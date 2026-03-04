@@ -3,7 +3,7 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::DefaultTerminal;
 use ratatui::widgets::TableState;
 
@@ -49,6 +49,9 @@ pub struct App {
     pub tag_table_state: TableState,
     /// Which view to return to after the Results screen (BranchList or Tags).
     pub results_return_view: ResultsReturnView,
+    /// Column header x-ranges for mouse click sorting: (x_start, sort_column_index).
+    /// Populated during branch_list rendering. The last entry extends to the end of the row.
+    pub header_columns: Vec<(u16, usize)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,10 +107,12 @@ impl App {
             tag_cursor: 0,
             tag_table_state: TableState::default(),
             results_return_view: ResultsReturnView::BranchList,
+            header_columns: Vec::new(),
         }
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
         while !self.should_exit {
             self.drain_squash_rx();
             terminal.draw(|frame| ui::render::draw(frame, self))?;
@@ -117,28 +122,70 @@ impl App {
                 self.handle_event(ev);
             }
         }
+        crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
         Ok(())
     }
 
     fn handle_event(&mut self, event: Event) {
-        let Event::Key(key) = event else { return };
-        if key.kind != KeyEventKind::Press {
+        match event {
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    return;
+                }
+
+                // Search input takes priority over all other key handlers
+                if self.search_active {
+                    self.handle_search_key(key.code);
+                    return;
+                }
+
+                match &self.view {
+                    View::BranchList => self.handle_branch_list_key(key.code),
+                    View::Confirm { .. } => self.handle_confirm_key(key.code),
+                    View::Results => self.handle_results_key(key.code),
+                    View::Help => self.handle_help_key(key.code),
+                    View::Menu { .. } => self.handle_menu_key(key.code),
+                    View::Tags => self.handle_tags_key(key.code),
+                }
+            }
+            Event::Mouse(mouse) => {
+                if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                    self.handle_mouse_click(mouse.column, mouse.row);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_mouse_click(&mut self, x: u16, y: u16) {
+        // Only handle clicks on the header row (row 1, inside the top border at row 0)
+        // and only in BranchList view
+        if y != 1 || self.view != View::BranchList || self.header_columns.is_empty() {
             return;
         }
 
-        // Search input takes priority over all other key handlers
-        if self.search_active {
-            self.handle_search_key(key.code);
-            return;
+        // Determine which sort column was clicked based on stored header x positions
+        let mut clicked_col: Option<usize> = None;
+        for (i, &(col_x, sort_idx)) in self.header_columns.iter().enumerate() {
+            let next_x = if i + 1 < self.header_columns.len() {
+                self.header_columns[i + 1].0
+            } else {
+                u16::MAX
+            };
+            if x >= col_x && x < next_x {
+                clicked_col = Some(sort_idx);
+                break;
+            }
         }
 
-        match &self.view {
-            View::BranchList => self.handle_branch_list_key(key.code),
-            View::Confirm { .. } => self.handle_confirm_key(key.code),
-            View::Results => self.handle_results_key(key.code),
-            View::Help => self.handle_help_key(key.code),
-            View::Menu { .. } => self.handle_menu_key(key.code),
-            View::Tags => self.handle_tags_key(key.code),
+        if let Some(col) = clicked_col {
+            if self.sort_column == Some(col) {
+                self.sort_ascending = !self.sort_ascending;
+            } else {
+                self.sort_column = Some(col);
+                self.sort_ascending = true;
+            }
+            self.apply_sort();
         }
     }
 
@@ -285,6 +332,48 @@ impl App {
             KeyCode::Char('/') => {
                 self.search_active = true;
             }
+            KeyCode::PageDown => {
+                let page_size = 20;
+                let query = self.search_query.to_lowercase();
+                let mut remaining = page_size;
+                let mut next = self.cursor;
+                while remaining > 0 && next + 1 < len {
+                    let candidate = next + 1;
+                    if !self.branches[candidate].is_pinned() && branch_matches_query(&self.branches[candidate], &query) {
+                        next = candidate;
+                        remaining -= 1;
+                    } else {
+                        next = candidate;
+                    }
+                }
+                // Ensure we landed on a valid row
+                if !self.branches[next].is_pinned() && branch_matches_query(&self.branches[next], &query) {
+                    self.cursor = next;
+                    self.table_state.select(Some(self.cursor));
+                }
+            }
+            KeyCode::PageUp => {
+                let page_size = 20;
+                let query = self.search_query.to_lowercase();
+                let first_unpinned = self.branches.iter().position(|b| !b.is_pinned()).unwrap_or(0);
+                let mut remaining = page_size;
+                let mut prev = self.cursor;
+                while remaining > 0 && prev > first_unpinned {
+                    let candidate = prev - 1;
+                    if !self.branches[candidate].is_pinned() && branch_matches_query(&self.branches[candidate], &query) {
+                        prev = candidate;
+                        remaining -= 1;
+                    } else if candidate > first_unpinned {
+                        prev = candidate;
+                    } else {
+                        break;
+                    }
+                }
+                if !self.branches[prev].is_pinned() && branch_matches_query(&self.branches[prev], &query) {
+                    self.cursor = prev;
+                    self.table_state.select(Some(self.cursor));
+                }
+            }
             KeyCode::Char('?') => {
                 self.view = View::Help;
             }
@@ -366,6 +455,20 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.tag_cursor > 0 {
                     self.tag_cursor -= 1;
+                    self.tag_table_state.select(Some(self.tag_cursor));
+                }
+            }
+            KeyCode::PageDown => {
+                if len > 0 {
+                    let page_size = 20;
+                    self.tag_cursor = (self.tag_cursor + page_size).min(len - 1);
+                    self.tag_table_state.select(Some(self.tag_cursor));
+                }
+            }
+            KeyCode::PageUp => {
+                if len > 0 {
+                    let page_size = 20;
+                    self.tag_cursor = self.tag_cursor.saturating_sub(page_size);
                     self.tag_table_state.select(Some(self.tag_cursor));
                 }
             }
@@ -592,6 +695,9 @@ impl App {
                 branch_cache,
             ))
         };
+
+        // Re-apply current sort so it persists across refreshes
+        self.apply_sort();
     }
 
     fn apply_sort(&mut self) {

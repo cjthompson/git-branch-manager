@@ -6,6 +6,9 @@ pub struct SymbolSet {
     pub arrow_up: &'static str,
     pub arrow_down: &'static str,
     pub current_branch: &'static str,
+    pub status_merged: &'static str,
+    pub status_squash_merged: &'static str,
+    pub status_unmerged: &'static str,
 }
 
 pub static ASCII: SymbolSet = SymbolSet {
@@ -15,6 +18,9 @@ pub static ASCII: SymbolSet = SymbolSet {
     arrow_up: "+",
     arrow_down: "-",
     current_branch: "*",
+    status_merged: "+",
+    status_squash_merged: "~",
+    status_unmerged: "-",
 };
 
 pub static UNICODE: SymbolSet = SymbolSet {
@@ -24,6 +30,9 @@ pub static UNICODE: SymbolSet = SymbolSet {
     arrow_up: "\u{2191}",      // ↑
     arrow_down: "\u{2193}",    // ↓
     current_branch: "\u{25cf}", // ●
+    status_merged: "\u{2714}",        // ✔
+    status_squash_merged: "\u{2248}", // ≈
+    status_unmerged: "\u{2718}",      // ✘
 };
 
 pub static POWERLINE: SymbolSet = SymbolSet {
@@ -33,6 +42,9 @@ pub static POWERLINE: SymbolSet = SymbolSet {
     arrow_up: "\u{f062}",
     arrow_down: "\u{f063}",
     current_branch: "\u{e0a0}",
+    status_merged: "\u{f00c}",        // nerd font check
+    status_squash_merged: "\u{f0ab}", // nerd font compress/squash
+    status_unmerged: "\u{f00d}",      // nerd font x-mark
 };
 
 pub fn detect() -> &'static SymbolSet {

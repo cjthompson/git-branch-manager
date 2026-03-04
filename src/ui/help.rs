@@ -7,6 +7,7 @@ use super::theme;
 const HELP_TEXT: &str = "\
 j/\u{2193}     Move down
 k/\u{2191}     Move up
+PgUp/Dn Page scroll
 ENTER   Operations menu
 SPACE   Toggle selection
 a       Select all

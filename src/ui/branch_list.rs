@@ -105,12 +105,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Cell::from(sort_label(0, "Branch")),
     ];
     if !hide_age {
-        header_cells.push(Cell::from(sort_label(1, "Age")));
+        header_cells.push(Cell::from(
+            Line::from(sort_label(1, "Age")).alignment(Alignment::Right),
+        ));
     }
     if !hide_ab {
         header_cells.push(Cell::from(sort_label(2, "A/B")));
     }
-    header_cells.push(Cell::from(sort_label(3, "Status")));
+    header_cells.push(Cell::from(
+        Line::from(sort_label(3, "Status")).alignment(Alignment::Right),
+    ));
 
     let header = Row::new(header_cells)
         .style(theme::HEADER_STYLE)
@@ -238,7 +242,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 } else {
                     age_style(&branch.last_commit_date)
                 };
-                cells.push(Cell::from(Span::styled(age, age_style)));
+                cells.push(Cell::from(
+                    Line::from(Span::styled(age, age_style)).alignment(Alignment::Right),
+                ));
             }
 
             // Ahead/behind column
@@ -269,18 +275,38 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 (String::new(), theme::PINNED_ROW_STYLE)
             } else if short_status {
                 match branch.merge_status {
-                    MergeStatus::Merged => ("m".into(), theme::MERGED_STYLE),
-                    MergeStatus::SquashMerged => ("s".into(), theme::SQUASH_MERGED_STYLE),
-                    MergeStatus::Unmerged => ("u".into(), theme::UNMERGED_STYLE),
+                    MergeStatus::Merged => (
+                        format!("{} m", app.symbols.status_merged),
+                        theme::MERGED_STYLE,
+                    ),
+                    MergeStatus::SquashMerged => (
+                        format!("{} s", app.symbols.status_squash_merged),
+                        theme::SQUASH_MERGED_STYLE,
+                    ),
+                    MergeStatus::Unmerged => (
+                        format!("{} u", app.symbols.status_unmerged),
+                        theme::UNMERGED_STYLE,
+                    ),
                 }
             } else {
                 match branch.merge_status {
-                    MergeStatus::Merged => ("merged".into(), theme::MERGED_STYLE),
-                    MergeStatus::SquashMerged => ("squash-merged".into(), theme::SQUASH_MERGED_STYLE),
-                    MergeStatus::Unmerged => ("unmerged".into(), theme::UNMERGED_STYLE),
+                    MergeStatus::Merged => (
+                        format!("{} merged", app.symbols.status_merged),
+                        theme::MERGED_STYLE,
+                    ),
+                    MergeStatus::SquashMerged => (
+                        format!("{} squash-merged", app.symbols.status_squash_merged),
+                        theme::SQUASH_MERGED_STYLE,
+                    ),
+                    MergeStatus::Unmerged => (
+                        format!("{} unmerged", app.symbols.status_unmerged),
+                        theme::UNMERGED_STYLE,
+                    ),
                 }
             };
-            cells.push(Cell::from(Span::styled(status_text, status_style)));
+            cells.push(Cell::from(
+                Line::from(Span::styled(status_text, status_style)).alignment(Alignment::Right),
+            ));
 
             Row::new(cells)
         })
@@ -298,6 +324,42 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         widths.push(Constraint::Length(6));
     }
     widths.push(Constraint::Length(if short_status { 3 } else { 14 })); // status
+
+    // Compute header column x positions for mouse click sorting.
+    // The table is inside a block with a 1-cell border on the left, so columns start at x=1.
+    // The highlight symbol takes some space; ratatui adds it before the first column.
+    // Sort column indices: checkbox=skip, name=0, age=1, A/B=2, status=3
+    {
+        let mut col_positions: Vec<(u16, usize)> = Vec::new();
+        // Account for left border (1) + highlight symbol width (cursor_prefix + space)
+        let highlight_width = app.symbols.cursor_prefix.len() as u16 + 1;
+        let x = main_area.x + 1 + highlight_width;
+
+        // Map table column index to sort column index
+        // col 0 = checkbox (no sort), col 1 = name (sort 0), then age/ab/status depending on visibility
+        let mut sort_col_map: Vec<Option<usize>> = vec![None]; // checkbox = no sort
+        sort_col_map.push(Some(0)); // name
+        if !hide_age {
+            sort_col_map.push(Some(1)); // age
+        }
+        if !hide_ab {
+            sort_col_map.push(Some(2)); // A/B
+        }
+        sort_col_map.push(Some(3)); // status
+
+        // Resolve constraint widths using the main_area width minus borders and highlight
+        let available = main_area.width.saturating_sub(2 + highlight_width);
+        let resolved = Layout::horizontal(&widths).split(Rect::new(0, 0, available, 1));
+
+        for (i, rect) in resolved.iter().enumerate() {
+            if let Some(&Some(sort_idx)) = sort_col_map.get(i) {
+                col_positions.push((x + rect.x, sort_idx));
+            }
+            // x advances based on resolved rect positions
+        }
+
+        app.header_columns = col_positions;
+    }
 
     let highlight_sym = format!("{} ", app.symbols.cursor_prefix);
     let table = Table::new(rows, widths)

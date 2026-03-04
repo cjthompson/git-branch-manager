@@ -43,7 +43,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Header row
     let mut header_cells = vec![
         Cell::from("Tag"),
-        Cell::from("Age"),
+        Cell::from(Line::from("Age").alignment(Alignment::Right)),
         Cell::from("Commit"),
     ];
     if !hide_message {
@@ -69,7 +69,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             } else {
                 tag.age_display()
             };
-            let age_cell = Cell::from(Span::styled(age, age_style(&tag.date)));
+            let age_cell = Cell::from(
+                Line::from(Span::styled(age, age_style(&tag.date))).alignment(Alignment::Right),
+            );
 
             let short_hash = if tag.commit_hash.len() >= 7 {
                 &tag.commit_hash[..7]
