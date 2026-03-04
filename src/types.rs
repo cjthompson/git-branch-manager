@@ -77,6 +77,8 @@ pub enum BranchAction {
     Fetch,
     FetchPrune,
     FastForward,
+    Merge,
+    SquashMerge,
 }
 
 impl BranchAction {
@@ -88,6 +90,8 @@ impl BranchAction {
             BranchAction::Fetch => "Fetch",
             BranchAction::FetchPrune => "Fetch + prune",
             BranchAction::FastForward => "Fast-forward",
+            BranchAction::Merge => "Merge into base",
+            BranchAction::SquashMerge => "Squash merge into base",
         }
     }
 }

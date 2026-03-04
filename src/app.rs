@@ -273,6 +273,22 @@ impl App {
             return;
         }
 
+        // Merge / squash merge operates on the cursor branch into base
+        if action == BranchAction::Merge || action == BranchAction::SquashMerge {
+            let branch_name = self.branches[self.cursor].name.clone();
+            let needs_stash = !self.working_tree_status.is_clean();
+            let squash = action == BranchAction::SquashMerge;
+            let results = operations::merge_branch(
+                &self.repo_path,
+                &branch_name,
+                &self.base_branch,
+                squash,
+                needs_stash,
+            );
+            self.results.extend(results);
+            return;
+        }
+
         let repo = match git2::Repository::open(&self.repo_path) {
             Ok(r) => r,
             Err(e) => {
@@ -315,7 +331,9 @@ impl App {
                 BranchAction::Checkout
                 | BranchAction::Fetch
                 | BranchAction::FetchPrune
-                | BranchAction::FastForward => unreachable!(),
+                | BranchAction::FastForward
+                | BranchAction::Merge
+                | BranchAction::SquashMerge => unreachable!(),
             }
         }
     }
@@ -458,6 +476,32 @@ impl App {
             },
         });
 
+        // Merge into base
+        items.push(ui::menu::MenuItem {
+            label: "Merge into base".into(),
+            enabled: !branch.is_base && !branch.is_current,
+            reason: if branch.is_current {
+                Some("current".into())
+            } else if branch.is_base {
+                Some("base".into())
+            } else {
+                None
+            },
+        });
+
+        // Squash merge into base
+        items.push(ui::menu::MenuItem {
+            label: "Squash merge into base".into(),
+            enabled: !branch.is_base && !branch.is_current,
+            reason: if branch.is_current {
+                Some("current".into())
+            } else if branch.is_base {
+                Some("base".into())
+            } else {
+                None
+            },
+        });
+
         items
     }
 
@@ -491,6 +535,8 @@ impl App {
                         1 => BranchAction::DeleteLocal,
                         2 => BranchAction::DeleteLocalAndRemote,
                         3 => BranchAction::FastForward,
+                        4 => BranchAction::Merge,
+                        5 => BranchAction::SquashMerge,
                         _ => return,
                     };
                     self.view = View::Confirm { action };

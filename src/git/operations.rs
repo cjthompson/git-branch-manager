@@ -204,6 +204,123 @@ pub fn fast_forward(repo_path: &Path, branch_name: &str) -> OperationResult {
     }
 }
 
+/// Merge a branch into the base branch (regular or squash merge).
+///
+/// If `stash` is true, working tree changes are stashed before the operation and popped after.
+/// On merge conflict the merge is aborted and the original branch is checked back out.
+pub fn merge_branch(
+    repo_path: &Path,
+    branch_name: &str,
+    base: &str,
+    squash: bool,
+    stash: bool,
+) -> Vec<OperationResult> {
+    let mut results = Vec::new();
+    let action = if squash {
+        BranchAction::SquashMerge
+    } else {
+        BranchAction::Merge
+    };
+
+    if stash {
+        let o = Command::new("git")
+            .current_dir(repo_path)
+            .args(["stash", "push", "-m", "git-bm auto-stash"])
+            .output();
+        if let Ok(o) = &o
+            && !o.status.success()
+        {
+            results.push(OperationResult {
+                branch_name: branch_name.to_string(),
+                action,
+                success: false,
+                message: "Stash failed".into(),
+            });
+            return results;
+        }
+    }
+
+    // Checkout base
+    let co = Command::new("git")
+        .current_dir(repo_path)
+        .args(["checkout", base])
+        .output();
+    if let Ok(o) = &co
+        && !o.status.success()
+    {
+        results.push(OperationResult {
+            branch_name: branch_name.to_string(),
+            action,
+            success: false,
+            message: format!("Checkout {} failed", base),
+        });
+        if stash {
+            let _ = Command::new("git")
+                .current_dir(repo_path)
+                .args(["stash", "pop"])
+                .output();
+        }
+        return results;
+    }
+
+    // Merge
+    let mut args = vec!["merge"];
+    if squash {
+        args.push("--squash");
+    }
+    args.push(branch_name);
+    let merge_out = Command::new("git").current_dir(repo_path).args(&args).output();
+    match merge_out {
+        Ok(o) if o.status.success() => {
+            if squash {
+                let _ = Command::new("git")
+                    .current_dir(repo_path)
+                    .args(["commit", "-m", &format!("Squash merge {}", branch_name)])
+                    .output();
+            }
+            results.push(OperationResult {
+                branch_name: branch_name.to_string(),
+                action,
+                success: true,
+                message: if squash {
+                    "Squash merged".into()
+                } else {
+                    "Merged".into()
+                },
+            });
+        }
+        Ok(o) => {
+            let _ = Command::new("git")
+                .current_dir(repo_path)
+                .args(["merge", "--abort"])
+                .output();
+            results.push(OperationResult {
+                branch_name: branch_name.to_string(),
+                action,
+                success: false,
+                message: format!(
+                    "Merge failed: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+            });
+        }
+        Err(e) => results.push(OperationResult {
+            branch_name: branch_name.to_string(),
+            action,
+            success: false,
+            message: format!("Failed: {}", e),
+        }),
+    }
+
+    if stash {
+        let _ = Command::new("git")
+            .current_dir(repo_path)
+            .args(["stash", "pop"])
+            .output();
+    }
+    results
+}
+
 /// Delete a branch from the remote using git CLI.
 fn delete_remote(repo_path: &Path, branch_name: &str) -> OperationResult {
     match Command::new("git")

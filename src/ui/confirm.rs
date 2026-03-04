@@ -11,8 +11,15 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let action_label = action.label();
 
-    // Build content: Checkout shows cursor branch; delete actions show selected branches
-    let mut lines = if *action == git_branch_manager::types::BranchAction::Checkout {
+    // Build content: Cursor-branch operations show the cursor branch; bulk operations show selected branches
+    let is_cursor_action = matches!(
+        action,
+        git_branch_manager::types::BranchAction::Checkout
+            | git_branch_manager::types::BranchAction::FastForward
+            | git_branch_manager::types::BranchAction::Merge
+            | git_branch_manager::types::BranchAction::SquashMerge
+    );
+    let mut lines = if is_cursor_action {
         let cursor_name = &app.branches[app.cursor].name;
         vec![
             Line::from(format!("{} branch?", action_label)),
