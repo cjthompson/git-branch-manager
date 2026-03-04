@@ -21,7 +21,7 @@ f       Fetch
 F       Fetch + prune
 R       Force recheck (clear cache)
 ?       Toggle help
-q/Esc   Quit";
+q       Quit";
 
 pub fn draw(frame: &mut Frame, _app: &App) {
     let area = frame.area();

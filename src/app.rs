@@ -105,7 +105,7 @@ impl App {
     fn handle_branch_list_key(&mut self, code: KeyCode) {
         let len = self.branches.len();
         if len == 0 {
-            if matches!(code, KeyCode::Char('q') | KeyCode::Esc) {
+            if matches!(code, KeyCode::Char('q')) {
                 self.should_exit = true;
             }
             return;
@@ -220,7 +220,7 @@ impl App {
             KeyCode::Char('?') => {
                 self.view = View::Help;
             }
-            KeyCode::Char('q') | KeyCode::Esc => {
+            KeyCode::Char('q') => {
                 self.should_exit = true;
             }
             _ => {}
