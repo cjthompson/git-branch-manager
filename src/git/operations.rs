@@ -487,6 +487,74 @@ pub fn push_branch(repo_path: &Path, branch_name: &str) -> OperationResult {
     }
 }
 
+/// Pull (fast-forward) a branch from its remote tracking branch.
+///
+/// For branches that are not currently checked out, uses `git fetch origin branch:branch`.
+/// For the current branch, uses `git pull --ff-only`.
+pub fn pull_branch(repo_path: &Path, branch_name: &str, is_current: bool) -> OperationResult {
+    if is_current {
+        match Command::new("git")
+            .current_dir(repo_path)
+            .args(["pull", "--ff-only"])
+            .output()
+        {
+            Ok(o) if o.status.success() => OperationResult {
+                branch_name: branch_name.to_string(),
+                action: BranchAction::Pull,
+                success: true,
+                message: "Pulled from remote".into(),
+            },
+            Ok(o) => OperationResult {
+                branch_name: branch_name.to_string(),
+                action: BranchAction::Pull,
+                success: false,
+                message: format!(
+                    "Pull failed: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+            },
+            Err(e) => OperationResult {
+                branch_name: branch_name.to_string(),
+                action: BranchAction::Pull,
+                success: false,
+                message: format!("Failed to run git: {}", e),
+            },
+        }
+    } else {
+        match Command::new("git")
+            .current_dir(repo_path)
+            .args([
+                "fetch",
+                "origin",
+                &format!("{}:{}", branch_name, branch_name),
+            ])
+            .output()
+        {
+            Ok(o) if o.status.success() => OperationResult {
+                branch_name: branch_name.to_string(),
+                action: BranchAction::Pull,
+                success: true,
+                message: "Pulled from remote".into(),
+            },
+            Ok(o) => OperationResult {
+                branch_name: branch_name.to_string(),
+                action: BranchAction::Pull,
+                success: false,
+                message: format!(
+                    "Pull failed: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+            },
+            Err(e) => OperationResult {
+                branch_name: branch_name.to_string(),
+                action: BranchAction::Pull,
+                success: false,
+                message: format!("Failed to run git: {}", e),
+            },
+        }
+    }
+}
+
 /// Delete a branch from the remote using git CLI.
 fn delete_remote(repo_path: &Path, branch_name: &str) -> OperationResult {
     match Command::new("git")
