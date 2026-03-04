@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::DefaultTerminal;
+use ratatui::widgets::TableState;
 
 use git_branch_manager::git::{branch, cache, operations, squash_loader, status};
 use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, SquashResult, WorkingTreeStatus};
@@ -30,6 +31,7 @@ pub struct App {
     pub should_exit: bool,
     pub squash_rx: Option<Receiver<SquashResult>>,
     pub working_tree_status: WorkingTreeStatus,
+    pub table_state: TableState,
 }
 
 impl App {
@@ -53,6 +55,7 @@ impl App {
             should_exit: false,
             squash_rx,
             working_tree_status,
+            table_state: TableState::default().with_selected(Some(0)),
         }
     }
 
@@ -96,11 +99,13 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.cursor + 1 < len {
                     self.cursor += 1;
+                    self.table_state.select(Some(self.cursor));
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.cursor > 0 {
                     self.cursor -= 1;
+                    self.table_state.select(Some(self.cursor));
                 }
             }
             KeyCode::Char(' ') => {
@@ -270,6 +275,7 @@ impl App {
         self.selected = vec![false; len];
         self.cursor = self.cursor.min(len.saturating_sub(1));
         self.list_scroll_offset = 0;
+        self.table_state.select(Some(self.cursor));
         self.results.clear();
 
         self.squash_rx = if candidates.is_empty() {

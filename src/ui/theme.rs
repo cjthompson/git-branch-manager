@@ -21,10 +21,6 @@ pub const SECONDARY_TEXT: Style = Style::new().fg(Color::DarkGray);
 // Cursor row — dark teal-blue background for clear contrast
 pub const CURSOR_STYLE: Style = Style::new().bg(Color::Indexed(24));
 
-pub const CURSOR_PREFIX_STYLE: Style = Style::new()
-    .fg(Color::Cyan)
-    .add_modifier(Modifier::BOLD);
-
 // Selected item checkbox/name
 pub const SELECTED_STYLE: Style = Style::new()
     .fg(Color::Green)
@@ -51,3 +47,9 @@ pub const STATUS_BAR_STYLE: Style = Style::new()
 pub const TITLE_STYLE: Style = Style::new()
     .fg(Color::Cyan)
     .add_modifier(Modifier::BOLD);
+
+// Table header row
+pub const HEADER_STYLE: Style = Style::new()
+    .fg(Color::Cyan)
+    .add_modifier(Modifier::BOLD)
+    .add_modifier(Modifier::UNDERLINED);

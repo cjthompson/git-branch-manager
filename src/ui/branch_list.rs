@@ -1,11 +1,11 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::App;
 use git_branch_manager::types::{MergeStatus, TrackingStatus};
 use super::theme;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
     let layout = Layout::default()
@@ -27,38 +27,37 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .title_style(theme::TITLE_STYLE)
         .borders(Borders::ALL);
 
-    let inner_height = block.inner(main_area).height as usize;
+    // Header row
+    let header = Row::new(vec![
+        Cell::from(""),
+        Cell::from("Branch"),
+        Cell::from("Age"),
+        Cell::from("A/B"),
+        Cell::from("Status"),
+    ])
+    .style(theme::HEADER_STYLE)
+    .bottom_margin(0);
 
-    // Compute scroll offset to keep cursor visible
-    let scroll_offset = {
-        let mut offset = app.list_scroll_offset;
-        if inner_height > 0 {
-            if app.cursor < offset {
-                offset = app.cursor;
-            }
-            if app.cursor >= offset + inner_height {
-                offset = app.cursor - inner_height + 1;
-            }
-        }
-        offset
-    };
-
-    let items: Vec<ListItem> = app
+    // Build table rows
+    let rows: Vec<Row> = app
         .branches
         .iter()
         .enumerate()
-        .skip(scroll_offset)
-        .take(inner_height)
         .map(|(i, branch)| {
-            let is_cursor = i == app.cursor;
             let is_selected = app.selected[i];
 
-            let checkbox = if is_selected { "[x]" } else { "[ ]" };
-            let checkbox_style = if is_selected {
-                theme::SELECTED_STYLE
+            // Checkbox column
+            let (checkbox_text, checkbox_style) = if branch.is_base || branch.is_current {
+                ("   ", Style::default())
+            } else if is_selected {
+                ("[x]", theme::SELECTED_STYLE)
             } else {
-                theme::SECONDARY_TEXT
+                ("[ ]", theme::SECONDARY_TEXT)
             };
+
+            // Branch name column
+            let current_marker = if branch.is_current { "* " } else { "  " };
+            let base_suffix = if branch.is_base { " [base]" } else { "" };
 
             let name_style = if branch.is_current {
                 theme::CURRENT_BRANCH_STYLE
@@ -71,14 +70,25 @@ pub fn draw(frame: &mut Frame, app: &App) {
             let tracking_text = match &branch.tracking {
                 TrackingStatus::Tracked { remote_ref, gone } => {
                     if *gone {
-                        "gone".to_string()
+                        " (gone)".to_string()
                     } else {
-                        remote_ref.clone()
+                        format!(" \u{2192} {}", remote_ref)
                     }
                 }
-                TrackingStatus::Local => "(local)".to_string(),
+                TrackingStatus::Local => " (local)".to_string(),
             };
 
+            let name_cell = Cell::from(Line::from(vec![
+                Span::styled(format!("{}{}", current_marker, branch.name), name_style),
+                Span::styled(base_suffix, theme::SECONDARY_TEXT),
+                Span::styled(tracking_text, theme::SECONDARY_TEXT),
+            ]));
+
+            // Age column
+            let age = branch.age_display();
+            let age_cell = Cell::from(Span::styled(age, theme::SECONDARY_TEXT));
+
+            // Ahead/behind column
             let ahead_behind = match (branch.ahead, branch.behind) {
                 (Some(a), Some(b)) if a > 0 || b > 0 => {
                     let mut parts = Vec::new();
@@ -92,55 +102,41 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 }
                 _ => String::new(),
             };
+            let ab_cell = Cell::from(Span::styled(ahead_behind, theme::AHEAD_BEHIND_STYLE));
 
-            let age = branch.age_display();
-
+            // Status column
             let (status_text, status_style) = match branch.merge_status {
                 MergeStatus::Merged => ("merged", theme::MERGED_STYLE),
                 MergeStatus::SquashMerged => ("squash-merged", theme::SQUASH_MERGED_STYLE),
                 MergeStatus::Unmerged => ("unmerged", theme::UNMERGED_STYLE),
             };
+            let status_cell = Cell::from(Span::styled(status_text, status_style));
 
-            let current_marker = if branch.is_current { "* " } else { "  " };
-            let base_marker = if branch.is_base { " [base]" } else { "" };
-
-            let cursor_prefix = if is_cursor { "> " } else { "  " };
-            let cursor_prefix_style = if is_cursor {
-                theme::CURSOR_PREFIX_STYLE
-            } else {
-                Style::default()
-            };
-
-            let mut spans = vec![
-                Span::styled(cursor_prefix, cursor_prefix_style),
-                Span::styled(format!("{} ", checkbox), checkbox_style),
-                Span::styled(format!("{}{}", current_marker, branch.name), name_style),
-                Span::styled(base_marker, theme::SECONDARY_TEXT),
-                Span::raw("  "),
-                Span::styled(tracking_text, theme::SECONDARY_TEXT),
-            ];
-            if !ahead_behind.is_empty() {
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(ahead_behind, theme::AHEAD_BEHIND_STYLE));
-            }
-            spans.extend([
-                Span::raw("  "),
-                Span::styled(age, theme::SECONDARY_TEXT),
-                Span::raw("  "),
-                Span::styled(status_text, status_style),
-            ]);
-            let line = Line::from(spans);
-
-            let mut item = ListItem::new(line);
-            if is_cursor {
-                item = item.style(theme::CURSOR_STYLE);
-            }
-            item
+            Row::new(vec![
+                Cell::from(Span::styled(checkbox_text, checkbox_style)),
+                name_cell,
+                age_cell,
+                ab_cell,
+                status_cell,
+            ])
         })
         .collect();
 
-    let list = List::new(items).block(block);
-    frame.render_widget(list, main_area);
+    let widths = [
+        Constraint::Length(3),
+        Constraint::Min(20),
+        Constraint::Length(14),
+        Constraint::Length(6),
+        Constraint::Length(14),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(block)
+        .row_highlight_style(theme::CURSOR_STYLE)
+        .highlight_symbol("> ");
+
+    frame.render_stateful_widget(table, main_area, &mut app.table_state);
 
     // Status bar
     let selected_count = app.selection_count();
