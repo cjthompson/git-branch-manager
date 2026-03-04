@@ -648,6 +648,16 @@ impl App {
             return;
         }
 
+        // Push operates on the cursor branch
+        if action == BranchAction::Push {
+            let branch_name = self.branches[self.cursor].name.clone();
+            let repo_path = self.repo_path.clone();
+            self.spawn_op(label, move || {
+                vec![operations::push_branch(&repo_path, &branch_name)]
+            });
+            return;
+        }
+
         // Merge / squash merge operates on the cursor branch into base
         if action == BranchAction::Merge || action == BranchAction::SquashMerge {
             let branch_name = self.branches[self.cursor].name.clone();
@@ -999,6 +1009,20 @@ impl App {
             },
         });
 
+        // Push: only for branches that are ahead of their remote
+        let is_ahead = branch.ahead.is_some_and(|a| a > 0);
+        items.push(ui::menu::MenuItem {
+            label: "Push".into(),
+            enabled: is_ahead,
+            reason: if !has_live_remote {
+                Some("no remote".into())
+            } else if !is_ahead {
+                Some("not ahead".into())
+            } else {
+                None
+            },
+        });
+
         // Merge into base
         items.push(ui::menu::MenuItem {
             label: "Merge into base".into(),
@@ -1082,10 +1106,11 @@ impl App {
                         1 => BranchAction::DeleteLocal,
                         2 => BranchAction::DeleteLocalAndRemote,
                         3 => BranchAction::FastForward,
-                        4 => BranchAction::Merge,
-                        5 => BranchAction::SquashMerge,
-                        6 => BranchAction::Rebase,
-                        7 => BranchAction::Worktree,
+                        4 => BranchAction::Push,
+                        5 => BranchAction::Merge,
+                        6 => BranchAction::SquashMerge,
+                        7 => BranchAction::Rebase,
+                        8 => BranchAction::Worktree,
                         _ => return,
                     };
                     self.view = View::Confirm { action };

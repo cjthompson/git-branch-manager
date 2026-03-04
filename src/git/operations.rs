@@ -456,6 +456,37 @@ pub fn create_worktree(repo_path: &Path, branch_name: &str) -> OperationResult {
     }
 }
 
+/// Push a branch to its remote tracking branch.
+pub fn push_branch(repo_path: &Path, branch_name: &str) -> OperationResult {
+    match Command::new("git")
+        .current_dir(repo_path)
+        .args(["push", "origin", branch_name])
+        .output()
+    {
+        Ok(o) if o.status.success() => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::Push,
+            success: true,
+            message: "Pushed to remote".into(),
+        },
+        Ok(o) => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::Push,
+            success: false,
+            message: format!(
+                "Push failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+        },
+        Err(e) => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::Push,
+            success: false,
+            message: format!("Failed to run git: {}", e),
+        },
+    }
+}
+
 /// Delete a branch from the remote using git CLI.
 fn delete_remote(repo_path: &Path, branch_name: &str) -> OperationResult {
     match Command::new("git")

@@ -103,6 +103,7 @@ pub enum BranchAction {
     SquashMerge,
     Rebase,
     Worktree,
+    Push,
     DeleteTag,
     PushTag,
 }
@@ -120,6 +121,7 @@ impl BranchAction {
             BranchAction::SquashMerge => "Squash merge into base",
             BranchAction::Rebase => "Rebase onto base",
             BranchAction::Worktree => "Create worktree",
+            BranchAction::Push => "Push",
             BranchAction::DeleteTag => "Delete tag",
             BranchAction::PushTag => "Push tag",
         }
