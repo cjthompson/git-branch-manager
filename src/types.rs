@@ -80,6 +80,7 @@ pub enum BranchAction {
     Merge,
     SquashMerge,
     Rebase,
+    Worktree,
 }
 
 impl BranchAction {
@@ -94,6 +95,7 @@ impl BranchAction {
             BranchAction::Merge => "Merge into base",
             BranchAction::SquashMerge => "Squash merge into base",
             BranchAction::Rebase => "Rebase onto base",
+            BranchAction::Worktree => "Create worktree",
         }
     }
 }

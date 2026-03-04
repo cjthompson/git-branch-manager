@@ -19,6 +19,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             | git_branch_manager::types::BranchAction::Merge
             | git_branch_manager::types::BranchAction::SquashMerge
             | git_branch_manager::types::BranchAction::Rebase
+            | git_branch_manager::types::BranchAction::Worktree
     );
     let mut lines = if is_cursor_action {
         let cursor_name = &app.branches[app.cursor].name;

@@ -418,6 +418,44 @@ pub fn rebase_branch(
     results
 }
 
+/// Create a git worktree for the given branch under `.worktrees/<sanitized-name>`.
+pub fn create_worktree(repo_path: &Path, branch_name: &str) -> OperationResult {
+    let sanitized = branch_name.replace('/', "-");
+    let worktree_path = repo_path.join(".worktrees").join(&sanitized);
+    match Command::new("git")
+        .current_dir(repo_path)
+        .args([
+            "worktree",
+            "add",
+            worktree_path.to_str().unwrap_or(""),
+            branch_name,
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::Worktree,
+            success: true,
+            message: format!("Worktree at {}", worktree_path.display()),
+        },
+        Ok(o) => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::Worktree,
+            success: false,
+            message: format!(
+                "Failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+        },
+        Err(e) => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::Worktree,
+            success: false,
+            message: format!("Failed: {}", e),
+        },
+    }
+}
+
 /// Delete a branch from the remote using git CLI.
 fn delete_remote(repo_path: &Path, branch_name: &str) -> OperationResult {
     match Command::new("git")

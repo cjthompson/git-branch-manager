@@ -303,6 +303,14 @@ impl App {
             return;
         }
 
+        // Create worktree operates on the cursor branch
+        if action == BranchAction::Worktree {
+            let branch_name = self.branches[self.cursor].name.clone();
+            let result = operations::create_worktree(&self.repo_path, &branch_name);
+            self.results.push(result);
+            return;
+        }
+
         let repo = match git2::Repository::open(&self.repo_path) {
             Ok(r) => r,
             Err(e) => {
@@ -348,7 +356,8 @@ impl App {
                 | BranchAction::FastForward
                 | BranchAction::Merge
                 | BranchAction::SquashMerge
-                | BranchAction::Rebase => unreachable!(),
+                | BranchAction::Rebase
+                | BranchAction::Worktree => unreachable!(),
             }
         }
     }
@@ -530,6 +539,17 @@ impl App {
             },
         });
 
+        // Create worktree
+        items.push(ui::menu::MenuItem {
+            label: "Create worktree".into(),
+            enabled: !branch.is_current,
+            reason: if branch.is_current {
+                Some("current".into())
+            } else {
+                None
+            },
+        });
+
         items
     }
 
@@ -566,6 +586,7 @@ impl App {
                         4 => BranchAction::Merge,
                         5 => BranchAction::SquashMerge,
                         6 => BranchAction::Rebase,
+                        7 => BranchAction::Worktree,
                         _ => return,
                     };
                     self.view = View::Confirm { action };
