@@ -190,6 +190,18 @@ impl App {
                     };
                 }
             }
+            KeyCode::Char('f') => {
+                let result = operations::fetch(&self.repo_path);
+                self.results.push(result);
+                self.refresh_branches();
+                self.view = View::Results;
+            }
+            KeyCode::Char('F') => {
+                let result = operations::fetch_prune(&self.repo_path);
+                self.results.push(result);
+                self.refresh_branches();
+                self.view = View::Results;
+            }
             KeyCode::Char('?') => {
                 self.view = View::Help;
             }
@@ -270,7 +282,9 @@ impl App {
                         operations::delete_local_and_remote(&repo, &self.repo_path, branch_name);
                     self.results.extend(results);
                 }
-                BranchAction::Checkout => unreachable!(),
+                BranchAction::Checkout
+                | BranchAction::Fetch
+                | BranchAction::FetchPrune => unreachable!(),
             }
         }
     }

@@ -15,6 +15,8 @@ i       Invert selection
 c       Checkout cursor branch
 d       Delete local
 D       Delete local + remote
+f       Fetch
+F       Fetch + prune
 R       Force recheck (clear cache)
 ?       Toggle help
 q/Esc   Quit";

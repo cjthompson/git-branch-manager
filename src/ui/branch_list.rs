@@ -167,7 +167,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         String::new()
     };
     let status_text = format!(
-        " {} branches | {} selected | {} merged | {} squashed{} \u{2014} [c]heckout [d]el [D]el+remote [?]help [q]uit",
+        " {} branches | {} selected | {} merged | {} squashed{} \u{2014} [c]heckout [d]el [D]el+remote [f]etch [?]help [q]uit",
         total, selected_count, merged_count, squash_count, progress
     );
     let status = Paragraph::new(status_text).style(theme::STATUS_BAR_STYLE);

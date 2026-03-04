@@ -74,6 +74,8 @@ pub enum BranchAction {
     DeleteLocal,
     DeleteLocalAndRemote,
     Checkout,
+    Fetch,
+    FetchPrune,
 }
 
 impl BranchAction {
@@ -82,6 +84,8 @@ impl BranchAction {
             BranchAction::DeleteLocal => "Delete local",
             BranchAction::DeleteLocalAndRemote => "Delete local + remote",
             BranchAction::Checkout => "Checkout",
+            BranchAction::Fetch => "Fetch",
+            BranchAction::FetchPrune => "Fetch + prune",
         }
     }
 }

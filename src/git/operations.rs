@@ -116,6 +116,59 @@ pub fn checkout_branch(repo_path: &Path, branch_name: &str, stash: bool) -> Oper
     result
 }
 
+/// Fetch from all remotes.
+pub fn fetch(repo_path: &Path) -> OperationResult {
+    run_fetch_cmd(repo_path, false)
+}
+
+/// Fetch from all remotes with --prune (removes stale tracking refs).
+pub fn fetch_prune(repo_path: &Path) -> OperationResult {
+    run_fetch_cmd(repo_path, true)
+}
+
+fn run_fetch_cmd(repo_path: &Path, prune: bool) -> OperationResult {
+    let mut args = vec!["fetch"];
+    if prune {
+        args.push("--prune");
+    }
+    let action = if prune {
+        BranchAction::FetchPrune
+    } else {
+        BranchAction::Fetch
+    };
+    match Command::new("git")
+        .current_dir(repo_path)
+        .args(&args)
+        .output()
+    {
+        Ok(output) if output.status.success() => OperationResult {
+            branch_name: String::new(),
+            action,
+            success: true,
+            message: if prune {
+                "Fetched with prune".into()
+            } else {
+                "Fetched".into()
+            },
+        },
+        Ok(output) => OperationResult {
+            branch_name: String::new(),
+            action,
+            success: false,
+            message: format!(
+                "Fetch failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        },
+        Err(e) => OperationResult {
+            branch_name: String::new(),
+            action,
+            success: false,
+            message: format!("Failed to run git: {}", e),
+        },
+    }
+}
+
 /// Delete a branch from the remote using git CLI.
 fn delete_remote(repo_path: &Path, branch_name: &str) -> OperationResult {
     match Command::new("git")
