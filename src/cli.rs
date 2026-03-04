@@ -6,4 +6,8 @@ pub struct Cli {
     /// Override the base branch (default: auto-detect from remote HEAD)
     #[arg(long, short)]
     pub base: Option<String>,
+
+    /// Print branch list to stdout and exit (no TUI)
+    #[arg(long)]
+    pub list: bool,
 }

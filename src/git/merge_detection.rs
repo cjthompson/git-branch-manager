@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::Result;
@@ -40,22 +41,29 @@ pub fn detect_merged_branches(
 /// Detect branches that were squash-merged into the base branch.
 ///
 /// Uses git CLI commands since git2 doesn't expose commit-tree or cherry.
-pub fn detect_squash_merged_branches(base_branch: &str, branches: &mut [BranchInfo]) {
+pub fn detect_squash_merged_branches(
+    repo_path: &Path,
+    base_branch: &str,
+    branches: &mut [BranchInfo],
+) {
     for branch in branches.iter_mut() {
         if branch.merge_status != MergeStatus::Unmerged || branch.is_base || branch.is_current {
             continue;
         }
 
-        if is_squash_merged(base_branch, &branch.name) {
+        if is_squash_merged(repo_path, base_branch, &branch.name) {
             branch.merge_status = MergeStatus::SquashMerged;
         }
     }
 }
 
 /// Check if a single branch was squash-merged into the base branch.
-fn is_squash_merged(base_branch: &str, branch_name: &str) -> bool {
+///
+/// Runs three git CLI commands in the given repo directory.
+pub(crate) fn is_squash_merged(repo_path: &Path, base_branch: &str, branch_name: &str) -> bool {
     // Step 1: git merge-base <base> <branch>
     let ancestor = match Command::new("git")
+        .current_dir(repo_path)
         .args(["merge-base", base_branch, branch_name])
         .output()
     {
@@ -68,6 +76,7 @@ fn is_squash_merged(base_branch: &str, branch_name: &str) -> bool {
     // Step 2: git commit-tree <branch>^{tree} -p <ancestor> -m _
     let tree_spec = format!("{}^{{tree}}", branch_name);
     let temp_commit = match Command::new("git")
+        .current_dir(repo_path)
         .args(["commit-tree", &tree_spec, "-p", &ancestor, "-m", "_"])
         .output()
     {
@@ -79,6 +88,7 @@ fn is_squash_merged(base_branch: &str, branch_name: &str) -> bool {
 
     // Step 3: git cherry <base> <temp_commit>
     match Command::new("git")
+        .current_dir(repo_path)
         .args(["cherry", base_branch, &temp_commit])
         .output()
     {

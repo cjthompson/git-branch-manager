@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 
 use git2::{BranchType, Repository};
@@ -35,6 +36,7 @@ pub fn delete_local(repo: &Repository, branch_name: &str) -> OperationResult {
 /// Returns a result for each sub-operation (local delete, remote delete).
 pub fn delete_local_and_remote(
     repo: &Repository,
+    repo_path: &Path,
     branch_name: &str,
 ) -> Vec<OperationResult> {
     let mut results = Vec::new();
@@ -46,7 +48,7 @@ pub fn delete_local_and_remote(
 
     // Delete remote (only attempt if local succeeded)
     if local_success {
-        let remote_result = delete_remote(branch_name);
+        let remote_result = delete_remote(repo_path, branch_name);
         results.push(remote_result);
     }
 
@@ -54,8 +56,9 @@ pub fn delete_local_and_remote(
 }
 
 /// Delete a branch from the remote using git CLI.
-fn delete_remote(branch_name: &str) -> OperationResult {
+fn delete_remote(repo_path: &Path, branch_name: &str) -> OperationResult {
     match Command::new("git")
+        .current_dir(repo_path)
         .args(["push", "origin", "--delete", branch_name])
         .output()
     {

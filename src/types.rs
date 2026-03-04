@@ -85,3 +85,10 @@ pub struct OperationResult {
     pub success: bool,
     pub message: String,
 }
+
+/// Result of a background squash-merge check for a single branch.
+#[derive(Debug)]
+pub struct SquashResult {
+    pub branch_name: String,
+    pub is_squash_merged: bool,
+}

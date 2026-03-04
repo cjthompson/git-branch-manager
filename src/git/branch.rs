@@ -60,10 +60,32 @@ pub fn detect_base_branch(repo: &Repository, override_base: Option<&str>) -> Res
     Err(GitError::CannotDetectBase.into())
 }
 
-/// List all local branches with metadata, merge status detection, sorted by date descending.
-pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
-    let branches_iter = repo.branches(Some(BranchType::Local))?;
+/// List all local branches with metadata and regular merge detection, sorted by date.
+///
+/// Does NOT run squash-merge detection — call `spawn_squash_checker` for that.
+/// Used by the TUI path for instant startup.
+pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
+    let mut branches = collect_branch_metadata(repo, base_branch)?;
+    detect_merged_branches(repo, base_branch, &mut branches)?;
+    branches.sort_by(|a, b| b.last_commit_date.cmp(&a.last_commit_date));
+    Ok(branches)
+}
 
+/// List all local branches with full metadata including squash-merge detection.
+///
+/// Used by `--list` mode (synchronous) and integration tests.
+pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
+    let repo_path = repo.workdir().unwrap_or_else(|| repo.path());
+    let mut branches = collect_branch_metadata(repo, base_branch)?;
+    detect_merged_branches(repo, base_branch, &mut branches)?;
+    detect_squash_merged_branches(repo_path, base_branch, &mut branches);
+    branches.sort_by(|a, b| b.last_commit_date.cmp(&a.last_commit_date));
+    Ok(branches)
+}
+
+/// Collect metadata for all local branches (no merge detection).
+fn collect_branch_metadata(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
+    let branches_iter = repo.branches(Some(BranchType::Local))?;
     let mut branches: Vec<BranchInfo> = Vec::new();
 
     for branch_result in branches_iter {
@@ -133,13 +155,6 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
             merge_status: MergeStatus::Unmerged,
         });
     }
-
-    // Detect merge statuses
-    detect_merged_branches(repo, base_branch, &mut branches)?;
-    detect_squash_merged_branches(base_branch, &mut branches);
-
-    // Sort by last_commit_date descending (most recent first)
-    branches.sort_by(|a, b| b.last_commit_date.cmp(&a.last_commit_date));
 
     Ok(branches)
 }

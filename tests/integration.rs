@@ -88,9 +88,6 @@ fn test_list_branches() {
     run_git(dir, &["branch", "feature-a"]);
     run_git(dir, &["branch", "feature-b"]);
 
-    // set_current_dir is needed because squash-merge detection shells out to git
-    std::env::set_current_dir(dir).expect("failed to set current dir");
-
     let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
 
     // Should have 3 branches: main, feature-a, feature-b
@@ -126,8 +123,6 @@ fn test_merged_branch_detection() {
     run_git(dir, &["add", "main-change.txt"]);
     run_git(dir, &["commit", "-m", "Main branch commit"]);
     run_git(dir, &["merge", "feature-merged", "-m", "Merge feature-merged"]);
-
-    std::env::set_current_dir(dir).expect("failed to set current dir");
 
     // Re-open the repo so git2 sees the merge commit
     let repo = git2::Repository::open(dir).expect("failed to re-open repo");
@@ -165,9 +160,6 @@ fn test_squash_merged_branch_detection() {
         &["commit", "-m", "squash merge feature-squashed"],
     );
 
-    // The squash-merge detection shells out to git in the current working directory
-    std::env::set_current_dir(dir).expect("failed to set current dir");
-
     // Re-open the repo so git2 sees the latest state
     let repo = git2::Repository::open(dir).expect("failed to re-open repo");
     let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
@@ -197,8 +189,6 @@ fn test_unmerged_branch_detection() {
 
     // Switch back to main (do NOT merge)
     run_git(dir, &["checkout", "main"]);
-
-    std::env::set_current_dir(dir).expect("failed to set current dir");
 
     // Re-open the repo so git2 sees the latest state
     let repo = git2::Repository::open(dir).expect("failed to re-open repo");

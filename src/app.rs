@@ -1,11 +1,13 @@
+use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::DefaultTerminal;
 
-use git_branch_manager::git::operations;
-use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult};
+use git_branch_manager::git::{branch, operations, squash_loader};
+use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, SquashResult};
 use crate::ui;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +20,7 @@ pub enum View {
 
 pub struct App {
     pub base_branch: String,
+    pub repo_path: PathBuf,
     pub branches: Vec<BranchInfo>,
     pub view: View,
     pub cursor: usize,
@@ -25,13 +28,20 @@ pub struct App {
     pub list_scroll_offset: usize,
     pub results: Vec<OperationResult>,
     pub should_exit: bool,
+    pub squash_rx: Option<Receiver<SquashResult>>,
 }
 
 impl App {
-    pub fn new(base_branch: String, branches: Vec<BranchInfo>) -> Self {
+    pub fn new(
+        base_branch: String,
+        repo_path: PathBuf,
+        branches: Vec<BranchInfo>,
+        squash_rx: Option<Receiver<SquashResult>>,
+    ) -> Self {
         let len = branches.len();
         Self {
             base_branch,
+            repo_path,
             branches,
             view: View::BranchList,
             cursor: 0,
@@ -39,11 +49,13 @@ impl App {
             list_scroll_offset: 0,
             results: Vec::new(),
             should_exit: false,
+            squash_rx,
         }
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.should_exit {
+            self.drain_squash_rx();
             terminal.draw(|frame| ui::render::draw(frame, self))?;
 
             if event::poll(Duration::from_millis(250))? {
@@ -157,7 +169,8 @@ impl App {
     }
 
     fn handle_results_key(&mut self, _code: KeyCode) {
-        self.should_exit = true;
+        self.refresh_branches();
+        self.view = View::BranchList;
     }
 
     fn handle_help_key(&mut self, _code: KeyCode) {
@@ -170,7 +183,7 @@ impl App {
             _ => return,
         };
 
-        let repo = match git2::Repository::discover(".") {
+        let repo = match git2::Repository::open(&self.repo_path) {
             Ok(r) => r,
             Err(e) => {
                 self.results.push(OperationResult {
@@ -198,10 +211,68 @@ impl App {
                     self.results.push(result);
                 }
                 BranchAction::DeleteLocalAndRemote => {
-                    let results = operations::delete_local_and_remote(&repo, branch_name);
+                    let results =
+                        operations::delete_local_and_remote(&repo, &self.repo_path, branch_name);
                     self.results.extend(results);
                 }
             }
+        }
+    }
+
+    fn refresh_branches(&mut self) {
+        let Ok(repo) = git2::Repository::open(&self.repo_path) else { return };
+        let Ok(branches) = branch::list_branches_phase1(&repo, &self.base_branch) else {
+            return;
+        };
+
+        let candidates: Vec<String> = branches
+            .iter()
+            .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base && !b.is_current)
+            .map(|b| b.name.clone())
+            .collect();
+
+        let len = branches.len();
+        self.branches = branches;
+        self.selected = vec![false; len];
+        self.cursor = self.cursor.min(len.saturating_sub(1));
+        self.list_scroll_offset = 0;
+        self.results.clear();
+
+        self.squash_rx = if candidates.is_empty() {
+            None
+        } else {
+            Some(squash_loader::spawn_squash_checker(
+                self.repo_path.clone(),
+                self.base_branch.clone(),
+                candidates,
+            ))
+        };
+    }
+
+    fn drain_squash_rx(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+
+        let Some(rx) = &self.squash_rx else { return };
+
+        let done = loop {
+            match rx.try_recv() {
+                Ok(result) => {
+                    if result.is_squash_merged
+                        && let Some(branch) = self
+                            .branches
+                            .iter_mut()
+                            .find(|b| b.name == result.branch_name)
+                    {
+                        branch.merge_status = MergeStatus::SquashMerged;
+                    }
+                }
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
+            }
+        };
+
+        if done {
+            self.squash_rx = None;
         }
     }
 

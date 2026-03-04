@@ -46,6 +46,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     frame.render_widget(paragraph, main_area);
 
-    let footer = Paragraph::new(" Press any key to exit").style(theme::STATUS_BAR_STYLE);
+    let footer = Paragraph::new(" Press any key to continue").style(theme::STATUS_BAR_STYLE);
     frame.render_widget(footer, footer_area);
 }

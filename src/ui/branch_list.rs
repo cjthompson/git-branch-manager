@@ -109,9 +109,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // Status bar
     let selected_count = app.selection_count();
     let total = app.branches.len();
+    let loading = if app.squash_rx.is_some() { " [loading\u{2026}]" } else { "" };
     let status_text = format!(
-        " {}/{} selected \u{2014} [d]elete [D]el+remote [?]help [q]uit",
-        selected_count, total
+        " {}/{} selected{} \u{2014} [d]elete [D]el+remote [?]help [q]uit",
+        selected_count, total, loading
     );
     let status = Paragraph::new(status_text).style(theme::STATUS_BAR_STYLE);
     frame.render_widget(status, status_area);
