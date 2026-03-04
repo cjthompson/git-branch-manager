@@ -49,15 +49,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
             // Checkbox column — pinned rows show empty space
             let (checkbox_text, checkbox_style) = if is_pinned {
-                ("   ", Style::default())
+                ("   ".to_string(), Style::default())
             } else if is_selected {
-                ("[x]", theme::SELECTED_STYLE)
+                (app.symbols.checkbox_on.to_string(), theme::SELECTED_STYLE)
             } else {
-                ("[ ]", theme::SECONDARY_TEXT)
+                (app.symbols.checkbox_off.to_string(), theme::SECONDARY_TEXT)
             };
 
             // Branch name column
-            let current_marker = if branch.is_current { "* " } else { "  " };
+            let current_marker = if branch.is_current {
+                format!("{} ", app.symbols.current_branch)
+            } else {
+                "  ".to_string()
+            };
 
             let name_style = if branch.is_current {
                 theme::CURRENT_BRANCH_STYLE
@@ -106,10 +110,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 (Some(a), Some(b)) if a > 0 || b > 0 => {
                     let mut parts = Vec::new();
                     if a > 0 {
-                        parts.push(format!("\u{2191}{}", a));
+                        parts.push(format!("{}{}", app.symbols.arrow_up, a));
                     }
                     if b > 0 {
-                        parts.push(format!("\u{2193}{}", b));
+                        parts.push(format!("{}{}", app.symbols.arrow_down, b));
                     }
                     parts.join("")
                 }
@@ -131,7 +135,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let status_cell = Cell::from(Span::styled(status_text, status_style));
 
             Row::new(vec![
-                Cell::from(Span::styled(checkbox_text, checkbox_style)),
+                Cell::from(Span::styled(checkbox_text.clone(), checkbox_style)),
                 name_cell,
                 age_cell,
                 ab_cell,
@@ -148,11 +152,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Length(14),
     ];
 
+    let highlight_sym = format!("{} ", app.symbols.cursor_prefix);
     let table = Table::new(rows, widths)
         .header(header)
         .block(block)
         .row_highlight_style(theme::CURSOR_STYLE)
-        .highlight_symbol("> ");
+        .highlight_symbol(highlight_sym);
 
     frame.render_stateful_widget(table, main_area, &mut app.table_state);
 

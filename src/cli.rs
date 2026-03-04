@@ -10,4 +10,8 @@ pub struct Cli {
     /// Print branch list to stdout and exit (no TUI)
     #[arg(long)]
     pub list: bool,
+
+    /// Symbol set: ascii, unicode, powerline (default: auto-detect)
+    #[arg(long)]
+    pub symbols: Option<String>,
 }

@@ -10,6 +10,7 @@ use ratatui::widgets::TableState;
 use git_branch_manager::git::{branch, cache, operations, squash_loader, status};
 use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, SquashResult, TrackingStatus, WorkingTreeStatus};
 use crate::ui;
+use crate::ui::symbols::SymbolSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
@@ -35,6 +36,7 @@ pub struct App {
     pub squash_total: usize,
     pub working_tree_status: WorkingTreeStatus,
     pub table_state: TableState,
+    pub symbols: &'static SymbolSet,
 }
 
 impl App {
@@ -45,6 +47,7 @@ impl App {
         squash_rx: Option<Receiver<SquashResult>>,
         squash_total: usize,
         working_tree_status: WorkingTreeStatus,
+        symbols: &'static SymbolSet,
     ) -> Self {
         // Sort: base first, then current, then the rest by date descending
         branches.sort_by(|a, b| {
@@ -71,6 +74,7 @@ impl App {
             squash_total,
             working_tree_status,
             table_state: TableState::default().with_selected(Some(first_unpinned)),
+            symbols,
         }
     }
 

@@ -4,4 +4,5 @@ pub mod help;
 pub mod menu;
 pub mod render;
 pub mod results;
+pub mod symbols;
 pub mod theme;
