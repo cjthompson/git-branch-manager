@@ -8,7 +8,7 @@ use ratatui::DefaultTerminal;
 use ratatui::widgets::TableState;
 
 use git_branch_manager::git::{branch, cache, operations, squash_loader, status};
-use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, SquashResult, WorkingTreeStatus};
+use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, SquashResult, TrackingStatus, WorkingTreeStatus};
 use crate::ui;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,6 +265,14 @@ impl App {
             return;
         }
 
+        // Fast-forward operates on the cursor branch
+        if action == BranchAction::FastForward {
+            let branch_name = self.branches[self.cursor].name.clone();
+            let result = operations::fast_forward(&self.repo_path, &branch_name);
+            self.results.push(result);
+            return;
+        }
+
         let repo = match git2::Repository::open(&self.repo_path) {
             Ok(r) => r,
             Err(e) => {
@@ -306,7 +314,8 @@ impl App {
                 }
                 BranchAction::Checkout
                 | BranchAction::Fetch
-                | BranchAction::FetchPrune => unreachable!(),
+                | BranchAction::FetchPrune
+                | BranchAction::FastForward => unreachable!(),
             }
         }
     }
@@ -432,6 +441,23 @@ impl App {
             },
         });
 
+        // Fast-forward: only for non-current branches with a tracked (non-gone) remote
+        let has_live_remote = matches!(
+            &branch.tracking,
+            TrackingStatus::Tracked { gone: false, .. }
+        );
+        items.push(ui::menu::MenuItem {
+            label: "Fast-forward".into(),
+            enabled: !branch.is_current && has_live_remote,
+            reason: if branch.is_current {
+                Some("current".into())
+            } else if !has_live_remote {
+                Some("no remote".into())
+            } else {
+                None
+            },
+        });
+
         items
     }
 
@@ -464,6 +490,7 @@ impl App {
                         0 => BranchAction::Checkout,
                         1 => BranchAction::DeleteLocal,
                         2 => BranchAction::DeleteLocalAndRemote,
+                        3 => BranchAction::FastForward,
                         _ => return,
                     };
                     self.view = View::Confirm { action };

@@ -76,6 +76,7 @@ pub enum BranchAction {
     Checkout,
     Fetch,
     FetchPrune,
+    FastForward,
 }
 
 impl BranchAction {
@@ -86,6 +87,7 @@ impl BranchAction {
             BranchAction::Checkout => "Checkout",
             BranchAction::Fetch => "Fetch",
             BranchAction::FetchPrune => "Fetch + prune",
+            BranchAction::FastForward => "Fast-forward",
         }
     }
 }

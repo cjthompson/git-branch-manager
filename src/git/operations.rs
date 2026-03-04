@@ -169,6 +169,41 @@ fn run_fetch_cmd(repo_path: &Path, prune: bool) -> OperationResult {
     }
 }
 
+/// Fast-forward a local branch to match its remote tracking branch without checking it out.
+pub fn fast_forward(repo_path: &Path, branch_name: &str) -> OperationResult {
+    match Command::new("git")
+        .current_dir(repo_path)
+        .args([
+            "fetch",
+            "origin",
+            &format!("{}:{}", branch_name, branch_name),
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::FastForward,
+            success: true,
+            message: "Fast-forwarded to remote".into(),
+        },
+        Ok(o) => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::FastForward,
+            success: false,
+            message: format!(
+                "Cannot fast-forward: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+        },
+        Err(e) => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::FastForward,
+            success: false,
+            message: format!("Failed: {}", e),
+        },
+    }
+}
+
 /// Delete a branch from the remote using git CLI.
 fn delete_remote(repo_path: &Path, branch_name: &str) -> OperationResult {
     match Command::new("git")
