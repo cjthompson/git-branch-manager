@@ -55,19 +55,19 @@ These have no dependencies and unlock the most downstream work.
   9. Right-aligned: "unmerged", "merged", "squashed"
 
 #### BL-021: Improved merge status and cursor colors
-- **Status:** planned
+- **Status:** done
 - **Priority:** critical
 - **Blocks:** BL-018
 - **Description:** Current merge status colors are too similar — make them more distinct (green=merged, yellow=squash-merged, red=unmerged per pcu pattern). Improve the cursor/selection bar to be more colorful and visible. Fix the current gray-on-light-gray contrast issue that makes text under the cursor unreadable. Bold white for key data, dim gray for secondary info.
 
 #### BL-003: Branch status cache
-- **Status:** planned
+- **Status:** done
 - **Priority:** critical
 - **Blocks:** BL-004
 - **Description:** Write a cache file to `/tmp` to remember merge/squash-merge status. Merged and squash-merged branches are cached permanently (they cannot become "unmerged"). Unmerged branches are cached with the HEAD commit hash and timestamp — the cached value is used unless the branch has been modified. Upstream branch existence can be cached but must be refreshed after `git fetch` or prune.
 
 #### BL-006: Working tree status display
-- **Status:** planned
+- **Status:** done
 - **Priority:** critical
 - **Blocks:** BL-011, BL-012, BL-013
 - **Description:** Show whether the working tree is clean, has staged changes, has unstaged changes, or has untracked files. If the working tree is not clean, disable git commands that require a clean working tree (e.g., checkout, rebase).
