@@ -188,11 +188,33 @@ fn collect_branch_metadata(repo: &Repository, base_branch: &str) -> Result<Vec<B
         let last_commit_date = DateTime::from_timestamp(time.seconds(), 0)
             .unwrap_or_default();
 
+        // Ahead/behind counts (only for tracked, non-gone branches)
+        let (ahead, behind) = match &tracking {
+            TrackingStatus::Tracked { gone: false, .. } => {
+                let branch_oid = commit.id();
+                if let Ok(upstream) = branch.upstream() {
+                    if let Ok(upstream_commit) = upstream.get().peel_to_commit() {
+                        match repo.graph_ahead_behind(branch_oid, upstream_commit.id()) {
+                            Ok((a, b)) => (Some(a as u32), Some(b as u32)),
+                            Err(_) => (None, None),
+                        }
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                }
+            }
+            _ => (None, None),
+        };
+
         branches.push(BranchInfo {
             name,
             is_current,
             is_base,
             tracking,
+            ahead,
+            behind,
             last_commit_date,
             merge_status: MergeStatus::Unmerged,
         });

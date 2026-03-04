@@ -27,6 +27,8 @@ pub struct BranchInfo {
     pub is_current: bool,
     pub is_base: bool,
     pub tracking: TrackingStatus,
+    pub ahead: Option<u32>,
+    pub behind: Option<u32>,
     pub last_commit_date: DateTime<Utc>,
     pub merge_status: MergeStatus,
 }

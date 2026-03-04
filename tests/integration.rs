@@ -239,3 +239,100 @@ fn test_delete_local_nonexistent() {
         "delete_local on nonexistent branch should return success: false"
     );
 }
+
+#[test]
+fn test_ahead_behind_indicators() {
+    // Create a bare "remote" repo, clone it, push a branch, then add a local commit.
+    // The branch should report ahead=1, behind=0.
+    let tmpdir = tempfile::tempdir().expect("failed to create tmpdir");
+    let base_dir = tmpdir.path();
+
+    // 1. Create a bare remote repo
+    let remote_dir = base_dir.join("remote.git");
+    std::fs::create_dir_all(&remote_dir).unwrap();
+    run_git(&remote_dir, &["init", "--bare", "-b", "main"]);
+
+    // 2. Clone it into a working directory
+    let work_dir = base_dir.join("work");
+    run_git(
+        base_dir,
+        &["clone", remote_dir.to_str().unwrap(), "work"],
+    );
+
+    // 3. Configure user in the clone
+    run_git(&work_dir, &["config", "user.name", "Test User"]);
+    run_git(&work_dir, &["config", "user.email", "test@example.com"]);
+
+    // 4. Create an initial commit on main and push
+    let readme = work_dir.join("README.md");
+    std::fs::write(&readme, "# Test\n").unwrap();
+    run_git(&work_dir, &["add", "."]);
+    run_git(&work_dir, &["commit", "-m", "Initial commit"]);
+    run_git(&work_dir, &["push", "-u", "origin", "main"]);
+
+    // 5. Create a feature branch and push it so it has a remote tracking branch
+    run_git(&work_dir, &["checkout", "-b", "feature-ahead"]);
+    let feature_file = work_dir.join("feature.txt");
+    std::fs::write(&feature_file, "feature content\n").unwrap();
+    run_git(&work_dir, &["add", "feature.txt"]);
+    run_git(&work_dir, &["commit", "-m", "Feature commit 1"]);
+    run_git(&work_dir, &["push", "-u", "origin", "feature-ahead"]);
+
+    // 6. Add another local commit (not pushed) — this should make ahead=1
+    let feature_file2 = work_dir.join("feature2.txt");
+    std::fs::write(&feature_file2, "more feature content\n").unwrap();
+    run_git(&work_dir, &["add", "feature2.txt"]);
+    run_git(&work_dir, &["commit", "-m", "Feature commit 2 (local only)"]);
+
+    // 7. Go back to main for listing
+    run_git(&work_dir, &["checkout", "main"]);
+
+    // 8. Open repo and list branches
+    let repo = git2::Repository::open(&work_dir).expect("failed to open work repo");
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+
+    let feature = branches
+        .iter()
+        .find(|b| b.name == "feature-ahead")
+        .expect("feature-ahead branch not found");
+
+    assert_eq!(
+        feature.ahead,
+        Some(1),
+        "feature-ahead should be 1 commit ahead of its upstream"
+    );
+    assert_eq!(
+        feature.behind,
+        Some(0),
+        "feature-ahead should be 0 commits behind its upstream"
+    );
+
+    // Also verify that main (which is in sync) reports ahead=0, behind=0
+    let main_branch = branches.iter().find(|b| b.name == "main").unwrap();
+    assert_eq!(main_branch.ahead, Some(0), "main should be 0 ahead");
+    assert_eq!(main_branch.behind, Some(0), "main should be 0 behind");
+}
+
+#[test]
+fn test_ahead_behind_local_only_branch() {
+    // A branch with no upstream should have ahead=None, behind=None
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["branch", "local-only"]);
+
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let local_branch = branches
+        .iter()
+        .find(|b| b.name == "local-only")
+        .expect("local-only branch not found");
+
+    assert_eq!(
+        local_branch.ahead, None,
+        "local-only branch should have ahead=None"
+    );
+    assert_eq!(
+        local_branch.behind, None,
+        "local-only branch should have behind=None"
+    );
+}

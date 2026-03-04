@@ -79,6 +79,20 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 TrackingStatus::Local => "(local)".to_string(),
             };
 
+            let ahead_behind = match (branch.ahead, branch.behind) {
+                (Some(a), Some(b)) if a > 0 || b > 0 => {
+                    let mut parts = Vec::new();
+                    if a > 0 {
+                        parts.push(format!("\u{2191}{}", a));
+                    }
+                    if b > 0 {
+                        parts.push(format!("\u{2193}{}", b));
+                    }
+                    parts.join("")
+                }
+                _ => String::new(),
+            };
+
             let age = branch.age_display();
 
             let (status_text, status_style) = match branch.merge_status {
@@ -97,18 +111,25 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 Style::default()
             };
 
-            let line = Line::from(vec![
+            let mut spans = vec![
                 Span::styled(cursor_prefix, cursor_prefix_style),
                 Span::styled(format!("{} ", checkbox), checkbox_style),
                 Span::styled(format!("{}{}", current_marker, branch.name), name_style),
                 Span::styled(base_marker, theme::SECONDARY_TEXT),
                 Span::raw("  "),
                 Span::styled(tracking_text, theme::SECONDARY_TEXT),
+            ];
+            if !ahead_behind.is_empty() {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(ahead_behind, theme::AHEAD_BEHIND_STYLE));
+            }
+            spans.extend([
                 Span::raw("  "),
                 Span::styled(age, theme::SECONDARY_TEXT),
                 Span::raw("  "),
                 Span::styled(status_text, status_style),
             ]);
+            let line = Line::from(spans);
 
             let mut item = ListItem::new(line);
             if is_cursor {
