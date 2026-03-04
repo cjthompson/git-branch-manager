@@ -66,6 +66,7 @@ impl BranchInfo {
 pub enum BranchAction {
     DeleteLocal,
     DeleteLocalAndRemote,
+    Checkout,
 }
 
 impl BranchAction {
@@ -73,6 +74,7 @@ impl BranchAction {
         match self {
             BranchAction::DeleteLocal => "Delete local",
             BranchAction::DeleteLocalAndRemote => "Delete local + remote",
+            BranchAction::Checkout => "Checkout",
         }
     }
 }

@@ -9,21 +9,34 @@ pub fn draw(frame: &mut Frame, app: &App) {
         return;
     };
 
-    let selected_names = app.selected_branch_names();
-    let count = selected_names.len();
     let action_label = action.label();
 
-    // Build content
-    let mut lines = vec![
-        Line::from(format!("{} {} branch(es)?", action_label, count)),
-        Line::from(""),
-    ];
-    for name in &selected_names {
-        lines.push(Line::from(Span::styled(
-            format!("  {}", name),
-            theme::SELECTED_STYLE,
-        )));
-    }
+    // Build content: Checkout shows cursor branch; delete actions show selected branches
+    let mut lines = if *action == git_branch_manager::types::BranchAction::Checkout {
+        let cursor_name = &app.branches[app.cursor].name;
+        vec![
+            Line::from(format!("{} branch?", action_label)),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  {}", cursor_name),
+                theme::SELECTED_STYLE,
+            )),
+        ]
+    } else {
+        let selected_names = app.selected_branch_names();
+        let count = selected_names.len();
+        let mut l = vec![
+            Line::from(format!("{} {} branch(es)?", action_label, count)),
+            Line::from(""),
+        ];
+        for name in &selected_names {
+            l.push(Line::from(Span::styled(
+                format!("  {}", name),
+                theme::SELECTED_STYLE,
+            )));
+        }
+        l
+    };
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "[y]es  [n]o",

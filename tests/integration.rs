@@ -239,3 +239,39 @@ fn test_delete_local_nonexistent() {
         "delete_local on nonexistent branch should return success: false"
     );
 }
+
+#[test]
+fn test_checkout_branch() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["branch", "feature-checkout"]);
+
+    let result = operations::checkout_branch(dir, "feature-checkout", false);
+    assert!(result.success, "checkout should succeed: {}", result.message);
+
+    let repo = git2::Repository::open(dir).unwrap();
+    let head = repo.head().unwrap();
+    assert_eq!(head.shorthand().unwrap(), "feature-checkout");
+}
+
+#[test]
+fn test_checkout_branch_with_stash() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["branch", "feature-stash-checkout"]);
+
+    // Create a dirty working tree (unstaged change)
+    let dirty_file = dir.join("README.md");
+    std::fs::write(&dirty_file, "# Modified\n").expect("failed to write dirty file");
+
+    let result = operations::checkout_branch(dir, "feature-stash-checkout", true);
+    assert!(result.success, "checkout with stash should succeed: {}", result.message);
+
+    let repo = git2::Repository::open(dir).unwrap();
+    let head = repo.head().unwrap();
+    assert_eq!(head.shorthand().unwrap(), "feature-stash-checkout");
+
+    // The stash should have been popped, so the working tree change should be present
+    let contents = std::fs::read_to_string(&dirty_file).expect("failed to read file");
+    assert_eq!(contents, "# Modified\n", "stash pop should restore changes");
+}

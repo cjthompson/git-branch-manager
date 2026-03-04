@@ -148,6 +148,14 @@ impl App {
                     };
                 }
             }
+            KeyCode::Char('c') => {
+                let branch = &self.branches[self.cursor];
+                if !branch.is_current && !branch.is_base {
+                    self.view = View::Confirm {
+                        action: BranchAction::Checkout,
+                    };
+                }
+            }
             KeyCode::Char('?') => {
                 self.view = View::Help;
             }
@@ -186,6 +194,16 @@ impl App {
             _ => return,
         };
 
+        // Checkout operates on the cursor branch, not the selection
+        if action == BranchAction::Checkout {
+            let branch_name = self.branches[self.cursor].name.clone();
+            let needs_stash = !self.working_tree_status.is_clean();
+            let result =
+                operations::checkout_branch(&self.repo_path, &branch_name, needs_stash);
+            self.results.push(result);
+            return;
+        }
+
         let repo = match git2::Repository::open(&self.repo_path) {
             Ok(r) => r,
             Err(e) => {
@@ -218,6 +236,7 @@ impl App {
                         operations::delete_local_and_remote(&repo, &self.repo_path, branch_name);
                     self.results.extend(results);
                 }
+                BranchAction::Checkout => unreachable!(),
             }
         }
     }
