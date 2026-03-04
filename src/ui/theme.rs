@@ -35,6 +35,9 @@ pub const CURRENT_BRANCH_STYLE: Style = Style::new()
     .fg(Color::Cyan)
     .add_modifier(Modifier::BOLD);
 
+// Ahead/behind indicators
+pub const AHEAD_BEHIND_STYLE: Style = Style::new().fg(Color::Cyan);
+
 pub const ERROR_STYLE: Style = Style::new()
     .fg(Color::Red)
     .add_modifier(Modifier::BOLD);
