@@ -129,204 +129,218 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .map(|(i, _)| i)
         .collect();
 
-    // Map cursor (original index) to filtered row index for table_state
-    let filtered_cursor = filtered_indices.iter().position(|&i| i == app.cursor);
-    if let Some(row_idx) = filtered_cursor {
+    // Split filtered indices into pinned and non-pinned groups
+    let pinned_indices: Vec<usize> = filtered_indices
+        .iter()
+        .copied()
+        .filter(|&i| app.branches[i].is_pinned())
+        .collect();
+    let non_pinned_indices: Vec<usize> = filtered_indices
+        .iter()
+        .copied()
+        .filter(|&i| !app.branches[i].is_pinned())
+        .collect();
+
+    // Map cursor (original index) to non-pinned row index for table_state
+    let non_pinned_cursor = non_pinned_indices.iter().position(|&i| i == app.cursor);
+    if let Some(row_idx) = non_pinned_cursor {
         app.table_state.select(Some(row_idx));
     }
 
-    // Build table rows from filtered branches
-    let rows: Vec<Row> = filtered_indices
-        .iter()
-        .map(|&i| {
-            let branch = &app.branches[i];
-            let is_selected = app.selected[i];
-            let is_pinned = branch.is_pinned();
+    // Helper closure to build a Row from a branch index
+    let build_row = |i: usize| -> Row {
+        let branch = &app.branches[i];
+        let is_selected = app.selected[i];
+        let is_pinned = branch.is_pinned();
 
-            // Checkbox column — pinned rows show empty space
-            let (checkbox_text, checkbox_style) = if is_pinned {
-                ("   ".to_string(), Style::default())
-            } else if is_selected {
-                (app.symbols.checkbox_on.to_string(), app.theme.selected)
-            } else {
-                (app.symbols.checkbox_off.to_string(), app.theme.secondary_text)
-            };
+        // Checkbox column — pinned rows show empty space
+        let (checkbox_text, checkbox_style) = if is_pinned {
+            ("   ".to_string(), Style::default())
+        } else if is_selected {
+            (app.symbols.checkbox_on.to_string(), app.theme.selected)
+        } else {
+            (app.symbols.checkbox_off.to_string(), app.theme.secondary_text)
+        };
 
-            // Branch name column
-            let current_marker = if branch.is_current {
-                format!("{} ", app.symbols.current_branch)
-            } else {
-                "  ".to_string()
-            };
+        // Branch name column
+        let current_marker = if branch.is_current {
+            format!("{} ", app.symbols.current_branch)
+        } else {
+            "  ".to_string()
+        };
 
-            let name_style = if branch.is_current {
-                app.theme.current_branch
-            } else if is_pinned {
-                app.theme.pinned_row
-            } else if is_selected {
-                app.theme.selected
-            } else {
-                app.theme.primary_text
-            };
+        let name_style = if branch.is_current {
+            app.theme.current_branch
+        } else if is_pinned {
+            app.theme.pinned_row
+        } else if is_selected {
+            app.theme.selected
+        } else {
+            app.theme.primary_text
+        };
 
-            let display_name = if do_trim_names {
-                trim_name(&branch.name, name_max_len, &app.trim_strategy)
-            } else {
-                branch.name.clone()
-            };
+        let display_name = if do_trim_names {
+            trim_name(&branch.name, name_max_len, &app.trim_strategy)
+        } else {
+            branch.name.clone()
+        };
 
-            let tracking_text = match &branch.tracking {
-                TrackingStatus::Tracked { remote_ref, gone } => {
-                    if *gone {
-                        " (gone)".to_string()
-                    } else {
-                        format!(" \u{2192} {}", remote_ref)
-                    }
-                }
-                TrackingStatus::Local => " (local)".to_string(),
-            };
-
-            let pinned_label = if branch.is_current && branch.is_base {
-                " [base] [current]"
-            } else if branch.is_base {
-                " [base]"
-            } else if branch.is_current {
-                " [current]"
-            } else {
-                ""
-            };
-
-            // Build name spans — colorize known prefixes (e.g. fix/, feat/)
-            let mut name_spans: Vec<Span> = Vec::new();
-            if let Some((prefix_part, rest)) = display_name.split_once('/') {
-                if let Some(pstyle) = prefix_style(prefix_part) {
-                    name_spans.push(Span::styled(
-                        format!("{}{}/", current_marker, prefix_part),
-                        pstyle,
-                    ));
-                    name_spans.push(Span::styled(rest.to_string(), name_style));
+        let tracking_text = match &branch.tracking {
+            TrackingStatus::Tracked { remote_ref, gone } => {
+                if *gone {
+                    " (gone)".to_string()
                 } else {
-                    // Unknown prefix — render entire name in name_style
-                    name_spans.push(Span::styled(
-                        format!("{}{}", current_marker, display_name),
-                        name_style,
-                    ));
+                    format!(" \u{2192} {}", remote_ref)
                 }
+            }
+            TrackingStatus::Local => " (local)".to_string(),
+        };
+
+        let pinned_label = if branch.is_current && branch.is_base {
+            " [base] [current]"
+        } else if branch.is_base {
+            " [base]"
+        } else if branch.is_current {
+            " [current]"
+        } else {
+            ""
+        };
+
+        // Build name spans — colorize known prefixes (e.g. fix/, feat/)
+        let mut name_spans: Vec<Span> = Vec::new();
+        if let Some((prefix_part, rest)) = display_name.split_once('/') {
+            if let Some(pstyle) = prefix_style(prefix_part) {
+                name_spans.push(Span::styled(
+                    format!("{}{}/", current_marker, prefix_part),
+                    pstyle,
+                ));
+                name_spans.push(Span::styled(rest.to_string(), name_style));
             } else {
-                // No slash — render entire name in name_style
+                // Unknown prefix — render entire name in name_style
                 name_spans.push(Span::styled(
                     format!("{}{}", current_marker, display_name),
                     name_style,
                 ));
             }
-            name_spans.push(Span::styled(pinned_label, app.theme.secondary_text));
-            name_spans.push(Span::styled(tracking_text, app.theme.secondary_text));
+        } else {
+            // No slash — render entire name in name_style
+            name_spans.push(Span::styled(
+                format!("{}{}", current_marker, display_name),
+                name_style,
+            ));
+        }
+        name_spans.push(Span::styled(pinned_label, app.theme.secondary_text));
+        name_spans.push(Span::styled(tracking_text, app.theme.secondary_text));
 
-            let name_cell = Cell::from(Line::from(name_spans));
+        let name_cell = Cell::from(Line::from(name_spans));
 
-            // Build cells dynamically based on visible columns
-            let mut cells = vec![
-                Cell::from(Span::styled(checkbox_text.clone(), checkbox_style)),
-                name_cell,
-            ];
+        // Build cells dynamically based on visible columns
+        let mut cells = vec![
+            Cell::from(Span::styled(checkbox_text.clone(), checkbox_style)),
+            name_cell,
+        ];
 
-            // Age column
-            if !hide_age {
-                let age = if compact_age {
-                    branch.age_short()
-                } else {
-                    branch.age_display()
-                };
-                let age_style = if is_pinned {
-                    app.theme.pinned_row
-                } else {
-                    age_style(&branch.last_commit_date)
-                };
-                cells.push(Cell::from(
-                    Line::from(Span::styled(age, age_style)).alignment(Alignment::Right),
-                ));
-            }
-
-            // Ahead/behind column
-            if !hide_ab {
-                let ahead_behind = match (branch.ahead, branch.behind) {
-                    (Some(a), Some(b)) if a > 0 || b > 0 => {
-                        let mut parts = Vec::new();
-                        if a > 0 {
-                            parts.push(format!("{}{}", app.symbols.arrow_up, a));
-                        }
-                        if b > 0 {
-                            parts.push(format!("{}{}", app.symbols.arrow_down, b));
-                        }
-                        parts.join("")
-                    }
-                    _ => String::new(),
-                };
-                let ab_style = if is_pinned {
-                    app.theme.pinned_row
-                } else {
-                    app.theme.ahead_behind
-                };
-                cells.push(Cell::from(Span::styled(ahead_behind, ab_style)));
-
-                // PR# column
-                let pr_text = if is_pinned {
-                    String::new()
-                } else {
-                    app.pr_map
-                        .get(&branch.name)
-                        .map(|n| format!("#{}", n))
-                        .unwrap_or_default()
-                };
-                let pr_style = if is_pinned {
-                    app.theme.pinned_row
-                } else {
-                    app.theme.ahead_behind
-                };
-                cells.push(Cell::from(Span::styled(pr_text, pr_style)));
-            }
-
-            // Status column — pinned rows don't show merge status (they are the base)
-            let (status_text, status_style) = if is_pinned {
-                (String::new(), app.theme.pinned_row)
-            } else if short_status {
-                match branch.merge_status {
-                    MergeStatus::Merged => (
-                        format!("{} m", app.symbols.status_merged),
-                        app.theme.merged,
-                    ),
-                    MergeStatus::SquashMerged => (
-                        format!("{} s", app.symbols.status_squash_merged),
-                        app.theme.squash_merged,
-                    ),
-                    MergeStatus::Unmerged => (
-                        format!("{} u", app.symbols.status_unmerged),
-                        app.theme.unmerged,
-                    ),
-                }
+        // Age column
+        if !hide_age {
+            let age = if compact_age {
+                branch.age_short()
             } else {
-                match branch.merge_status {
-                    MergeStatus::Merged => (
-                        format!("{} merged", app.symbols.status_merged),
-                        app.theme.merged,
-                    ),
-                    MergeStatus::SquashMerged => (
-                        format!("{} squash-merged", app.symbols.status_squash_merged),
-                        app.theme.squash_merged,
-                    ),
-                    MergeStatus::Unmerged => (
-                        format!("{} unmerged", app.symbols.status_unmerged),
-                        app.theme.unmerged,
-                    ),
-                }
+                branch.age_display()
+            };
+            let age_style = if is_pinned {
+                app.theme.pinned_row
+            } else {
+                age_style(&branch.last_commit_date)
             };
             cells.push(Cell::from(
-                Line::from(Span::styled(status_text, status_style)).alignment(Alignment::Right),
+                Line::from(Span::styled(age, age_style)).alignment(Alignment::Right),
             ));
+        }
 
-            Row::new(cells)
-        })
-        .collect();
+        // Ahead/behind column
+        if !hide_ab {
+            let ahead_behind = match (branch.ahead, branch.behind) {
+                (Some(a), Some(b)) if a > 0 || b > 0 => {
+                    let mut parts = Vec::new();
+                    if a > 0 {
+                        parts.push(format!("{}{}", app.symbols.arrow_up, a));
+                    }
+                    if b > 0 {
+                        parts.push(format!("{}{}", app.symbols.arrow_down, b));
+                    }
+                    parts.join("")
+                }
+                _ => String::new(),
+            };
+            let ab_style = if is_pinned {
+                app.theme.pinned_row
+            } else {
+                app.theme.ahead_behind
+            };
+            cells.push(Cell::from(Span::styled(ahead_behind, ab_style)));
+
+            // PR# column
+            let pr_text = if is_pinned {
+                String::new()
+            } else {
+                app.pr_map
+                    .get(&branch.name)
+                    .map(|n| format!("#{}", n))
+                    .unwrap_or_default()
+            };
+            let pr_style = if is_pinned {
+                app.theme.pinned_row
+            } else {
+                app.theme.ahead_behind
+            };
+            cells.push(Cell::from(Span::styled(pr_text, pr_style)));
+        }
+
+        // Status column — pinned rows don't show merge status (they are the base)
+        let (status_text, status_style) = if is_pinned {
+            (String::new(), app.theme.pinned_row)
+        } else if short_status {
+            match branch.merge_status {
+                MergeStatus::Merged => (
+                    format!("{} m", app.symbols.status_merged),
+                    app.theme.merged,
+                ),
+                MergeStatus::SquashMerged => (
+                    format!("{} s", app.symbols.status_squash_merged),
+                    app.theme.squash_merged,
+                ),
+                MergeStatus::Unmerged => (
+                    format!("{} u", app.symbols.status_unmerged),
+                    app.theme.unmerged,
+                ),
+            }
+        } else {
+            match branch.merge_status {
+                MergeStatus::Merged => (
+                    format!("{} merged", app.symbols.status_merged),
+                    app.theme.merged,
+                ),
+                MergeStatus::SquashMerged => (
+                    format!("{} squash-merged", app.symbols.status_squash_merged),
+                    app.theme.squash_merged,
+                ),
+                MergeStatus::Unmerged => (
+                    format!("{} unmerged", app.symbols.status_unmerged),
+                    app.theme.unmerged,
+                ),
+            }
+        };
+        cells.push(Cell::from(
+            Line::from(Span::styled(status_text, status_style)).alignment(Alignment::Right),
+        ));
+
+        Row::new(cells)
+    };
+
+    // Build pinned rows and non-pinned rows separately
+    let pinned_rows: Vec<Row> = pinned_indices.iter().map(|&i| build_row(i)).collect();
+    let non_pinned_rows: Vec<Row> = non_pinned_indices.iter().map(|&i| build_row(i)).collect();
+    let pinned_count = pinned_rows.len() as u16;
 
     // Dynamic column widths based on what's visible
     let mut widths: Vec<Constraint> = vec![
@@ -380,13 +394,49 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     let highlight_sym = format!("{} ", app.symbols.cursor_prefix);
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(block)
-        .row_highlight_style(app.theme.cursor)
-        .highlight_symbol(highlight_sym);
 
-    frame.render_stateful_widget(table, main_area, &mut app.table_state);
+    // Render the outer block border first, then split the inner area into
+    // a fixed pinned section and a scrollable non-pinned section.
+    let inner_area = block.inner(main_area);
+    frame.render_widget(block, main_area);
+
+    if pinned_count > 0 {
+        // header (1 row) + pinned rows
+        let pinned_height = 1 + pinned_count; // 1 for header row
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(pinned_height),
+                Constraint::Min(1),
+            ])
+            .split(inner_area);
+
+        let pinned_area = sections[0];
+        let scrollable_area = sections[1];
+
+        // Pinned table: header + pinned rows, no highlight, no state (never scrolls)
+        let pinned_table = Table::new(pinned_rows, widths.clone())
+            .header(header)
+            .row_highlight_style(Style::default())
+            .highlight_symbol(" ".repeat(highlight_sym.len()));
+
+        frame.render_widget(pinned_table, pinned_area);
+
+        // Scrollable table: non-pinned rows only, with cursor highlight and stateful scrolling
+        let scrollable_table = Table::new(non_pinned_rows, widths)
+            .row_highlight_style(app.theme.cursor)
+            .highlight_symbol(highlight_sym);
+
+        frame.render_stateful_widget(scrollable_table, scrollable_area, &mut app.table_state);
+    } else {
+        // No pinned rows — render everything as a single table (original behavior)
+        let table = Table::new(non_pinned_rows, widths)
+            .header(header)
+            .row_highlight_style(app.theme.cursor)
+            .highlight_symbol(highlight_sym);
+
+        frame.render_stateful_widget(table, inner_area, &mut app.table_state);
+    }
 
     // Status bar / search bar
     if app.search_active {
