@@ -7,7 +7,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::DefaultTerminal;
 use ratatui::widgets::TableState;
 
-use git_branch_manager::git::{branch, cache, operations, squash_loader, status};
+use git_branch_manager::git::{branch, cache, operations, squash_loader, status, tags};
+use git_branch_manager::git::tags::TagInfo;
 use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, SquashResult, TrackingStatus, WorkingTreeStatus};
 use crate::ui;
 use crate::ui::symbols::SymbolSet;
@@ -19,6 +20,7 @@ pub enum View {
     Results,
     Help,
     Menu { cursor: usize },
+    Tags,
 }
 
 pub struct App {
@@ -42,6 +44,17 @@ pub struct App {
     pub sort_ascending: bool,
     pub search_query: String,
     pub search_active: bool,
+    pub tags: Vec<TagInfo>,
+    pub tag_cursor: usize,
+    pub tag_table_state: TableState,
+    /// Which view to return to after the Results screen (BranchList or Tags).
+    pub results_return_view: ResultsReturnView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResultsReturnView {
+    BranchList,
+    Tags,
 }
 
 impl App {
@@ -87,6 +100,10 @@ impl App {
             sort_ascending: true,
             search_query: String::new(),
             search_active: false,
+            tags: Vec::new(),
+            tag_cursor: 0,
+            tag_table_state: TableState::default(),
+            results_return_view: ResultsReturnView::BranchList,
         }
     }
 
@@ -121,6 +138,7 @@ impl App {
             View::Results => self.handle_results_key(key.code),
             View::Help => self.handle_help_key(key.code),
             View::Menu { .. } => self.handle_menu_key(key.code),
+            View::Tags => self.handle_tags_key(key.code),
         }
     }
 
@@ -253,6 +271,17 @@ impl App {
                 self.sort_ascending = !self.sort_ascending;
                 self.apply_sort();
             }
+            KeyCode::Char('t') => {
+                let Ok(repo) = git2::Repository::open(&self.repo_path) else {
+                    return;
+                };
+                self.tags = tags::list_tags(&repo);
+                self.tag_cursor = 0;
+                self.tag_table_state = TableState::default().with_selected(
+                    if self.tags.is_empty() { None } else { Some(0) }
+                );
+                self.view = View::Tags;
+            }
             KeyCode::Char('/') => {
                 self.search_active = true;
             }
@@ -269,23 +298,101 @@ impl App {
     fn handle_confirm_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('y') => {
+                let is_tag_action = matches!(
+                    &self.view,
+                    View::Confirm { action } if matches!(action, BranchAction::DeleteTag | BranchAction::PushTag)
+                );
+                if is_tag_action {
+                    self.results_return_view = ResultsReturnView::Tags;
+                }
                 self.execute_action();
                 self.view = View::Results;
             }
             KeyCode::Char('n') | KeyCode::Esc => {
-                self.view = View::BranchList;
+                // Return to the appropriate view
+                let is_tag_action = matches!(
+                    &self.view,
+                    View::Confirm { action } if matches!(action, BranchAction::DeleteTag | BranchAction::PushTag)
+                );
+                if is_tag_action {
+                    self.view = View::Tags;
+                } else {
+                    self.view = View::BranchList;
+                }
             }
             _ => {}
         }
     }
 
     fn handle_results_key(&mut self, _code: KeyCode) {
-        self.refresh_branches();
-        self.view = View::BranchList;
+        match self.results_return_view {
+            ResultsReturnView::Tags => {
+                // Refresh the tag list and return to Tags view
+                let Ok(repo) = git2::Repository::open(&self.repo_path) else {
+                    self.view = View::BranchList;
+                    return;
+                };
+                self.tags = tags::list_tags(&repo);
+                if self.tag_cursor >= self.tags.len() {
+                    self.tag_cursor = self.tags.len().saturating_sub(1);
+                }
+                self.tag_table_state.select(
+                    if self.tags.is_empty() { None } else { Some(self.tag_cursor) }
+                );
+                self.results.clear();
+                self.results_return_view = ResultsReturnView::BranchList;
+                self.view = View::Tags;
+            }
+            ResultsReturnView::BranchList => {
+                self.refresh_branches();
+                self.view = View::BranchList;
+            }
+        }
     }
 
     fn handle_help_key(&mut self, _code: KeyCode) {
         self.view = View::BranchList;
+    }
+
+    fn handle_tags_key(&mut self, code: KeyCode) {
+        let len = self.tags.len();
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if len > 0 && self.tag_cursor + 1 < len {
+                    self.tag_cursor += 1;
+                    self.tag_table_state.select(Some(self.tag_cursor));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.tag_cursor > 0 {
+                    self.tag_cursor -= 1;
+                    self.tag_table_state.select(Some(self.tag_cursor));
+                }
+            }
+            KeyCode::Char('d') => {
+                if len > 0 {
+                    self.view = View::Confirm {
+                        action: BranchAction::DeleteTag,
+                    };
+                }
+            }
+            KeyCode::Char('p') => {
+                if len > 0 {
+                    let tag_name = self.tags[self.tag_cursor].name.clone();
+                    let result = tags::push_tag(&self.repo_path, &tag_name);
+                    self.results.push(result);
+                    self.results_return_view = ResultsReturnView::Tags;
+                    self.view = View::Results;
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
+                self.view = View::BranchList;
+            }
+            KeyCode::Char('?') => {
+                self.view = View::Help;
+            }
+            _ => {}
+        }
     }
 
     fn execute_action(&mut self) {
@@ -293,6 +400,37 @@ impl App {
             View::Confirm { action } => action.clone(),
             _ => return,
         };
+
+        // Tag operations operate on the tag cursor, not branches
+        if action == BranchAction::DeleteTag {
+            if !self.tags.is_empty() {
+                let tag_name = self.tags[self.tag_cursor].name.clone();
+                let repo = match git2::Repository::open(&self.repo_path) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.results.push(OperationResult {
+                            branch_name: tag_name,
+                            action: BranchAction::DeleteTag,
+                            success: false,
+                            message: format!("Failed to open repo: {}", e),
+                        });
+                        return;
+                    }
+                };
+                let result = tags::delete_tag(&repo, &tag_name);
+                self.results.push(result);
+            }
+            return;
+        }
+
+        if action == BranchAction::PushTag {
+            if !self.tags.is_empty() {
+                let tag_name = self.tags[self.tag_cursor].name.clone();
+                let result = tags::push_tag(&self.repo_path, &tag_name);
+                self.results.push(result);
+            }
+            return;
+        }
 
         // Checkout operates on the cursor branch, not the selection
         if action == BranchAction::Checkout {
@@ -396,7 +534,9 @@ impl App {
                 | BranchAction::Merge
                 | BranchAction::SquashMerge
                 | BranchAction::Rebase
-                | BranchAction::Worktree => unreachable!(),
+                | BranchAction::Worktree
+                | BranchAction::DeleteTag
+                | BranchAction::PushTag => unreachable!(),
             }
         }
     }

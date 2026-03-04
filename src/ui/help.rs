@@ -22,6 +22,7 @@ F       Fetch + prune
 s       Cycle sort column
 S       Reverse sort order
 R       Force recheck (clear cache)
+t       Tags view
 /       Search branches
 ?       Toggle help
 q       Quit";

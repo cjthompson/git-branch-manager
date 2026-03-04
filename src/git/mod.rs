@@ -4,3 +4,4 @@ pub mod merge_detection;
 pub mod operations;
 pub mod squash_loader;
 pub mod status;
+pub mod tags;

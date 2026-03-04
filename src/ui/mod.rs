@@ -5,4 +5,5 @@ pub mod menu;
 pub mod render;
 pub mod results;
 pub mod symbols;
+pub mod tag_list;
 pub mod theme;

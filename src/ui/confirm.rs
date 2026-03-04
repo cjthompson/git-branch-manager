@@ -11,7 +11,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let action_label = action.label();
 
-    // Build content: Cursor-branch operations show the cursor branch; bulk operations show selected branches
+    // Build content: Tag operations show the tag name; cursor-branch operations show the cursor branch; bulk operations show selected branches
+    let is_tag_action = matches!(
+        action,
+        git_branch_manager::types::BranchAction::DeleteTag
+            | git_branch_manager::types::BranchAction::PushTag
+    );
     let is_cursor_action = matches!(
         action,
         git_branch_manager::types::BranchAction::Checkout
@@ -21,7 +26,21 @@ pub fn draw(frame: &mut Frame, app: &App) {
             | git_branch_manager::types::BranchAction::Rebase
             | git_branch_manager::types::BranchAction::Worktree
     );
-    let mut lines = if is_cursor_action {
+    let mut lines = if is_tag_action {
+        let tag_name = if !app.tags.is_empty() {
+            &app.tags[app.tag_cursor].name
+        } else {
+            "(none)"
+        };
+        vec![
+            Line::from(format!("{}?", action_label)),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  {}", tag_name),
+                theme::SELECTED_STYLE,
+            )),
+        ]
+    } else if is_cursor_action {
         let cursor_name = &app.branches[app.cursor].name;
         vec![
             Line::from(format!("{} branch?", action_label)),
