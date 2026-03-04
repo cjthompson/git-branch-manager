@@ -129,7 +129,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .map(|(i, _)| i)
         .collect();
 
-    // Split filtered indices into pinned and non-pinned groups
+    // Split filtered indices into pinned and non-pinned groups, then combine pinned-first
     let pinned_indices: Vec<usize> = filtered_indices
         .iter()
         .copied()
@@ -141,9 +141,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .filter(|&i| !app.branches[i].is_pinned())
         .collect();
 
-    // Map cursor (original index) to non-pinned row index for table_state
-    let non_pinned_cursor = non_pinned_indices.iter().position(|&i| i == app.cursor);
-    if let Some(row_idx) = non_pinned_cursor {
+    // Combined display order: pinned first, then non-pinned
+    let display_indices: Vec<usize> = pinned_indices
+        .iter()
+        .chain(non_pinned_indices.iter())
+        .copied()
+        .collect();
+
+    // Map cursor (original branch index) to display row index for table_state
+    let display_cursor = display_indices.iter().position(|&i| i == app.cursor);
+    if let Some(row_idx) = display_cursor {
         app.table_state.select(Some(row_idx));
     }
 
@@ -337,10 +344,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Row::new(cells)
     };
 
-    // Build pinned rows and non-pinned rows separately
-    let pinned_rows: Vec<Row> = pinned_indices.iter().map(|&i| build_row(i)).collect();
-    let non_pinned_rows: Vec<Row> = non_pinned_indices.iter().map(|&i| build_row(i)).collect();
-    let pinned_count = pinned_rows.len() as u16;
+    // Build all rows in display order (pinned first, then non-pinned)
+    let all_rows: Vec<Row> = display_indices.iter().map(|&i| build_row(i)).collect();
 
     // Dynamic column widths based on what's visible
     let mut widths: Vec<Constraint> = vec![
@@ -395,48 +400,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let highlight_sym = format!("{} ", app.symbols.cursor_prefix);
 
-    // Render the outer block border first, then split the inner area into
-    // a fixed pinned section and a scrollable non-pinned section.
+    // Render all rows in a single stateful table with cursor highlight.
+    // Pinned rows appear first (sorted to top), cursor can move onto them.
     let inner_area = block.inner(main_area);
     frame.render_widget(block, main_area);
 
-    if pinned_count > 0 {
-        // header (1 row) + pinned rows
-        let pinned_height = 1 + pinned_count; // 1 for header row
-        let sections = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(pinned_height),
-                Constraint::Min(1),
-            ])
-            .split(inner_area);
+    let table = Table::new(all_rows, widths)
+        .header(header)
+        .row_highlight_style(app.theme.cursor)
+        .highlight_symbol(highlight_sym);
 
-        let pinned_area = sections[0];
-        let scrollable_area = sections[1];
-
-        // Pinned table: header + pinned rows, no highlight, no state (never scrolls)
-        let pinned_table = Table::new(pinned_rows, widths.clone())
-            .header(header)
-            .row_highlight_style(Style::default())
-            .highlight_symbol(" ".repeat(highlight_sym.len()));
-
-        frame.render_widget(pinned_table, pinned_area);
-
-        // Scrollable table: non-pinned rows only, with cursor highlight and stateful scrolling
-        let scrollable_table = Table::new(non_pinned_rows, widths)
-            .row_highlight_style(app.theme.cursor)
-            .highlight_symbol(highlight_sym);
-
-        frame.render_stateful_widget(scrollable_table, scrollable_area, &mut app.table_state);
-    } else {
-        // No pinned rows — render everything as a single table (original behavior)
-        let table = Table::new(non_pinned_rows, widths)
-            .header(header)
-            .row_highlight_style(app.theme.cursor)
-            .highlight_symbol(highlight_sym);
-
-        frame.render_stateful_widget(table, inner_area, &mut app.table_state);
-    }
+    frame.render_stateful_widget(table, inner_area, &mut app.table_state);
 
     // Status bar / search bar
     if app.search_active {

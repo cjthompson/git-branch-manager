@@ -104,14 +104,13 @@ impl App {
         });
 
         let len = branches.len();
-        let first_unpinned = branches.iter().position(|b| !b.is_pinned()).unwrap_or(0);
 
         Self {
             base_branch,
             repo_path,
             branches,
             view: View::BranchList,
-            cursor: first_unpinned,
+            cursor: 0,
             selected: vec![false; len],
             list_scroll_offset: 0,
             results: Vec::new(),
@@ -120,7 +119,7 @@ impl App {
             squash_checked: 0,
             squash_total,
             working_tree_status,
-            table_state: TableState::default().with_selected(Some(first_unpinned)),
+            table_state: TableState::default().with_selected(Some(0)),
             symbols,
             trim_strategy,
             sort_column: None,
@@ -238,7 +237,7 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => {
                 let query = self.search_query.to_lowercase();
                 let mut next = self.cursor + 1;
-                while next < len && (self.branches[next].is_pinned() || !branch_matches_query(&self.branches[next], &query)) {
+                while next < len && !branch_matches_query(&self.branches[next], &query) {
                     next += 1;
                 }
                 if next < len {
@@ -250,10 +249,10 @@ impl App {
                 let query = self.search_query.to_lowercase();
                 if self.cursor > 0 {
                     let mut prev = self.cursor - 1;
-                    while prev > 0 && (self.branches[prev].is_pinned() || !branch_matches_query(&self.branches[prev], &query)) {
+                    while prev > 0 && !branch_matches_query(&self.branches[prev], &query) {
                         prev -= 1;
                     }
-                    if !self.branches[prev].is_pinned() && branch_matches_query(&self.branches[prev], &query) {
+                    if branch_matches_query(&self.branches[prev], &query) {
                         self.cursor = prev;
                         self.table_state.select(Some(self.cursor));
                     }
@@ -338,9 +337,7 @@ impl App {
                 });
             }
             KeyCode::Enter => {
-                if !self.branches[self.cursor].is_pinned() {
-                    self.view = View::Menu { cursor: 0 };
-                }
+                self.view = View::Menu { cursor: 0 };
             }
             KeyCode::Char('s') => {
                 self.sort_column = Some(match self.sort_column {
@@ -375,7 +372,7 @@ impl App {
                 let mut next = self.cursor;
                 while remaining > 0 && next + 1 < len {
                     let candidate = next + 1;
-                    if !self.branches[candidate].is_pinned() && branch_matches_query(&self.branches[candidate], &query) {
+                    if branch_matches_query(&self.branches[candidate], &query) {
                         next = candidate;
                         remaining -= 1;
                     } else {
@@ -383,7 +380,7 @@ impl App {
                     }
                 }
                 // Ensure we landed on a valid row
-                if !self.branches[next].is_pinned() && branch_matches_query(&self.branches[next], &query) {
+                if branch_matches_query(&self.branches[next], &query) {
                     self.cursor = next;
                     self.table_state.select(Some(self.cursor));
                 }
@@ -391,21 +388,20 @@ impl App {
             KeyCode::PageUp => {
                 let page_size = 20;
                 let query = self.search_query.to_lowercase();
-                let first_unpinned = self.branches.iter().position(|b| !b.is_pinned()).unwrap_or(0);
                 let mut remaining = page_size;
                 let mut prev = self.cursor;
-                while remaining > 0 && prev > first_unpinned {
+                while remaining > 0 && prev > 0 {
                     let candidate = prev - 1;
-                    if !self.branches[candidate].is_pinned() && branch_matches_query(&self.branches[candidate], &query) {
+                    if branch_matches_query(&self.branches[candidate], &query) {
                         prev = candidate;
                         remaining -= 1;
-                    } else if candidate > first_unpinned {
+                    } else if candidate > 0 {
                         prev = candidate;
                     } else {
                         break;
                     }
                 }
-                if !self.branches[prev].is_pinned() && branch_matches_query(&self.branches[prev], &query) {
+                if branch_matches_query(&self.branches[prev], &query) {
                     self.cursor = prev;
                     self.table_state.select(Some(self.cursor));
                 }
@@ -790,13 +786,12 @@ impl App {
         });
 
         let len = branches.len();
-        let first_unpinned = branches.iter().position(|b| !b.is_pinned()).unwrap_or(0);
 
         self.branches = branches;
         self.selected = vec![false; len];
-        self.cursor = first_unpinned;
+        self.cursor = 0;
         self.list_scroll_offset = 0;
-        self.table_state.select(Some(self.cursor));
+        self.table_state.select(Some(0));
         self.results.clear();
         self.search_query.clear();
         self.search_active = false;
@@ -850,9 +845,8 @@ impl App {
 
         // Reset selection and cursor after sort
         self.selected = vec![false; self.branches.len()];
-        let first_unpinned = self.branches.iter().position(|b| !b.is_pinned()).unwrap_or(0);
-        self.cursor = first_unpinned;
-        self.table_state.select(Some(self.cursor));
+        self.cursor = 0;
+        self.table_state.select(Some(0));
     }
 
     fn drain_squash_rx(&mut self) {
@@ -1138,23 +1132,22 @@ impl App {
         branch.name.to_lowercase().contains(&self.search_query.to_lowercase())
     }
 
-    /// Reset cursor to the first non-pinned branch that matches the search filter.
+    /// Reset cursor to the first branch that matches the search filter.
     fn reset_cursor_to_first_match(&mut self) {
         let first_match = self
             .branches
             .iter()
             .enumerate()
-            .find(|(_, b)| !b.is_pinned() && self.matches_search(b))
+            .find(|(_, b)| self.matches_search(b))
             .map(|(i, _)| i);
 
         if let Some(idx) = first_match {
             self.cursor = idx;
             self.table_state.select(Some(idx));
         } else {
-            // No match: keep cursor at first unpinned (or 0)
-            let first_unpinned = self.branches.iter().position(|b| !b.is_pinned()).unwrap_or(0);
-            self.cursor = first_unpinned;
-            self.table_state.select(Some(self.cursor));
+            // No match: keep cursor at 0
+            self.cursor = 0;
+            self.table_state.select(Some(0));
         }
     }
 
