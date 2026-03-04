@@ -17,7 +17,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let status_area = layout[1];
 
     // Main branch list
-    let title = format!("git-branch-manager \u{2014} base: {}", app.base_branch);
+    let wt_status = app.working_tree_status.summary();
+    let title = format!(
+        "git-branch-manager \u{2014} base: {} [{}]",
+        app.base_branch, wt_status
+    );
     let block = Block::default()
         .title(title)
         .title_style(theme::TITLE_STYLE)
@@ -46,14 +50,22 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .skip(scroll_offset)
         .take(inner_height)
         .map(|(i, branch)| {
-            let checkbox = if app.selected[i] { "[x]" } else { "[ ]" };
+            let is_cursor = i == app.cursor;
+            let is_selected = app.selected[i];
 
-            let name_style = if branch.is_current {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else if app.selected[i] {
+            let checkbox = if is_selected { "[x]" } else { "[ ]" };
+            let checkbox_style = if is_selected {
                 theme::SELECTED_STYLE
             } else {
-                Style::default()
+                theme::SECONDARY_TEXT
+            };
+
+            let name_style = if branch.is_current {
+                theme::CURRENT_BRANCH_STYLE
+            } else if is_selected {
+                theme::SELECTED_STYLE
+            } else {
+                theme::PRIMARY_TEXT
             };
 
             let tracking_text = match &branch.tracking {
@@ -78,25 +90,28 @@ pub fn draw(frame: &mut Frame, app: &App) {
             let current_marker = if branch.is_current { "* " } else { "  " };
             let base_marker = if branch.is_base { " [base]" } else { "" };
 
-            let cursor_prefix = if i == app.cursor { "> " } else { "  " };
+            let cursor_prefix = if is_cursor { "> " } else { "  " };
+            let cursor_prefix_style = if is_cursor {
+                theme::CURSOR_PREFIX_STYLE
+            } else {
+                Style::default()
+            };
 
             let line = Line::from(vec![
-                Span::raw(cursor_prefix),
-                Span::styled(
-                    format!("{} {}{}", checkbox, current_marker, branch.name),
-                    name_style,
-                ),
-                Span::styled(base_marker, theme::DIM_STYLE),
+                Span::styled(cursor_prefix, cursor_prefix_style),
+                Span::styled(format!("{} ", checkbox), checkbox_style),
+                Span::styled(format!("{}{}", current_marker, branch.name), name_style),
+                Span::styled(base_marker, theme::SECONDARY_TEXT),
                 Span::raw("  "),
-                Span::styled(tracking_text, theme::DIM_STYLE),
+                Span::styled(tracking_text, theme::SECONDARY_TEXT),
                 Span::raw("  "),
-                Span::styled(age, theme::DIM_STYLE),
+                Span::styled(age, theme::SECONDARY_TEXT),
                 Span::raw("  "),
                 Span::styled(status_text, status_style),
             ]);
 
             let mut item = ListItem::new(line);
-            if i == app.cursor {
+            if is_cursor {
                 item = item.style(theme::CURSOR_STYLE);
             }
             item
