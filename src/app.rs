@@ -289,6 +289,20 @@ impl App {
             return;
         }
 
+        // Rebase operates on the cursor branch onto base
+        if action == BranchAction::Rebase {
+            let branch_name = self.branches[self.cursor].name.clone();
+            let needs_stash = !self.working_tree_status.is_clean();
+            let results = operations::rebase_branch(
+                &self.repo_path,
+                &branch_name,
+                &self.base_branch,
+                needs_stash,
+            );
+            self.results.extend(results);
+            return;
+        }
+
         let repo = match git2::Repository::open(&self.repo_path) {
             Ok(r) => r,
             Err(e) => {
@@ -333,7 +347,8 @@ impl App {
                 | BranchAction::FetchPrune
                 | BranchAction::FastForward
                 | BranchAction::Merge
-                | BranchAction::SquashMerge => unreachable!(),
+                | BranchAction::SquashMerge
+                | BranchAction::Rebase => unreachable!(),
             }
         }
     }
@@ -502,6 +517,19 @@ impl App {
             },
         });
 
+        // Rebase onto base
+        items.push(ui::menu::MenuItem {
+            label: "Rebase onto base".into(),
+            enabled: !branch.is_base && !branch.is_current,
+            reason: if branch.is_current {
+                Some("current".into())
+            } else if branch.is_base {
+                Some("base".into())
+            } else {
+                None
+            },
+        });
+
         items
     }
 
@@ -537,6 +565,7 @@ impl App {
                         3 => BranchAction::FastForward,
                         4 => BranchAction::Merge,
                         5 => BranchAction::SquashMerge,
+                        6 => BranchAction::Rebase,
                         _ => return,
                     };
                     self.view = View::Confirm { action };

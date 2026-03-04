@@ -79,6 +79,7 @@ pub enum BranchAction {
     FastForward,
     Merge,
     SquashMerge,
+    Rebase,
 }
 
 impl BranchAction {
@@ -92,6 +93,7 @@ impl BranchAction {
             BranchAction::FastForward => "Fast-forward",
             BranchAction::Merge => "Merge into base",
             BranchAction::SquashMerge => "Squash merge into base",
+            BranchAction::Rebase => "Rebase onto base",
         }
     }
 }

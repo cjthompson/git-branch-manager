@@ -321,6 +321,103 @@ pub fn merge_branch(
     results
 }
 
+/// Rebase a branch onto the base branch.
+///
+/// Checks out the branch, runs `git rebase <base>`, and on conflict aborts.
+/// If `stash` is true, working tree changes are stashed before and popped after.
+pub fn rebase_branch(
+    repo_path: &Path,
+    branch_name: &str,
+    base: &str,
+    stash: bool,
+) -> Vec<OperationResult> {
+    let mut results = Vec::new();
+
+    if stash {
+        let o = Command::new("git")
+            .current_dir(repo_path)
+            .args(["stash", "push", "-m", "git-bm auto-stash"])
+            .output();
+        if let Ok(o) = &o
+            && !o.status.success()
+        {
+            results.push(OperationResult {
+                branch_name: branch_name.to_string(),
+                action: BranchAction::Rebase,
+                success: false,
+                message: "Stash failed".into(),
+            });
+            return results;
+        }
+    }
+
+    let co = Command::new("git")
+        .current_dir(repo_path)
+        .args(["checkout", branch_name])
+        .output();
+    if let Ok(o) = &co
+        && !o.status.success()
+    {
+        results.push(OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::Rebase,
+            success: false,
+            message: "Checkout failed".into(),
+        });
+        if stash {
+            let _ = Command::new("git")
+                .current_dir(repo_path)
+                .args(["stash", "pop"])
+                .output();
+        }
+        return results;
+    }
+
+    let rebase = Command::new("git")
+        .current_dir(repo_path)
+        .args(["rebase", base])
+        .output();
+    match rebase {
+        Ok(o) if o.status.success() => {
+            results.push(OperationResult {
+                branch_name: branch_name.to_string(),
+                action: BranchAction::Rebase,
+                success: true,
+                message: format!("Rebased onto {}", base),
+            });
+        }
+        Ok(o) => {
+            let _ = Command::new("git")
+                .current_dir(repo_path)
+                .args(["rebase", "--abort"])
+                .output();
+            results.push(OperationResult {
+                branch_name: branch_name.to_string(),
+                action: BranchAction::Rebase,
+                success: false,
+                message: format!(
+                    "Rebase conflicts: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+            });
+        }
+        Err(e) => results.push(OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::Rebase,
+            success: false,
+            message: format!("Failed: {}", e),
+        }),
+    }
+
+    if stash {
+        let _ = Command::new("git")
+            .current_dir(repo_path)
+            .args(["stash", "pop"])
+            .output();
+    }
+    results
+}
+
 /// Delete a branch from the remote using git CLI.
 fn delete_remote(repo_path: &Path, branch_name: &str) -> OperationResult {
     match Command::new("git")
