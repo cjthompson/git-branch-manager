@@ -23,13 +23,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
             )),
         ]
     } else {
-        let selected_names = app.selected_branch_names();
-        let count = selected_names.len();
+        let target_names = app.target_branch_names();
+        let count = target_names.len();
         let mut l = vec![
             Line::from(format!("{} {} branch(es)?", action_label, count)),
             Line::from(""),
         ];
-        for name in &selected_names {
+        for name in &target_names {
             l.push(Line::from(Span::styled(
                 format!("  {}", name),
                 theme::SELECTED_STYLE,

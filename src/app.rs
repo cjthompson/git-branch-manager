@@ -182,6 +182,14 @@ impl App {
                 branch_cache.clear();
                 self.refresh_branches();
             }
+            KeyCode::Char('x') => {
+                let branch = &self.branches[self.cursor];
+                if !branch.is_base && !branch.is_current {
+                    self.view = View::Confirm {
+                        action: BranchAction::DeleteLocal,
+                    };
+                }
+            }
             KeyCode::Char('c') => {
                 let branch = &self.branches[self.cursor];
                 if !branch.is_current && !branch.is_base {
@@ -263,15 +271,22 @@ impl App {
             }
         };
 
-        let selected_branches: Vec<String> = self
-            .branches
-            .iter()
-            .zip(self.selected.iter())
-            .filter(|&(_, &sel)| sel)
-            .map(|(b, _)| b.name.clone())
-            .collect();
+        let target_branches: Vec<String> = {
+            let selected: Vec<String> = self
+                .branches
+                .iter()
+                .zip(self.selected.iter())
+                .filter(|&(_, &sel)| sel)
+                .map(|(b, _)| b.name.clone())
+                .collect();
+            if selected.is_empty() {
+                vec![self.branches[self.cursor].name.clone()]
+            } else {
+                selected
+            }
+        };
 
-        for branch_name in &selected_branches {
+        for branch_name in &target_branches {
             match action {
                 BranchAction::DeleteLocal => {
                     let result = operations::delete_local(&repo, branch_name);
@@ -383,5 +398,16 @@ impl App {
             .filter(|&(_, &sel)| sel)
             .map(|(b, _)| b.name.as_str())
             .collect()
+    }
+
+    /// Returns the branches that will be targeted by the current action.
+    /// If branches are selected, returns those; otherwise returns the cursor branch.
+    pub fn target_branch_names(&self) -> Vec<&str> {
+        let selected = self.selected_branch_names();
+        if selected.is_empty() {
+            vec![self.branches[self.cursor].name.as_str()]
+        } else {
+            selected
+        }
     }
 }

@@ -13,8 +13,9 @@ n       Deselect all
 m       Select merged
 i       Invert selection
 c       Checkout cursor branch
-d       Delete local
-D       Delete local + remote
+x       Delete cursor branch
+d       Delete local (selected)
+D       Delete local + remote (selected)
 f       Fetch
 F       Fetch + prune
 R       Force recheck (clear cache)
@@ -26,7 +27,7 @@ pub fn draw(frame: &mut Frame, _app: &App) {
 
     let lines: Vec<Line> = HELP_TEXT.lines().map(Line::from).collect();
     let content_height = lines.len() as u16 + 2; // +2 for borders
-    let width = 36u16.min(area.width);
+    let width = 42u16.min(area.width);
     let height = content_height.min(area.height);
 
     let rect = centered_rect(width, height, area);
