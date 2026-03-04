@@ -72,8 +72,40 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     // Calculate overlay size
     let area = frame.area();
-    let content_height = lines.len() as u16 + 2; // +2 for borders
     let max_height = (area.height * 60 / 100).max(8);
+    let inner_max = max_height.saturating_sub(2) as usize; // subtract borders
+
+    // If content exceeds available space, truncate the branch list and add "...N more"
+    if lines.len() > inner_max {
+        // Find how many branch name lines we can keep.
+        // Layout: header lines at top, then branch names, then blank + [y]es [n]o at bottom.
+        // The last 2 lines are always: blank line + "[y]es  [n]o"
+        // We also need 1 line for the "...N more" indicator.
+        // So available for branch names = inner_max - (non-branch lines count) - 1 (for "...N more")
+        let footer_lines = 2; // blank + yes/no
+        let header_lines = 2; // action question + blank
+        let available_for_branches = inner_max.saturating_sub(header_lines + footer_lines + 1);
+
+        // Rebuild: keep header, truncated branch list, "...N more", footer
+        let total_branches = lines.len() - header_lines - footer_lines;
+        let hidden = total_branches.saturating_sub(available_for_branches);
+
+        if hidden > 0 {
+            // Remove footer (last 2 lines)
+            let footer: Vec<Line> = lines.split_off(lines.len() - 2);
+            // Truncate branch list: keep header + available_for_branches items
+            lines.truncate(header_lines + available_for_branches);
+            // Add "...N more"
+            lines.push(Line::from(Span::styled(
+                format!("  ...{} more", hidden),
+                app.theme.dim,
+            )));
+            // Re-add footer
+            lines.extend(footer);
+        }
+    }
+
+    let content_height = lines.len() as u16 + 2; // +2 for borders
     let height = content_height.min(max_height).min(area.height);
     let width = (area.width / 2).max(40).min(area.width);
 
