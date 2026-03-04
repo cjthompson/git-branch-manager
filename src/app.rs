@@ -658,6 +658,16 @@ impl App {
             return;
         }
 
+        // Force push operates on the cursor branch
+        if action == BranchAction::ForcePush {
+            let branch_name = self.branches[self.cursor].name.clone();
+            let repo_path = self.repo_path.clone();
+            self.spawn_op(label, move || {
+                vec![operations::force_push_branch(&repo_path, &branch_name)]
+            });
+            return;
+        }
+
         // Pull operates on the cursor branch
         if action == BranchAction::Pull {
             let branch_name = self.branches[self.cursor].name.clone();
@@ -1034,6 +1044,22 @@ impl App {
             },
         });
 
+        // Force Push: only for branches that are both ahead AND behind their remote
+        let is_ahead_and_behind = is_ahead && branch.behind.is_some_and(|b| b > 0);
+        items.push(ui::menu::MenuItem {
+            label: "Force push".into(),
+            enabled: is_ahead_and_behind,
+            reason: if !has_live_remote {
+                Some("no remote".into())
+            } else if !is_ahead {
+                Some("not ahead".into())
+            } else if branch.behind.is_none_or(|b| b == 0) {
+                Some("not behind".into())
+            } else {
+                None
+            },
+        });
+
         // Pull: only for branches that are behind their remote tracking branch
         let is_behind = branch.behind.is_some_and(|b| b > 0);
         items.push(ui::menu::MenuItem {
@@ -1132,11 +1158,12 @@ impl App {
                         2 => BranchAction::DeleteLocalAndRemote,
                         3 => BranchAction::FastForward,
                         4 => BranchAction::Push,
-                        5 => BranchAction::Pull,
-                        6 => BranchAction::Merge,
-                        7 => BranchAction::SquashMerge,
-                        8 => BranchAction::Rebase,
-                        9 => BranchAction::Worktree,
+                        5 => BranchAction::ForcePush,
+                        6 => BranchAction::Pull,
+                        7 => BranchAction::Merge,
+                        8 => BranchAction::SquashMerge,
+                        9 => BranchAction::Rebase,
+                        10 => BranchAction::Worktree,
                         _ => return,
                     };
                     self.view = View::Confirm { action };

@@ -487,6 +487,37 @@ pub fn push_branch(repo_path: &Path, branch_name: &str) -> OperationResult {
     }
 }
 
+/// Force push a branch to its remote tracking branch using --force-with-lease.
+pub fn force_push_branch(repo_path: &Path, branch_name: &str) -> OperationResult {
+    match Command::new("git")
+        .current_dir(repo_path)
+        .args(["push", "--force-with-lease", "origin", branch_name])
+        .output()
+    {
+        Ok(o) if o.status.success() => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::ForcePush,
+            success: true,
+            message: "Force pushed to remote".into(),
+        },
+        Ok(o) => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::ForcePush,
+            success: false,
+            message: format!(
+                "Force push failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+        },
+        Err(e) => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::ForcePush,
+            success: false,
+            message: format!("Failed to run git: {}", e),
+        },
+    }
+}
+
 /// Pull (fast-forward) a branch from its remote tracking branch.
 ///
 /// For branches that are not currently checked out, uses `git fetch origin branch:branch`.
