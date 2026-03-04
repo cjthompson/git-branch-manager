@@ -2,7 +2,6 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::app::{App, View};
-use super::theme;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let View::Confirm { action } = &app.view else {
@@ -37,7 +36,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             Line::from(""),
             Line::from(Span::styled(
                 format!("  {}", tag_name),
-                theme::SELECTED_STYLE,
+                app.theme.selected,
             )),
         ]
     } else if is_cursor_action {
@@ -47,7 +46,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             Line::from(""),
             Line::from(Span::styled(
                 format!("  {}", cursor_name),
-                theme::SELECTED_STYLE,
+                app.theme.selected,
             )),
         ]
     } else {
@@ -60,7 +59,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         for name in &target_names {
             l.push(Line::from(Span::styled(
                 format!("  {}", name),
-                theme::SELECTED_STYLE,
+                app.theme.selected,
             )));
         }
         l
@@ -68,7 +67,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "[y]es  [n]o",
-        theme::DIM_STYLE,
+        app.theme.dim,
     )));
 
     // Calculate overlay size
@@ -82,7 +81,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let block = Block::default()
         .title(format!("Confirm {}", action_label))
-        .title_style(theme::TITLE_STYLE)
+        .title_style(app.theme.title)
         .borders(Borders::ALL);
 
     let paragraph = Paragraph::new(lines)

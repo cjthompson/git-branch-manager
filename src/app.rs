@@ -14,6 +14,7 @@ use git_branch_manager::git::tags::TagInfo;
 use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, SquashResult, TrackingStatus, WorkingTreeStatus};
 use crate::ui;
 use crate::ui::symbols::SymbolSet;
+use crate::ui::theme::Theme;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
@@ -58,6 +59,8 @@ pub struct App {
     pub pr_map: PrMap,
     /// Receiver for background PR data fetch. Receives exactly one PrMap, then closes.
     pub pr_rx: Option<Receiver<PrMap>>,
+    /// Active color theme.
+    pub theme: Theme,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +81,7 @@ impl App {
         symbols: &'static SymbolSet,
         trim_strategy: String,
         pr_rx: Option<Receiver<PrMap>>,
+        theme: Theme,
     ) -> Self {
         // Sort: base first, then current, then the rest by date descending
         branches.sort_by(|a, b| {
@@ -117,6 +121,7 @@ impl App {
             header_columns: Vec::new(),
             pr_map: HashMap::new(),
             pr_rx,
+            theme,
         }
     }
 
@@ -383,6 +388,12 @@ impl App {
                     self.cursor = prev;
                     self.table_state.select(Some(self.cursor));
                 }
+            }
+            KeyCode::Char('T') => {
+                self.theme = self.theme.next();
+                let mut config = git_branch_manager::config::Config::load();
+                config.theme = Some(self.theme.name.to_string());
+                config.save();
             }
             KeyCode::Char('?') => {
                 self.view = View::Help;

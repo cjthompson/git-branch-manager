@@ -2,7 +2,6 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::App;
-use super::theme;
 
 /// Returns a color style based on how old a tag's commit is.
 fn age_style(date: &chrono::DateTime<chrono::Utc>) -> Style {
@@ -37,7 +36,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let block = Block::default()
         .title("Tags")
-        .title_style(theme::TITLE_STYLE)
+        .title_style(app.theme.title)
         .borders(Borders::ALL);
 
     // Header row
@@ -51,7 +50,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     let header = Row::new(header_cells)
-        .style(theme::HEADER_STYLE)
+        .style(app.theme.header)
         .bottom_margin(0);
 
     // Build table rows
@@ -61,7 +60,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .map(|tag| {
             let name_cell = Cell::from(Span::styled(
                 &tag.name,
-                theme::PRIMARY_TEXT,
+                app.theme.primary_text,
             ));
 
             let age = if compact_age {
@@ -80,7 +79,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             };
             let hash_cell = Cell::from(Span::styled(
                 short_hash,
-                theme::SECONDARY_TEXT,
+                app.theme.secondary_text,
             ));
 
             let mut cells = vec![name_cell, age_cell, hash_cell];
@@ -95,7 +94,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 };
                 cells.push(Cell::from(Span::styled(
                     msg_display,
-                    theme::SECONDARY_TEXT,
+                    app.theme.secondary_text,
                 )));
             }
 
@@ -117,7 +116,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let table = Table::new(rows, widths)
         .header(header)
         .block(block)
-        .row_highlight_style(theme::CURSOR_STYLE)
+        .row_highlight_style(app.theme.cursor)
         .highlight_symbol(highlight_sym);
 
     frame.render_stateful_widget(table, main_area, &mut app.tag_table_state);
@@ -135,6 +134,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             total
         )
     };
-    let status = Paragraph::new(status_text).style(theme::STATUS_BAR_STYLE);
+    let status = Paragraph::new(status_text).style(app.theme.status_bar);
     frame.render_widget(status, status_area);
 }

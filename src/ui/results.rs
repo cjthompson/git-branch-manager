@@ -2,7 +2,6 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::app::App;
-use super::theme;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -17,7 +16,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let block = Block::default()
         .title("Results")
-        .title_style(theme::TITLE_STYLE)
+        .title_style(app.theme.title)
         .borders(Borders::ALL);
 
     let lines: Vec<Line> = app
@@ -25,9 +24,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .iter()
         .map(|r| {
             let (status, style) = if r.success {
-                (" OK ", theme::MERGED_STYLE)
+                (" OK ", app.theme.merged)
             } else {
-                ("FAIL", theme::ERROR_STYLE)
+                ("FAIL", app.theme.error)
             };
 
             Line::from(vec![
@@ -35,7 +34,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 Span::raw("  "),
                 Span::styled(&r.branch_name, Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw("  "),
-                Span::styled(&r.message, theme::DIM_STYLE),
+                Span::styled(&r.message, app.theme.dim),
             ])
         })
         .collect();
@@ -46,6 +45,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     frame.render_widget(paragraph, main_area);
 
-    let footer = Paragraph::new(" Press any key to continue").style(theme::STATUS_BAR_STYLE);
+    let footer = Paragraph::new(" Press any key to continue").style(app.theme.status_bar);
     frame.render_widget(footer, footer_area);
 }

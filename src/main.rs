@@ -97,8 +97,9 @@ fn main() -> Result<()> {
     // Spawn background PR loader
     let pr_rx = Some(pr_loader::spawn_pr_loader(repo_path.clone()));
 
+    let theme = ui::theme::Theme::from_name(config.theme.as_deref().unwrap_or("dark"));
     let trim_strategy = config.trim_strategy.unwrap_or_else(|| "end".to_string());
-    let mut app = app::App::new(base_branch, repo_path, branches, squash_rx, squash_total, working_tree_status, symbols, trim_strategy, pr_rx);
+    let mut app = app::App::new(base_branch, repo_path, branches, squash_rx, squash_total, working_tree_status, symbols, trim_strategy, pr_rx, theme);
     let mut terminal = ratatui::init();
     let result = app.run(&mut terminal);
     ratatui::restore();

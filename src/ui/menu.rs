@@ -1,7 +1,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
 
-use super::theme;
+use super::theme::Theme;
 
 pub struct MenuItem {
     pub label: String,
@@ -9,7 +9,7 @@ pub struct MenuItem {
     pub reason: Option<String>,
 }
 
-pub fn draw(frame: &mut Frame, items: &[MenuItem], menu_cursor: usize, anchor_row: u16) {
+pub fn draw(frame: &mut Frame, items: &[MenuItem], menu_cursor: usize, anchor_row: u16, theme: &Theme) {
     let area = frame.area();
     let menu_width = 35u16.min(area.width);
     let menu_height = (items.len() as u16 + 2).min(area.height); // +2 for borders
@@ -25,9 +25,9 @@ pub fn draw(frame: &mut Frame, items: &[MenuItem], menu_cursor: usize, anchor_ro
         .map(|(i, item)| {
             let prefix = if i == menu_cursor { "\u{25b8} " } else { "  " };
             let style = if !item.enabled {
-                theme::SECONDARY_TEXT
+                theme.secondary_text
             } else if i == menu_cursor {
-                theme::PRIMARY_TEXT
+                theme.primary_text
             } else {
                 Style::default()
             };
@@ -42,7 +42,7 @@ pub fn draw(frame: &mut Frame, items: &[MenuItem], menu_cursor: usize, anchor_ro
 
     let block = Block::default()
         .title("Actions")
-        .title_style(theme::TITLE_STYLE)
+        .title_style(theme.title)
         .borders(Borders::ALL);
 
     let list = List::new(list_items).block(block);

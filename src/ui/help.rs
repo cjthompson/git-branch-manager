@@ -2,7 +2,6 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::App;
-use super::theme;
 
 const HELP_TEXT: &str = "\
 j/\u{2193}     Move down
@@ -23,12 +22,13 @@ F       Fetch + prune
 s       Cycle sort column
 S       Reverse sort order
 R       Force recheck (clear cache)
+T       Cycle theme
 t       Tags view
 /       Search branches
 ?       Toggle help
 q       Quit";
 
-pub fn draw(frame: &mut Frame, _app: &App) {
+pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
     let lines: Vec<Line> = HELP_TEXT.lines().map(Line::from).collect();
@@ -40,7 +40,7 @@ pub fn draw(frame: &mut Frame, _app: &App) {
 
     let block = Block::default()
         .title("Help")
-        .title_style(theme::TITLE_STYLE)
+        .title_style(app.theme.title)
         .borders(Borders::ALL);
 
     let paragraph = Paragraph::new(lines).block(block);

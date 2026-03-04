@@ -4,7 +4,6 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::App;
 use git_branch_manager::types::{MergeStatus, TrackingStatus};
-use super::theme;
 
 /// Returns a style for known branch name prefixes (text before the first `/`).
 fn prefix_style(prefix: &str) -> Option<Style> {
@@ -86,7 +85,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     let block = Block::default()
         .title(title)
-        .title_style(theme::TITLE_STYLE)
+        .title_style(app.theme.title)
         .borders(Borders::ALL);
 
     // Sort indicator helper
@@ -118,7 +117,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ));
 
     let header = Row::new(header_cells)
-        .style(theme::HEADER_STYLE)
+        .style(app.theme.header)
         .bottom_margin(0);
 
     // Build filtered index list: only branches matching the search query
@@ -148,9 +147,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let (checkbox_text, checkbox_style) = if is_pinned {
                 ("   ".to_string(), Style::default())
             } else if is_selected {
-                (app.symbols.checkbox_on.to_string(), theme::SELECTED_STYLE)
+                (app.symbols.checkbox_on.to_string(), app.theme.selected)
             } else {
-                (app.symbols.checkbox_off.to_string(), theme::SECONDARY_TEXT)
+                (app.symbols.checkbox_off.to_string(), app.theme.secondary_text)
             };
 
             // Branch name column
@@ -161,13 +160,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             };
 
             let name_style = if branch.is_current {
-                theme::CURRENT_BRANCH_STYLE
+                app.theme.current_branch
             } else if is_pinned {
-                theme::PINNED_ROW_STYLE
+                app.theme.pinned_row
             } else if is_selected {
-                theme::SELECTED_STYLE
+                app.theme.selected
             } else {
-                theme::PRIMARY_TEXT
+                app.theme.primary_text
             };
 
             let display_name = if do_trim_names {
@@ -220,8 +219,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     name_style,
                 ));
             }
-            name_spans.push(Span::styled(pinned_label, theme::SECONDARY_TEXT));
-            name_spans.push(Span::styled(tracking_text, theme::SECONDARY_TEXT));
+            name_spans.push(Span::styled(pinned_label, app.theme.secondary_text));
+            name_spans.push(Span::styled(tracking_text, app.theme.secondary_text));
 
             let name_cell = Cell::from(Line::from(name_spans));
 
@@ -239,7 +238,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     branch.age_display()
                 };
                 let age_style = if is_pinned {
-                    theme::PINNED_ROW_STYLE
+                    app.theme.pinned_row
                 } else {
                     age_style(&branch.last_commit_date)
                 };
@@ -264,9 +263,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     _ => String::new(),
                 };
                 let ab_style = if is_pinned {
-                    theme::PINNED_ROW_STYLE
+                    app.theme.pinned_row
                 } else {
-                    theme::AHEAD_BEHIND_STYLE
+                    app.theme.ahead_behind
                 };
                 cells.push(Cell::from(Span::styled(ahead_behind, ab_style)));
 
@@ -280,44 +279,44 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         .unwrap_or_default()
                 };
                 let pr_style = if is_pinned {
-                    theme::PINNED_ROW_STYLE
+                    app.theme.pinned_row
                 } else {
-                    theme::AHEAD_BEHIND_STYLE
+                    app.theme.ahead_behind
                 };
                 cells.push(Cell::from(Span::styled(pr_text, pr_style)));
             }
 
             // Status column — pinned rows don't show merge status (they are the base)
             let (status_text, status_style) = if is_pinned {
-                (String::new(), theme::PINNED_ROW_STYLE)
+                (String::new(), app.theme.pinned_row)
             } else if short_status {
                 match branch.merge_status {
                     MergeStatus::Merged => (
                         format!("{} m", app.symbols.status_merged),
-                        theme::MERGED_STYLE,
+                        app.theme.merged,
                     ),
                     MergeStatus::SquashMerged => (
                         format!("{} s", app.symbols.status_squash_merged),
-                        theme::SQUASH_MERGED_STYLE,
+                        app.theme.squash_merged,
                     ),
                     MergeStatus::Unmerged => (
                         format!("{} u", app.symbols.status_unmerged),
-                        theme::UNMERGED_STYLE,
+                        app.theme.unmerged,
                     ),
                 }
             } else {
                 match branch.merge_status {
                     MergeStatus::Merged => (
                         format!("{} merged", app.symbols.status_merged),
-                        theme::MERGED_STYLE,
+                        app.theme.merged,
                     ),
                     MergeStatus::SquashMerged => (
                         format!("{} squash-merged", app.symbols.status_squash_merged),
-                        theme::SQUASH_MERGED_STYLE,
+                        app.theme.squash_merged,
                     ),
                     MergeStatus::Unmerged => (
                         format!("{} unmerged", app.symbols.status_unmerged),
-                        theme::UNMERGED_STYLE,
+                        app.theme.unmerged,
                     ),
                 }
             };
@@ -384,7 +383,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let table = Table::new(rows, widths)
         .header(header)
         .block(block)
-        .row_highlight_style(theme::CURSOR_STYLE)
+        .row_highlight_style(app.theme.cursor)
         .highlight_symbol(highlight_sym);
 
     frame.render_stateful_widget(table, main_area, &mut app.table_state);
@@ -393,7 +392,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.search_active {
         // Show search input
         let search_text = format!(" / {}_", app.search_query);
-        let search_bar = Paragraph::new(search_text).style(theme::SEARCH_BAR_STYLE);
+        let search_bar = Paragraph::new(search_text).style(app.theme.search_bar);
         frame.render_widget(search_bar, status_area);
     } else if !app.search_query.is_empty() {
         // Show active filter indicator in status bar
@@ -401,7 +400,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             " filter: \"{}\" ({}/{} shown) \u{2014} [/]search [ESC in search]clear",
             app.search_query, filtered_indices.len(), app.branches.len()
         );
-        let status = Paragraph::new(filter_text).style(theme::SEARCH_BAR_STYLE);
+        let status = Paragraph::new(filter_text).style(app.theme.search_bar);
         frame.render_widget(status, status_area);
     } else {
         let selected_count = app.selection_count();
@@ -434,7 +433,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 total, selected_count, merged_count, squash_count, progress
             )
         };
-        let status = Paragraph::new(status_text).style(theme::STATUS_BAR_STYLE);
+        let status = Paragraph::new(status_text).style(app.theme.status_bar);
         frame.render_widget(status, status_area);
     }
 }
