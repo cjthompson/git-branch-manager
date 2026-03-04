@@ -174,6 +174,17 @@ impl WorkingTreeStatus {
     }
 }
 
+/// Progress update sent from a background operation thread.
+#[derive(Debug, Clone)]
+pub struct ProgressUpdate {
+    /// Number of items completed so far.
+    pub completed: usize,
+    /// Total number of items to process.
+    pub total: usize,
+    /// Name of the item currently being processed.
+    pub current_item: String,
+}
+
 /// Result of a background squash-merge check for a single branch.
 #[derive(Debug)]
 pub struct SquashResult {

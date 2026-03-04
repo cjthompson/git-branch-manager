@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -11,7 +13,7 @@ use ratatui::widgets::TableState;
 use git_branch_manager::git::{branch, cache, operations, pr_loader, squash_loader, status, tags};
 use git_branch_manager::git::github::PrMap;
 use git_branch_manager::git::tags::TagInfo;
-use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, SquashResult, TrackingStatus, WorkingTreeStatus};
+use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, ProgressUpdate, SquashResult, TrackingStatus, WorkingTreeStatus};
 use crate::ui;
 use crate::ui::symbols::SymbolSet;
 use crate::ui::theme::Theme;
@@ -66,6 +68,12 @@ pub struct App {
     pub op_rx: Option<Receiver<Vec<OperationResult>>>,
     /// Description of the currently executing operation (shown in the Executing view).
     pub executing_label: String,
+    /// Receiver for per-item progress updates from background operations.
+    pub progress_rx: Option<Receiver<ProgressUpdate>>,
+    /// Current progress state (updated each tick from progress_rx).
+    pub progress: Option<ProgressUpdate>,
+    /// Shared cancellation flag: set to true when user presses Esc during Executing.
+    pub cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +137,9 @@ impl App {
             theme,
             op_rx: None,
             executing_label: String::new(),
+            progress_rx: None,
+            progress: None,
+            cancel_flag: None,
         }
     }
 
@@ -137,6 +148,7 @@ impl App {
         while !self.should_exit {
             self.drain_squash_rx();
             self.drain_pr_rx();
+            self.drain_progress_rx();
             self.drain_op_rx();
             terminal.draw(|frame| ui::render::draw(frame, self))?;
 
@@ -165,7 +177,7 @@ impl App {
                 match &self.view {
                     View::BranchList => self.handle_branch_list_key(key.code),
                     View::Confirm { .. } => self.handle_confirm_key(key.code),
-                    View::Executing => {} // ignore keys while operation is running
+                    View::Executing => self.handle_executing_key(key.code),
                     View::Results => self.handle_results_key(key.code),
                     View::Help => self.handle_help_key(key.code),
                     View::Menu { .. } => self.handle_menu_key(key.code),
@@ -442,6 +454,14 @@ impl App {
         }
     }
 
+    fn handle_executing_key(&mut self, code: KeyCode) {
+        if let KeyCode::Esc = code
+            && let Some(flag) = &self.cancel_flag
+        {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+
     fn handle_results_key(&mut self, _code: KeyCode) {
         match self.results_return_view {
             ResultsReturnView::Tags => {
@@ -541,6 +561,31 @@ impl App {
         });
         self.executing_label = label;
         self.op_rx = Some(rx);
+        self.progress_rx = None;
+        self.progress = None;
+        self.cancel_flag = None;
+        self.view = View::Executing;
+    }
+
+    /// Spawn a closure that receives a progress sender and cancellation flag.
+    /// Used for bulk operations that process multiple items.
+    fn spawn_op_with_progress<F>(&mut self, label: String, f: F)
+    where
+        F: FnOnce(Sender<ProgressUpdate>, Arc<AtomicBool>) -> Vec<OperationResult> + Send + 'static,
+    {
+        let (op_tx, op_rx) = mpsc::channel();
+        let (prog_tx, prog_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+        std::thread::spawn(move || {
+            let results = f(prog_tx, cancel_clone);
+            let _ = op_tx.send(results);
+        });
+        self.executing_label = label;
+        self.op_rx = Some(op_rx);
+        self.progress_rx = Some(prog_rx);
+        self.progress = None;
+        self.cancel_flag = Some(cancel);
         self.view = View::Executing;
     }
 
@@ -659,8 +704,9 @@ impl App {
         };
 
         let repo_path = self.repo_path.clone();
-        self.spawn_op(label, move || {
+        self.spawn_op_with_progress(label, move |prog_tx, cancel_flag| {
             let mut results = Vec::new();
+            let total = target_branches.len();
             let repo = match git2::Repository::open(&repo_path) {
                 Ok(r) => r,
                 Err(e) => {
@@ -674,7 +720,24 @@ impl App {
                 }
             };
 
-            for branch_name in &target_branches {
+            for (i, branch_name) in target_branches.iter().enumerate() {
+                // Check cancellation before each item
+                if cancel_flag.load(Ordering::Relaxed) {
+                    results.push(OperationResult {
+                        branch_name: String::new(),
+                        action: action.clone(),
+                        success: false,
+                        message: "Cancelled by user".to_string(),
+                    });
+                    break;
+                }
+
+                let _ = prog_tx.send(ProgressUpdate {
+                    completed: i,
+                    total,
+                    current_item: branch_name.clone(),
+                });
+
                 match action {
                     BranchAction::DeleteLocal => {
                         let result = operations::delete_local(&repo, branch_name);
@@ -688,6 +751,14 @@ impl App {
                     _ => unreachable!(),
                 }
             }
+
+            // Send final progress
+            let _ = prog_tx.send(ProgressUpdate {
+                completed: results.iter().filter(|r| r.success).count().min(total),
+                total,
+                current_item: "Done".to_string(),
+            });
+
             results
         });
     }
@@ -829,6 +900,26 @@ impl App {
         }
     }
 
+    fn drain_progress_rx(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+
+        let Some(rx) = &self.progress_rx else { return };
+
+        let done = loop {
+            match rx.try_recv() {
+                Ok(update) => {
+                    self.progress = Some(update);
+                }
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
+            }
+        };
+
+        if done {
+            self.progress_rx = None;
+        }
+    }
+
     fn drain_op_rx(&mut self) {
         use std::sync::mpsc::TryRecvError;
 
@@ -838,12 +929,18 @@ impl App {
             Ok(op_results) => {
                 self.results.extend(op_results);
                 self.op_rx = None;
+                self.progress_rx = None;
+                self.progress = None;
+                self.cancel_flag = None;
                 self.view = View::Results;
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
                 // Thread finished without sending (shouldn't happen, but handle gracefully)
                 self.op_rx = None;
+                self.progress_rx = None;
+                self.progress = None;
+                self.cancel_flag = None;
                 self.view = View::Results;
             }
         }
