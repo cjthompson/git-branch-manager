@@ -30,6 +30,8 @@ pub struct App {
     pub results: Vec<OperationResult>,
     pub should_exit: bool,
     pub squash_rx: Option<Receiver<SquashResult>>,
+    pub squash_checked: usize,
+    pub squash_total: usize,
     pub working_tree_status: WorkingTreeStatus,
     pub table_state: TableState,
 }
@@ -40,6 +42,7 @@ impl App {
         repo_path: PathBuf,
         mut branches: Vec<BranchInfo>,
         squash_rx: Option<Receiver<SquashResult>>,
+        squash_total: usize,
         working_tree_status: WorkingTreeStatus,
     ) -> Self {
         // Sort: base first, then current, then the rest by date descending
@@ -63,6 +66,8 @@ impl App {
             results: Vec::new(),
             should_exit: false,
             squash_rx,
+            squash_checked: 0,
+            squash_total,
             working_tree_status,
             table_state: TableState::default().with_selected(Some(first_unpinned)),
         }
@@ -306,6 +311,9 @@ impl App {
         self.table_state.select(Some(self.cursor));
         self.results.clear();
 
+        self.squash_checked = 0;
+        self.squash_total = candidates.len();
+
         self.squash_rx = if candidates.is_empty() {
             None
         } else {
@@ -326,6 +334,7 @@ impl App {
         let done = loop {
             match rx.try_recv() {
                 Ok(result) => {
+                    self.squash_checked += 1;
                     if result.is_squash_merged
                         && let Some(branch) = self
                             .branches

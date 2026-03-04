@@ -159,10 +159,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Status bar
     let selected_count = app.selection_count();
     let total = app.branches.len();
-    let loading = if app.squash_rx.is_some() { " [loading\u{2026}]" } else { "" };
+    let merged_count = app.branches.iter().filter(|b| b.merge_status == MergeStatus::Merged).count();
+    let squash_count = app.branches.iter().filter(|b| b.merge_status == MergeStatus::SquashMerged).count();
+    let progress = if app.squash_total > 0 && app.squash_checked < app.squash_total {
+        format!(" | checking {}/{}", app.squash_checked, app.squash_total)
+    } else {
+        String::new()
+    };
     let status_text = format!(
-        " {}/{} selected{} \u{2014} [c]heckout [d]elete [D]el+remote [?]help [q]uit",
-        selected_count, total, loading
+        " {} branches | {} selected | {} merged | {} squashed{} \u{2014} [c]heckout [d]el [D]el+remote [?]help [q]uit",
+        total, selected_count, merged_count, squash_count, progress
     );
     let status = Paragraph::new(status_text).style(theme::STATUS_BAR_STYLE);
     frame.render_widget(status, status_area);

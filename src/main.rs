@@ -70,6 +70,8 @@ fn main() -> Result<()> {
         })
         .collect();
 
+    let squash_total = candidates.len();
+
     let squash_rx = if candidates.is_empty() {
         None
     } else {
@@ -83,9 +85,7 @@ fn main() -> Result<()> {
 
     // Detect working tree status
     let working_tree_status = git::status::detect_working_tree_status(&repo);
-
-    // Run the TUI
-    let mut app = app::App::new(base_branch, repo_path, branches, squash_rx, working_tree_status);
+    let mut app = app::App::new(base_branch, repo_path, branches, squash_rx, squash_total, working_tree_status);
     let mut terminal = ratatui::init();
     let result = app.run(&mut terminal);
     ratatui::restore();
