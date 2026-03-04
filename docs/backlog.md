@@ -202,13 +202,13 @@ Cosmetic, configuration, and nice-to-have features. Depend on Tier 1–3 items.
 - **Description:** Color the age column based on how old the branch is: less than a week, less than a month, less than a quarter, etc. with progressively "warmer" colors for older branches. Depends on column layout for age column rendering.
 
 #### BL-018: Selectable color themes
-- **Status:** planned
+- **Status:** done
 - **Priority:** low
 - **Depends on:** BL-021
 - **Description:** Support selectable color themes similar to Python Textual's built-in schemes. Allow users to switch between themes. Depends on having good base colors established first so themes build on solid defaults.
 
 #### BL-023: GitHub PR# column
-- **Status:** planned
+- **Status:** done
 - **Priority:** low
 - **Depends on:** BL-017
 - **Description:** Optionally show the GitHub PR number associated with each branch. User-configurable setting to enable/disable this column. Requires GitHub API integration or `gh` CLI.
