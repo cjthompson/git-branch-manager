@@ -55,6 +55,67 @@ pub fn delete_local_and_remote(
     results
 }
 
+/// Checkout a branch, optionally stashing and unstashing dirty working tree changes.
+pub fn checkout_branch(repo_path: &Path, branch_name: &str, stash: bool) -> OperationResult {
+    if stash {
+        let output = Command::new("git")
+            .current_dir(repo_path)
+            .args(["stash", "push", "-m", "git-bm auto-stash"])
+            .output();
+        if let Ok(o) = &output
+            && !o.status.success()
+        {
+            return OperationResult {
+                branch_name: branch_name.to_string(),
+                action: BranchAction::Checkout,
+                success: false,
+                message: format!(
+                    "Stash failed: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+            };
+        }
+    }
+
+    let checkout = Command::new("git")
+        .current_dir(repo_path)
+        .args(["checkout", branch_name])
+        .output();
+
+    let result = match checkout {
+        Ok(o) if o.status.success() => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::Checkout,
+            success: true,
+            message: format!("Checked out {}", branch_name),
+        },
+        Ok(o) => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::Checkout,
+            success: false,
+            message: format!(
+                "Checkout failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+        },
+        Err(e) => OperationResult {
+            branch_name: branch_name.to_string(),
+            action: BranchAction::Checkout,
+            success: false,
+            message: format!("Failed to run git: {}", e),
+        },
+    };
+
+    if stash && result.success {
+        let _ = Command::new("git")
+            .current_dir(repo_path)
+            .args(["stash", "pop"])
+            .output();
+    }
+
+    result
+}
+
 /// Delete a branch from the remote using git CLI.
 fn delete_remote(repo_path: &Path, branch_name: &str) -> OperationResult {
     match Command::new("git")

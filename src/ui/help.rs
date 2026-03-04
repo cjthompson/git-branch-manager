@@ -12,6 +12,7 @@ a       Select all
 n       Deselect all
 m       Select merged
 i       Invert selection
+c       Checkout cursor branch
 d       Delete local
 D       Delete local + remote
 R       Force recheck (clear cache)
