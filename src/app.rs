@@ -17,6 +17,7 @@ pub enum View {
     Confirm { action: BranchAction },
     Results,
     Help,
+    Menu { cursor: usize },
 }
 
 pub struct App {
@@ -97,6 +98,7 @@ impl App {
             View::Confirm { .. } => self.handle_confirm_key(key.code),
             View::Results => self.handle_results_key(key.code),
             View::Help => self.handle_help_key(key.code),
+            View::Menu { .. } => self.handle_menu_key(key.code),
         }
     }
 
@@ -209,6 +211,11 @@ impl App {
                 self.results.push(result);
                 self.refresh_branches();
                 self.view = View::Results;
+            }
+            KeyCode::Enter => {
+                if !self.branches[self.cursor].is_pinned() {
+                    self.view = View::Menu { cursor: 0 };
+                }
             }
             KeyCode::Char('?') => {
                 self.view = View::Help;
@@ -380,6 +387,92 @@ impl App {
 
         if done {
             self.squash_rx = None;
+        }
+    }
+
+    pub fn build_menu_items(&self) -> Vec<ui::menu::MenuItem> {
+        let branch = &self.branches[self.cursor];
+
+        let mut items = Vec::new();
+
+        // Checkout
+        items.push(ui::menu::MenuItem {
+            label: "Checkout".into(),
+            enabled: !branch.is_current,
+            reason: if branch.is_current {
+                Some("current".into())
+            } else {
+                None
+            },
+        });
+
+        // Delete local
+        items.push(ui::menu::MenuItem {
+            label: "Delete local".into(),
+            enabled: !branch.is_base && !branch.is_current,
+            reason: if branch.is_current {
+                Some("current".into())
+            } else if branch.is_base {
+                Some("base".into())
+            } else {
+                None
+            },
+        });
+
+        // Delete local + remote
+        items.push(ui::menu::MenuItem {
+            label: "Delete local + remote".into(),
+            enabled: !branch.is_base && !branch.is_current,
+            reason: if branch.is_current {
+                Some("current".into())
+            } else if branch.is_base {
+                Some("base".into())
+            } else {
+                None
+            },
+        });
+
+        items
+    }
+
+    fn handle_menu_key(&mut self, code: KeyCode) {
+        let items = self.build_menu_items();
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let View::Menu { ref mut cursor } = self.view
+                    && *cursor + 1 < items.len()
+                {
+                    *cursor += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let View::Menu { ref mut cursor } = self.view
+                    && *cursor > 0
+                {
+                    *cursor -= 1;
+                }
+            }
+            KeyCode::Enter => {
+                let menu_cursor = if let View::Menu { cursor } = &self.view {
+                    *cursor
+                } else {
+                    return;
+                };
+                let item = &items[menu_cursor];
+                if item.enabled {
+                    let action = match menu_cursor {
+                        0 => BranchAction::Checkout,
+                        1 => BranchAction::DeleteLocal,
+                        2 => BranchAction::DeleteLocalAndRemote,
+                        _ => return,
+                    };
+                    self.view = View::Confirm { action };
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.view = View::BranchList;
+            }
+            _ => {}
         }
     }
 

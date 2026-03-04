@@ -1,7 +1,7 @@
 use ratatui::Frame;
 
 use crate::app::{App, View};
-use super::{branch_list, confirm, help, results};
+use super::{branch_list, confirm, help, menu, results};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     match &app.view {
@@ -14,6 +14,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         View::Help => {
             branch_list::draw(frame, app);
             help::draw(frame, &*app);
+        }
+        View::Menu { cursor } => {
+            let menu_cursor = *cursor;
+            branch_list::draw(frame, app);
+            let items = app.build_menu_items();
+            // Calculate anchor row based on table cursor position
+            // +2 accounts for the border and header row
+            let anchor_row =
+                (app.cursor as u16).saturating_sub(app.table_state.offset() as u16) + 2;
+            menu::draw(frame, &items, menu_cursor, anchor_row);
         }
     }
 }
