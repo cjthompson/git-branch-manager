@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -7,7 +8,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEve
 use ratatui::DefaultTerminal;
 use ratatui::widgets::TableState;
 
-use git_branch_manager::git::{branch, cache, operations, squash_loader, status, tags};
+use git_branch_manager::git::{branch, cache, operations, pr_loader, squash_loader, status, tags};
+use git_branch_manager::git::github::PrMap;
 use git_branch_manager::git::tags::TagInfo;
 use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, SquashResult, TrackingStatus, WorkingTreeStatus};
 use crate::ui;
@@ -52,6 +54,10 @@ pub struct App {
     /// Column header x-ranges for mouse click sorting: (x_start, sort_column_index).
     /// Populated during branch_list rendering. The last entry extends to the end of the row.
     pub header_columns: Vec<(u16, usize)>,
+    /// GitHub PR numbers keyed by branch name.
+    pub pr_map: PrMap,
+    /// Receiver for background PR data fetch. Receives exactly one PrMap, then closes.
+    pub pr_rx: Option<Receiver<PrMap>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +77,7 @@ impl App {
         working_tree_status: WorkingTreeStatus,
         symbols: &'static SymbolSet,
         trim_strategy: String,
+        pr_rx: Option<Receiver<PrMap>>,
     ) -> Self {
         // Sort: base first, then current, then the rest by date descending
         branches.sort_by(|a, b| {
@@ -108,6 +115,8 @@ impl App {
             tag_table_state: TableState::default(),
             results_return_view: ResultsReturnView::BranchList,
             header_columns: Vec::new(),
+            pr_map: HashMap::new(),
+            pr_rx,
         }
     }
 
@@ -115,6 +124,7 @@ impl App {
         crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
         while !self.should_exit {
             self.drain_squash_rx();
+            self.drain_pr_rx();
             terminal.draw(|frame| ui::render::draw(frame, self))?;
 
             if event::poll(Duration::from_millis(250))? {
@@ -696,6 +706,9 @@ impl App {
             ))
         };
 
+        // Refresh PR data from GitHub
+        self.pr_rx = Some(pr_loader::spawn_pr_loader(self.repo_path.clone()));
+
         // Re-apply current sort so it persists across refreshes
         self.apply_sort();
     }
@@ -758,6 +771,23 @@ impl App {
 
         if done {
             self.squash_rx = None;
+        }
+    }
+
+    fn drain_pr_rx(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+
+        let Some(rx) = &self.pr_rx else { return };
+
+        match rx.try_recv() {
+            Ok(pr_map) => {
+                self.pr_map = pr_map;
+                self.pr_rx = None;
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.pr_rx = None;
+            }
         }
     }
 

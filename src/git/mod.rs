@@ -1,7 +1,9 @@
 pub mod branch;
 pub mod cache;
+pub mod github;
 pub mod merge_detection;
 pub mod operations;
+pub mod pr_loader;
 pub mod squash_loader;
 pub mod status;
 pub mod tags;

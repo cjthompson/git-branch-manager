@@ -111,6 +111,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if !hide_ab {
         header_cells.push(Cell::from(sort_label(2, "A/B")));
+        header_cells.push(Cell::from("PR"));
     }
     header_cells.push(Cell::from(
         Line::from(sort_label(3, "Status")).alignment(Alignment::Right),
@@ -268,6 +269,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     theme::AHEAD_BEHIND_STYLE
                 };
                 cells.push(Cell::from(Span::styled(ahead_behind, ab_style)));
+
+                // PR# column
+                let pr_text = if is_pinned {
+                    String::new()
+                } else {
+                    app.pr_map
+                        .get(&branch.name)
+                        .map(|n| format!("#{}", n))
+                        .unwrap_or_default()
+                };
+                let pr_style = if is_pinned {
+                    theme::PINNED_ROW_STYLE
+                } else {
+                    theme::AHEAD_BEHIND_STYLE
+                };
+                cells.push(Cell::from(Span::styled(pr_text, pr_style)));
             }
 
             // Status column — pinned rows don't show merge status (they are the base)
@@ -321,7 +338,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         widths.push(Constraint::Length(if compact_age { 5 } else { 14 }));
     }
     if !hide_ab {
-        widths.push(Constraint::Length(6));
+        widths.push(Constraint::Length(6));  // A/B
+        widths.push(Constraint::Length(6));  // PR
     }
     widths.push(Constraint::Length(if short_status { 3 } else { 14 })); // status
 
@@ -344,6 +362,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
         if !hide_ab {
             sort_col_map.push(Some(2)); // A/B
+            sort_col_map.push(None);    // PR (not sortable)
         }
         sort_col_map.push(Some(3)); // status
 
