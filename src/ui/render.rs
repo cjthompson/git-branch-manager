@@ -1,7 +1,7 @@
 use ratatui::Frame;
 
 use crate::app::{App, View};
-use super::{branch_list, confirm, help, menu, results, tag_list};
+use super::{branch_list, confirm, executing, help, menu, results, tag_list};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     match &app.view {
@@ -18,6 +18,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 branch_list::draw(frame, app);
             }
             confirm::draw(frame, &*app);
+        }
+        View::Executing => {
+            branch_list::draw(frame, app);
+            executing::draw(frame, &*app);
         }
         View::Results => results::draw(frame, &*app),
         View::Help => {

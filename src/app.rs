@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -20,6 +20,7 @@ use crate::ui::theme::Theme;
 pub enum View {
     BranchList,
     Confirm { action: BranchAction },
+    Executing,
     Results,
     Help,
     Menu { cursor: usize },
@@ -61,6 +62,10 @@ pub struct App {
     pub pr_rx: Option<Receiver<PrMap>>,
     /// Active color theme.
     pub theme: Theme,
+    /// Receiver for background git operation results.
+    pub op_rx: Option<Receiver<Vec<OperationResult>>>,
+    /// Description of the currently executing operation (shown in the Executing view).
+    pub executing_label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +127,8 @@ impl App {
             pr_map: HashMap::new(),
             pr_rx,
             theme,
+            op_rx: None,
+            executing_label: String::new(),
         }
     }
 
@@ -130,6 +137,7 @@ impl App {
         while !self.should_exit {
             self.drain_squash_rx();
             self.drain_pr_rx();
+            self.drain_op_rx();
             terminal.draw(|frame| ui::render::draw(frame, self))?;
 
             if event::poll(Duration::from_millis(250))? {
@@ -157,6 +165,7 @@ impl App {
                 match &self.view {
                     View::BranchList => self.handle_branch_list_key(key.code),
                     View::Confirm { .. } => self.handle_confirm_key(key.code),
+                    View::Executing => {} // ignore keys while operation is running
                     View::Results => self.handle_results_key(key.code),
                     View::Help => self.handle_help_key(key.code),
                     View::Menu { .. } => self.handle_menu_key(key.code),
@@ -305,16 +314,16 @@ impl App {
                 }
             }
             KeyCode::Char('f') => {
-                let result = operations::fetch(&self.repo_path);
-                self.results.push(result);
-                self.refresh_branches();
-                self.view = View::Results;
+                self.spawn_op("Fetching...".into(), {
+                    let repo_path = self.repo_path.clone();
+                    move || vec![operations::fetch(&repo_path)]
+                });
             }
             KeyCode::Char('F') => {
-                let result = operations::fetch_prune(&self.repo_path);
-                self.results.push(result);
-                self.refresh_branches();
-                self.view = View::Results;
+                self.spawn_op("Fetching with prune...".into(), {
+                    let repo_path = self.repo_path.clone();
+                    move || vec![operations::fetch_prune(&repo_path)]
+                });
             }
             KeyCode::Enter => {
                 if !self.branches[self.cursor].is_pinned() {
@@ -415,8 +424,7 @@ impl App {
                 if is_tag_action {
                     self.results_return_view = ResultsReturnView::Tags;
                 }
-                self.execute_action();
-                self.view = View::Results;
+                self.execute_action_async();
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 // Return to the appropriate view
@@ -503,10 +511,11 @@ impl App {
             KeyCode::Char('p') => {
                 if len > 0 {
                     let tag_name = self.tags[self.tag_cursor].name.clone();
-                    let result = tags::push_tag(&self.repo_path, &tag_name);
-                    self.results.push(result);
                     self.results_return_view = ResultsReturnView::Tags;
-                    self.view = View::Results;
+                    self.spawn_op(format!("Pushing tag {}...", tag_name), {
+                        let repo_path = self.repo_path.clone();
+                        move || vec![tags::push_tag(&repo_path, &tag_name)]
+                    });
                 }
             }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
@@ -519,30 +528,49 @@ impl App {
         }
     }
 
-    fn execute_action(&mut self) {
+    /// Spawn a closure on a background thread and transition to the Executing view.
+    /// The closure should return a `Vec<OperationResult>`.
+    fn spawn_op<F>(&mut self, label: String, f: F)
+    where
+        F: FnOnce() -> Vec<OperationResult> + Send + 'static,
+    {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let results = f();
+            let _ = tx.send(results);
+        });
+        self.executing_label = label;
+        self.op_rx = Some(rx);
+        self.view = View::Executing;
+    }
+
+    fn execute_action_async(&mut self) {
         let action = match &self.view {
             View::Confirm { action } => action.clone(),
             _ => return,
         };
 
+        let label = format!("{}...", action.label());
+
         // Tag operations operate on the tag cursor, not branches
         if action == BranchAction::DeleteTag {
             if !self.tags.is_empty() {
                 let tag_name = self.tags[self.tag_cursor].name.clone();
-                let repo = match git2::Repository::open(&self.repo_path) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        self.results.push(OperationResult {
-                            branch_name: tag_name,
-                            action: BranchAction::DeleteTag,
-                            success: false,
-                            message: format!("Failed to open repo: {}", e),
-                        });
-                        return;
-                    }
-                };
-                let result = tags::delete_tag(&repo, &tag_name);
-                self.results.push(result);
+                let repo_path = self.repo_path.clone();
+                self.spawn_op(label, move || {
+                    let repo = match git2::Repository::open(&repo_path) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return vec![OperationResult {
+                                branch_name: tag_name,
+                                action: BranchAction::DeleteTag,
+                                success: false,
+                                message: format!("Failed to open repo: {}", e),
+                            }];
+                        }
+                    };
+                    vec![tags::delete_tag(&repo, &tag_name)]
+                });
             }
             return;
         }
@@ -550,8 +578,10 @@ impl App {
         if action == BranchAction::PushTag {
             if !self.tags.is_empty() {
                 let tag_name = self.tags[self.tag_cursor].name.clone();
-                let result = tags::push_tag(&self.repo_path, &tag_name);
-                self.results.push(result);
+                let repo_path = self.repo_path.clone();
+                self.spawn_op(label, move || {
+                    vec![tags::push_tag(&repo_path, &tag_name)]
+                });
             }
             return;
         }
@@ -560,17 +590,20 @@ impl App {
         if action == BranchAction::Checkout {
             let branch_name = self.branches[self.cursor].name.clone();
             let needs_stash = !self.working_tree_status.is_clean();
-            let result =
-                operations::checkout_branch(&self.repo_path, &branch_name, needs_stash);
-            self.results.push(result);
+            let repo_path = self.repo_path.clone();
+            self.spawn_op(label, move || {
+                vec![operations::checkout_branch(&repo_path, &branch_name, needs_stash)]
+            });
             return;
         }
 
         // Fast-forward operates on the cursor branch
         if action == BranchAction::FastForward {
             let branch_name = self.branches[self.cursor].name.clone();
-            let result = operations::fast_forward(&self.repo_path, &branch_name);
-            self.results.push(result);
+            let repo_path = self.repo_path.clone();
+            self.spawn_op(label, move || {
+                vec![operations::fast_forward(&repo_path, &branch_name)]
+            });
             return;
         }
 
@@ -579,14 +612,11 @@ impl App {
             let branch_name = self.branches[self.cursor].name.clone();
             let needs_stash = !self.working_tree_status.is_clean();
             let squash = action == BranchAction::SquashMerge;
-            let results = operations::merge_branch(
-                &self.repo_path,
-                &branch_name,
-                &self.base_branch,
-                squash,
-                needs_stash,
-            );
-            self.results.extend(results);
+            let repo_path = self.repo_path.clone();
+            let base_branch = self.base_branch.clone();
+            self.spawn_op(label, move || {
+                operations::merge_branch(&repo_path, &branch_name, &base_branch, squash, needs_stash)
+            });
             return;
         }
 
@@ -594,37 +624,25 @@ impl App {
         if action == BranchAction::Rebase {
             let branch_name = self.branches[self.cursor].name.clone();
             let needs_stash = !self.working_tree_status.is_clean();
-            let results = operations::rebase_branch(
-                &self.repo_path,
-                &branch_name,
-                &self.base_branch,
-                needs_stash,
-            );
-            self.results.extend(results);
+            let repo_path = self.repo_path.clone();
+            let base_branch = self.base_branch.clone();
+            self.spawn_op(label, move || {
+                operations::rebase_branch(&repo_path, &branch_name, &base_branch, needs_stash)
+            });
             return;
         }
 
         // Create worktree operates on the cursor branch
         if action == BranchAction::Worktree {
             let branch_name = self.branches[self.cursor].name.clone();
-            let result = operations::create_worktree(&self.repo_path, &branch_name);
-            self.results.push(result);
+            let repo_path = self.repo_path.clone();
+            self.spawn_op(label, move || {
+                vec![operations::create_worktree(&repo_path, &branch_name)]
+            });
             return;
         }
 
-        let repo = match git2::Repository::open(&self.repo_path) {
-            Ok(r) => r,
-            Err(e) => {
-                self.results.push(OperationResult {
-                    branch_name: String::new(),
-                    action: action.clone(),
-                    success: false,
-                    message: format!("Failed to open repo: {}", e),
-                });
-                return;
-            }
-        };
-
+        // Bulk branch operations (delete local, delete local+remote)
         let target_branches: Vec<String> = {
             let selected: Vec<String> = self
                 .branches
@@ -640,29 +658,38 @@ impl App {
             }
         };
 
-        for branch_name in &target_branches {
-            match action {
-                BranchAction::DeleteLocal => {
-                    let result = operations::delete_local(&repo, branch_name);
-                    self.results.push(result);
+        let repo_path = self.repo_path.clone();
+        self.spawn_op(label, move || {
+            let mut results = Vec::new();
+            let repo = match git2::Repository::open(&repo_path) {
+                Ok(r) => r,
+                Err(e) => {
+                    results.push(OperationResult {
+                        branch_name: String::new(),
+                        action: action.clone(),
+                        success: false,
+                        message: format!("Failed to open repo: {}", e),
+                    });
+                    return results;
                 }
-                BranchAction::DeleteLocalAndRemote => {
-                    let results =
-                        operations::delete_local_and_remote(&repo, &self.repo_path, branch_name);
-                    self.results.extend(results);
+            };
+
+            for branch_name in &target_branches {
+                match action {
+                    BranchAction::DeleteLocal => {
+                        let result = operations::delete_local(&repo, branch_name);
+                        results.push(result);
+                    }
+                    BranchAction::DeleteLocalAndRemote => {
+                        let r =
+                            operations::delete_local_and_remote(&repo, &repo_path, branch_name);
+                        results.extend(r);
+                    }
+                    _ => unreachable!(),
                 }
-                BranchAction::Checkout
-                | BranchAction::Fetch
-                | BranchAction::FetchPrune
-                | BranchAction::FastForward
-                | BranchAction::Merge
-                | BranchAction::SquashMerge
-                | BranchAction::Rebase
-                | BranchAction::Worktree
-                | BranchAction::DeleteTag
-                | BranchAction::PushTag => unreachable!(),
             }
-        }
+            results
+        });
     }
 
     fn refresh_branches(&mut self) {
@@ -798,6 +825,26 @@ impl App {
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
                 self.pr_rx = None;
+            }
+        }
+    }
+
+    fn drain_op_rx(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+
+        let Some(rx) = &self.op_rx else { return };
+
+        match rx.try_recv() {
+            Ok(op_results) => {
+                self.results.extend(op_results);
+                self.op_rx = None;
+                self.view = View::Results;
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                // Thread finished without sending (shouldn't happen, but handle gracefully)
+                self.op_rx = None;
+                self.view = View::Results;
             }
         }
     }
