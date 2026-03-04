@@ -60,15 +60,28 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .title_style(theme::TITLE_STYLE)
         .borders(Borders::ALL);
 
+    // Sort indicator helper
+    let sort_arrow = if app.sort_ascending { "\u{25b2}" } else { "\u{25bc}" };
+    let sort_label = |col_index: usize, base: &str| -> String {
+        if app.sort_column == Some(col_index) {
+            format!("{}{}", base, sort_arrow)
+        } else {
+            base.to_string()
+        }
+    };
+
     // Header row — build dynamically based on visible columns
-    let mut header_cells = vec![Cell::from(""), Cell::from("Branch")];
+    let mut header_cells = vec![
+        Cell::from(""),
+        Cell::from(sort_label(0, "Branch")),
+    ];
     if !hide_age {
-        header_cells.push(Cell::from("Age"));
+        header_cells.push(Cell::from(sort_label(1, "Age")));
     }
     if !hide_ab {
-        header_cells.push(Cell::from("A/B"));
+        header_cells.push(Cell::from(sort_label(2, "A/B")));
     }
-    header_cells.push(Cell::from("Status"));
+    header_cells.push(Cell::from(sort_label(3, "Status")));
 
     let header = Row::new(header_cells)
         .style(theme::HEADER_STYLE)

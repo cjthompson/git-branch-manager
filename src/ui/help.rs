@@ -19,6 +19,8 @@ d       Delete local (selected)
 D       Delete local + remote (selected)
 f       Fetch
 F       Fetch + prune
+s       Cycle sort column
+S       Reverse sort order
 R       Force recheck (clear cache)
 ?       Toggle help
 q       Quit";

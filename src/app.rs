@@ -38,6 +38,8 @@ pub struct App {
     pub table_state: TableState,
     pub symbols: &'static SymbolSet,
     pub trim_strategy: String,
+    pub sort_column: Option<usize>,  // 0=name, 1=age, 2=ahead, 3=status
+    pub sort_ascending: bool,
 }
 
 impl App {
@@ -79,6 +81,8 @@ impl App {
             table_state: TableState::default().with_selected(Some(first_unpinned)),
             symbols,
             trim_strategy,
+            sort_column: None,
+            sort_ascending: true,
         }
     }
 
@@ -224,6 +228,18 @@ impl App {
                 if !self.branches[self.cursor].is_pinned() {
                     self.view = View::Menu { cursor: 0 };
                 }
+            }
+            KeyCode::Char('s') => {
+                self.sort_column = Some(match self.sort_column {
+                    Some(c) => (c + 1) % 4,
+                    None => 0,
+                });
+                self.sort_ascending = true;
+                self.apply_sort();
+            }
+            KeyCode::Char('S') => {
+                self.sort_ascending = !self.sort_ascending;
+                self.apply_sort();
             }
             KeyCode::Char('?') => {
                 self.view = View::Help;
@@ -419,6 +435,39 @@ impl App {
                 branch_cache,
             ))
         };
+    }
+
+    fn apply_sort(&mut self) {
+        let Some(col) = self.sort_column else { return };
+        let asc = self.sort_ascending;
+
+        // Find where pinned rows end — pinned rows are never sorted
+        let pin_count = self.branches.iter().take_while(|b| b.is_pinned()).count();
+        let sortable = &mut self.branches[pin_count..];
+
+        sortable.sort_by(|a, b| {
+            let ord = match col {
+                0 => a.name.cmp(&b.name),
+                1 => a.last_commit_date.cmp(&b.last_commit_date),
+                2 => a.ahead.unwrap_or(0).cmp(&b.ahead.unwrap_or(0)),
+                3 => {
+                    let rank = |s: &MergeStatus| match s {
+                        MergeStatus::Merged => 0,
+                        MergeStatus::SquashMerged => 1,
+                        MergeStatus::Unmerged => 2,
+                    };
+                    rank(&a.merge_status).cmp(&rank(&b.merge_status))
+                }
+                _ => std::cmp::Ordering::Equal,
+            };
+            if asc { ord } else { ord.reverse() }
+        });
+
+        // Reset selection and cursor after sort
+        self.selected = vec![false; self.branches.len()];
+        let first_unpinned = self.branches.iter().position(|b| !b.is_pinned()).unwrap_or(0);
+        self.cursor = first_unpinned;
+        self.table_state.select(Some(self.cursor));
     }
 
     fn drain_squash_rx(&mut self) {
