@@ -1,9 +1,38 @@
+use chrono::{DateTime, Utc};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::App;
 use git_branch_manager::types::{MergeStatus, TrackingStatus};
 use super::theme;
+
+/// Returns a style for known branch name prefixes (text before the first `/`).
+fn prefix_style(prefix: &str) -> Option<Style> {
+    match prefix {
+        "fix" => Some(Style::new().fg(Color::Red)),
+        "feat" | "feature" => Some(Style::new().fg(Color::Green)),
+        "chore" => Some(Style::new().fg(Color::Yellow)),
+        "hotfix" => Some(Style::new().fg(Color::Magenta)),
+        "release" => Some(Style::new().fg(Color::Cyan)),
+        _ => None,
+    }
+}
+
+/// Returns a color style based on how old a commit is.
+fn age_style(date: &DateTime<Utc>) -> Style {
+    let duration = Utc::now() - *date;
+    let days = duration.num_days();
+
+    if days < 7 {
+        Style::new().fg(Color::Green)
+    } else if days < 30 {
+        Style::new().fg(Color::Yellow)
+    } else if days < 90 {
+        Style::new().fg(Color::Indexed(208)) // orange
+    } else {
+        Style::new().fg(Color::Red)
+    }
+}
 
 /// Trim a branch name to fit within max_len characters, using the given strategy.
 fn trim_name(name: &str, max_len: usize, strategy: &str) -> String {
@@ -149,11 +178,33 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 ""
             };
 
-            let name_cell = Cell::from(Line::from(vec![
-                Span::styled(format!("{}{}", current_marker, display_name), name_style),
-                Span::styled(pinned_label, theme::SECONDARY_TEXT),
-                Span::styled(tracking_text, theme::SECONDARY_TEXT),
-            ]));
+            // Build name spans — colorize known prefixes (e.g. fix/, feat/)
+            let mut name_spans: Vec<Span> = Vec::new();
+            if let Some((prefix_part, rest)) = display_name.split_once('/') {
+                if let Some(pstyle) = prefix_style(prefix_part) {
+                    name_spans.push(Span::styled(
+                        format!("{}{}/", current_marker, prefix_part),
+                        pstyle,
+                    ));
+                    name_spans.push(Span::styled(rest.to_string(), name_style));
+                } else {
+                    // Unknown prefix — render entire name in name_style
+                    name_spans.push(Span::styled(
+                        format!("{}{}", current_marker, display_name),
+                        name_style,
+                    ));
+                }
+            } else {
+                // No slash — render entire name in name_style
+                name_spans.push(Span::styled(
+                    format!("{}{}", current_marker, display_name),
+                    name_style,
+                ));
+            }
+            name_spans.push(Span::styled(pinned_label, theme::SECONDARY_TEXT));
+            name_spans.push(Span::styled(tracking_text, theme::SECONDARY_TEXT));
+
+            let name_cell = Cell::from(Line::from(name_spans));
 
             // Build cells dynamically based on visible columns
             let mut cells = vec![
@@ -171,7 +222,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 let age_style = if is_pinned {
                     theme::PINNED_ROW_STYLE
                 } else {
-                    theme::SECONDARY_TEXT
+                    age_style(&branch.last_commit_date)
                 };
                 cells.push(Cell::from(Span::styled(age, age_style)));
             }
