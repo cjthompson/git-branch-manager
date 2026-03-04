@@ -34,6 +34,9 @@ pub const CURRENT_BRANCH_STYLE: Style = Style::new()
 // Ahead/behind indicators
 pub const AHEAD_BEHIND_STYLE: Style = Style::new().fg(Color::Cyan);
 
+// Pinned rows (base/current branch) — dimmed to separate from actionable branches
+pub const PINNED_ROW_STYLE: Style = Style::new().add_modifier(Modifier::DIM);
+
 pub const ERROR_STYLE: Style = Style::new()
     .fg(Color::Red)
     .add_modifier(Modifier::BOLD);

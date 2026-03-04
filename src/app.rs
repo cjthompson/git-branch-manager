@@ -38,24 +38,33 @@ impl App {
     pub fn new(
         base_branch: String,
         repo_path: PathBuf,
-        branches: Vec<BranchInfo>,
+        mut branches: Vec<BranchInfo>,
         squash_rx: Option<Receiver<SquashResult>>,
         working_tree_status: WorkingTreeStatus,
     ) -> Self {
+        // Sort: base first, then current, then the rest by date descending
+        branches.sort_by(|a, b| {
+            let pin_a = if a.is_base { 0 } else if a.is_current { 1 } else { 2 };
+            let pin_b = if b.is_base { 0 } else if b.is_current { 1 } else { 2 };
+            pin_a.cmp(&pin_b).then(b.last_commit_date.cmp(&a.last_commit_date))
+        });
+
         let len = branches.len();
+        let first_unpinned = branches.iter().position(|b| !b.is_pinned()).unwrap_or(0);
+
         Self {
             base_branch,
             repo_path,
             branches,
             view: View::BranchList,
-            cursor: 0,
+            cursor: first_unpinned,
             selected: vec![false; len],
             list_scroll_offset: 0,
             results: Vec::new(),
             should_exit: false,
             squash_rx,
             working_tree_status,
-            table_state: TableState::default().with_selected(Some(0)),
+            table_state: TableState::default().with_selected(Some(first_unpinned)),
         }
     }
 
@@ -97,15 +106,25 @@ impl App {
 
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.cursor + 1 < len {
-                    self.cursor += 1;
+                let mut next = self.cursor + 1;
+                while next < len && self.branches[next].is_pinned() {
+                    next += 1;
+                }
+                if next < len {
+                    self.cursor = next;
                     self.table_state.select(Some(self.cursor));
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.cursor > 0 {
-                    self.cursor -= 1;
-                    self.table_state.select(Some(self.cursor));
+                    let mut prev = self.cursor - 1;
+                    while prev > 0 && self.branches[prev].is_pinned() {
+                        prev -= 1;
+                    }
+                    if !self.branches[prev].is_pinned() {
+                        self.cursor = prev;
+                        self.table_state.select(Some(self.cursor));
+                    }
                 }
             }
             KeyCode::Char(' ') => {
@@ -270,10 +289,19 @@ impl App {
             })
             .collect();
 
+        let mut branches = branches;
+        branches.sort_by(|a, b| {
+            let pin_a = if a.is_base { 0 } else if a.is_current { 1 } else { 2 };
+            let pin_b = if b.is_base { 0 } else if b.is_current { 1 } else { 2 };
+            pin_a.cmp(&pin_b).then(b.last_commit_date.cmp(&a.last_commit_date))
+        });
+
         let len = branches.len();
+        let first_unpinned = branches.iter().position(|b| !b.is_pinned()).unwrap_or(0);
+
         self.branches = branches;
         self.selected = vec![false; len];
-        self.cursor = self.cursor.min(len.saturating_sub(1));
+        self.cursor = first_unpinned;
         self.list_scroll_offset = 0;
         self.table_state.select(Some(self.cursor));
         self.results.clear();

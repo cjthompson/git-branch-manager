@@ -45,9 +45,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .enumerate()
         .map(|(i, branch)| {
             let is_selected = app.selected[i];
+            let is_pinned = branch.is_pinned();
 
-            // Checkbox column
-            let (checkbox_text, checkbox_style) = if branch.is_base || branch.is_current {
+            // Checkbox column — pinned rows show empty space
+            let (checkbox_text, checkbox_style) = if is_pinned {
                 ("   ", Style::default())
             } else if is_selected {
                 ("[x]", theme::SELECTED_STYLE)
@@ -57,10 +58,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
             // Branch name column
             let current_marker = if branch.is_current { "* " } else { "  " };
-            let base_suffix = if branch.is_base { " [base]" } else { "" };
 
             let name_style = if branch.is_current {
                 theme::CURRENT_BRANCH_STYLE
+            } else if is_pinned {
+                theme::PINNED_ROW_STYLE
             } else if is_selected {
                 theme::SELECTED_STYLE
             } else {
@@ -78,15 +80,26 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 TrackingStatus::Local => " (local)".to_string(),
             };
 
+            let pinned_label = if branch.is_current && branch.is_base {
+                " [base] [current]"
+            } else if branch.is_base {
+                " [base]"
+            } else if branch.is_current {
+                " [current]"
+            } else {
+                ""
+            };
+
             let name_cell = Cell::from(Line::from(vec![
                 Span::styled(format!("{}{}", current_marker, branch.name), name_style),
-                Span::styled(base_suffix, theme::SECONDARY_TEXT),
+                Span::styled(pinned_label, theme::SECONDARY_TEXT),
                 Span::styled(tracking_text, theme::SECONDARY_TEXT),
             ]));
 
             // Age column
             let age = branch.age_display();
-            let age_cell = Cell::from(Span::styled(age, theme::SECONDARY_TEXT));
+            let age_style = if is_pinned { theme::PINNED_ROW_STYLE } else { theme::SECONDARY_TEXT };
+            let age_cell = Cell::from(Span::styled(age, age_style));
 
             // Ahead/behind column
             let ahead_behind = match (branch.ahead, branch.behind) {
@@ -102,13 +115,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 }
                 _ => String::new(),
             };
-            let ab_cell = Cell::from(Span::styled(ahead_behind, theme::AHEAD_BEHIND_STYLE));
+            let ab_style = if is_pinned { theme::PINNED_ROW_STYLE } else { theme::AHEAD_BEHIND_STYLE };
+            let ab_cell = Cell::from(Span::styled(ahead_behind, ab_style));
 
-            // Status column
-            let (status_text, status_style) = match branch.merge_status {
-                MergeStatus::Merged => ("merged", theme::MERGED_STYLE),
-                MergeStatus::SquashMerged => ("squash-merged", theme::SQUASH_MERGED_STYLE),
-                MergeStatus::Unmerged => ("unmerged", theme::UNMERGED_STYLE),
+            // Status column — pinned rows don't show merge status (they are the base)
+            let (status_text, status_style) = if is_pinned {
+                ("", theme::PINNED_ROW_STYLE)
+            } else {
+                match branch.merge_status {
+                    MergeStatus::Merged => ("merged", theme::MERGED_STYLE),
+                    MergeStatus::SquashMerged => ("squash-merged", theme::SQUASH_MERGED_STYLE),
+                    MergeStatus::Unmerged => ("unmerged", theme::UNMERGED_STYLE),
+                }
             };
             let status_cell = Cell::from(Span::styled(status_text, status_style));
 

@@ -34,6 +34,11 @@ pub struct BranchInfo {
 }
 
 impl BranchInfo {
+    /// Whether this branch is pinned to the top (base or current branch).
+    pub fn is_pinned(&self) -> bool {
+        self.is_base || self.is_current
+    }
+
     /// Human-readable age string: "3 days ago", "2 months ago", etc.
     pub fn age_display(&self) -> String {
         let duration = Utc::now() - self.last_commit_date;
