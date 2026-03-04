@@ -6,8 +6,8 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::DefaultTerminal;
 
-use git_branch_manager::git::{branch, operations, squash_loader};
-use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, SquashResult};
+use git_branch_manager::git::{branch, cache, operations, squash_loader, status};
+use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, SquashResult, WorkingTreeStatus};
 use crate::ui;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +29,7 @@ pub struct App {
     pub results: Vec<OperationResult>,
     pub should_exit: bool,
     pub squash_rx: Option<Receiver<SquashResult>>,
+    pub working_tree_status: WorkingTreeStatus,
 }
 
 impl App {
@@ -37,6 +38,7 @@ impl App {
         repo_path: PathBuf,
         branches: Vec<BranchInfo>,
         squash_rx: Option<Receiver<SquashResult>>,
+        working_tree_status: WorkingTreeStatus,
     ) -> Self {
         let len = branches.len();
         Self {
@@ -50,6 +52,7 @@ impl App {
             results: Vec::new(),
             should_exit: false,
             squash_rx,
+            working_tree_status,
         }
     }
 
@@ -225,10 +228,17 @@ impl App {
             return;
         };
 
-        let candidates: Vec<String> = branches
+        self.working_tree_status = status::detect_working_tree_status(&repo);
+
+        let branch_cache = cache::BranchCache::load(&self.repo_path);
+
+        let candidates: Vec<(String, String)> = branches
             .iter()
             .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base && !b.is_current)
-            .map(|b| b.name.clone())
+            .filter_map(|b| {
+                branch::get_commit_hash(&repo, &b.name)
+                    .map(|hash| (b.name.clone(), hash))
+            })
             .collect();
 
         let len = branches.len();
@@ -245,6 +255,7 @@ impl App {
                 self.repo_path.clone(),
                 self.base_branch.clone(),
                 candidates,
+                branch_cache,
             ))
         };
     }

@@ -86,6 +86,45 @@ pub struct OperationResult {
     pub message: String,
 }
 
+/// Working tree status: clean, staged, unstaged, untracked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkingTreeStatus {
+    pub has_staged: bool,
+    pub has_unstaged: bool,
+    pub has_untracked: bool,
+}
+
+impl WorkingTreeStatus {
+    pub fn clean() -> Self {
+        Self {
+            has_staged: false,
+            has_unstaged: false,
+            has_untracked: false,
+        }
+    }
+
+    pub fn is_clean(&self) -> bool {
+        !self.has_staged && !self.has_unstaged && !self.has_untracked
+    }
+
+    pub fn summary(&self) -> String {
+        if self.is_clean() {
+            return "clean".to_string();
+        }
+        let mut parts = Vec::new();
+        if self.has_staged {
+            parts.push("staged");
+        }
+        if self.has_unstaged {
+            parts.push("unstaged");
+        }
+        if self.has_untracked {
+            parts.push("untracked");
+        }
+        parts.join("+")
+    }
+}
+
 /// Result of a background squash-merge check for a single branch.
 #[derive(Debug)]
 pub struct SquashResult {

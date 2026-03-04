@@ -17,10 +17,17 @@ fn main() -> Result<()> {
     // Detect base branch
     let base_branch = git::branch::detect_base_branch(&repo, cli.base.as_deref())?;
 
-    // Non-interactive list mode (synchronous, full pipeline)
+    let repo_path = repo
+        .workdir()
+        .unwrap_or_else(|| repo.path())
+        .to_path_buf();
+
+    // Non-interactive list mode (synchronous, full pipeline with cache)
     if cli.list {
         use git_branch_manager::types::TrackingStatus;
-        let branches = git::branch::list_branches(&repo, &base_branch)?;
+        let mut cache = git::cache::BranchCache::load(&repo_path);
+        let branches = git::branch::list_branches_cached(&repo, &base_branch, &mut cache)?;
+        cache.save();
         if branches.is_empty() {
             eprintln!("No branches found.");
             return Ok(());
@@ -44,7 +51,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // TUI mode: phase 1 (fast git2), then spawn background squash checker
+    // TUI mode: phase 1 (fast git2), then spawn background squash checker with cache
     let branches = git::branch::list_branches_phase1(&repo, &base_branch)?;
 
     if branches.is_empty() {
@@ -52,15 +59,15 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let repo_path = repo
-        .workdir()
-        .unwrap_or_else(|| repo.path())
-        .to_path_buf();
+    let cache = git::cache::BranchCache::load(&repo_path);
 
-    let candidates: Vec<String> = branches
+    let candidates: Vec<(String, String)> = branches
         .iter()
         .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base && !b.is_current)
-        .map(|b| b.name.clone())
+        .filter_map(|b| {
+            git::branch::get_commit_hash(&repo, &b.name)
+                .map(|hash| (b.name.clone(), hash))
+        })
         .collect();
 
     let squash_rx = if candidates.is_empty() {
@@ -70,11 +77,15 @@ fn main() -> Result<()> {
             repo_path.clone(),
             base_branch.clone(),
             candidates,
+            cache,
         ))
     };
 
+    // Detect working tree status
+    let working_tree_status = git::status::detect_working_tree_status(&repo);
+
     // Run the TUI
-    let mut app = app::App::new(base_branch, repo_path, branches, squash_rx);
+    let mut app = app::App::new(base_branch, repo_path, branches, squash_rx, working_tree_status);
     let mut terminal = ratatui::init();
     let result = app.run(&mut terminal);
     ratatui::restore();
