@@ -14,6 +14,7 @@ m       Select merged
 i       Invert selection
 d       Delete local
 D       Delete local + remote
+R       Force recheck (clear cache)
 ?       Toggle help
 q/Esc   Quit";
 

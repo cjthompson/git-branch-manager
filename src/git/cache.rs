@@ -49,6 +49,12 @@ impl BranchCache {
         }
     }
 
+    /// Delete the cache file and clear in-memory entries.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        let _ = std::fs::remove_file(&self.path);
+    }
+
     /// Insert or update a branch's cached status.
     pub fn insert(&mut self, branch_name: &str, status: &MergeStatus, commit_hash: &str) {
         let status_str = match status {
@@ -71,4 +77,56 @@ fn cache_path(repo_path: &Path) -> PathBuf {
     repo_path.hash(&mut hasher);
     let hash = hasher.finish();
     PathBuf::from(format!("/tmp/git-bm-cache-{:x}.json", hash))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clear_removes_entries_and_file() {
+        // Use a unique fake repo path so this test doesn't collide with real caches
+        let fake_repo = Path::new("/tmp/test-clear-cache-repo-unique-12345");
+        let mut cache = BranchCache::load(fake_repo);
+
+        // Insert some entries and save to disk
+        cache.insert("feature-a", &MergeStatus::Merged, "abc123");
+        cache.insert("feature-b", &MergeStatus::Unmerged, "def456");
+        cache.save();
+
+        // Verify the cache file exists
+        assert!(cache.path.exists(), "cache file should exist after save");
+
+        // Verify lookups work before clear
+        assert_eq!(cache.lookup("feature-a", ""), Some(MergeStatus::Merged));
+        assert_eq!(
+            cache.lookup("feature-b", "def456"),
+            Some(MergeStatus::Unmerged)
+        );
+
+        // Clear the cache
+        cache.clear();
+
+        // In-memory entries should be gone
+        assert!(cache.lookup("feature-a", "").is_none());
+        assert!(cache.lookup("feature-b", "def456").is_none());
+
+        // Cache file should be removed from disk
+        assert!(
+            !cache.path.exists(),
+            "cache file should be removed after clear"
+        );
+    }
+
+    #[test]
+    fn test_clear_on_empty_cache_is_noop() {
+        let fake_repo = Path::new("/tmp/test-clear-empty-cache-repo-unique-67890");
+        let mut cache = BranchCache::load(fake_repo);
+
+        // Clear on an empty cache (no file on disk) should not panic
+        cache.clear();
+
+        assert!(cache.lookup("anything", "").is_none());
+        assert!(!cache.path.exists());
+    }
 }

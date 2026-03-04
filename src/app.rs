@@ -148,6 +148,11 @@ impl App {
                     };
                 }
             }
+            KeyCode::Char('R') => {
+                let mut branch_cache = cache::BranchCache::load(&self.repo_path);
+                branch_cache.clear();
+                self.refresh_branches();
+            }
             KeyCode::Char('?') => {
                 self.view = View::Help;
             }
