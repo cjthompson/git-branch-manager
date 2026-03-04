@@ -66,6 +66,28 @@ impl BranchInfo {
             format!("{} year{} ago", years, if years == 1 { "" } else { "s" })
         }
     }
+
+    /// Compact age string for narrow terminals: "3d", "2mo", etc.
+    pub fn age_short(&self) -> String {
+        let duration = Utc::now() - self.last_commit_date;
+        let seconds = duration.num_seconds();
+
+        if seconds < 60 {
+            "now".into()
+        } else if seconds < 3600 {
+            format!("{}m", duration.num_minutes())
+        } else if seconds < 86400 {
+            format!("{}h", duration.num_hours())
+        } else if seconds < 604800 {
+            format!("{}d", duration.num_days())
+        } else if seconds < 2_592_000 {
+            format!("{}w", duration.num_weeks())
+        } else if seconds < 31_536_000 {
+            format!("{}mo", duration.num_days() / 30)
+        } else {
+            format!("{}y", duration.num_days() / 365)
+        }
+    }
 }
 
 /// What the user wants to do with selected branches.

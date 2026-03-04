@@ -94,7 +94,8 @@ fn main() -> Result<()> {
         None => ui::symbols::detect(),
     };
 
-    let mut app = app::App::new(base_branch, repo_path, branches, squash_rx, squash_total, working_tree_status, symbols);
+    let trim_strategy = config.trim_strategy.unwrap_or_else(|| "end".to_string());
+    let mut app = app::App::new(base_branch, repo_path, branches, squash_rx, squash_total, working_tree_status, symbols, trim_strategy);
     let mut terminal = ratatui::init();
     let result = app.run(&mut terminal);
     ratatui::restore();

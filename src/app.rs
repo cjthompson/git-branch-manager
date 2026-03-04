@@ -37,9 +37,11 @@ pub struct App {
     pub working_tree_status: WorkingTreeStatus,
     pub table_state: TableState,
     pub symbols: &'static SymbolSet,
+    pub trim_strategy: String,
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         base_branch: String,
         repo_path: PathBuf,
@@ -48,6 +50,7 @@ impl App {
         squash_total: usize,
         working_tree_status: WorkingTreeStatus,
         symbols: &'static SymbolSet,
+        trim_strategy: String,
     ) -> Self {
         // Sort: base first, then current, then the rest by date descending
         branches.sort_by(|a, b| {
@@ -75,6 +78,7 @@ impl App {
             working_tree_status,
             table_state: TableState::default().with_selected(Some(first_unpinned)),
             symbols,
+            trim_strategy,
         }
     }
 
