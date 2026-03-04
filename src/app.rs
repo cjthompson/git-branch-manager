@@ -40,6 +40,8 @@ pub struct App {
     pub trim_strategy: String,
     pub sort_column: Option<usize>,  // 0=name, 1=age, 2=ahead, 3=status
     pub sort_ascending: bool,
+    pub search_query: String,
+    pub search_active: bool,
 }
 
 impl App {
@@ -83,6 +85,8 @@ impl App {
             trim_strategy,
             sort_column: None,
             sort_ascending: true,
+            search_query: String::new(),
+            search_active: false,
         }
     }
 
@@ -102,6 +106,12 @@ impl App {
     fn handle_event(&mut self, event: Event) {
         let Event::Key(key) = event else { return };
         if key.kind != KeyEventKind::Press {
+            return;
+        }
+
+        // Search input takes priority over all other key handlers
+        if self.search_active {
+            self.handle_search_key(key.code);
             return;
         }
 
@@ -125,8 +135,9 @@ impl App {
 
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
+                let query = self.search_query.to_lowercase();
                 let mut next = self.cursor + 1;
-                while next < len && self.branches[next].is_pinned() {
+                while next < len && (self.branches[next].is_pinned() || !branch_matches_query(&self.branches[next], &query)) {
                     next += 1;
                 }
                 if next < len {
@@ -135,12 +146,13 @@ impl App {
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
+                let query = self.search_query.to_lowercase();
                 if self.cursor > 0 {
                     let mut prev = self.cursor - 1;
-                    while prev > 0 && self.branches[prev].is_pinned() {
+                    while prev > 0 && (self.branches[prev].is_pinned() || !branch_matches_query(&self.branches[prev], &query)) {
                         prev -= 1;
                     }
-                    if !self.branches[prev].is_pinned() {
+                    if !self.branches[prev].is_pinned() && branch_matches_query(&self.branches[prev], &query) {
                         self.cursor = prev;
                         self.table_state.select(Some(self.cursor));
                     }
@@ -240,6 +252,9 @@ impl App {
             KeyCode::Char('S') => {
                 self.sort_ascending = !self.sort_ascending;
                 self.apply_sort();
+            }
+            KeyCode::Char('/') => {
+                self.search_active = true;
             }
             KeyCode::Char('?') => {
                 self.view = View::Help;
@@ -421,6 +436,8 @@ impl App {
         self.list_scroll_offset = 0;
         self.table_state.select(Some(self.cursor));
         self.results.clear();
+        self.search_query.clear();
+        self.search_active = false;
 
         self.squash_checked = 0;
         self.squash_total = candidates.len();
@@ -656,6 +673,60 @@ impl App {
         }
     }
 
+    fn handle_search_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.search_query.clear();
+                self.search_active = false;
+                self.reset_cursor_to_first_match();
+            }
+            KeyCode::Enter => {
+                self.search_active = false;
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                self.reset_cursor_to_first_match();
+            }
+            KeyCode::Char(c) => {
+                self.search_query.push(c);
+                self.reset_cursor_to_first_match();
+            }
+            _ => {}
+        }
+    }
+
+    /// Returns true if the branch matches the current search query.
+    /// Always matches if the query is empty or the branch is pinned.
+    pub fn matches_search(&self, branch: &BranchInfo) -> bool {
+        if self.search_query.is_empty() {
+            return true;
+        }
+        if branch.is_pinned() {
+            return true;
+        }
+        branch.name.to_lowercase().contains(&self.search_query.to_lowercase())
+    }
+
+    /// Reset cursor to the first non-pinned branch that matches the search filter.
+    fn reset_cursor_to_first_match(&mut self) {
+        let first_match = self
+            .branches
+            .iter()
+            .enumerate()
+            .find(|(_, b)| !b.is_pinned() && self.matches_search(b))
+            .map(|(i, _)| i);
+
+        if let Some(idx) = first_match {
+            self.cursor = idx;
+            self.table_state.select(Some(idx));
+        } else {
+            // No match: keep cursor at first unpinned (or 0)
+            let first_unpinned = self.branches.iter().position(|b| !b.is_pinned()).unwrap_or(0);
+            self.cursor = first_unpinned;
+            self.table_state.select(Some(self.cursor));
+        }
+    }
+
     pub fn has_selection(&self) -> bool {
         self.selected.iter().any(|&s| s)
     }
@@ -683,4 +754,13 @@ impl App {
             selected
         }
     }
+}
+
+/// Check if a branch name matches the lowercased search query.
+/// Returns true if query is empty (no filter active).
+fn branch_matches_query(branch: &BranchInfo, query_lower: &str) -> bool {
+    if query_lower.is_empty() {
+        return true;
+    }
+    branch.name.to_lowercase().contains(query_lower)
 }

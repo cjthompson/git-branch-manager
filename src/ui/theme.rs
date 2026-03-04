@@ -51,6 +51,11 @@ pub const TITLE_STYLE: Style = Style::new()
     .fg(Color::Cyan)
     .add_modifier(Modifier::BOLD);
 
+// Search bar — yellow text on dark background for visibility
+pub const SEARCH_BAR_STYLE: Style = Style::new()
+    .bg(Color::Indexed(236))
+    .fg(Color::Yellow);
+
 // Table header row
 pub const HEADER_STYLE: Style = Style::new()
     .fg(Color::Cyan)

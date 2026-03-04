@@ -116,12 +116,26 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .style(theme::HEADER_STYLE)
         .bottom_margin(0);
 
-    // Build table rows
-    let rows: Vec<Row> = app
+    // Build filtered index list: only branches matching the search query
+    let filtered_indices: Vec<usize> = app
         .branches
         .iter()
         .enumerate()
-        .map(|(i, branch)| {
+        .filter(|(_, branch)| app.matches_search(branch))
+        .map(|(i, _)| i)
+        .collect();
+
+    // Map cursor (original index) to filtered row index for table_state
+    let filtered_cursor = filtered_indices.iter().position(|&i| i == app.cursor);
+    if let Some(row_idx) = filtered_cursor {
+        app.table_state.select(Some(row_idx));
+    }
+
+    // Build table rows from filtered branches
+    let rows: Vec<Row> = filtered_indices
+        .iter()
+        .map(|&i| {
+            let branch = &app.branches[i];
             let is_selected = app.selected[i];
             let is_pinned = branch.is_pinned();
 
@@ -294,37 +308,52 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     frame.render_stateful_widget(table, main_area, &mut app.table_state);
 
-    // Status bar
-    let selected_count = app.selection_count();
-    let total = app.branches.len();
-    let merged_count = app
-        .branches
-        .iter()
-        .filter(|b| b.merge_status == MergeStatus::Merged)
-        .count();
-    let squash_count = app
-        .branches
-        .iter()
-        .filter(|b| b.merge_status == MergeStatus::SquashMerged)
-        .count();
-    let progress = if app.squash_total > 0 && app.squash_checked < app.squash_total {
-        format!(" | checking {}/{}", app.squash_checked, app.squash_total)
+    // Status bar / search bar
+    if app.search_active {
+        // Show search input
+        let search_text = format!(" / {}_", app.search_query);
+        let search_bar = Paragraph::new(search_text).style(theme::SEARCH_BAR_STYLE);
+        frame.render_widget(search_bar, status_area);
+    } else if !app.search_query.is_empty() {
+        // Show active filter indicator in status bar
+        let filter_text = format!(
+            " filter: \"{}\" ({}/{} shown) \u{2014} [/]search [ESC in search]clear",
+            app.search_query, filtered_indices.len(), app.branches.len()
+        );
+        let status = Paragraph::new(filter_text).style(theme::SEARCH_BAR_STYLE);
+        frame.render_widget(status, status_area);
     } else {
-        String::new()
-    };
+        let selected_count = app.selection_count();
+        let total = app.branches.len();
+        let merged_count = app
+            .branches
+            .iter()
+            .filter(|b| b.merge_status == MergeStatus::Merged)
+            .count();
+        let squash_count = app
+            .branches
+            .iter()
+            .filter(|b| b.merge_status == MergeStatus::SquashMerged)
+            .count();
+        let progress = if app.squash_total > 0 && app.squash_checked < app.squash_total {
+            format!(" | checking {}/{}", app.squash_checked, app.squash_total)
+        } else {
+            String::new()
+        };
 
-    // Responsive status bar
-    let status_text = if width < 80 {
-        format!(
-            " {}br {}sel {}m {}s{} \u{2014} [?]help [q]uit",
-            total, selected_count, merged_count, squash_count, progress
-        )
-    } else {
-        format!(
-            " {} branches | {} selected | {} merged | {} squashed{} \u{2014} [c]heckout [d]el [D]el+remote [f]etch [?]help [q]uit",
-            total, selected_count, merged_count, squash_count, progress
-        )
-    };
-    let status = Paragraph::new(status_text).style(theme::STATUS_BAR_STYLE);
-    frame.render_widget(status, status_area);
+        // Responsive status bar
+        let status_text = if width < 80 {
+            format!(
+                " {}br {}sel {}m {}s{} \u{2014} [/]search [?]help [q]uit",
+                total, selected_count, merged_count, squash_count, progress
+            )
+        } else {
+            format!(
+                " {} branches | {} selected | {} merged | {} squashed{} \u{2014} [/]search [c]heckout [d]el [D]el+remote [f]etch [?]help [q]uit",
+                total, selected_count, merged_count, squash_count, progress
+            )
+        };
+        let status = Paragraph::new(status_text).style(theme::STATUS_BAR_STYLE);
+        frame.render_widget(status, status_area);
+    }
 }
