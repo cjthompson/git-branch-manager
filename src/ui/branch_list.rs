@@ -12,7 +12,7 @@ fn prefix_style(prefix: &str) -> Option<Style> {
     match prefix {
         "fix" => Some(Style::new().fg(Color::Red)),
         "feat" | "feature" => Some(Style::new().fg(Color::Green)),
-        "chore" => Some(Style::new().fg(Color::Yellow)),
+        "chore" => Some(Style::new().fg(Color::Indexed(130))),
         "hotfix" => Some(Style::new().fg(Color::Magenta)),
         "release" => Some(Style::new().fg(Color::Cyan)),
         _ => None,
