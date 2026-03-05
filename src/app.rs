@@ -59,6 +59,11 @@ pub struct App {
     /// Column header x-ranges for mouse click sorting: (x_start, sort_column_index).
     /// Populated during branch_list rendering. The last entry extends to the end of the row.
     pub header_columns: Vec<(u16, usize)>,
+    /// Status bar clickable items: (x_start, x_end_exclusive, key_to_simulate).
+    /// Populated during branch_list rendering.
+    pub status_bar_items: Vec<(u16, u16, KeyCode)>,
+    /// Terminal height in rows, updated each frame. Used to detect status bar row clicks.
+    pub terminal_rows: u16,
     /// GitHub PR numbers keyed by branch name.
     pub pr_map: PrMap,
     /// Receiver for background PR data fetch. Receives exactly one PrMap, then closes.
@@ -145,6 +150,8 @@ impl App {
             tag_table_state: TableState::default(),
             results_return_view: ResultsReturnView::BranchList,
             header_columns: Vec::new(),
+            status_bar_items: Vec::new(),
+            terminal_rows: 0,
             pr_map: HashMap::new(),
             pr_rx,
             theme,
@@ -272,6 +279,14 @@ impl App {
                 self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
                 self.config.sort_asc = Some(self.sort_ascending);
                 self.config.save();
+            }
+        } else if self.terminal_rows > 0 && y == self.terminal_rows - 1 && !self.status_bar_items.is_empty() {
+            // Status bar row click — look up which item was clicked and simulate its key
+            for &(x_start, x_end, key) in &self.status_bar_items.clone() {
+                if x >= x_start && x < x_end {
+                    self.handle_branch_list_key(key);
+                    break;
+                }
             }
         } else if y >= 2 {
             // Data row click — move cursor to clicked row and toggle selection if not pinned

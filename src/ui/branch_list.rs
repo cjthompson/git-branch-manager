@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use crossterm::event::KeyCode;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
@@ -58,6 +59,8 @@ fn trim_name(name: &str, max_len: usize, strategy: &str) -> String {
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    // Update terminal_rows so handle_mouse_click can detect status bar row
+    app.terminal_rows = area.height;
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -422,12 +425,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // Status bar / search bar
     if app.search_active {
-        // Show search input
+        // Show search input — no clickable items
+        app.status_bar_items.clear();
         let search_text = format!(" / {}_", app.search_query);
         let search_bar = Paragraph::new(search_text).style(app.theme.search_bar);
         frame.render_widget(search_bar, status_area);
     } else if !app.search_query.is_empty() {
-        // Show active filter indicator in status bar
+        // Show active filter indicator in status bar — no clickable items
+        app.status_bar_items.clear();
         let filter_text = format!(
             " filter: \"{}\" ({}/{} shown) \u{2014} [/]search [ESC in search]clear",
             app.search_query, filtered_indices.len(), app.branches.len()
@@ -465,6 +470,48 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 total, selected_count, merged_count, squash_count, progress
             )
         };
+
+        // Build clickable status bar item regions.
+        // Scan for [X]... patterns and record (x_start, x_end, KeyCode).
+        // x_start is at the '[', x_end is after the last char of the word following ']'.
+        {
+            let mut items: Vec<(u16, u16, KeyCode)> = Vec::new();
+            let chars: Vec<char> = status_text.chars().collect();
+            let base_x = status_area.x;
+            let mut i = 0;
+            while i < chars.len() {
+                if chars[i] == '[' && i + 2 < chars.len() && chars[i + 2] == ']' {
+                    let key_char = chars[i + 1];
+                    let key_code = match key_char {
+                        '/' => KeyCode::Char('/'),
+                        '?' => KeyCode::Char('?'),
+                        'q' => KeyCode::Char('q'),
+                        'c' => KeyCode::Char('c'),
+                        'd' => KeyCode::Char('d'),
+                        'D' => KeyCode::Char('D'),
+                        'f' => KeyCode::Char('f'),
+                        'E' => KeyCode::Char('E'),
+                        _ => {
+                            i += 1;
+                            continue;
+                        }
+                    };
+                    let x_start = base_x + i as u16;
+                    // Find end: skip '[X]' then consume word chars (non-space, non-'[')
+                    let mut j = i + 3;
+                    while j < chars.len() && chars[j] != ' ' && chars[j] != '[' {
+                        j += 1;
+                    }
+                    let x_end = base_x + j as u16;
+                    items.push((x_start, x_end, key_code));
+                    i = j;
+                } else {
+                    i += 1;
+                }
+            }
+            app.status_bar_items = items;
+        }
+
         let status = Paragraph::new(status_text).style(app.theme.status_bar);
         frame.render_widget(status, status_area);
     }
