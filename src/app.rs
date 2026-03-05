@@ -65,6 +65,8 @@ pub struct App {
     pub pr_rx: Option<Receiver<PrMap>>,
     /// Active color theme.
     pub theme: Theme,
+    /// Persisted configuration (used for saving sort state and other settings).
+    pub config: git_branch_manager::config::Config,
     /// Receiver for background git operation results.
     pub op_rx: Option<Receiver<Vec<OperationResult>>>,
     /// Description of the currently executing operation (shown in the Executing view).
@@ -96,6 +98,7 @@ impl App {
         trim_strategy: String,
         pr_rx: Option<Receiver<PrMap>>,
         theme: Theme,
+        config: git_branch_manager::config::Config,
     ) -> Self {
         // Sort: base first, then current, then the rest by date descending
         branches.sort_by(|a, b| {
@@ -106,7 +109,16 @@ impl App {
 
         let len = branches.len();
 
-        Self {
+        let init_sort_col: Option<usize> = config.sort_column.as_deref().and_then(|s| match s {
+            "name" => Some(0),
+            "age" => Some(1),
+            "ahead" => Some(2),
+            "status" => Some(3),
+            _ => None,
+        });
+        let init_sort_asc: bool = config.sort_asc.unwrap_or(true);
+
+        let mut app = Self {
             base_branch,
             repo_path,
             branches,
@@ -123,8 +135,8 @@ impl App {
             table_state: TableState::default().with_selected(Some(0)),
             symbols,
             trim_strategy,
-            sort_column: None,
-            sort_ascending: true,
+            sort_column: init_sort_col,
+            sort_ascending: init_sort_asc,
             search_query: String::new(),
             search_active: false,
             tags: Vec::new(),
@@ -135,11 +147,24 @@ impl App {
             pr_map: HashMap::new(),
             pr_rx,
             theme,
+            config,
             op_rx: None,
             executing_label: String::new(),
             progress_rx: None,
             progress: None,
             cancel_flag: None,
+        };
+        app.apply_sort();
+        app
+    }
+
+    fn sort_col_name(col: usize) -> &'static str {
+        match col {
+            0 => "name",
+            1 => "age",
+            2 => "ahead",
+            3 => "status",
+            _ => "name",
         }
     }
 
@@ -223,6 +248,9 @@ impl App {
                 self.sort_ascending = true;
             }
             self.apply_sort();
+            self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
+            self.config.sort_asc = Some(self.sort_ascending);
+            self.config.save();
         }
     }
 
@@ -348,10 +376,16 @@ impl App {
                 });
                 self.sort_ascending = true;
                 self.apply_sort();
+                self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
+                self.config.sort_asc = Some(self.sort_ascending);
+                self.config.save();
             }
             KeyCode::Char('S') => {
                 self.sort_ascending = !self.sort_ascending;
                 self.apply_sort();
+                self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
+                self.config.sort_asc = Some(self.sort_ascending);
+                self.config.save();
             }
             KeyCode::Char('t') => {
                 let Ok(repo) = git2::Repository::open(&self.repo_path) else {
