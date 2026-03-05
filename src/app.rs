@@ -113,7 +113,8 @@ impl App {
             "name" => Some(0),
             "age" => Some(1),
             "ahead" => Some(2),
-            "status" => Some(3),
+            "behind" => Some(3),
+            "status" => Some(4),
             _ => None,
         });
         let init_sort_asc: bool = config.sort_asc.unwrap_or(true);
@@ -163,7 +164,8 @@ impl App {
             0 => "name",
             1 => "age",
             2 => "ahead",
-            3 => "status",
+            3 => "behind",
+            4 => "status",
             _ => "name",
         }
     }
@@ -470,7 +472,7 @@ impl App {
             }
             KeyCode::Char('s') => {
                 self.sort_column = Some(match self.sort_column {
-                    Some(c) => (c + 1) % 4,
+                    Some(c) => (c + 1) % 5,
                     None => 0,
                 });
                 self.sort_ascending = true;
@@ -1005,7 +1007,8 @@ impl App {
                 0 => a.name.cmp(&b.name),
                 1 => a.last_commit_date.cmp(&b.last_commit_date),
                 2 => a.ahead.unwrap_or(0).cmp(&b.ahead.unwrap_or(0)),
-                3 => {
+                3 => a.behind.unwrap_or(0).cmp(&b.behind.unwrap_or(0)),
+                4 => {
                     let rank = |s: &MergeStatus| match s {
                         MergeStatus::Merged => 0,
                         MergeStatus::SquashMerged => 1,
@@ -1342,10 +1345,13 @@ impl App {
     }
 
     fn handle_settings_key(&mut self, code: KeyCode) {
+        // Sort column cycle order: None, 0=name, 1=age, 2=ahead, 3=behind, 4=status
+        const SORT_CYCLE: [Option<usize>; 6] = [None, Some(0), Some(1), Some(2), Some(3), Some(4)];
+
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if let View::Settings { ref mut cursor } = self.view {
-                    *cursor = (*cursor + 1).min(1); // 2 rows (index 0 and 1)
+                    *cursor = (*cursor + 1).min(3); // 4 rows (index 0..=3)
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -1363,6 +1369,21 @@ impl App {
                     self.theme = self.theme.next();
                     self.config.theme = Some(self.theme.name.to_string());
                     self.config.save();
+                } else if cursor == 2 {
+                    // Advance sort column forward through cycle
+                    let pos = SORT_CYCLE.iter().position(|&c| c == self.sort_column).unwrap_or(0);
+                    let next_pos = (pos + 1) % SORT_CYCLE.len();
+                    self.sort_column = SORT_CYCLE[next_pos];
+                    self.apply_sort();
+                    self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
+                    self.config.sort_asc = Some(self.sort_ascending);
+                    self.config.save();
+                } else if cursor == 3 {
+                    // Toggle sort direction
+                    self.sort_ascending = !self.sort_ascending;
+                    self.apply_sort();
+                    self.config.sort_asc = Some(self.sort_ascending);
+                    self.config.save();
                 }
             }
             KeyCode::Left | KeyCode::Char('h') => {
@@ -1379,6 +1400,31 @@ impl App {
                     self.theme = self.theme.next();
                     self.theme = self.theme.next();
                     self.config.theme = Some(self.theme.name.to_string());
+                    self.config.save();
+                } else if cursor == 2 {
+                    // Advance sort column backward through cycle
+                    let pos = SORT_CYCLE.iter().position(|&c| c == self.sort_column).unwrap_or(0);
+                    let next_pos = (pos + SORT_CYCLE.len() - 1) % SORT_CYCLE.len();
+                    self.sort_column = SORT_CYCLE[next_pos];
+                    self.apply_sort();
+                    self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
+                    self.config.sort_asc = Some(self.sort_ascending);
+                    self.config.save();
+                } else if cursor == 3 {
+                    // Toggle sort direction (same as right)
+                    self.sort_ascending = !self.sort_ascending;
+                    self.apply_sort();
+                    self.config.sort_asc = Some(self.sort_ascending);
+                    self.config.save();
+                }
+            }
+            KeyCode::Char(' ') => {
+                // Space toggles sort direction on cursor==3
+                let cursor = if let View::Settings { cursor } = self.view { cursor } else { return };
+                if cursor == 3 {
+                    self.sort_ascending = !self.sort_ascending;
+                    self.apply_sort();
+                    self.config.sort_asc = Some(self.sort_ascending);
                     self.config.save();
                 }
             }

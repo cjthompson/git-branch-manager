@@ -372,7 +372,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Compute header column x positions for mouse click sorting.
     // The table is inside a block with a 1-cell border on the left, so columns start at x=1.
     // The highlight symbol takes some space; ratatui adds it before the first column.
-    // Sort column indices: checkbox=skip, name=0, age=1, A/B=2, status=3
+    // Sort column indices: checkbox=skip, name=0, age=1, A/B(ahead)=2, status=4
     {
         let mut col_positions: Vec<(u16, usize)> = Vec::new();
         // Account for left border (1) + highlight symbol width (cursor_prefix + space)
@@ -390,7 +390,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             sort_col_map.push(Some(2)); // A/B
             sort_col_map.push(None);    // PR (not sortable)
         }
-        sort_col_map.push(Some(3)); // status
+        sort_col_map.push(Some(4)); // status
 
         // Resolve constraint widths using the main_area width minus borders and highlight
         let available = main_area.width.saturating_sub(2 + highlight_width);

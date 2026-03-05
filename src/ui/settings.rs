@@ -6,7 +6,7 @@ use crate::app::{App, View};
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let width = 60u16.min(area.width);
-    let height = 10u16.min(area.height);
+    let height = 12u16.min(area.height);
     let rect = centered_rect(width, height, area);
 
     let block = Block::default()
@@ -20,9 +20,22 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let cursor = if let View::Settings { cursor } = app.view { cursor } else { 0 };
 
+    let sort_col_display = match app.sort_column {
+        None => "none".to_string(),
+        Some(0) => "name".to_string(),
+        Some(1) => "age".to_string(),
+        Some(2) => "ahead".to_string(),
+        Some(3) => "behind".to_string(),
+        Some(4) => "status".to_string(),
+        Some(_) => "none".to_string(),
+    };
+    let sort_dir_display = if app.sort_ascending { "ascending".to_string() } else { "descending".to_string() };
+
     let rows: &[(&str, String)] = &[
         ("Symbol set", crate::ui::symbols::name(app.symbols).to_string()),
         ("Theme", app.theme.name.to_string()),
+        ("Default sort column", sort_col_display),
+        ("Default sort direction", sort_dir_display),
     ];
 
     let mut lines: Vec<Line> = rows.iter().enumerate().map(|(i, (label, value))| {
