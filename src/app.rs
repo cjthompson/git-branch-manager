@@ -18,6 +18,19 @@ use crate::ui;
 use crate::ui::symbols::SymbolSet;
 use crate::ui::theme::Theme;
 
+/// Payload sent from the background initial-load thread.
+pub struct InitialLoad {
+    pub branches: Vec<BranchInfo>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub candidates: Vec<(String, String)>,
+    pub cache: cache::BranchCache,
+}
+
+/// Progress message sent from the background load thread.
+pub struct LoadProgress {
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
     BranchList,
@@ -28,6 +41,7 @@ pub enum View {
     Menu { cursor: usize },
     Tags,
     Settings { cursor: usize },
+    Filter,
 }
 
 pub struct App {
@@ -81,6 +95,14 @@ pub struct App {
     pub progress: Option<ProgressUpdate>,
     /// Shared cancellation flag: set to true when user presses Esc during Executing.
     pub cancel_flag: Option<Arc<AtomicBool>>,
+    /// True while the initial branch load is in progress.
+    pub loading: bool,
+    /// Receiver for the initial background load (branches + working tree status).
+    pub load_rx: Option<Receiver<InitialLoad>>,
+    /// Receiver for loading progress messages (e.g. "Fetching from remote...").
+    pub load_progress_rx: Option<Receiver<LoadProgress>>,
+    /// Current loading status message shown on the loading screen.
+    pub loading_message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,24 +116,12 @@ impl App {
     pub fn new(
         base_branch: String,
         repo_path: PathBuf,
-        mut branches: Vec<BranchInfo>,
-        squash_rx: Option<Receiver<SquashResult>>,
-        squash_total: usize,
-        working_tree_status: WorkingTreeStatus,
         symbols: &'static SymbolSet,
-        pr_rx: Option<Receiver<PrMap>>,
         theme: Theme,
         config: git_branch_manager::config::Config,
+        load_rx: Receiver<InitialLoad>,
+        load_progress_rx: Receiver<LoadProgress>,
     ) -> Self {
-        // Sort: base first, then current, then the rest by date descending
-        branches.sort_by(|a, b| {
-            let pin_a = if a.is_base { 0 } else if a.is_current { 1 } else { 2 };
-            let pin_b = if b.is_base { 0 } else if b.is_current { 1 } else { 2 };
-            pin_a.cmp(&pin_b).then(b.last_commit_date.cmp(&a.last_commit_date))
-        });
-
-        let len = branches.len();
-
         let init_sort_col: Option<usize> = config.sort_column.as_deref().and_then(|s| match s {
             "name" => Some(0),
             "age" => Some(1),
@@ -122,20 +132,20 @@ impl App {
         });
         let init_sort_asc: bool = config.sort_asc.unwrap_or(true);
 
-        let mut app = Self {
+        Self {
             base_branch,
             repo_path,
-            branches,
+            branches: Vec::new(),
             view: View::BranchList,
             cursor: 0,
-            selected: vec![false; len],
+            selected: Vec::new(),
             list_scroll_offset: 0,
             results: Vec::new(),
             should_exit: false,
-            squash_rx,
+            squash_rx: None,
             squash_checked: 0,
-            squash_total,
-            working_tree_status,
+            squash_total: 0,
+            working_tree_status: WorkingTreeStatus::clean(),
             table_state: TableState::default().with_selected(Some(0)),
             symbols,
             sort_column: init_sort_col,
@@ -150,7 +160,7 @@ impl App {
             status_bar_items: Vec::new(),
             terminal_rows: 0,
             pr_map: HashMap::new(),
-            pr_rx,
+            pr_rx: None,
             theme,
             config,
             op_rx: None,
@@ -158,9 +168,11 @@ impl App {
             progress_rx: None,
             progress: None,
             cancel_flag: None,
-        };
-        app.apply_sort();
-        app
+            loading: true,
+            load_rx: Some(load_rx),
+            load_progress_rx: Some(load_progress_rx),
+            loading_message: "Loading...".into(),
+        }
     }
 
     fn sort_col_name(col: usize) -> &'static str {
@@ -177,6 +189,7 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
         while !self.should_exit {
+            self.drain_load_rx();
             self.drain_squash_rx();
             self.drain_pr_rx();
             self.drain_progress_rx();
@@ -214,6 +227,7 @@ impl App {
                     View::Menu { .. } => self.handle_menu_key(key.code),
                     View::Tags => self.handle_tags_key(key.code),
                     View::Settings { .. } => self.handle_settings_key(key.code),
+                    View::Filter => self.handle_filter_key(key.code),
                 }
             }
             Event::Mouse(mouse) => {
@@ -514,6 +528,9 @@ impl App {
             KeyCode::Char('/') => {
                 self.search_active = true;
             }
+            KeyCode::Char('\\') => {
+                self.view = View::Filter;
+            }
             KeyCode::PageDown => {
                 let page_size = 20;
                 let query = self.search_query.to_lowercase();
@@ -644,6 +661,113 @@ impl App {
 
     fn handle_help_key(&mut self, _code: KeyCode) {
         self.view = View::BranchList;
+    }
+
+    fn handle_filter_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('\\') => {
+                self.view = View::BranchList;
+            }
+            // Status toggles
+            KeyCode::Char('m') => {
+                self.search_query =
+                    FilterSet::toggle_token(&self.search_query, "status:merged");
+                self.reset_cursor_to_first_match();
+                self.view = View::BranchList;
+            }
+            KeyCode::Char('s') => {
+                self.search_query =
+                    FilterSet::toggle_token(&self.search_query, "status:squash");
+                self.reset_cursor_to_first_match();
+                self.view = View::BranchList;
+            }
+            KeyCode::Char('u') => {
+                self.search_query =
+                    FilterSet::toggle_token(&self.search_query, "status:unmerged");
+                self.reset_cursor_to_first_match();
+                self.view = View::BranchList;
+            }
+            // PR toggles
+            KeyCode::Char('p') => {
+                self.search_query =
+                    FilterSet::toggle_token(&self.search_query, "pr:yes");
+                self.reset_cursor_to_first_match();
+                self.view = View::BranchList;
+            }
+            KeyCode::Char('P') => {
+                self.search_query =
+                    FilterSet::toggle_token(&self.search_query, "pr:no");
+                self.reset_cursor_to_first_match();
+                self.view = View::BranchList;
+            }
+            // Sync toggles
+            KeyCode::Char('a') => {
+                self.search_query =
+                    FilterSet::toggle_token(&self.search_query, "sync:ahead");
+                self.reset_cursor_to_first_match();
+                self.view = View::BranchList;
+            }
+            KeyCode::Char('b') => {
+                self.search_query =
+                    FilterSet::toggle_token(&self.search_query, "sync:behind");
+                self.reset_cursor_to_first_match();
+                self.view = View::BranchList;
+            }
+            // Age presets
+            KeyCode::Char('1') => {
+                self.search_query =
+                    FilterSet::toggle_token(&self.search_query, "age:<7d");
+                self.reset_cursor_to_first_match();
+                self.view = View::BranchList;
+            }
+            KeyCode::Char('2') => {
+                self.search_query =
+                    FilterSet::toggle_token(&self.search_query, "age:<30d");
+                self.reset_cursor_to_first_match();
+                self.view = View::BranchList;
+            }
+            KeyCode::Char('3') => {
+                self.search_query =
+                    FilterSet::toggle_token(&self.search_query, "age:>30d");
+                self.reset_cursor_to_first_match();
+                self.view = View::BranchList;
+            }
+            KeyCode::Char('4') => {
+                self.search_query =
+                    FilterSet::toggle_token(&self.search_query, "age:>90d");
+                self.reset_cursor_to_first_match();
+                self.view = View::BranchList;
+            }
+            // Custom age — drop into search bar
+            KeyCode::Char('n') => {
+                let trimmed = self.search_query.trim().to_string();
+                self.search_query = if trimmed.is_empty() {
+                    "age:<".into()
+                } else {
+                    format!("{} age:<", trimmed)
+                };
+                self.search_active = true;
+                self.view = View::BranchList;
+            }
+            KeyCode::Char('o') => {
+                let trimmed = self.search_query.trim().to_string();
+                self.search_query = if trimmed.is_empty() {
+                    "age:>".into()
+                } else {
+                    format!("{} age:>", trimmed)
+                };
+                self.search_active = true;
+                self.view = View::BranchList;
+            }
+            // Clear all
+            KeyCode::Char('c') => {
+                self.search_query.clear();
+                self.search_active = false;
+                self.reset_cursor_to_first_match();
+                self.view = View::BranchList;
+            }
+            _ => {}
+        }
     }
 
     fn handle_tags_key(&mut self, code: KeyCode) {
@@ -1055,6 +1179,70 @@ impl App {
         self.selected = vec![false; self.branches.len()];
         self.cursor = 0;
         self.table_state.select(Some(0));
+    }
+
+    fn drain_load_rx(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+
+        // Drain progress messages
+        if let Some(rx) = &self.load_progress_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(p) => self.loading_message = p.message,
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        self.load_progress_rx = None;
+                        break;
+                    }
+                }
+            }
+        }
+
+        let Some(rx) = &self.load_rx else { return };
+
+        match rx.try_recv() {
+            Ok(load) => {
+                self.load_rx = None;
+                self.loading = false;
+
+                let mut branches = load.branches;
+                branches.sort_by(|a, b| {
+                    let pin_a = if a.is_base { 0 } else if a.is_current { 1 } else { 2 };
+                    let pin_b = if b.is_base { 0 } else if b.is_current { 1 } else { 2 };
+                    pin_a.cmp(&pin_b).then(b.last_commit_date.cmp(&a.last_commit_date))
+                });
+
+                let len = branches.len();
+                self.branches = branches;
+                self.selected = vec![false; len];
+                self.cursor = 0;
+                self.table_state.select(Some(0));
+                self.working_tree_status = load.working_tree_status;
+
+                self.squash_total = load.candidates.len();
+                self.squash_checked = 0;
+                self.squash_rx = if load.candidates.is_empty() {
+                    None
+                } else {
+                    Some(squash_loader::spawn_squash_checker(
+                        self.repo_path.clone(),
+                        self.base_branch.clone(),
+                        load.candidates,
+                        load.cache,
+                    ))
+                };
+
+                // Spawn PR loader now that branches are loaded
+                self.pr_rx = Some(pr_loader::spawn_pr_loader(self.repo_path.clone()));
+
+                self.apply_sort();
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.load_rx = None;
+                self.loading = false;
+            }
+        }
     }
 
     fn drain_squash_rx(&mut self) {
@@ -1559,7 +1747,7 @@ impl App {
         }
     }
 
-    /// Returns true if the branch matches the current search query.
+    /// Returns true if the branch matches the current search query and filters.
     /// Always matches if the query is empty or the branch is pinned.
     pub fn matches_search(&self, branch: &BranchInfo) -> bool {
         if self.search_query.is_empty() {
@@ -1568,7 +1756,60 @@ impl App {
         if branch.is_pinned() {
             return true;
         }
-        branch.name.to_lowercase().contains(&self.search_query.to_lowercase())
+
+        let fs = FilterSet::parse(&self.search_query);
+        if fs.is_empty() {
+            return true;
+        }
+
+        // Text filter (AND)
+        if !fs.text.is_empty()
+            && !branch
+                .name
+                .to_lowercase()
+                .contains(&fs.text.to_lowercase())
+        {
+            return false;
+        }
+
+        // Status filter (OR within group)
+        if !fs.statuses.is_empty() && !fs.statuses.contains(&branch.merge_status) {
+            return false;
+        }
+
+        // PR filter — positive and negative
+        let has_pr = self.pr_map.contains_key(&branch.name);
+        if fs.pr_yes && !has_pr {
+            return false;
+        }
+        if fs.pr_no && has_pr {
+            return false;
+        }
+
+        // Sync filter (OR within group)
+        if fs.sync_ahead || fs.sync_behind {
+            let is_ahead = branch.ahead.unwrap_or(0) > 0;
+            let is_behind = branch.behind.unwrap_or(0) > 0;
+            let matches_sync = (fs.sync_ahead && is_ahead) || (fs.sync_behind && is_behind);
+            if !matches_sync {
+                return false;
+            }
+        }
+
+        // Age filters
+        let age_secs = (chrono::Utc::now() - branch.last_commit_date).num_seconds();
+        if let Some(threshold) = fs.age_newer_secs
+            && age_secs > threshold
+        {
+            return false;
+        }
+        if let Some(threshold) = fs.age_older_secs
+            && age_secs < threshold
+        {
+            return false;
+        }
+
+        true
     }
 
     /// Reset cursor to the first branch that matches the search filter.
@@ -1619,11 +1860,123 @@ impl App {
     }
 }
 
-/// Check if a branch name matches the lowercased search query.
-/// Returns true if query is empty (no filter active).
+/// Parsed filter set from the search query.
+#[derive(Debug, Default)]
+pub struct FilterSet {
+    pub statuses: Vec<MergeStatus>,
+    pub pr_yes: bool,
+    pub pr_no: bool,
+    pub sync_ahead: bool,
+    pub sync_behind: bool,
+    pub age_newer_secs: Option<i64>,
+    pub age_older_secs: Option<i64>,
+    pub text: String,
+}
+
+impl FilterSet {
+    pub fn parse(query: &str) -> Self {
+        let mut fs = FilterSet::default();
+        for token in query.split_whitespace() {
+            if let Some(val) = token.strip_prefix("status:") {
+                match val {
+                    "merged" => fs.statuses.push(MergeStatus::Merged),
+                    "squash" => fs.statuses.push(MergeStatus::SquashMerged),
+                    "unmerged" => fs.statuses.push(MergeStatus::Unmerged),
+                    _ => {}
+                }
+            } else if let Some(val) = token.strip_prefix("pr:") {
+                match val {
+                    "yes" => fs.pr_yes = true,
+                    "no" => fs.pr_no = true,
+                    _ => {}
+                }
+            } else if let Some(val) = token.strip_prefix("sync:") {
+                match val {
+                    "ahead" => fs.sync_ahead = true,
+                    "behind" => fs.sync_behind = true,
+                    _ => {}
+                }
+            } else if let Some(val) = token.strip_prefix("age:<") {
+                if let Some(secs) = parse_age_duration(val) {
+                    fs.age_newer_secs = Some(secs);
+                }
+            } else if let Some(val) = token.strip_prefix("age:>") {
+                if let Some(secs) = parse_age_duration(val) {
+                    fs.age_older_secs = Some(secs);
+                }
+            } else {
+                // Plain text — append to text filter
+                if !fs.text.is_empty() {
+                    fs.text.push(' ');
+                }
+                fs.text.push_str(token);
+            }
+        }
+        fs
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.statuses.is_empty()
+            && !self.pr_yes
+            && !self.pr_no
+            && !self.sync_ahead
+            && !self.sync_behind
+            && self.age_newer_secs.is_none()
+            && self.age_older_secs.is_none()
+            && self.text.is_empty()
+    }
+
+    /// Check if a token string is present in the query.
+    pub fn has_token(query: &str, token: &str) -> bool {
+        query.split_whitespace().any(|t| t == token)
+    }
+
+    /// Toggle a token in the query string. Returns the new query.
+    pub fn toggle_token(query: &str, token: &str) -> String {
+        if Self::has_token(query, token) {
+            // Remove the token
+            query
+                .split_whitespace()
+                .filter(|t| *t != token)
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            let trimmed = query.trim();
+            if trimmed.is_empty() {
+                token.to_string()
+            } else {
+                format!("{} {}", trimmed, token)
+            }
+        }
+    }
+}
+
+/// Parse age duration string like "7d", "30d", "6m", "1y" into seconds.
+fn parse_age_duration(s: &str) -> Option<i64> {
+    if s.is_empty() {
+        return None;
+    }
+    let (num_str, suffix) = s.split_at(s.len() - 1);
+    let num: i64 = num_str.parse().ok()?;
+    match suffix {
+        "d" => Some(num * 86400),
+        "w" => Some(num * 604800),
+        "m" => Some(num * 2_592_000), // 30 days
+        "y" => Some(num * 31_536_000), // 365 days
+        _ => None,
+    }
+}
+
+/// Check if a branch matches the lowercased search query (text portion only).
+/// Used for cursor navigation — skips non-matching branches.
 fn branch_matches_query(branch: &BranchInfo, query_lower: &str) -> bool {
     if query_lower.is_empty() {
         return true;
     }
-    branch.name.to_lowercase().contains(query_lower)
+    // Parse filters and only use text portion for name matching
+    let fs = FilterSet::parse(query_lower);
+    if fs.text.is_empty() {
+        return true;
+    }
+    branch.name.to_lowercase().contains(&fs.text.to_lowercase())
 }

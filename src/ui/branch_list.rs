@@ -41,6 +41,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Update terminal_rows so handle_mouse_click can detect status bar row
     app.terminal_rows = area.height;
 
+    // Show loading screen while initial branch data is being fetched
+    if app.loading {
+        let block = Block::default()
+            .title("git-branch-manager")
+            .title_style(app.theme.title)
+            .borders(Borders::ALL);
+        let msg = format!("  {}", app.loading_message);
+        let loading = Paragraph::new(msg)
+            .style(app.theme.primary_text)
+            .block(block);
+        frame.render_widget(loading, area);
+        return;
+    }
+
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -462,7 +476,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // Show active filter indicator in status bar — no clickable items
         app.status_bar_items.clear();
         let filter_text = format!(
-            " filter: \"{}\" ({}/{} shown) \u{2014} [/]search [ESC in search]clear",
+            " filter: \"{}\" ({}/{} shown) \u{2014} [\\]filter [/]edit [Esc in /]clear",
             app.search_query, filtered_indices.len(), app.branches.len()
         );
         let status = Paragraph::new(filter_text).style(app.theme.search_bar);
@@ -489,12 +503,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // Responsive status bar
         let status_text = if width < 80 {
             format!(
-                " {}br {}sel {}m {}s{} \u{2014} [/]search [?]help [q]uit",
+                " {}br {}sel {}m {}s{} \u{2014} [/]search [\\]filter [?]help [q]uit",
                 total, selected_count, merged_count, squash_count, progress
             )
         } else {
             format!(
-                " {} branches | {} selected | {} merged | {} squashed{} \u{2014} [/]search [c]heckout [d]el [D]el+remote [f]etch [?]help [q]uit",
+                " {} branches | {} selected | {} merged | {} squashed{} \u{2014} [/]search [\\]filter [c]heckout [d]el [D]el+remote [f]etch [?]help [q]uit",
                 total, selected_count, merged_count, squash_count, progress
             )
         };
