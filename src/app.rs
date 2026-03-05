@@ -1144,6 +1144,7 @@ impl App {
             } else {
                 None
             },
+            shortcut: Some('c'),
         });
 
         // Delete local
@@ -1157,6 +1158,7 @@ impl App {
             } else {
                 None
             },
+            shortcut: Some('d'),
         });
 
         // Delete local + remote
@@ -1173,6 +1175,7 @@ impl App {
             } else {
                 None
             },
+            shortcut: Some('D'),
         });
 
         // Fast-forward: only for non-current branches with a tracked (non-gone) remote
@@ -1190,6 +1193,7 @@ impl App {
             } else {
                 None
             },
+            shortcut: Some('f'),
         });
 
         // Push: only for branches that are ahead of their remote
@@ -1204,6 +1208,7 @@ impl App {
             } else {
                 None
             },
+            shortcut: Some('p'),
         });
 
         // Force Push: only for branches that are both ahead AND behind their remote
@@ -1220,6 +1225,7 @@ impl App {
             } else {
                 None
             },
+            shortcut: Some('P'),
         });
 
         // Pull: only for branches that are behind their remote tracking branch
@@ -1234,6 +1240,7 @@ impl App {
             } else {
                 None
             },
+            shortcut: Some('l'),
         });
 
         // Merge into base
@@ -1247,6 +1254,7 @@ impl App {
             } else {
                 None
             },
+            shortcut: None,
         });
 
         // Squash merge into base
@@ -1260,6 +1268,7 @@ impl App {
             } else {
                 None
             },
+            shortcut: None,
         });
 
         // Rebase onto base
@@ -1273,6 +1282,7 @@ impl App {
             } else {
                 None
             },
+            shortcut: None,
         });
 
         // Create worktree
@@ -1284,6 +1294,7 @@ impl App {
             } else {
                 None
             },
+            shortcut: None,
         });
 
         // Open PR in browser
@@ -1292,6 +1303,7 @@ impl App {
             label: "Open PR in browser".into(),
             enabled: has_pr,
             reason: if !has_pr { Some("no PR".into()) } else { None },
+            shortcut: Some('o'),
         });
 
         items
@@ -1364,7 +1376,41 @@ impl App {
                     self.view = View::Confirm { action };
                 }
             }
-            KeyCode::Esc | KeyCode::Char('q') => {
+            KeyCode::Char(ch) => {
+                if let Some((idx, _)) = items.iter().enumerate().find(|(_, item)| item.shortcut == Some(ch) && item.enabled) {
+                    // Open PR in browser (index 11) — no confirm needed, fire and forget
+                    if idx == 11 {
+                        let branch_name = self.branches[self.cursor].name.clone();
+                        let repo_path = self.repo_path.clone();
+                        std::thread::spawn(move || {
+                            let _ = std::process::Command::new("gh")
+                                .args(["pr", "view", "--web", &branch_name])
+                                .current_dir(&repo_path)
+                                .status();
+                        });
+                        self.view = View::BranchList;
+                        return;
+                    }
+                    let action = match idx {
+                        0 => BranchAction::Checkout,
+                        1 => BranchAction::DeleteLocal,
+                        2 => BranchAction::DeleteLocalAndRemote,
+                        3 => BranchAction::FastForward,
+                        4 => BranchAction::Push,
+                        5 => BranchAction::ForcePush,
+                        6 => BranchAction::Pull,
+                        7 => BranchAction::Merge,
+                        8 => BranchAction::SquashMerge,
+                        9 => BranchAction::Rebase,
+                        10 => BranchAction::Worktree,
+                        _ => return,
+                    };
+                    self.view = View::Confirm { action };
+                } else if ch == 'q' {
+                    self.view = View::BranchList;
+                }
+            }
+            KeyCode::Esc => {
                 self.view = View::BranchList;
             }
             _ => {}

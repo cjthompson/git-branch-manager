@@ -7,6 +7,7 @@ pub struct MenuItem {
     pub label: String,
     pub enabled: bool,
     pub reason: Option<String>,
+    pub shortcut: Option<char>,
 }
 
 pub fn draw(frame: &mut Frame, items: &[MenuItem], menu_cursor: usize, anchor_row: u16, theme: &Theme) {
@@ -31,10 +32,15 @@ pub fn draw(frame: &mut Frame, items: &[MenuItem], menu_cursor: usize, anchor_ro
             } else {
                 Style::default()
             };
-            let text = if let Some(reason) = &item.reason {
-                format!("{}{} ({})", prefix, item.label, reason)
+            let label_text = if let Some(ch) = item.shortcut {
+                format!("[{}] {}", ch, item.label)
             } else {
-                format!("{}{}", prefix, item.label)
+                item.label.clone()
+            };
+            let text = if let Some(reason) = &item.reason {
+                format!("{}{} ({})", prefix, label_text, reason)
+            } else {
+                format!("{}{}", prefix, label_text)
             };
             ListItem::new(text).style(style)
         })
