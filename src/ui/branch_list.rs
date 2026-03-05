@@ -548,17 +548,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .add_modifier(ratatui::style::Modifier::BOLD);
         let mut spans: Vec<Span> = Vec::new();
         let mut remaining = status_text.as_str();
-        while let Some(bracket_pos) = remaining.find('[') {
-            if bracket_pos > 0 {
-                spans.push(Span::styled(remaining[..bracket_pos].to_string(), app.theme.status_bar));
+        while let Some(open) = remaining.find('[') {
+            // text before '['
+            if open > 0 {
+                spans.push(Span::styled(remaining[..open].to_string(), app.theme.status_bar));
             }
-            remaining = &remaining[bracket_pos..];
+            remaining = &remaining[open..]; // remaining starts with '['
             if let Some(close) = remaining.find(']') {
-                let after_bracket = &remaining[close + 1..];
-                let word_end = after_bracket.find(' ').unwrap_or(after_bracket.len());
-                let token = &remaining[..close + 1 + word_end];
-                spans.push(Span::styled(token.to_string(), key_style));
-                remaining = &remaining[close + 1 + word_end..];
+                // '[' itself
+                spans.push(Span::styled("[".to_string(), app.theme.status_bar));
+                // the key letter(s) between '[' and ']'
+                spans.push(Span::styled(remaining[1..close].to_string(), key_style));
+                // ']' + following word (up to next space or end)
+                let after_close = &remaining[close..]; // starts with ']'
+                let word_end = after_close[1..].find(' ').map(|i| i + 1).unwrap_or(after_close.len());
+                spans.push(Span::styled(after_close[..word_end].to_string(), app.theme.status_bar));
+                remaining = &after_close[word_end..];
             } else {
                 spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
                 remaining = "";
