@@ -1366,7 +1366,7 @@ impl App {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if let View::Settings { ref mut cursor } = self.view {
-                    *cursor = (*cursor + 1).min(3); // 4 rows (index 0..=3)
+                    *cursor = (*cursor + 1).min(4); // 5 rows (index 0..=4)
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -1398,6 +1398,10 @@ impl App {
                     self.sort_ascending = !self.sort_ascending;
                     self.apply_sort();
                     self.config.sort_asc = Some(self.sort_ascending);
+                    self.config.save();
+                } else if cursor == 4 {
+                    // Toggle auto-fetch
+                    self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
                     self.config.save();
                 }
             }
@@ -1431,15 +1435,22 @@ impl App {
                     self.apply_sort();
                     self.config.sort_asc = Some(self.sort_ascending);
                     self.config.save();
+                } else if cursor == 4 {
+                    // Toggle auto-fetch (same as right)
+                    self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
+                    self.config.save();
                 }
             }
             KeyCode::Char(' ') => {
-                // Space toggles sort direction on cursor==3
+                // Space toggles on cursor==3 (sort direction) or cursor==4 (auto-fetch)
                 let cursor = if let View::Settings { cursor } = self.view { cursor } else { return };
                 if cursor == 3 {
                     self.sort_ascending = !self.sort_ascending;
                     self.apply_sort();
                     self.config.sort_asc = Some(self.sort_ascending);
+                    self.config.save();
+                } else if cursor == 4 {
+                    self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
                     self.config.save();
                 }
             }

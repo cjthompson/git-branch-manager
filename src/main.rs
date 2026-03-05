@@ -6,7 +6,7 @@ use anyhow::Result;
 use clap::Parser;
 use cli::Cli;
 use git_branch_manager::config::Config;
-use git_branch_manager::git::{self, pr_loader};
+use git_branch_manager::git::{self, operations, pr_loader};
 use git_branch_manager::types::MergeStatus;
 
 fn main() -> Result<()> {
@@ -22,6 +22,9 @@ fn main() -> Result<()> {
         .workdir()
         .unwrap_or_else(|| repo.path())
         .to_path_buf();
+
+    // Load config early so auto_fetch and other settings are available throughout
+    let config = Config::load();
 
     // Non-interactive list mode (synchronous, full pipeline with cache)
     if cli.list {
@@ -50,6 +53,14 @@ fn main() -> Result<()> {
             println!("{}{:<25} {:<20} {:<15} {}", current, b.name, tracking, b.age_display(), status);
         }
         return Ok(());
+    }
+
+    // Auto-fetch on launch if configured
+    if config.auto_fetch == Some(true) {
+        let result = operations::fetch(&repo_path);
+        if !result.success {
+            eprintln!("Auto-fetch warning: {}", result.message);
+        }
     }
 
     // TUI mode: phase 1 (fast git2), then spawn background squash checker with cache
@@ -88,7 +99,6 @@ fn main() -> Result<()> {
     let working_tree_status = git::status::detect_working_tree_status(&repo);
 
     // Resolve symbol set: CLI flag > config file > auto-detect
-    let config = Config::load();
     let symbols = match cli.symbols.as_deref().or(config.symbols.as_deref()) {
         Some(name) => ui::symbols::from_name(name),
         None => ui::symbols::detect(),
