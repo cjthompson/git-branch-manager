@@ -24,6 +24,7 @@ S       Reverse sort order
 R       Force recheck (clear cache)
 T       Cycle theme
 t       Tags view
+,       Settings
 /       Search branches
 ?       Toggle help
 q       Quit";

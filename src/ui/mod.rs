@@ -5,6 +5,7 @@ pub mod help;
 pub mod menu;
 pub mod render;
 pub mod results;
+pub mod settings;
 pub mod symbols;
 pub mod tag_list;
 pub mod theme;

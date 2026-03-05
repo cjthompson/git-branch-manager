@@ -27,6 +27,7 @@ pub enum View {
     Help,
     Menu { cursor: usize },
     Tags,
+    Settings { cursor: usize },
 }
 
 pub struct App {
@@ -181,6 +182,7 @@ impl App {
                     View::Help => self.handle_help_key(key.code),
                     View::Menu { .. } => self.handle_menu_key(key.code),
                     View::Tags => self.handle_tags_key(key.code),
+                    View::Settings { .. } => self.handle_settings_key(key.code),
                 }
             }
             Event::Mouse(mouse) => {
@@ -414,6 +416,9 @@ impl App {
             }
             KeyCode::Char('?') => {
                 self.view = View::Help;
+            }
+            KeyCode::Char(',') => {
+                self.view = View::Settings { cursor: 0 };
             }
             KeyCode::Char('q') => {
                 self.should_exit = true;
@@ -1191,6 +1196,25 @@ impl App {
                 }
             }
             KeyCode::Esc | KeyCode::Char('q') => {
+                self.view = View::BranchList;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_settings_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let View::Settings { ref mut cursor } = self.view {
+                    *cursor = cursor.saturating_add(1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let View::Settings { ref mut cursor } = self.view {
+                    *cursor = cursor.saturating_sub(1);
+                }
+            }
+            KeyCode::Esc => {
                 self.view = View::BranchList;
             }
             _ => {}
