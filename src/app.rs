@@ -1345,7 +1345,7 @@ impl App {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if let View::Settings { ref mut cursor } = self.view {
-                    *cursor = (*cursor + 1).min(0); // Only 1 row (index 0)
+                    *cursor = (*cursor + 1).min(1); // 2 rows (index 0 and 1)
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -1359,6 +1359,10 @@ impl App {
                     self.symbols = crate::ui::symbols::next(self.symbols);
                     self.config.symbols = Some(crate::ui::symbols::name(self.symbols).to_string());
                     self.config.save();
+                } else if cursor == 1 {
+                    self.theme = self.theme.next();
+                    self.config.theme = Some(self.theme.name.to_string());
+                    self.config.save();
                 }
             }
             KeyCode::Left | KeyCode::Char('h') => {
@@ -1368,6 +1372,13 @@ impl App {
                     self.symbols = crate::ui::symbols::next(self.symbols);
                     self.symbols = crate::ui::symbols::next(self.symbols);
                     self.config.symbols = Some(crate::ui::symbols::name(self.symbols).to_string());
+                    self.config.save();
+                } else if cursor == 1 {
+                    // backward = next() 3 times (4-cycle: dark→light→solarized→dracula)
+                    self.theme = self.theme.next();
+                    self.theme = self.theme.next();
+                    self.theme = self.theme.next();
+                    self.config.theme = Some(self.theme.name.to_string());
                     self.config.save();
                 }
             }
