@@ -1160,13 +1160,16 @@ impl App {
         });
 
         // Delete local + remote
+        let has_remote = matches!(&branch.tracking, TrackingStatus::Tracked { gone: false, .. });
         items.push(ui::menu::MenuItem {
             label: "Delete local + remote".into(),
-            enabled: !branch.is_base && !branch.is_current,
+            enabled: !branch.is_base && !branch.is_current && has_remote,
             reason: if branch.is_current {
                 Some("current".into())
             } else if branch.is_base {
                 Some("base".into())
+            } else if !has_remote {
+                Some("no remote".into())
             } else {
                 None
             },
@@ -1298,17 +1301,29 @@ impl App {
         let items = self.build_menu_items();
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if let View::Menu { ref mut cursor } = self.view
-                    && *cursor + 1 < items.len()
-                {
-                    *cursor += 1;
+                if let View::Menu { ref mut cursor } = self.view {
+                    let mut next = *cursor + 1;
+                    while next < items.len() && !items[next].enabled {
+                        next += 1;
+                    }
+                    if next < items.len() {
+                        *cursor = next;
+                    }
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if let View::Menu { ref mut cursor } = self.view
-                    && *cursor > 0
-                {
-                    *cursor -= 1;
+                if let View::Menu { ref mut cursor } = self.view {
+                    let mut prev = *cursor;
+                    loop {
+                        if prev == 0 {
+                            break;
+                        }
+                        prev -= 1;
+                        if items[prev].enabled {
+                            *cursor = prev;
+                            break;
+                        }
+                    }
                 }
             }
             KeyCode::Enter => {
