@@ -233,37 +233,80 @@ impl App {
     }
 
     fn handle_mouse_click(&mut self, x: u16, y: u16) {
-        // Only handle clicks on the header row (row 1, inside the top border at row 0)
-        // and only in BranchList view
-        if y != 1 || self.view != View::BranchList || self.header_columns.is_empty() {
+        if self.view != View::BranchList {
             return;
         }
 
-        // Determine which sort column was clicked based on stored header x positions
-        let mut clicked_col: Option<usize> = None;
-        for (i, &(col_x, sort_idx)) in self.header_columns.iter().enumerate() {
-            let next_x = if i + 1 < self.header_columns.len() {
-                self.header_columns[i + 1].0
-            } else {
-                u16::MAX
-            };
-            if x >= col_x && x < next_x {
-                clicked_col = Some(sort_idx);
-                break;
+        // Layout:
+        //   y=0 — outer border top
+        //   y=1 — header row (column titles)
+        //   y=2+ — branch data rows (first data row at y=2)
+        if y == 1 && !self.header_columns.is_empty() {
+            // Header row click — determine which sort column was clicked
+            let mut clicked_col: Option<usize> = None;
+            for (i, &(col_x, sort_idx)) in self.header_columns.iter().enumerate() {
+                let next_x = if i + 1 < self.header_columns.len() {
+                    self.header_columns[i + 1].0
+                } else {
+                    u16::MAX
+                };
+                if x >= col_x && x < next_x {
+                    clicked_col = Some(sort_idx);
+                    break;
+                }
             }
-        }
 
-        if let Some(col) = clicked_col {
-            if self.sort_column == Some(col) {
-                self.sort_ascending = !self.sort_ascending;
-            } else {
-                self.sort_column = Some(col);
-                self.sort_ascending = true;
+            if let Some(col) = clicked_col {
+                if self.sort_column == Some(col) {
+                    self.sort_ascending = !self.sort_ascending;
+                } else {
+                    self.sort_column = Some(col);
+                    self.sort_ascending = true;
+                }
+                self.apply_sort();
+                self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
+                self.config.sort_asc = Some(self.sort_ascending);
+                self.config.save();
             }
-            self.apply_sort();
-            self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
-            self.config.sort_asc = Some(self.sort_ascending);
-            self.config.save();
+        } else if y >= 2 {
+            // Data row click — move cursor to clicked row and toggle selection if not pinned
+            let scroll_offset = self.table_state.offset();
+            let clicked_display_row = (y - 2) as usize + scroll_offset;
+
+            // Reconstruct display_indices (same logic as branch_list.rs): pinned first, then non-pinned,
+            // filtered by current search query
+            let filtered_indices: Vec<usize> = self
+                .branches
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| self.matches_search(b))
+                .map(|(i, _)| i)
+                .collect();
+            let pinned_indices: Vec<usize> = filtered_indices
+                .iter()
+                .copied()
+                .filter(|&i| self.branches[i].is_pinned())
+                .collect();
+            let non_pinned_indices: Vec<usize> = filtered_indices
+                .iter()
+                .copied()
+                .filter(|&i| !self.branches[i].is_pinned())
+                .collect();
+            let display_indices: Vec<usize> = pinned_indices
+                .iter()
+                .chain(non_pinned_indices.iter())
+                .copied()
+                .collect();
+
+            if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
+                self.cursor = branch_idx;
+                self.table_state.select(Some(clicked_display_row));
+
+                // Toggle selection only for non-pinned rows
+                if !self.branches[branch_idx].is_pinned() {
+                    self.selected[branch_idx] = !self.selected[branch_idx];
+                }
+            }
         }
     }
 
