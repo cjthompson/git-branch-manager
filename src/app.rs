@@ -42,6 +42,7 @@ pub enum View {
     Tags,
     Settings { cursor: usize },
     Filter,
+    TagFilter,
 }
 
 pub struct App {
@@ -67,6 +68,10 @@ pub struct App {
     pub tags: Vec<TagInfo>,
     pub tag_cursor: usize,
     pub tag_table_state: TableState,
+    pub tag_selected: Vec<bool>,
+    pub tag_search_query: String,
+    pub tag_search_active: bool,
+    pub tag_sort_by_name: bool,
     /// Which view to return to after the Results screen (BranchList or Tags).
     pub results_return_view: ResultsReturnView,
     /// Column header x-ranges for mouse click sorting: (x_start, sort_column_index).
@@ -155,6 +160,10 @@ impl App {
             tags: Vec::new(),
             tag_cursor: 0,
             tag_table_state: TableState::default(),
+            tag_selected: Vec::new(),
+            tag_search_query: String::new(),
+            tag_search_active: false,
+            tag_sort_by_name: false,
             results_return_view: ResultsReturnView::BranchList,
             header_columns: Vec::new(),
             status_bar_items: Vec::new(),
@@ -213,6 +222,10 @@ impl App {
                 }
 
                 // Search input takes priority over all other key handlers
+                if self.tag_search_active && matches!(self.view, View::Tags) {
+                    self.handle_tag_search_key(key.code);
+                    return;
+                }
                 if self.search_active {
                     self.handle_search_key(key.code);
                     return;
@@ -228,6 +241,7 @@ impl App {
                     View::Tags => self.handle_tags_key(key.code),
                     View::Settings { .. } => self.handle_settings_key(key.code),
                     View::Filter => self.handle_filter_key(key.code),
+                    View::TagFilter => self.handle_tag_filter_key(key.code),
                 }
             }
             Event::Mouse(mouse) => {
@@ -241,11 +255,15 @@ impl App {
                     MouseEventKind::ScrollDown => {
                         if self.view == View::BranchList {
                             self.handle_branch_list_key(KeyCode::Down);
+                        } else if self.view == View::Tags {
+                            self.handle_tags_key(KeyCode::Down);
                         }
                     }
                     MouseEventKind::ScrollUp => {
                         if self.view == View::BranchList {
                             self.handle_branch_list_key(KeyCode::Up);
+                        } else if self.view == View::Tags {
+                            self.handle_tags_key(KeyCode::Up);
                         }
                     }
                     _ => {}
@@ -519,7 +537,11 @@ impl App {
                     return;
                 };
                 self.tags = tags::list_tags(&repo);
+                self.tag_selected = vec![false; self.tags.len()];
                 self.tag_cursor = 0;
+                self.tag_search_query.clear();
+                self.tag_search_active = false;
+                self.tag_sort_by_name = false;
                 self.tag_table_state = TableState::default().with_selected(
                     if self.tags.is_empty() { None } else { Some(0) }
                 );
@@ -602,7 +624,7 @@ impl App {
             KeyCode::Char('y') => {
                 let is_tag_action = matches!(
                     &self.view,
-                    View::Confirm { action } if matches!(action, BranchAction::DeleteTag | BranchAction::PushTag)
+                    View::Confirm { action } if matches!(action, BranchAction::DeleteTag | BranchAction::DeleteTagAndRemote | BranchAction::PushTag)
                 );
                 if is_tag_action {
                     self.results_return_view = ResultsReturnView::Tags;
@@ -613,7 +635,7 @@ impl App {
                 // Return to the appropriate view
                 let is_tag_action = matches!(
                     &self.view,
-                    View::Confirm { action } if matches!(action, BranchAction::DeleteTag | BranchAction::PushTag)
+                    View::Confirm { action } if matches!(action, BranchAction::DeleteTag | BranchAction::DeleteTagAndRemote | BranchAction::PushTag)
                 );
                 if is_tag_action {
                     self.view = View::Tags;
@@ -642,6 +664,10 @@ impl App {
                     return;
                 };
                 self.tags = tags::list_tags(&repo);
+                if self.tag_sort_by_name {
+                    self.tags.sort_by(|a, b| a.name.cmp(&b.name));
+                }
+                self.tag_selected = vec![false; self.tags.len()];
                 if self.tag_cursor >= self.tags.len() {
                     self.tag_cursor = self.tags.len().saturating_sub(1);
                 }
@@ -771,43 +797,89 @@ impl App {
     }
 
     fn handle_tags_key(&mut self, code: KeyCode) {
-        let len = self.tags.len();
+        let filtered: Vec<usize> = self.filtered_tag_indices();
+        let len = filtered.len();
+        if len == 0 {
+            match code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
+                    self.view = View::BranchList;
+                }
+                KeyCode::Char('/') => {
+                    self.tag_search_active = true;
+                }
+                KeyCode::Char('\\') => {
+                    self.view = View::TagFilter;
+                }
+                KeyCode::Char('c') if !self.tag_search_query.is_empty() => {
+                    self.tag_search_query.clear();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Find current cursor position in filtered list
+        let cursor_pos = filtered.iter().position(|&i| i == self.tag_cursor).unwrap_or(0);
+
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if len > 0 && self.tag_cursor + 1 < len {
-                    self.tag_cursor += 1;
-                    self.tag_table_state.select(Some(self.tag_cursor));
+                if cursor_pos + 1 < len {
+                    self.tag_cursor = filtered[cursor_pos + 1];
+                    self.tag_table_state.select(Some(cursor_pos + 1));
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if self.tag_cursor > 0 {
-                    self.tag_cursor -= 1;
-                    self.tag_table_state.select(Some(self.tag_cursor));
+                if cursor_pos > 0 {
+                    self.tag_cursor = filtered[cursor_pos - 1];
+                    self.tag_table_state.select(Some(cursor_pos - 1));
                 }
             }
             KeyCode::PageDown => {
-                if len > 0 {
-                    let page_size = 20;
-                    self.tag_cursor = (self.tag_cursor + page_size).min(len - 1);
-                    self.tag_table_state.select(Some(self.tag_cursor));
-                }
+                let page_size = 20;
+                let new_pos = (cursor_pos + page_size).min(len - 1);
+                self.tag_cursor = filtered[new_pos];
+                self.tag_table_state.select(Some(new_pos));
             }
             KeyCode::PageUp => {
-                if len > 0 {
-                    let page_size = 20;
-                    self.tag_cursor = self.tag_cursor.saturating_sub(page_size);
-                    self.tag_table_state.select(Some(self.tag_cursor));
+                let page_size = 20;
+                let new_pos = cursor_pos.saturating_sub(page_size);
+                self.tag_cursor = filtered[new_pos];
+                self.tag_table_state.select(Some(new_pos));
+            }
+            KeyCode::Char(' ') => {
+                self.tag_selected[self.tag_cursor] = !self.tag_selected[self.tag_cursor];
+            }
+            KeyCode::Char('a') => {
+                for &i in &filtered {
+                    self.tag_selected[i] = true;
+                }
+            }
+            KeyCode::Char('n') => {
+                self.tag_selected.fill(false);
+            }
+            KeyCode::Char('i') => {
+                for &i in &filtered {
+                    self.tag_selected[i] = !self.tag_selected[i];
                 }
             }
             KeyCode::Char('d') => {
-                if len > 0 {
+                if self.has_tag_selection() || !self.tags.is_empty() {
+                    self.results_return_view = ResultsReturnView::Tags;
                     self.view = View::Confirm {
                         action: BranchAction::DeleteTag,
                     };
                 }
             }
+            KeyCode::Char('D') => {
+                if self.has_tag_selection() || !self.tags.is_empty() {
+                    self.results_return_view = ResultsReturnView::Tags;
+                    self.view = View::Confirm {
+                        action: BranchAction::DeleteTagAndRemote,
+                    };
+                }
+            }
             KeyCode::Char('p') => {
-                if len > 0 {
+                if !self.tags.is_empty() {
                     let tag_name = self.tags[self.tag_cursor].name.clone();
                     self.results_return_view = ResultsReturnView::Tags;
                     self.spawn_op(format!("Pushing tag {}...", tag_name), {
@@ -816,11 +888,102 @@ impl App {
                     });
                 }
             }
+            KeyCode::Char('/') => {
+                self.tag_search_active = true;
+            }
+            KeyCode::Char('\\') => {
+                self.view = View::TagFilter;
+            }
+            KeyCode::Char('s') => {
+                self.tag_sort_by_name = !self.tag_sort_by_name;
+                self.apply_tag_sort();
+            }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
                 self.view = View::BranchList;
             }
             KeyCode::Char('?') => {
                 self.view = View::Help;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_tag_search_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.tag_search_query.clear();
+                self.tag_search_active = false;
+                self.reset_tag_cursor();
+            }
+            KeyCode::Enter => {
+                self.tag_search_active = false;
+            }
+            KeyCode::Backspace => {
+                self.tag_search_query.pop();
+                self.reset_tag_cursor();
+            }
+            KeyCode::Char(c) => {
+                self.tag_search_query.push(c);
+                self.reset_tag_cursor();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_tag_filter_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('\\') => {
+                self.view = View::Tags;
+            }
+            KeyCode::Char('1') => {
+                self.tag_search_query =
+                    FilterSet::toggle_token(&self.tag_search_query, "age:<7d");
+                self.reset_tag_cursor();
+                self.view = View::Tags;
+            }
+            KeyCode::Char('2') => {
+                self.tag_search_query =
+                    FilterSet::toggle_token(&self.tag_search_query, "age:<30d");
+                self.reset_tag_cursor();
+                self.view = View::Tags;
+            }
+            KeyCode::Char('3') => {
+                self.tag_search_query =
+                    FilterSet::toggle_token(&self.tag_search_query, "age:>30d");
+                self.reset_tag_cursor();
+                self.view = View::Tags;
+            }
+            KeyCode::Char('4') => {
+                self.tag_search_query =
+                    FilterSet::toggle_token(&self.tag_search_query, "age:>90d");
+                self.reset_tag_cursor();
+                self.view = View::Tags;
+            }
+            KeyCode::Char('n') => {
+                let trimmed = self.tag_search_query.trim().to_string();
+                self.tag_search_query = if trimmed.is_empty() {
+                    "age:<".into()
+                } else {
+                    format!("{} age:<", trimmed)
+                };
+                self.tag_search_active = true;
+                self.view = View::Tags;
+            }
+            KeyCode::Char('o') => {
+                let trimmed = self.tag_search_query.trim().to_string();
+                self.tag_search_query = if trimmed.is_empty() {
+                    "age:>".into()
+                } else {
+                    format!("{} age:>", trimmed)
+                };
+                self.tag_search_active = true;
+                self.view = View::Tags;
+            }
+            KeyCode::Char('c') => {
+                self.tag_search_query.clear();
+                self.tag_search_active = false;
+                self.reset_tag_cursor();
+                self.view = View::Tags;
             }
             _ => {}
         }
@@ -875,26 +1038,39 @@ impl App {
 
         let label = format!("{}...", action.label());
 
-        // Tag operations operate on the tag cursor, not branches
-        if action == BranchAction::DeleteTag {
-            if !self.tags.is_empty() {
-                let tag_name = self.tags[self.tag_cursor].name.clone();
-                let repo_path = self.repo_path.clone();
-                self.spawn_op(label, move || {
-                    let repo = match git2::Repository::open(&repo_path) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            return vec![OperationResult {
-                                branch_name: tag_name,
-                                action: BranchAction::DeleteTag,
-                                success: false,
-                                message: format!("Failed to open repo: {}", e),
-                            }];
-                        }
-                    };
-                    vec![tags::delete_tag(&repo, &tag_name)]
-                });
+        // Tag operations
+        if action == BranchAction::DeleteTag || action == BranchAction::DeleteTagAndRemote {
+            let target_names = self.target_tag_names();
+            if target_names.is_empty() {
+                return;
             }
+            let repo_path = self.repo_path.clone();
+            let delete_remote = action == BranchAction::DeleteTagAndRemote;
+            self.spawn_op(label, move || {
+                let repo = match git2::Repository::open(&repo_path) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return vec![OperationResult {
+                            branch_name: String::new(),
+                            action: BranchAction::DeleteTag,
+                            success: false,
+                            message: format!("Failed to open repo: {}", e),
+                        }];
+                    }
+                };
+                let mut results = tags::delete_tags_batch(&repo, &target_names);
+                if delete_remote {
+                    let successfully_deleted: Vec<String> = results
+                        .iter()
+                        .filter(|r| r.success)
+                        .map(|r| r.branch_name.clone())
+                        .collect();
+                    if !successfully_deleted.is_empty() {
+                        results.extend(tags::delete_remote_tags_batch(&repo_path, &successfully_deleted));
+                    }
+                }
+                results
+            });
             return;
         }
 
@@ -1857,6 +2033,105 @@ impl App {
         } else {
             selected
         }
+    }
+
+    pub fn has_tag_selection(&self) -> bool {
+        self.tag_selected.iter().any(|&s| s)
+    }
+
+    pub fn tag_selection_count(&self) -> usize {
+        self.tag_selected.iter().filter(|&&s| s).count()
+    }
+
+    pub fn selected_tag_names(&self) -> Vec<String> {
+        self.tags
+            .iter()
+            .zip(self.tag_selected.iter())
+            .filter(|&(_, &sel)| sel)
+            .map(|(t, _)| t.name.clone())
+            .collect()
+    }
+
+    /// Returns tag names targeted by the current action.
+    /// If tags are selected, returns those; otherwise returns the cursor tag.
+    pub fn target_tag_names(&self) -> Vec<String> {
+        let selected = self.selected_tag_names();
+        if selected.is_empty() && !self.tags.is_empty() {
+            vec![self.tags[self.tag_cursor].name.clone()]
+        } else {
+            selected
+        }
+    }
+
+    pub fn filtered_tag_indices(&self) -> Vec<usize> {
+        self.tags
+            .iter()
+            .enumerate()
+            .filter(|(_, tag)| self.matches_tag_search(tag))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub fn matches_tag_search(&self, tag: &TagInfo) -> bool {
+        if self.tag_search_query.is_empty() {
+            return true;
+        }
+
+        let fs = FilterSet::parse(&self.tag_search_query);
+
+        // Text filter: match against tag name and message
+        if !fs.text.is_empty() {
+            let text_lower = fs.text.to_lowercase();
+            let name_lower = tag.name.to_lowercase();
+            let msg_lower = tag.message.as_deref().unwrap_or("").to_lowercase();
+            if !name_lower.contains(&text_lower) && !msg_lower.contains(&text_lower) {
+                return false;
+            }
+        }
+
+        // Age newer filter
+        if let Some(threshold) = fs.age_newer_secs {
+            let age_secs = (chrono::Utc::now() - tag.date).num_seconds();
+            if age_secs > threshold {
+                return false;
+            }
+        }
+
+        // Age older filter
+        if let Some(threshold) = fs.age_older_secs {
+            let age_secs = (chrono::Utc::now() - tag.date).num_seconds();
+            if age_secs < threshold {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn reset_tag_cursor(&mut self) {
+        let filtered = self.filtered_tag_indices();
+        if filtered.is_empty() {
+            return;
+        }
+        // If current cursor is in filtered list, keep it
+        if filtered.contains(&self.tag_cursor) {
+            let pos = filtered.iter().position(|&i| i == self.tag_cursor).unwrap();
+            self.tag_table_state.select(Some(pos));
+        } else {
+            self.tag_cursor = filtered[0];
+            self.tag_table_state.select(Some(0));
+        }
+    }
+
+    fn apply_tag_sort(&mut self) {
+        if self.tag_sort_by_name {
+            self.tags.sort_by(|a, b| a.name.cmp(&b.name));
+        } else {
+            self.tags.sort_by(|a, b| b.date.cmp(&a.date));
+        }
+        self.tag_selected = vec![false; self.tags.len()];
+        self.tag_cursor = 0;
+        self.tag_table_state.select(if self.tags.is_empty() { None } else { Some(0) });
     }
 }
 

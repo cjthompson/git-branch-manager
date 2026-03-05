@@ -10,6 +10,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let is_tag_action = matches!(
                 action,
                 git_branch_manager::types::BranchAction::DeleteTag
+                    | git_branch_manager::types::BranchAction::DeleteTagAndRemote
                     | git_branch_manager::types::BranchAction::PushTag
             );
             if is_tag_action {
@@ -46,6 +47,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         View::Filter => {
             branch_list::draw(frame, app);
             filter::draw(frame, &*app);
+        }
+        View::TagFilter => {
+            tag_list::draw(frame, app);
+            filter::draw_tag_filter(frame, &*app);
         }
     }
 }

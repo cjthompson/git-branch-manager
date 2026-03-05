@@ -138,6 +138,82 @@ pub fn delete_tag(repo: &Repository, tag_name: &str) -> OperationResult {
     }
 }
 
+/// Delete multiple local tags using git2.
+pub fn delete_tags_batch(repo: &Repository, tag_names: &[String]) -> Vec<OperationResult> {
+    tag_names
+        .iter()
+        .map(|name| delete_tag(repo, name))
+        .collect()
+}
+
+/// Delete multiple tags from the remote in a single git push.
+/// Falls back to individual deletes if the batch fails.
+pub fn delete_remote_tags_batch(repo_path: &Path, tag_names: &[String]) -> Vec<OperationResult> {
+    if tag_names.is_empty() {
+        return Vec::new();
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.current_dir(repo_path)
+        .stdin(std::process::Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .arg("push")
+        .arg("origin")
+        .arg("--delete");
+    for name in tag_names {
+        cmd.arg(name);
+    }
+
+    match cmd.output() {
+        Ok(o) if o.status.success() => tag_names
+            .iter()
+            .map(|name| OperationResult {
+                branch_name: name.clone(),
+                action: BranchAction::DeleteTagAndRemote,
+                success: true,
+                message: format!("Deleted remote tag {}", name),
+            })
+            .collect(),
+        _ => {
+            // Fallback: delete individually
+            tag_names
+                .iter()
+                .map(|name| {
+                    let mut fallback = Command::new("git");
+                    fallback
+                        .current_dir(repo_path)
+                        .stdin(std::process::Stdio::null())
+                        .env("GIT_TERMINAL_PROMPT", "0")
+                        .args(["push", "origin", "--delete", name]);
+                    match fallback.output() {
+                        Ok(o) if o.status.success() => OperationResult {
+                            branch_name: name.clone(),
+                            action: BranchAction::DeleteTagAndRemote,
+                            success: true,
+                            message: format!("Deleted remote tag {}", name),
+                        },
+                        Ok(o) => OperationResult {
+                            branch_name: name.clone(),
+                            action: BranchAction::DeleteTagAndRemote,
+                            success: false,
+                            message: format!(
+                                "Failed to delete remote tag: {}",
+                                String::from_utf8_lossy(&o.stderr).trim()
+                            ),
+                        },
+                        Err(e) => OperationResult {
+                            branch_name: name.clone(),
+                            action: BranchAction::DeleteTagAndRemote,
+                            success: false,
+                            message: format!("Failed to run git: {}", e),
+                        },
+                    }
+                })
+                .collect()
+        }
+    }
+}
+
 /// Push a tag to the remote using git CLI.
 pub fn push_tag(repo_path: &Path, tag_name: &str) -> OperationResult {
     let mut cmd = Command::new("git");

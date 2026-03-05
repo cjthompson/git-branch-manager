@@ -107,6 +107,7 @@ pub enum BranchAction {
     ForcePush,
     Pull,
     DeleteTag,
+    DeleteTagAndRemote,
     PushTag,
 }
 
@@ -127,6 +128,7 @@ impl BranchAction {
             BranchAction::ForcePush => "Force push",
             BranchAction::Pull => "Pull",
             BranchAction::DeleteTag => "Delete tag",
+            BranchAction::DeleteTagAndRemote => "Delete tag (local + remote)",
             BranchAction::PushTag => "Push tag",
         }
     }
