@@ -28,6 +28,7 @@ Y       Cycle symbols
 t       Tags view
 ,       Settings
 /       Search branches
+\\      Filter menu
 ?       Toggle help
 q       Quit";
 
