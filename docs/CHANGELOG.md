@@ -6,6 +6,8 @@
 - Column sizing — status min-width, PR/AB autosize, branch name ellipsis (#ui, #layout)
 
 ### Tasks
+- Git operation optimizations - remove dead code, cache --list mode, git2 checkout (#performance, #git, #cleanup)
+- Batch branch deletion - delete multiple branches in single git commands (#performance, #git)
 - Apply shortcut key color to all shortcut keys (#ui, #theme)
 - Apply theme color to shortcut keys shown in the bottom status bar (#ui, #status-bar, #theme)
 - Rows that have a checked state should have a different background color (#ui, #selection)

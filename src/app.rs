@@ -791,7 +791,18 @@ impl App {
             let needs_stash = !self.working_tree_status.is_clean();
             let repo_path = self.repo_path.clone();
             self.spawn_op(label, move || {
-                vec![operations::checkout_branch(&repo_path, &branch_name, needs_stash)]
+                let repo = match git2::Repository::open(&repo_path) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return vec![OperationResult {
+                            branch_name: branch_name.clone(),
+                            action: BranchAction::Checkout,
+                            success: false,
+                            message: format!("Failed to open repo: {}", e),
+                        }];
+                    }
+                };
+                vec![operations::checkout_branch(&repo, &repo_path, &branch_name, needs_stash)]
             });
             return;
         }
@@ -905,8 +916,9 @@ impl App {
                 }
             };
 
+            // Delete local branches (git2, fast local I/O)
+            let mut locally_deleted = Vec::new();
             for (i, branch_name) in target_branches.iter().enumerate() {
-                // Check cancellation before each item
                 if cancel_flag.load(Ordering::Relaxed) {
                     results.push(OperationResult {
                         branch_name: String::new(),
@@ -923,18 +935,24 @@ impl App {
                     current_item: branch_name.clone(),
                 });
 
-                match action {
-                    BranchAction::DeleteLocal => {
-                        let result = operations::delete_local(&repo, branch_name);
-                        results.push(result);
-                    }
-                    BranchAction::DeleteLocalAndRemote => {
-                        let r =
-                            operations::delete_local_and_remote(&repo, &repo_path, branch_name);
-                        results.extend(r);
-                    }
-                    _ => unreachable!(),
+                let result = operations::delete_local(&repo, branch_name);
+                if result.success {
+                    locally_deleted.push(branch_name.clone());
                 }
+                results.push(result);
+            }
+
+            // Batch-delete remote branches in a single git push (one network round-trip)
+            if action == BranchAction::DeleteLocalAndRemote && !locally_deleted.is_empty() {
+                let _ = prog_tx.send(ProgressUpdate {
+                    completed: locally_deleted.len(),
+                    total,
+                    current_item: "Deleting remote branches...".to_string(),
+                });
+
+                let remote_results =
+                    operations::delete_remotes_batch(&repo_path, &locally_deleted);
+                results.extend(remote_results);
             }
 
             // Send final progress

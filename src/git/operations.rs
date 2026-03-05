@@ -31,32 +31,16 @@ pub fn delete_local(repo: &Repository, branch_name: &str) -> OperationResult {
     }
 }
 
-/// Delete a branch both locally and from the remote.
+/// Checkout a branch using git2, optionally stashing and unstashing dirty working tree changes.
 ///
-/// Returns a result for each sub-operation (local delete, remote delete).
-pub fn delete_local_and_remote(
+/// The checkout itself uses git2 (`set_head` + `checkout_head`). Stash/pop still
+/// uses git CLI since git2 doesn't expose the stash API fully.
+pub fn checkout_branch(
     repo: &Repository,
     repo_path: &Path,
     branch_name: &str,
-) -> Vec<OperationResult> {
-    let mut results = Vec::new();
-
-    // Delete local
-    let local_result = delete_local(repo, branch_name);
-    let local_success = local_result.success;
-    results.push(local_result);
-
-    // Delete remote (only attempt if local succeeded)
-    if local_success {
-        let remote_result = delete_remote(repo_path, branch_name);
-        results.push(remote_result);
-    }
-
-    results
-}
-
-/// Checkout a branch, optionally stashing and unstashing dirty working tree changes.
-pub fn checkout_branch(repo_path: &Path, branch_name: &str, stash: bool) -> OperationResult {
+    stash: bool,
+) -> OperationResult {
     if stash {
         let output = Command::new("git")
             .current_dir(repo_path)
@@ -77,32 +61,31 @@ pub fn checkout_branch(repo_path: &Path, branch_name: &str, stash: bool) -> Oper
         }
     }
 
-    let checkout = Command::new("git")
-        .current_dir(repo_path)
-        .args(["checkout", branch_name])
-        .output();
-
-    let result = match checkout {
-        Ok(o) if o.status.success() => OperationResult {
-            branch_name: branch_name.to_string(),
-            action: BranchAction::Checkout,
-            success: true,
-            message: format!("Checked out {}", branch_name),
-        },
-        Ok(o) => OperationResult {
-            branch_name: branch_name.to_string(),
-            action: BranchAction::Checkout,
-            success: false,
-            message: format!(
-                "Checkout failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            ),
-        },
+    let refname = format!("refs/heads/{}", branch_name);
+    let result = match repo.set_head(&refname) {
+        Ok(()) => {
+            let mut checkout_opts = git2::build::CheckoutBuilder::new();
+            checkout_opts.force();
+            match repo.checkout_head(Some(&mut checkout_opts)) {
+                Ok(()) => OperationResult {
+                    branch_name: branch_name.to_string(),
+                    action: BranchAction::Checkout,
+                    success: true,
+                    message: format!("Checked out {}", branch_name),
+                },
+                Err(e) => OperationResult {
+                    branch_name: branch_name.to_string(),
+                    action: BranchAction::Checkout,
+                    success: false,
+                    message: format!("Checkout failed: {}", e),
+                },
+            }
+        }
         Err(e) => OperationResult {
             branch_name: branch_name.to_string(),
             action: BranchAction::Checkout,
             success: false,
-            message: format!("Failed to run git: {}", e),
+            message: format!("Branch not found: {}", e),
         },
     };
 
@@ -586,7 +569,47 @@ pub fn pull_branch(repo_path: &Path, branch_name: &str, is_current: bool) -> Ope
     }
 }
 
-/// Delete a branch from the remote using git CLI.
+/// Delete multiple branches from the remote in a single `git push` command.
+///
+/// Returns one `OperationResult` per branch. On success, all branches are
+/// deleted in a single network round-trip. On failure, falls back to
+/// deleting each branch individually so partial results are reported.
+pub fn delete_remotes_batch(repo_path: &Path, branch_names: &[String]) -> Vec<OperationResult> {
+    if branch_names.is_empty() {
+        return Vec::new();
+    }
+
+    // Try batch: git push origin --delete branch1 branch2 ...
+    let mut args = vec!["push", "origin", "--delete"];
+    for name in branch_names {
+        args.push(name.as_str());
+    }
+
+    match Command::new("git")
+        .current_dir(repo_path)
+        .args(&args)
+        .output()
+    {
+        Ok(output) if output.status.success() => branch_names
+            .iter()
+            .map(|name| OperationResult {
+                branch_name: name.clone(),
+                action: BranchAction::DeleteLocalAndRemote,
+                success: true,
+                message: "Deleted remote branch".to_string(),
+            })
+            .collect(),
+        _ => {
+            // Batch failed — fall back to one-by-one so we get per-branch errors
+            branch_names
+                .iter()
+                .map(|name| delete_remote(repo_path, name))
+                .collect()
+        }
+    }
+}
+
+/// Delete a single branch from the remote using git CLI.
 fn delete_remote(repo_path: &Path, branch_name: &str) -> OperationResult {
     match Command::new("git")
         .current_dir(repo_path)

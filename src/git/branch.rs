@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::types::{BranchInfo, MergeStatus, TrackingStatus};
 
 use super::cache::BranchCache;
-use super::merge_detection::{detect_merged_branches, detect_squash_merged_branches, is_squash_merged};
+use super::merge_detection::{detect_merged_branches, is_squash_merged};
 
 #[derive(Error, Debug)]
 pub enum GitError {
@@ -75,11 +75,31 @@ pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<
 /// List all local branches with full metadata including squash-merge detection.
 ///
 /// Used by `--list` mode (synchronous) and integration tests.
+/// Loads and updates the squash-merge cache automatically.
 pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
     let repo_path = repo.workdir().unwrap_or_else(|| repo.path());
+    let mut cache = BranchCache::load(repo_path);
     let mut branches = collect_branch_metadata(repo, base_branch)?;
     detect_merged_branches(repo, base_branch, &mut branches)?;
-    detect_squash_merged_branches(repo_path, base_branch, &mut branches);
+
+    for branch in branches.iter_mut() {
+        if branch.merge_status != MergeStatus::Unmerged || branch.is_base || branch.is_current {
+            continue;
+        }
+        let Some(commit_hash) = get_commit_hash(repo, &branch.name) else {
+            continue;
+        };
+        if let Some(status) = cache.lookup(&branch.name, &commit_hash) {
+            branch.merge_status = status;
+        } else if is_squash_merged(repo_path, base_branch, &branch.name) {
+            branch.merge_status = MergeStatus::SquashMerged;
+            cache.insert(&branch.name, &MergeStatus::SquashMerged, &commit_hash);
+        } else {
+            cache.insert(&branch.name, &MergeStatus::Unmerged, &commit_hash);
+        }
+    }
+
+    cache.save();
     branches.sort_by(|a, b| b.last_commit_date.cmp(&a.last_commit_date));
     Ok(branches)
 }

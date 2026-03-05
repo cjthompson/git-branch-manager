@@ -38,25 +38,6 @@ pub fn detect_merged_branches(
     Ok(())
 }
 
-/// Detect branches that were squash-merged into the base branch.
-///
-/// Uses git CLI commands since git2 doesn't expose commit-tree or cherry.
-pub fn detect_squash_merged_branches(
-    repo_path: &Path,
-    base_branch: &str,
-    branches: &mut [BranchInfo],
-) {
-    for branch in branches.iter_mut() {
-        if branch.merge_status != MergeStatus::Unmerged || branch.is_base || branch.is_current {
-            continue;
-        }
-
-        if is_squash_merged(repo_path, base_branch, &branch.name) {
-            branch.merge_status = MergeStatus::SquashMerged;
-        }
-    }
-}
-
 /// Check if a single branch was squash-merged into the base branch.
 ///
 /// Runs three git CLI commands in the given repo directory.

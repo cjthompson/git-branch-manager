@@ -2,6 +2,29 @@
 
 ---
 
+## task: git operation optimizations - remove dead code, cache --list mode, git2 checkout
+**Date:** 2026-03-05 14:15 | **Priority:** medium | **Tags:** #performance #git #cleanup
+**Status:** completed (2026-03-05 14:20)
+
+### Requirements
+- Remove dead `delete_local_and_remote()` from operations.rs (no longer called after batch delete change)
+- Remove dead `detect_squash_merged_branches()` from merge_detection.rs (no longer called)
+- Make `list_branches()` (used by `--list` mode) use the squash-merge cache instead of always re-checking
+- Convert `checkout_branch` from git CLI to git2 (`set_head` + `checkout_head`), keeping stash/pop as git CLI
+
+---
+
+## task: batch branch deletion - delete multiple branches in single git commands
+**Date:** 2026-03-05 14:00 | **Priority:** medium | **Tags:** #performance #git
+**Status:** completed (2026-03-05 14:05)
+
+### Requirements
+- Remote branch deletion should use a single `git push origin --delete branch1 branch2 ...` command instead of one command per branch
+- Fall back to individual deletes if the batch command fails, so per-branch error reporting is preserved
+- Local deletes happen first (via git2, already fast), then a single batched remote delete for all successfully-deleted locals
+
+---
+
 ## task: apply shortcut key color to all shortcut keys
 **Date:** 2026-03-05 13:15 | **Priority:** medium | **Tags:** #ui #theme
 **Status:** completed (2026-03-05 13:30)

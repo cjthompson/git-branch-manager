@@ -339,11 +339,11 @@ fn test_ahead_behind_local_only_branch() {
 
 #[test]
 fn test_checkout_branch() {
-    let (tmpdir, _repo) = setup_test_repo();
+    let (tmpdir, repo) = setup_test_repo();
     let dir = tmpdir.path();
     run_git(dir, &["branch", "feature-checkout"]);
 
-    let result = operations::checkout_branch(dir, "feature-checkout", false);
+    let result = operations::checkout_branch(&repo, dir, "feature-checkout", false);
     assert!(result.success, "checkout should succeed: {}", result.message);
 
     let repo = git2::Repository::open(dir).unwrap();
@@ -353,7 +353,7 @@ fn test_checkout_branch() {
 
 #[test]
 fn test_checkout_branch_with_stash() {
-    let (tmpdir, _repo) = setup_test_repo();
+    let (tmpdir, repo) = setup_test_repo();
     let dir = tmpdir.path();
     run_git(dir, &["branch", "feature-stash-checkout"]);
 
@@ -361,7 +361,7 @@ fn test_checkout_branch_with_stash() {
     let dirty_file = dir.join("README.md");
     std::fs::write(&dirty_file, "# Modified\n").expect("failed to write dirty file");
 
-    let result = operations::checkout_branch(dir, "feature-stash-checkout", true);
+    let result = operations::checkout_branch(&repo, dir, "feature-stash-checkout", true);
     assert!(result.success, "checkout with stash should succeed: {}", result.message);
 
     let repo = git2::Repository::open(dir).unwrap();
