@@ -352,7 +352,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Line::from(Span::styled(status_text, status_style)).alignment(Alignment::Right),
         ));
 
-        Row::new(cells)
+        if is_selected {
+            Row::new(cells).style(app.theme.checked_row)
+        } else {
+            Row::new(cells)
+        }
     };
 
     // Build all rows in display order (pinned first, then non-pinned)
