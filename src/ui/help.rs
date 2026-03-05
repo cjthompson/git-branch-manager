@@ -1,4 +1,5 @@
 use ratatui::prelude::*;
+use ratatui::style::Modifier;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::App;
@@ -33,7 +34,25 @@ q       Quit";
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
-    let lines: Vec<Line> = HELP_TEXT.lines().map(Line::from).collect();
+    let key_style = Style::default()
+        .fg(app.theme.title.fg.unwrap_or(Color::White))
+        .add_modifier(Modifier::BOLD);
+    let lines: Vec<Line> = HELP_TEXT
+        .lines()
+        .map(|line| {
+            // Split on first occurrence of two or more spaces to get key_part and desc_part
+            if let Some(pos) = line.find("  ") {
+                let key_part = &line[..pos];
+                let desc_part = &line[pos..];
+                Line::from(vec![
+                    Span::styled(key_part.to_string(), key_style),
+                    Span::styled(desc_part.to_string(), Style::default()),
+                ])
+            } else {
+                Line::from(line)
+            }
+        })
+        .collect();
     let content_height = lines.len() as u16 + 2; // +2 for borders
     let width = 42u16.min(area.width);
     let height = content_height.min(area.height);

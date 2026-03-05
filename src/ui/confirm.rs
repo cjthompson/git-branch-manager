@@ -65,10 +65,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
         l
     };
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "[y]es  [n]o",
-        app.theme.dim,
-    )));
+    let key_style = Style::default().fg(app.theme.title.fg.unwrap_or(Color::White));
+    lines.push(Line::from(vec![
+        Span::styled("[", app.theme.dim),
+        Span::styled("y", key_style),
+        Span::styled("]es  [", app.theme.dim),
+        Span::styled("n", key_style),
+        Span::styled("]o", app.theme.dim),
+    ]));
 
     // Calculate overlay size
     let area = frame.area();
