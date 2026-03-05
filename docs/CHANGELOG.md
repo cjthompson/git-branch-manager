@@ -3,9 +3,13 @@
 ## 2026-03-05
 
 ### Fixes
+- Delete local + remote hangs on "deleting remote branches..." stage (#bug, #git)
 - Column sizing — status min-width, PR/AB autosize, branch name ellipsis (#ui, #layout)
 
 ### Tasks
+- Add filter system with discoverable menu and composable search bar tokens (#ux, #filtering)
+- Show task-specific loading messages during startup (#ux, #loading)
+- Defer initial branch loading to after TUI renders (#performance, #ux)
 - Git operation optimizations - remove dead code, cache --list mode, git2 checkout (#performance, #git, #cleanup)
 - Batch branch deletion - delete multiple branches in single git commands (#performance, #git)
 - Apply shortcut key color to all shortcut keys (#ui, #theme)

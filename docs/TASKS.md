@@ -2,6 +2,61 @@
 
 ---
 
+## task: add filter system with discoverable menu and composable search bar tokens
+**Date:** 2026-03-05 15:30 | **Priority:** medium | **Tags:** #ux #filtering
+**Status:** completed (2026-03-05 16:00)
+
+### Requirements
+- Filter by merge status (merged, squash-merged, unmerged)
+- Filter by "has PR" / "no PR"
+- Filter by sync state (ahead/behind remote)
+- Filter by age with presets (7d, 30d, 90d) and custom values (Nd/Nm/Ny)
+- Discoverable filter menu opened with `\` key
+- Menu toggles add/remove tokens in the search bar (e.g. `status:merged`, `pr:yes`, `age:<30d`)
+- Same-type positive filters OR together, different types AND together
+- Negative filters (pr:no) always exclude
+- Custom age drops into search bar with prefix prefilled
+- Search bar is always editable for power users to type tokens directly
+- Text search combines with structured filters
+
+---
+
+## fix: delete local + remote hangs on "deleting remote branches..." stage
+**Date:** 2026-03-05 15:00 | **Priority:** high | **Tags:** #bug #git
+**Status:** completed (2026-03-05 15:10)
+
+### Requirements
+- All git CLI commands that do network I/O (push, fetch, pull) must not hang if credentials are needed
+- Set `GIT_TERMINAL_PROMPT=0` and pipe stdin to /dev/null so git fails fast instead of blocking
+- Create a `git_cmd()` helper in operations.rs and use it for all git CLI calls
+- Apply the same fix to `push_tag` in tags.rs
+
+---
+
+## task: show task-specific loading messages during startup
+**Date:** 2026-03-05 14:45 | **Priority:** medium | **Tags:** #ux #loading
+**Status:** completed (2026-03-05 14:50)
+
+### Requirements
+- Loading screen should show what is currently happening: "Fetching from remote..." during auto-fetch, "Reading branches..." during phase 1
+- Progress messages sent from the background load thread via a separate channel
+- Loading screen displays the latest progress message dynamically
+
+---
+
+## task: defer initial branch loading to after TUI renders
+**Date:** 2026-03-05 14:30 | **Priority:** medium | **Tags:** #performance #ux
+**Status:** completed (2026-03-05 14:40)
+
+### Requirements
+- Move phase 1 branch loading and auto-fetch to a background thread
+- Start the TUI immediately with an empty branch list and `loading: true`
+- Show "Loading branches..." in the main area while loading
+- When the background thread completes, populate branches and kick off squash checker + PR loader
+- User can press `q` to quit during loading
+
+---
+
 ## task: git operation optimizations - remove dead code, cache --list mode, git2 checkout
 **Date:** 2026-03-05 14:15 | **Priority:** medium | **Tags:** #performance #git #cleanup
 **Status:** completed (2026-03-05 14:20)
