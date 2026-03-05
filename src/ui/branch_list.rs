@@ -540,7 +540,34 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.status_bar_items = items;
         }
 
-        let status = Paragraph::new(status_text).style(app.theme.status_bar);
+        // Build multi-span line: shortcut key tokens [X]word styled with theme.title fg,
+        // surrounding text styled with status_bar.
+        let key_style = Style::default()
+            .fg(app.theme.title.fg.unwrap_or(Color::White))
+            .bg(app.theme.status_bar.bg.unwrap_or(Color::Reset))
+            .add_modifier(ratatui::style::Modifier::BOLD);
+        let mut spans: Vec<Span> = Vec::new();
+        let mut remaining = status_text.as_str();
+        while let Some(bracket_pos) = remaining.find('[') {
+            if bracket_pos > 0 {
+                spans.push(Span::styled(remaining[..bracket_pos].to_string(), app.theme.status_bar));
+            }
+            remaining = &remaining[bracket_pos..];
+            if let Some(close) = remaining.find(']') {
+                let after_bracket = &remaining[close + 1..];
+                let word_end = after_bracket.find(' ').unwrap_or(after_bracket.len());
+                let token = &remaining[..close + 1 + word_end];
+                spans.push(Span::styled(token.to_string(), key_style));
+                remaining = &remaining[close + 1 + word_end..];
+            } else {
+                spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
+                remaining = "";
+            }
+        }
+        if !remaining.is_empty() {
+            spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
+        }
+        let status = Paragraph::new(Line::from(spans)).style(app.theme.status_bar);
         frame.render_widget(status, status_area);
     }
 }
