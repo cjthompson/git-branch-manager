@@ -37,7 +37,7 @@ pub fn draw(frame: &mut Frame, items: &[MenuItem], menu_cursor: usize, anchor_ro
             let mut spans = vec![prefix_span];
             if let Some(ch) = item.shortcut {
                 spans.push(Span::styled("[", item_style));
-                spans.push(Span::styled(ch.to_string(), theme.title));
+                spans.push(Span::styled(ch.to_string(), if item.enabled { theme.title } else { item_style }));
                 spans.push(Span::styled(format!("] {}", item.label), item_style));
             } else {
                 spans.push(Span::styled(item.label.clone(), item_style));
