@@ -211,8 +211,21 @@ impl App {
                 }
             }
             Event::Mouse(mouse) => {
-                if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
-                    self.handle_mouse_click(mouse.column, mouse.row);
+                match mouse.kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        self.handle_mouse_click(mouse.column, mouse.row);
+                    }
+                    MouseEventKind::ScrollDown => {
+                        if self.view == View::BranchList {
+                            self.handle_branch_list_key(KeyCode::Down);
+                        }
+                    }
+                    MouseEventKind::ScrollUp => {
+                        if self.view == View::BranchList {
+                            self.handle_branch_list_key(KeyCode::Up);
+                        }
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -1246,12 +1259,30 @@ impl App {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if let View::Settings { ref mut cursor } = self.view {
-                    *cursor = cursor.saturating_add(1);
+                    *cursor = (*cursor + 1).min(0); // Only 1 row (index 0)
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if let View::Settings { ref mut cursor } = self.view {
                     *cursor = cursor.saturating_sub(1);
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                let cursor = if let View::Settings { cursor } = self.view { cursor } else { return };
+                if cursor == 0 {
+                    self.symbols = crate::ui::symbols::next(self.symbols);
+                    self.config.symbols = Some(crate::ui::symbols::name(self.symbols).to_string());
+                    self.config.save();
+                }
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                let cursor = if let View::Settings { cursor } = self.view { cursor } else { return };
+                if cursor == 0 {
+                    // backward = next() twice (3-cycle)
+                    self.symbols = crate::ui::symbols::next(self.symbols);
+                    self.symbols = crate::ui::symbols::next(self.symbols);
+                    self.config.symbols = Some(crate::ui::symbols::name(self.symbols).to_string());
+                    self.config.save();
                 }
             }
             KeyCode::Esc => {
