@@ -3,6 +3,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::App;
+use git_branch_manager::git::github::PrStatus;
 use git_branch_manager::types::{MergeStatus, TrackingStatus};
 
 /// Returns a style for known branch name prefixes (text before the first `/`).
@@ -292,13 +293,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             } else {
                 app.pr_map
                     .get(&branch.name)
-                    .map(|n| format!("#{}", n))
+                    .map(|info| format!("#{}", info.number))
                     .unwrap_or_default()
             };
             let pr_style = if is_pinned {
                 app.theme.pinned_row
+            } else if let Some(info) = app.pr_map.get(&branch.name) {
+                match info.status {
+                    PrStatus::Draft => app.theme.pr_draft,
+                    PrStatus::Open => app.theme.pr_open,
+                    PrStatus::Merged => app.theme.pr_merged,
+                    PrStatus::Closed => app.theme.pr_closed,
+                }
             } else {
-                app.theme.ahead_behind
+                Style::default()
             };
             cells.push(Cell::from(Span::styled(pr_text, pr_style)));
         }

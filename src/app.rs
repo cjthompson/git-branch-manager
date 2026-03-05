@@ -1124,6 +1124,14 @@ impl App {
             },
         });
 
+        // Open PR in browser
+        let has_pr = self.pr_map.contains_key(&branch.name);
+        items.push(ui::menu::MenuItem {
+            label: "Open PR in browser".into(),
+            enabled: has_pr,
+            reason: if !has_pr { Some("no PR".into()) } else { None },
+        });
+
         items
     }
 
@@ -1152,6 +1160,19 @@ impl App {
                 };
                 let item = &items[menu_cursor];
                 if item.enabled {
+                    // Open PR in browser — no confirm needed, fire and forget
+                    if menu_cursor == 11 {
+                        let branch_name = self.branches[self.cursor].name.clone();
+                        let repo_path = self.repo_path.clone();
+                        std::thread::spawn(move || {
+                            let _ = std::process::Command::new("gh")
+                                .args(["pr", "view", "--web", &branch_name])
+                                .current_dir(&repo_path)
+                                .status();
+                        });
+                        self.view = View::BranchList;
+                        return;
+                    }
                     let action = match menu_cursor {
                         0 => BranchAction::Checkout,
                         1 => BranchAction::DeleteLocal,

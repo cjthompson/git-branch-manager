@@ -19,6 +19,10 @@ pub struct Theme {
     pub title: Style,
     pub header: Style,
     pub search_bar: Style,
+    pub pr_draft: Style,
+    pub pr_open: Style,
+    pub pr_merged: Style,
+    pub pr_closed: Style,
 }
 
 impl Theme {
@@ -44,6 +48,10 @@ impl Theme {
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
             search_bar: Style::new().bg(Color::Indexed(236)).fg(Color::Yellow),
+            pr_draft: Style::new().fg(Color::DarkGray),
+            pr_open: Style::new().fg(Color::Green),
+            pr_merged: Style::new().fg(Color::Indexed(141)),
+            pr_closed: Style::new().fg(Color::Red),
         }
     }
 
@@ -69,6 +77,10 @@ impl Theme {
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
             search_bar: Style::new().bg(Color::Indexed(254)).fg(Color::Indexed(130)),
+            pr_draft: Style::new().fg(Color::DarkGray),
+            pr_open: Style::new().fg(Color::Indexed(28)),
+            pr_merged: Style::new().fg(Color::Indexed(92)),
+            pr_closed: Style::new().fg(Color::Red),
         }
     }
 
@@ -103,6 +115,10 @@ impl Theme {
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
             search_bar: Style::new().bg(Color::Indexed(235)).fg(yellow),
+            pr_draft: Style::new().fg(base01),
+            pr_open: Style::new().fg(green),
+            pr_merged: Style::new().fg(Color::Indexed(61)),
+            pr_closed: Style::new().fg(red),
         }
     }
 
@@ -135,6 +151,10 @@ impl Theme {
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
             search_bar: Style::new().bg(Color::Indexed(236)).fg(yellow),
+            pr_draft: Style::new().fg(Color::Indexed(245)),
+            pr_open: Style::new().fg(green),
+            pr_merged: Style::new().fg(purple),
+            pr_closed: Style::new().fg(red),
         }
     }
 
