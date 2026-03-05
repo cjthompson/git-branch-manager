@@ -35,27 +35,6 @@ fn age_style(date: &DateTime<Utc>) -> Style {
     }
 }
 
-/// Trim a branch name to fit within max_len characters, using the given strategy.
-fn trim_name(name: &str, max_len: usize, strategy: &str) -> String {
-    if name.len() <= max_len {
-        return name.to_string();
-    }
-    if max_len <= 1 {
-        return "\u{2026}".to_string();
-    }
-    match strategy {
-        "start" => format!("\u{2026}{}", &name[name.len().saturating_sub(max_len - 1)..]),
-        "middle" => {
-            let half = (max_len.saturating_sub(1)) / 2;
-            format!(
-                "{}\u{2026}{}",
-                &name[..half],
-                &name[name.len().saturating_sub(half)..]
-            )
-        }
-        _ => format!("{}\u{2026}", &name[..max_len.saturating_sub(1)]),
-    }
-}
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -73,13 +52,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Responsive width thresholds
     let width = main_area.width as usize;
     let compact_age = width < 120;
-    let do_trim_names = width < 100;
     let hide_ab = width < 80;
     let short_status = width < 70;
     let hide_age = width < 60;
-
-    // Max branch name length when trimming is active
-    let name_max_len = if do_trim_names { 30 } else { usize::MAX };
 
     // Main branch list
     let wt_status = app.working_tree_status.summary();
@@ -158,6 +133,51 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.table_state.select(Some(row_idx));
     }
 
+    // Status min-width: "squash-merged " (14) + symbol (1) = 15; short form: 4
+    let status_min_width: u16 = if short_status { 4 } else { 15 };
+
+    // PR column: widest "#NNNN" across all branches, minimum = "PR".len() = 2
+    let max_pr_width: u16 = app.branches.iter()
+        .filter_map(|b| app.pr_map.get(&b.name).map(|info| format!("#{}", info.number).len()))
+        .max()
+        .unwrap_or(0)
+        .max("PR".len()) as u16;
+
+    // A/B column: widest ahead+behind string, minimum = "A/B".len() = 3
+    let max_ab_width: u16 = app.branches.iter()
+        .filter_map(|b| {
+            let a = b.ahead.unwrap_or(0);
+            let bk = b.behind.unwrap_or(0);
+            if a > 0 || bk > 0 {
+                let mut s = String::new();
+                if a > 0 { s.push_str(&a.to_string()); }
+                if a > 0 && bk > 0 { s.push(' '); }
+                if bk > 0 { s.push_str(&bk.to_string()); }
+                Some(s.len())
+            } else {
+                None
+            }
+        })
+        .max()
+        .unwrap_or(0)
+        .max("A/B".len()) as u16;
+
+    // Name column available width (for ellipsis trimming)
+    let highlight_width_for_name = app.symbols.cursor_prefix.len() as u16 + 1;
+    let checkbox_width: u16 = 3;
+    let age_width: u16 = if hide_age { 0 } else if compact_age { 5 } else { 14 };
+    let ab_pr_width: u16 = if hide_ab { 0 } else { max_ab_width + 1 + max_pr_width + 1 };
+    // widths count: checkbox + name + optional_age + optional_ab + optional_pr + status
+    let gap_count: u16 = 2 + if hide_age { 0 } else { 1 } + if hide_ab { 0 } else { 2 } + 1;
+    let name_col_width = main_area.width
+        .saturating_sub(2) // borders
+        .saturating_sub(highlight_width_for_name)
+        .saturating_sub(checkbox_width)
+        .saturating_sub(age_width)
+        .saturating_sub(ab_pr_width)
+        .saturating_sub(status_min_width)
+        .saturating_sub(gap_count) as usize;
+
     // Helper closure to build a Row from a branch index
     let build_row = |i: usize| -> Row {
         let branch = &app.branches[i];
@@ -190,8 +210,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.theme.primary_text
         };
 
-        let display_name = if do_trim_names {
-            trim_name(&branch.name, name_max_len, &app.trim_strategy)
+        let ellipsis = if app.symbols.cursor_prefix == ">" { "..." } else { "\u{2026}" };
+        let name_available = name_col_width.saturating_sub(current_marker.len());
+        let display_name = if branch.name.len() > name_available && name_available > ellipsis.len() {
+            format!("{}{}", &branch.name[..name_available - ellipsis.len()], ellipsis)
+        } else if branch.name.len() > name_available {
+            ellipsis.to_string()
         } else {
             branch.name.clone()
         };
@@ -364,17 +388,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // Dynamic column widths based on what's visible
     let mut widths: Vec<Constraint> = vec![
-        Constraint::Length(3),  // checkbox always
-        Constraint::Min(20),   // name
+        Constraint::Length(3),              // checkbox always
+        Constraint::Min(20),               // name
     ];
     if !hide_age {
         widths.push(Constraint::Length(if compact_age { 5 } else { 14 }));
     }
     if !hide_ab {
-        widths.push(Constraint::Length(6));  // A/B
-        widths.push(Constraint::Length(6));  // PR
+        widths.push(Constraint::Length(max_ab_width));  // A/B
+        widths.push(Constraint::Length(max_pr_width));  // PR
     }
-    widths.push(Constraint::Length(if short_status { 3 } else { 14 })); // status
+    widths.push(Constraint::Length(status_min_width)); // status
 
     // Compute header column x positions for mouse click sorting.
     // The table is inside a block with a 1-cell border on the left, so columns start at x=1.

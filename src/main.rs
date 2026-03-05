@@ -108,8 +108,7 @@ fn main() -> Result<()> {
     let pr_rx = Some(pr_loader::spawn_pr_loader(repo_path.clone()));
 
     let theme = ui::theme::Theme::from_name(config.theme.as_deref().unwrap_or("dark"));
-    let trim_strategy = config.trim_strategy.clone().unwrap_or_else(|| "end".to_string());
-    let mut app = app::App::new(base_branch, repo_path, branches, squash_rx, squash_total, working_tree_status, symbols, trim_strategy, pr_rx, theme, config);
+    let mut app = app::App::new(base_branch, repo_path, branches, squash_rx, squash_total, working_tree_status, symbols, pr_rx, theme, config);
     let mut terminal = ratatui::init();
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
     let result = app.run(&mut terminal);

@@ -46,7 +46,6 @@ pub struct App {
     pub working_tree_status: WorkingTreeStatus,
     pub table_state: TableState,
     pub symbols: &'static SymbolSet,
-    pub trim_strategy: String,
     pub sort_column: Option<usize>,  // 0=name, 1=age, 2=ahead, 3=status
     pub sort_ascending: bool,
     pub search_query: String,
@@ -100,7 +99,6 @@ impl App {
         squash_total: usize,
         working_tree_status: WorkingTreeStatus,
         symbols: &'static SymbolSet,
-        trim_strategy: String,
         pr_rx: Option<Receiver<PrMap>>,
         theme: Theme,
         config: git_branch_manager::config::Config,
@@ -140,7 +138,6 @@ impl App {
             working_tree_status,
             table_state: TableState::default().with_selected(Some(0)),
             symbols,
-            trim_strategy,
             sort_column: init_sort_col,
             sort_ascending: init_sort_asc,
             search_query: String::new(),
