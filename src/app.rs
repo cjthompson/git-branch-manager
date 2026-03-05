@@ -215,6 +215,9 @@ impl App {
                     MouseEventKind::Down(MouseButton::Left) => {
                         self.handle_mouse_click(mouse.column, mouse.row);
                     }
+                    MouseEventKind::Down(MouseButton::Right) => {
+                        self.handle_mouse_right_click(mouse.column, mouse.row);
+                    }
                     MouseEventKind::ScrollDown => {
                         if self.view == View::BranchList {
                             self.handle_branch_list_key(KeyCode::Down);
@@ -306,6 +309,46 @@ impl App {
                 if !self.branches[branch_idx].is_pinned() {
                     self.selected[branch_idx] = !self.selected[branch_idx];
                 }
+            }
+        }
+    }
+
+    fn handle_mouse_right_click(&mut self, _x: u16, y: u16) {
+        if self.view != View::BranchList {
+            return;
+        }
+
+        if y >= 2 {
+            let scroll_offset = self.table_state.offset();
+            let clicked_display_row = (y - 2) as usize + scroll_offset;
+
+            let filtered_indices: Vec<usize> = self
+                .branches
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| self.matches_search(b))
+                .map(|(i, _)| i)
+                .collect();
+            let pinned_indices: Vec<usize> = filtered_indices
+                .iter()
+                .copied()
+                .filter(|&i| self.branches[i].is_pinned())
+                .collect();
+            let non_pinned_indices: Vec<usize> = filtered_indices
+                .iter()
+                .copied()
+                .filter(|&i| !self.branches[i].is_pinned())
+                .collect();
+            let display_indices: Vec<usize> = pinned_indices
+                .iter()
+                .chain(non_pinned_indices.iter())
+                .copied()
+                .collect();
+
+            if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
+                self.cursor = branch_idx;
+                self.table_state.select(Some(clicked_display_row));
+                self.view = View::Menu { cursor: 0 };
             }
         }
     }
