@@ -1254,7 +1254,7 @@ impl App {
             } else {
                 None
             },
-            shortcut: None,
+            shortcut: Some('m'),
         });
 
         // Squash merge into base
@@ -1268,7 +1268,7 @@ impl App {
             } else {
                 None
             },
-            shortcut: None,
+            shortcut: Some('s'),
         });
 
         // Rebase onto base
@@ -1282,7 +1282,7 @@ impl App {
             } else {
                 None
             },
-            shortcut: None,
+            shortcut: Some('r'),
         });
 
         // Create worktree
@@ -1294,7 +1294,7 @@ impl App {
             } else {
                 None
             },
-            shortcut: None,
+            shortcut: Some('w'),
         });
 
         // Open PR in browser
