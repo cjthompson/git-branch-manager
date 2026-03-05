@@ -320,30 +320,30 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         } else if short_status {
             match branch.merge_status {
                 MergeStatus::Merged => (
-                    format!("{} m", app.symbols.status_merged),
+                    format!("m {}", app.symbols.status_merged),
                     app.theme.merged,
                 ),
                 MergeStatus::SquashMerged => (
-                    format!("{} s", app.symbols.status_squash_merged),
+                    format!("s {}", app.symbols.status_squash_merged),
                     app.theme.squash_merged,
                 ),
                 MergeStatus::Unmerged => (
-                    format!("{} u", app.symbols.status_unmerged),
+                    format!("u {}", app.symbols.status_unmerged),
                     app.theme.unmerged,
                 ),
             }
         } else {
             match branch.merge_status {
                 MergeStatus::Merged => (
-                    format!("{} merged", app.symbols.status_merged),
+                    format!("merged {}", app.symbols.status_merged),
                     app.theme.merged,
                 ),
                 MergeStatus::SquashMerged => (
-                    format!("{} squash-merged", app.symbols.status_squash_merged),
+                    format!("squash-merged {}", app.symbols.status_squash_merged),
                     app.theme.squash_merged,
                 ),
                 MergeStatus::Unmerged => (
-                    format!("{} unmerged", app.symbols.status_unmerged),
+                    format!("unmerged {}", app.symbols.status_unmerged),
                     app.theme.unmerged,
                 ),
             }

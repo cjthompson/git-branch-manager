@@ -42,8 +42,8 @@ pub static POWERLINE: SymbolSet = SymbolSet {
     arrow_up: "\u{f062}",
     arrow_down: "\u{f063}",
     current_branch: "\u{e0a0}",
-    status_merged: "\u{f00c}",        // nerd font check
-    status_squash_merged: "\u{f0ab}", // nerd font compress/squash
+    status_merged: "\u{f126}",        // nerd font code-fork (merged)
+    status_squash_merged: "\u{25cf}", // solid circle (squash-merged)
     status_unmerged: "\u{f00d}",      // nerd font x-mark
 };
 
