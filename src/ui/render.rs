@@ -36,7 +36,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // +2 accounts for the border and header row
             let anchor_row =
                 (app.cursor as u16).saturating_sub(app.table_state.offset() as u16) + 2;
-            menu::draw(frame, &items, menu_cursor, anchor_row, &app.theme);
+            menu::draw(frame, &items, menu_cursor, anchor_row, &app.theme, app.symbols);
         }
         View::Tags => tag_list::draw(frame, app),
         View::Settings { .. } => {

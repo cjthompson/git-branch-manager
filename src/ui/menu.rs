@@ -1,6 +1,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
 
+use super::symbols::SymbolSet;
 use super::theme::Theme;
 
 pub struct MenuItem {
@@ -10,7 +11,7 @@ pub struct MenuItem {
     pub shortcut: Option<char>,
 }
 
-pub fn draw(frame: &mut Frame, items: &[MenuItem], menu_cursor: usize, anchor_row: u16, theme: &Theme) {
+pub fn draw(frame: &mut Frame, items: &[MenuItem], menu_cursor: usize, anchor_row: u16, theme: &Theme, symbols: &SymbolSet) {
     let area = frame.area();
     let menu_width = 35u16.min(area.width);
     let menu_height = (items.len() as u16 + 2).min(area.height); // +2 for borders
@@ -24,11 +25,11 @@ pub fn draw(frame: &mut Frame, items: &[MenuItem], menu_cursor: usize, anchor_ro
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let prefix = if i == menu_cursor { "\u{25b8} " } else { "  " };
+            let prefix = if i == menu_cursor { format!("{} ", symbols.cursor_prefix) } else { "  ".to_string() };
             let style = if !item.enabled {
                 theme.secondary_text
             } else if i == menu_cursor {
-                theme.primary_text
+                theme.cursor
             } else {
                 Style::default()
             };
