@@ -140,8 +140,11 @@ pub fn delete_tag(repo: &Repository, tag_name: &str) -> OperationResult {
 
 /// Push a tag to the remote using git CLI.
 pub fn push_tag(repo_path: &Path, tag_name: &str) -> OperationResult {
-    match Command::new("git")
-        .current_dir(repo_path)
+    let mut cmd = Command::new("git");
+    cmd.current_dir(repo_path)
+        .stdin(std::process::Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0");
+    match cmd
         .args(["push", "origin", tag_name])
         .output()
     {

@@ -5,6 +5,19 @@ use git2::{BranchType, Repository};
 
 use crate::types::{BranchAction, OperationResult};
 
+/// Create a git `Command` that won't hang on credential prompts.
+///
+/// Sets `GIT_TERMINAL_PROMPT=0` and pipes stdin to /dev/null so that
+/// network operations (push, fetch, pull) fail fast instead of blocking
+/// when authentication is needed.
+fn git_cmd(repo_path: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(repo_path)
+        .stdin(std::process::Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0");
+    cmd
+}
+
 /// Delete a local branch using git2.
 pub fn delete_local(repo: &Repository, branch_name: &str) -> OperationResult {
     match repo.find_branch(branch_name, BranchType::Local) {
@@ -42,8 +55,7 @@ pub fn checkout_branch(
     stash: bool,
 ) -> OperationResult {
     if stash {
-        let output = Command::new("git")
-            .current_dir(repo_path)
+        let output = git_cmd(repo_path)
             .args(["stash", "push", "-m", "git-bm auto-stash"])
             .output();
         if let Ok(o) = &output
@@ -90,8 +102,7 @@ pub fn checkout_branch(
     };
 
     if stash && result.success {
-        let _ = Command::new("git")
-            .current_dir(repo_path)
+        let _ = git_cmd(repo_path)
             .args(["stash", "pop"])
             .output();
     }
@@ -119,8 +130,7 @@ fn run_fetch_cmd(repo_path: &Path, prune: bool) -> OperationResult {
     } else {
         BranchAction::Fetch
     };
-    match Command::new("git")
-        .current_dir(repo_path)
+    match git_cmd(repo_path)
         .args(&args)
         .output()
     {
@@ -154,8 +164,7 @@ fn run_fetch_cmd(repo_path: &Path, prune: bool) -> OperationResult {
 
 /// Fast-forward a local branch to match its remote tracking branch without checking it out.
 pub fn fast_forward(repo_path: &Path, branch_name: &str) -> OperationResult {
-    match Command::new("git")
-        .current_dir(repo_path)
+    match git_cmd(repo_path)
         .args([
             "fetch",
             "origin",
@@ -206,8 +215,7 @@ pub fn merge_branch(
     };
 
     if stash {
-        let o = Command::new("git")
-            .current_dir(repo_path)
+        let o = git_cmd(repo_path)
             .args(["stash", "push", "-m", "git-bm auto-stash"])
             .output();
         if let Ok(o) = &o
@@ -224,8 +232,7 @@ pub fn merge_branch(
     }
 
     // Checkout base
-    let co = Command::new("git")
-        .current_dir(repo_path)
+    let co = git_cmd(repo_path)
         .args(["checkout", base])
         .output();
     if let Ok(o) = &co
@@ -238,8 +245,7 @@ pub fn merge_branch(
             message: format!("Checkout {} failed", base),
         });
         if stash {
-            let _ = Command::new("git")
-                .current_dir(repo_path)
+            let _ = git_cmd(repo_path)
                 .args(["stash", "pop"])
                 .output();
         }
@@ -252,12 +258,11 @@ pub fn merge_branch(
         args.push("--squash");
     }
     args.push(branch_name);
-    let merge_out = Command::new("git").current_dir(repo_path).args(&args).output();
+    let merge_out = git_cmd(repo_path).args(&args).output();
     match merge_out {
         Ok(o) if o.status.success() => {
             if squash {
-                let _ = Command::new("git")
-                    .current_dir(repo_path)
+                let _ = git_cmd(repo_path)
                     .args(["commit", "-m", &format!("Squash merge {}", branch_name)])
                     .output();
             }
@@ -273,8 +278,7 @@ pub fn merge_branch(
             });
         }
         Ok(o) => {
-            let _ = Command::new("git")
-                .current_dir(repo_path)
+            let _ = git_cmd(repo_path)
                 .args(["merge", "--abort"])
                 .output();
             results.push(OperationResult {
@@ -296,8 +300,7 @@ pub fn merge_branch(
     }
 
     if stash {
-        let _ = Command::new("git")
-            .current_dir(repo_path)
+        let _ = git_cmd(repo_path)
             .args(["stash", "pop"])
             .output();
     }
@@ -317,8 +320,7 @@ pub fn rebase_branch(
     let mut results = Vec::new();
 
     if stash {
-        let o = Command::new("git")
-            .current_dir(repo_path)
+        let o = git_cmd(repo_path)
             .args(["stash", "push", "-m", "git-bm auto-stash"])
             .output();
         if let Ok(o) = &o
@@ -334,8 +336,7 @@ pub fn rebase_branch(
         }
     }
 
-    let co = Command::new("git")
-        .current_dir(repo_path)
+    let co = git_cmd(repo_path)
         .args(["checkout", branch_name])
         .output();
     if let Ok(o) = &co
@@ -348,16 +349,14 @@ pub fn rebase_branch(
             message: "Checkout failed".into(),
         });
         if stash {
-            let _ = Command::new("git")
-                .current_dir(repo_path)
+            let _ = git_cmd(repo_path)
                 .args(["stash", "pop"])
                 .output();
         }
         return results;
     }
 
-    let rebase = Command::new("git")
-        .current_dir(repo_path)
+    let rebase = git_cmd(repo_path)
         .args(["rebase", base])
         .output();
     match rebase {
@@ -370,8 +369,7 @@ pub fn rebase_branch(
             });
         }
         Ok(o) => {
-            let _ = Command::new("git")
-                .current_dir(repo_path)
+            let _ = git_cmd(repo_path)
                 .args(["rebase", "--abort"])
                 .output();
             results.push(OperationResult {
@@ -393,8 +391,7 @@ pub fn rebase_branch(
     }
 
     if stash {
-        let _ = Command::new("git")
-            .current_dir(repo_path)
+        let _ = git_cmd(repo_path)
             .args(["stash", "pop"])
             .output();
     }
@@ -405,8 +402,7 @@ pub fn rebase_branch(
 pub fn create_worktree(repo_path: &Path, branch_name: &str) -> OperationResult {
     let sanitized = branch_name.replace('/', "-");
     let worktree_path = repo_path.join(".worktrees").join(&sanitized);
-    match Command::new("git")
-        .current_dir(repo_path)
+    match git_cmd(repo_path)
         .args([
             "worktree",
             "add",
@@ -441,8 +437,7 @@ pub fn create_worktree(repo_path: &Path, branch_name: &str) -> OperationResult {
 
 /// Push a branch to its remote tracking branch.
 pub fn push_branch(repo_path: &Path, branch_name: &str) -> OperationResult {
-    match Command::new("git")
-        .current_dir(repo_path)
+    match git_cmd(repo_path)
         .args(["push", "origin", branch_name])
         .output()
     {
@@ -472,8 +467,7 @@ pub fn push_branch(repo_path: &Path, branch_name: &str) -> OperationResult {
 
 /// Force push a branch to its remote tracking branch using --force-with-lease.
 pub fn force_push_branch(repo_path: &Path, branch_name: &str) -> OperationResult {
-    match Command::new("git")
-        .current_dir(repo_path)
+    match git_cmd(repo_path)
         .args(["push", "--force-with-lease", "origin", branch_name])
         .output()
     {
@@ -507,8 +501,7 @@ pub fn force_push_branch(repo_path: &Path, branch_name: &str) -> OperationResult
 /// For the current branch, uses `git pull --ff-only`.
 pub fn pull_branch(repo_path: &Path, branch_name: &str, is_current: bool) -> OperationResult {
     if is_current {
-        match Command::new("git")
-            .current_dir(repo_path)
+        match git_cmd(repo_path)
             .args(["pull", "--ff-only"])
             .output()
         {
@@ -535,8 +528,7 @@ pub fn pull_branch(repo_path: &Path, branch_name: &str, is_current: bool) -> Ope
             },
         }
     } else {
-        match Command::new("git")
-            .current_dir(repo_path)
+        match git_cmd(repo_path)
             .args([
                 "fetch",
                 "origin",
@@ -585,8 +577,7 @@ pub fn delete_remotes_batch(repo_path: &Path, branch_names: &[String]) -> Vec<Op
         args.push(name.as_str());
     }
 
-    match Command::new("git")
-        .current_dir(repo_path)
+    match git_cmd(repo_path)
         .args(&args)
         .output()
     {
@@ -611,8 +602,7 @@ pub fn delete_remotes_batch(repo_path: &Path, branch_names: &[String]) -> Vec<Op
 
 /// Delete a single branch from the remote using git CLI.
 fn delete_remote(repo_path: &Path, branch_name: &str) -> OperationResult {
-    match Command::new("git")
-        .current_dir(repo_path)
+    match git_cmd(repo_path)
         .args(["push", "origin", "--delete", branch_name])
         .output()
     {
