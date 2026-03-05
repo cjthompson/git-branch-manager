@@ -23,6 +23,7 @@ s       Cycle sort column
 S       Reverse sort order
 R       Force recheck (clear cache)
 T       Cycle theme
+Y       Cycle symbols
 t       Tags view
 ,       Settings
 /       Search branches

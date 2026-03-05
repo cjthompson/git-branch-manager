@@ -63,3 +63,25 @@ pub fn from_name(name: &str) -> &'static SymbolSet {
         _ => detect(),
     }
 }
+
+pub fn name(set: &'static SymbolSet) -> &'static str {
+    if std::ptr::eq(set, &ASCII) {
+        "ascii"
+    } else if std::ptr::eq(set, &UNICODE) {
+        "unicode"
+    } else if std::ptr::eq(set, &POWERLINE) {
+        "powerline"
+    } else {
+        "unicode"
+    }
+}
+
+pub fn next(set: &'static SymbolSet) -> &'static SymbolSet {
+    if std::ptr::eq(set, &ASCII) {
+        &UNICODE
+    } else if std::ptr::eq(set, &UNICODE) {
+        &POWERLINE
+    } else {
+        &ASCII
+    }
+}

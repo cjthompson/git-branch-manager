@@ -414,6 +414,12 @@ impl App {
                 config.theme = Some(self.theme.name.to_string());
                 config.save();
             }
+            KeyCode::Char('Y') => {
+                self.symbols = crate::ui::symbols::next(self.symbols);
+                let mut config = git_branch_manager::config::Config::load();
+                config.symbols = Some(crate::ui::symbols::name(self.symbols).to_string());
+                config.save();
+            }
             KeyCode::Char('?') => {
                 self.view = View::Help;
             }
