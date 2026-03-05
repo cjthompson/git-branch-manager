@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-03-05
+
+### Fixes
+- Column sizing — status min-width, PR/AB autosize, branch name ellipsis (#ui, #layout)
+
+### Tasks
+- Apply shortcut key color to all shortcut keys (#ui, #theme)
+- Apply theme color to shortcut keys shown in the bottom status bar (#ui, #status-bar, #theme)
+- Rows that have a checked state should have a different background color (#ui, #selection)
+- Change chore prefix color from yellow to brown/amber for light theme contrast (#ui, #theme)
+- Actions menu: disable "Delete local + remote" when there is no remote branch (#ui, #menu)
+- Add shortcut keys to each item in the Actions menu (#ui, #menu)
+- Actions menu missing shortcut keys for merge, squash, rebase, create worktree (#ui, #menu)
+- Actions menu: use same row cursor symbol and color scheme as branch list (#ui, #menu)
+- Color shortcut key letters using the base branch theme color (#ui, #menu, #theme)
+- Disabled Actions menu items should not color their shortcut key letter (#ui, #menu, #theme)
+
 ## 2026-03-04
 
 ### Fixes

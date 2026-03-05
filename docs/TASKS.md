@@ -2,6 +2,136 @@
 
 ---
 
+## task: apply shortcut key color to all shortcut keys
+**Date:** 2026-03-05 13:15 | **Priority:** medium | **Tags:** #ui #theme
+**Status:** completed (2026-03-05 13:30)
+
+### Requirements
+- Find every UI location that renders shortcut key hints in `[x]word` format — including the confirm modal (`[y]es [n]o`), help overlay, and any other popups
+- In each location, split the `[x]` token into three spans: `[` (normal style), `x` (theme.title fg color), `]` (normal style) — matching the pattern already used in the status bar and Actions menu
+- The key letter color should use `theme.title` fg (the same accent color used everywhere else)
+
+---
+
+## task: apply theme color to shortcut keys shown in the bottom status bar
+**Date:** 2026-03-05 12:45 | **Priority:** medium | **Tags:** #ui #status-bar #theme
+**Status:** completed (2026-03-05 13:00)
+
+### Requirements
+- In the bottom status bar, shortcut key labels (e.g. `d delete`, `space select`, `enter menu`) should have the key letter/symbol colored using `theme.title` — the same accent color used for menu shortcut letters
+- Non-key text (the command word) stays in the existing status bar style
+- The key portion and label portion are already rendered as separate spans or can be split — apply `theme.title` fg to the key span only
+
+---
+
+## task: disabled Actions menu items should not color their shortcut key letter
+**Date:** 2026-03-05 12:35 | **Priority:** medium | **Tags:** #ui #menu #theme
+**Status:** completed (2026-03-05 12:40)
+
+### Requirements
+- In `src/ui/menu.rs`, when building the shortcut span for a disabled item, use `item_style` (the dim style) instead of `theme.title` for the shortcut letter span
+- Only enabled items get the `theme.title` accent on the shortcut letter
+
+---
+
+## task: color shortcut key letters using the base branch theme color
+**Date:** 2026-03-05 12:15 | **Priority:** medium | **Tags:** #ui #menu #theme
+**Status:** completed (2026-03-05 12:30)
+
+### Requirements
+- In the Actions menu, shortcut key labels are rendered as `[x]` — the brackets should remain in the default text color, but the letter `x` should be colored using the same style as the base branch (`theme.current_branch` or whichever style is used for the pinned base branch row)
+- This means splitting `[x]` into three spans: `[` (default), `x` (theme color), `]` (default)
+- Identify which theme field is used for the base branch color and use that same field
+
+---
+
+## task: Actions menu missing shortcut keys for merge, squash, rebase, create worktree
+**Date:** 2026-03-05 11:50 | **Priority:** medium | **Tags:** #ui #menu
+**Status:** completed (2026-03-05 12:00)
+
+### Requirements
+- Add shortcut keys for the four items currently missing them:
+  - `m` = Merge into base
+  - `s` = Squash merge into base
+  - `r` = Rebase onto base
+  - `w` = Create worktree
+
+---
+
+## task: actions menu: use same row cursor symbol and color scheme as branch list
+**Date:** 2026-03-05 11:45 | **Priority:** medium | **Tags:** #ui #menu
+**Status:** completed (2026-03-05 12:00)
+
+### Requirements
+- The Actions menu cursor/highlight should use the same cursor symbol (`app.symbols.cursor_prefix`) and cursor style (`theme.cursor`) as the branch list row cursor
+- Currently the menu likely uses a plain `>` or block highlight — replace with the project's configured symbol and color
+
+---
+
+## task: add shortcut keys to each item in the Actions menu
+**Date:** 2026-03-05 11:30 | **Priority:** medium | **Tags:** #ui #menu
+**Status:** completed (2026-03-05 12:00)
+
+### Requirements
+- Each item in the ENTER key Actions menu should have a single-letter shortcut key displayed next to it
+- Pressing the shortcut key immediately executes that action (same as navigating to it and pressing Enter)
+- Shortcut keys should be shown in the menu item label, e.g. `[d] Delete local`
+- Disabled items' shortcut keys should not be active
+- Suggested shortcuts (adjust if conflicts exist in the codebase): `d` = Delete local, `D` = Delete local + remote, `p` = Push, `P` = Force push, `l` = Pull, `f` = Fast-forward, `o` = Open PR in browser, `c` = Checkout
+
+---
+
+## task: actions menu: disable "Delete local + remote" when there is no remote branch
+**Date:** 2026-03-05 11:00 | **Priority:** medium | **Tags:** #ui #menu
+**Status:** completed (2026-03-05 11:20)
+
+### Requirements
+- In the ENTER key actions menu, the "Delete local + remote" option should be disabled (not selectable, visually dimmed) when the branch has no remote tracking branch
+- A branch has no remote when `branch.tracking_status == TrackingStatus::Local` (or equivalent — no upstream set)
+- Disabled items should be skipped when navigating with ↑/↓ (cursor jumps over them)
+- Disabled items should be rendered with a dim style so users can see they exist but are unavailable
+
+---
+
+## fix: column sizing — status min-width, PR/AB autosize, branch name ellipsis
+**Date:** 2026-03-05 10:30 | **Priority:** high | **Tags:** #ui #layout
+**Status:** completed (2026-03-05 11:00)
+
+### Requirements
+- **Status column**: set a minimum width so `squash-merged ●` always fits without truncation; compute the minimum as the length of the longest possible status string plus symbol (e.g. `"squash-merged ●"`) and use that as the column constraint minimum
+- **PR column**: autosize to the widest PR value in the current branch list (e.g. `"#2424"` = 5 chars); use `Constraint::Length(max_pr_width)` where `max_pr_width` is computed from the data, with a minimum of the header label width
+- **A/B column**: autosize to the widest ahead/behind value in the current branch list (e.g. `"109"` = 3 chars, formatted as `"ahead/behind"` or just ahead count); use `Constraint::Length(max_ab_width)` computed from data, with a minimum of the header label width
+- **Branch name column**: when the branch name (including prefix marker) is longer than the available column width, trim from the right and append an ellipsis — use `…` (U+2026) for unicode/powerline symbol sets and `...` for ascii
+
+---
+
+## task: change chore prefix color from yellow to brown/amber for light theme contrast
+**Date:** 2026-03-05 10:15 | **Priority:** medium | **Tags:** #ui #theme
+**Status:** completed (2026-03-05 10:20)
+
+### Requirements
+- In `src/ui/branch_list.rs`, in the `prefix_style` function, change `"chore" => Some(Style::new().fg(Color::Yellow))` to `"chore" => Some(Style::new().fg(Color::Indexed(130)))`
+- This applies globally (all themes), as `Indexed(130)` brown/amber reads well on dark backgrounds too and avoids the clash with light theme's checked-row background (`Indexed(229)`)
+
+---
+
+## task: rows that have a checked state should have a different background color
+**Date:** 2026-03-04 15:30 | **Priority:** medium | **Tags:** #ui #selection
+**Status:** completed (2026-03-05 10:00)
+
+### Requirements
+- In the branch list, rows where the branch is selected (checked state, i.e., in `app.selected_branches`) should render with a distinct background color
+- The selected-row background should be visually distinct from both the normal row background and the cursor-highlight background
+- Apply the background color to the entire row span, not just the checkbox cell
+- Add a `checked_row` field to the `Theme` struct in `src/ui/theme.rs` with these per-theme values:
+  - dark: `Style::new().bg(Color::Indexed(236))`
+  - light: `Style::new().bg(Color::Indexed(229))`
+  - solarized: `Style::new().bg(Color::Indexed(22))`
+  - dracula: `Style::new().bg(Color::Indexed(22))`
+- In `src/ui/branch_list.rs`, when building each row's line spans, if the branch is in `app.selected_branches`, patch the background of all spans in that row to use `theme.checked_row.bg`
+
+---
+
 ## task: move merge status symbols to the right of the status text
 **Date:** 2026-03-04 15:00 | **Priority:** medium | **Tags:** #ui #symbols
 **Status:** completed (2026-03-04 15:10)
