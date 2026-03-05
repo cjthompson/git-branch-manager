@@ -11,6 +11,12 @@ pub struct Config {
     pub trim_strategy: Option<String>,
     #[serde(default)]
     pub trim_min_length: Option<usize>,
+    #[serde(default)]
+    pub sort_column: Option<String>,
+    #[serde(default)]
+    pub sort_asc: Option<bool>,
+    #[serde(default)]
+    pub auto_fetch: Option<bool>,
 }
 
 impl Config {
