@@ -26,24 +26,27 @@ pub fn draw(frame: &mut Frame, items: &[MenuItem], menu_cursor: usize, anchor_ro
         .enumerate()
         .map(|(i, item)| {
             let prefix = if i == menu_cursor { format!("{} ", symbols.cursor_prefix) } else { "  ".to_string() };
-            let style = if !item.enabled {
+            let item_style = if !item.enabled {
                 theme.secondary_text
             } else if i == menu_cursor {
                 theme.cursor
             } else {
                 Style::default()
             };
-            let label_text = if let Some(ch) = item.shortcut {
-                format!("[{}] {}", ch, item.label)
+            let prefix_span = Span::styled(prefix, item_style);
+            let mut spans = vec![prefix_span];
+            if let Some(ch) = item.shortcut {
+                spans.push(Span::styled("[", item_style));
+                spans.push(Span::styled(ch.to_string(), theme.title));
+                spans.push(Span::styled(format!("] {}", item.label), item_style));
             } else {
-                item.label.clone()
-            };
-            let text = if let Some(reason) = &item.reason {
-                format!("{}{} ({})", prefix, label_text, reason)
-            } else {
-                format!("{}{}", prefix, label_text)
-            };
-            ListItem::new(text).style(style)
+                spans.push(Span::styled(item.label.clone(), item_style));
+            }
+            if let Some(reason) = &item.reason {
+                spans.push(Span::styled(format!(" ({})", reason), item_style));
+            }
+            let line = Line::from(spans);
+            ListItem::new(line)
         })
         .collect();
 
