@@ -14,6 +14,10 @@ Ever accumulate dozens of local branches that GitHub says were "squash and merge
 
 ![Select merged branches](docs/screenshots/select-merged.png)
 
+**Context menu** — press `Enter` on any branch for per-branch actions (checkout, delete, push, merge, rebase, and more):
+
+![Context menu](docs/screenshots/context-menu.png)
+
 **Help overlay** — press `?` to show all keybindings:
 
 ![Help overlay](docs/screenshots/help.png)

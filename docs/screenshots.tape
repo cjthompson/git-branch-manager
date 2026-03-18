@@ -35,4 +35,15 @@ Type "m"
 Sleep 400ms
 Screenshot docs/screenshots/select-merged.png
 
+# Deselect all, move to a squash-merged branch, open context menu
+Type "n"
+Sleep 500ms
+Type "j"
+Sleep 500ms
+Enter
+Sleep 800ms
+Screenshot docs/screenshots/context-menu.png
+
+Escape
+Sleep 200ms
 Type "q"
