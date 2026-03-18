@@ -81,3 +81,18 @@ git commit -q -m "Bump version to 2.1.0"
 git checkout -q main
 
 echo "Demo repo created at $DEMO_DIR"
+
+# Override symbols to unicode for screenshots (save original to restore after)
+CFGDIR="$HOME/.config/git-branch-manager"
+CFGFILE="$CFGDIR/config.toml"
+mkdir -p "$CFGDIR"
+if [ -f "$CFGFILE" ]; then
+    cp "$CFGFILE" /tmp/gbm-config.bak
+    if grep -q '^symbols' "$CFGFILE"; then
+        sed -i '' 's/^symbols = .*/symbols = "unicode"/' "$CFGFILE"
+    else
+        echo 'symbols = "unicode"' >> "$CFGFILE"
+    fi
+else
+    echo 'symbols = "unicode"' > "$CFGFILE"
+fi

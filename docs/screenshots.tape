@@ -47,3 +47,7 @@ Screenshot docs/screenshots/context-menu.png
 Escape
 Sleep 200ms
 Type "q"
+Hide
+Type "[ -f /tmp/gbm-config.bak ] && mv /tmp/gbm-config.bak ~/.config/git-branch-manager/config.toml || rm -f ~/.config/git-branch-manager/config.toml"
+Enter
+Sleep 500ms
