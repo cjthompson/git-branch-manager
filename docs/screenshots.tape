@@ -3,6 +3,7 @@ Output docs/screenshots/branch-list.gif
 Set Width 800
 Set Height 600
 Set FontSize 14
+Set FontFamily "JetBrainsMono Nerd Font"
 Set Theme "TokyoNight"
 
 # Run setup silently before visible recording begins
