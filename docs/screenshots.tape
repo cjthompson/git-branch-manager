@@ -1,6 +1,6 @@
 Output docs/screenshots/branch-list.gif
 
-Set Width 1400
+Set Width 800
 Set Height 600
 Set FontSize 14
 Set Theme "TokyoNight"
