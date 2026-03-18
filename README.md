@@ -4,6 +4,20 @@ Interactive TUI for managing local git branches with squash-merge detection.
 
 Ever accumulate dozens of local branches that GitHub says were "squash and merged" but `git branch -d` refuses to delete because it thinks they're unmerged? This tool fixes that.
 
+## Screenshots
+
+**Branch list** — branch name prefixes are color-coded; merged and squash-merged branches are identified automatically:
+
+![Branch list](docs/screenshots/branch-list.png)
+
+**Select merged** — press `m` to select all merged and squash-merged branches, then `d` to delete:
+
+![Select merged branches](docs/screenshots/select-merged.png)
+
+**Help overlay** — press `?` to show all keybindings:
+
+![Help overlay](docs/screenshots/help.png)
+
 ## Quick Start
 
 ```sh
