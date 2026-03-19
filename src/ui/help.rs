@@ -26,6 +26,7 @@ R       Force recheck (clear cache)
 T       Cycle theme
 Y       Cycle symbols
 t       Tags view
+r       Remote branches
 ,       Settings
 /       Search branches
 \\      Filter menu
