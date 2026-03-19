@@ -234,6 +234,7 @@ impl App {
         while !self.should_exit {
             self.drain_load_rx();
             self.drain_squash_rx();
+            self.drain_remote_squash_rx();
             self.drain_pr_rx();
             self.drain_progress_rx();
             self.drain_op_rx();
@@ -1834,6 +1835,34 @@ impl App {
 
         if done {
             self.squash_rx = None;
+        }
+    }
+
+    fn drain_remote_squash_rx(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+
+        let Some(rx) = &self.remote_squash_rx else { return };
+
+        let done = loop {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.remote_squash_checked += 1;
+                    if result.is_squash_merged
+                        && let Some(branch) = self
+                            .remote_branches
+                            .iter_mut()
+                            .find(|b| b.full_ref == result.branch_name)
+                    {
+                        branch.merge_status = MergeStatus::SquashMerged;
+                    }
+                }
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
+            }
+        };
+
+        if done {
+            self.remote_squash_rx = None;
         }
     }
 
