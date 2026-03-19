@@ -741,8 +741,7 @@ impl App {
                 self.view = View::BranchList;
             }
             ResultsReturnView::RemoteBranches => {
-                // TODO: refresh remote branches and return to RemoteBranches view
-                self.view = View::BranchList;
+                self.open_remote_branches_view();
             }
         }
     }
