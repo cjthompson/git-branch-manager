@@ -13,7 +13,7 @@ use ratatui::widgets::TableState;
 use git_branch_manager::git::{branch, cache, operations, pr_loader, squash_loader, status, tags};
 use git_branch_manager::git::github::PrMap;
 use git_branch_manager::git::tags::TagInfo;
-use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, ProgressUpdate, SquashResult, TrackingStatus, WorkingTreeStatus};
+use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, ProgressUpdate, RemoteBranchInfo, SquashResult, TrackingStatus, WorkingTreeStatus};
 use crate::ui;
 use crate::ui::symbols::SymbolSet;
 use crate::ui::theme::Theme;
@@ -43,6 +43,7 @@ pub enum View {
     Settings { cursor: usize },
     Filter,
     TagFilter,
+    RemoteBranches,
 }
 
 pub struct App {
@@ -108,12 +109,31 @@ pub struct App {
     pub load_progress_rx: Option<Receiver<LoadProgress>>,
     /// Current loading status message shown on the loading screen.
     pub loading_message: String,
+    // ── Remote branches state ──
+    pub remote_branches: Vec<RemoteBranchInfo>,
+    pub remote_cursor: usize,
+    pub remote_selected: Vec<bool>,
+    pub remote_table_state: TableState,
+    pub remote_search_query: String,
+    pub remote_search_active: bool,
+    pub remote_sort_column: Option<usize>,
+    pub remote_sort_ascending: bool,
+    pub remote_squash_rx: Option<Receiver<SquashResult>>,
+    pub remote_squash_checked: usize,
+    pub remote_squash_total: usize,
+    /// Whether `git fetch` has been run this session (lazy fetch on first open).
+    pub remote_fetched: bool,
+    /// Column header x-ranges for mouse click sorting in remote branches view.
+    pub remote_header_columns: Vec<(u16, usize)>,
+    /// Status bar clickable items for remote branches view.
+    pub remote_status_bar_items: Vec<(u16, u16, KeyCode)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultsReturnView {
     BranchList,
     Tags,
+    RemoteBranches,
 }
 
 impl App {
@@ -181,6 +201,20 @@ impl App {
             load_rx: Some(load_rx),
             load_progress_rx: Some(load_progress_rx),
             loading_message: "Loading...".into(),
+            remote_branches: Vec::new(),
+            remote_cursor: 0,
+            remote_selected: Vec::new(),
+            remote_table_state: TableState::default(),
+            remote_search_query: String::new(),
+            remote_search_active: false,
+            remote_sort_column: None,
+            remote_sort_ascending: true,
+            remote_squash_rx: None,
+            remote_squash_checked: 0,
+            remote_squash_total: 0,
+            remote_fetched: false,
+            remote_header_columns: Vec::new(),
+            remote_status_bar_items: Vec::new(),
         }
     }
 
@@ -242,6 +276,7 @@ impl App {
                     View::Settings { .. } => self.handle_settings_key(key.code),
                     View::Filter => self.handle_filter_key(key.code),
                     View::TagFilter => self.handle_tag_filter_key(key.code),
+                    View::RemoteBranches => {} // TODO: handle_remote_branches_key
                 }
             }
             Event::Mouse(mouse) => {
@@ -680,6 +715,10 @@ impl App {
             }
             ResultsReturnView::BranchList => {
                 self.refresh_branches();
+                self.view = View::BranchList;
+            }
+            ResultsReturnView::RemoteBranches => {
+                // TODO: refresh remote branches and return to RemoteBranches view
                 self.view = View::BranchList;
             }
         }
