@@ -3,7 +3,7 @@ use chrono::DateTime;
 use git2::{BranchType, Repository};
 use thiserror::Error;
 
-use crate::types::{BranchInfo, MergeStatus, TrackingStatus};
+use crate::types::{BranchInfo, MergeStatus, RemoteBranchInfo, TrackingStatus};
 
 use super::cache::BranchCache;
 use super::merge_detection::{detect_merged_branches, is_squash_merged};
@@ -68,6 +68,96 @@ pub fn detect_base_branch(repo: &Repository, override_base: Option<&str>) -> Res
 pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
     let mut branches = collect_branch_metadata(repo, base_branch)?;
     detect_merged_branches(repo, base_branch, &mut branches)?;
+    branches.sort_by(|a, b| b.last_commit_date.cmp(&a.last_commit_date));
+    Ok(branches)
+}
+
+/// List remote branches with metadata and regular merge detection.
+///
+/// Does NOT run squash-merge detection — call `spawn_squash_checker` for that.
+/// Caller is responsible for running `git fetch` before calling this if needed.
+pub fn list_remote_branches_phase1(
+    repo: &Repository,
+    base_branch: &str,
+) -> Result<Vec<RemoteBranchInfo>> {
+    use git2::BranchType;
+
+    // Find the base branch OID for merge detection
+    let base_oid = repo
+        .find_branch(base_branch, BranchType::Local)
+        .ok()
+        .and_then(|b| b.get().peel_to_commit().ok())
+        .map(|c| c.id());
+
+    // Build a set of local branch names for has_local detection
+    let local_names: std::collections::HashSet<String> = repo
+        .branches(Some(BranchType::Local))
+        .map(|iter| {
+            iter.filter_map(|r| r.ok())
+                .filter_map(|(b, _)| b.name().ok().flatten().map(|n| n.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut branches = Vec::new();
+
+    let iter = repo.branches(Some(BranchType::Remote))?;
+    for branch_result in iter {
+        let (branch, _) = branch_result?;
+
+        let full_ref = match branch.name()? {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        // Skip HEAD pseudo-refs (e.g. "origin/HEAD")
+        if full_ref.ends_with("/HEAD") {
+            continue;
+        }
+
+        // Split "origin/feature-x" into remote="origin", short_name="feature-x"
+        let (remote, short_name) = match full_ref.split_once('/') {
+            Some((r, s)) => (r.to_string(), s.to_string()),
+            None => continue,
+        };
+
+        let is_base = short_name == base_branch;
+
+        let commit = match branch.get().peel_to_commit() {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let time = commit.committer().when();
+        let last_commit_date = DateTime::from_timestamp(time.seconds(), 0)
+            .unwrap_or_default();
+
+        // Regular merge detection: is the branch tip an ancestor of base?
+        let merge_status = if let Some(base) = base_oid {
+            if repo
+                .graph_descendant_of(base, commit.id())
+                .unwrap_or(false)
+            {
+                MergeStatus::Merged
+            } else {
+                MergeStatus::Unmerged
+            }
+        } else {
+            MergeStatus::Unmerged
+        };
+
+        let has_local = local_names.contains(&short_name);
+
+        branches.push(RemoteBranchInfo {
+            full_ref,
+            remote,
+            short_name,
+            has_local,
+            is_base,
+            last_commit_date,
+            merge_status,
+        });
+    }
+
     branches.sort_by(|a, b| b.last_commit_date.cmp(&a.last_commit_date));
     Ok(branches)
 }

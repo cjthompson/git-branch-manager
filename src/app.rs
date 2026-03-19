@@ -582,6 +582,9 @@ impl App {
                 );
                 self.view = View::Tags;
             }
+            KeyCode::Char('r') => {
+                self.open_remote_branches_view();
+            }
             KeyCode::Char('/') => {
                 self.search_active = true;
             }
@@ -843,6 +846,9 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
                     self.view = View::BranchList;
                 }
+                KeyCode::Char('r') => {
+                    self.open_remote_branches_view();
+                }
                 KeyCode::Char('/') => {
                     self.tag_search_active = true;
                 }
@@ -939,6 +945,9 @@ impl App {
             }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
                 self.view = View::BranchList;
+            }
+            KeyCode::Char('r') => {
+                self.open_remote_branches_view();
             }
             KeyCode::Char('?') => {
                 self.view = View::Help;
@@ -1361,6 +1370,71 @@ impl App {
 
         // Re-apply current sort so it persists across refreshes
         self.apply_sort();
+    }
+
+    /// Open the Remote Branches view.
+    ///
+    /// On the first call per session, runs `git fetch` before listing.
+    /// Subsequent calls use the already-fetched state.
+    fn open_remote_branches_view(&mut self) {
+        // Lazy fetch: run once per session on first open
+        if !self.remote_fetched {
+            operations::fetch_sync(&self.repo_path);
+            self.remote_fetched = true;
+        }
+
+        let Ok(repo) = git2::Repository::open(&self.repo_path) else {
+            return;
+        };
+
+        let remote_branches =
+            match branch::list_remote_branches_phase1(&repo, &self.base_branch) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
+
+        // Build squash-merge candidates: unmerged, non-base remote branches
+        let branch_cache = cache::BranchCache::load(&self.repo_path);
+        let candidates: Vec<(String, String)> = remote_branches
+            .iter()
+            .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base)
+            .filter_map(|b| {
+                let refname = format!("refs/remotes/{}", b.full_ref);
+                repo.find_reference(&refname)
+                    .ok()
+                    .and_then(|r| r.peel_to_commit().ok())
+                    .map(|c| (b.full_ref.clone(), c.id().to_string()))
+            })
+            .collect();
+
+        // Reset remote view state
+        let len = remote_branches.len();
+        self.remote_branches = remote_branches;
+        self.remote_selected = vec![false; len];
+        self.remote_cursor = 0;
+        self.remote_search_query.clear();
+        self.remote_search_active = false;
+        self.remote_sort_column = None;
+        self.remote_sort_ascending = true;
+        self.remote_table_state = TableState::default().with_selected(
+            if len == 0 { None } else { Some(0) }
+        );
+
+        // Spawn squash checker for remote candidates
+        self.remote_squash_checked = 0;
+        self.remote_squash_total = candidates.len();
+        self.remote_squash_rx = if candidates.is_empty() {
+            None
+        } else {
+            Some(squash_loader::spawn_squash_checker(
+                self.repo_path.clone(),
+                self.base_branch.clone(),
+                candidates,
+                branch_cache,
+            ))
+        };
+
+        self.view = View::RemoteBranches;
     }
 
     fn apply_sort(&mut self) {

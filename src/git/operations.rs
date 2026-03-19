@@ -120,6 +120,19 @@ pub fn fetch_prune(repo_path: &Path) -> OperationResult {
     run_fetch_cmd(repo_path, true)
 }
 
+/// Run `git fetch` synchronously and return whether it succeeded.
+///
+/// Used for the lazy fetch on first open of the Remote Branches view.
+/// Unlike `fetch()`, this does not produce an `OperationResult` and does not
+/// go through the Executing view.
+pub fn fetch_sync(repo_path: &Path) -> bool {
+    git_cmd(repo_path)
+        .args(["fetch"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 fn run_fetch_cmd(repo_path: &Path, prune: bool) -> OperationResult {
     let mut args = vec!["fetch"];
     if prune {
