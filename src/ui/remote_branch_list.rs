@@ -3,7 +3,7 @@ use crossterm::event::KeyCode;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
-use crate::app::App;
+use crate::app::{App, FilterSet};
 use git_branch_manager::types::{MergeStatus, RemoteBranchInfo};
 
 /// Returns a color style for known branch name prefixes (text before the first `/`).
@@ -477,8 +477,18 @@ fn matches_remote_search(app: &App, branch: &RemoteBranchInfo) -> bool {
     if branch.is_pinned() {
         return true;
     }
-    let query = app.remote_search_query.to_lowercase();
-    branch.short_name.to_lowercase().contains(&query)
-        || branch.remote.to_lowercase().contains(&query)
-        || branch.full_ref.to_lowercase().contains(&query)
+    let fs = FilterSet::parse(&app.remote_search_query);
+    if !fs.statuses.is_empty() && !fs.statuses.contains(&branch.merge_status) {
+        return false;
+    }
+    if !fs.text.is_empty() {
+        let text = fs.text.to_lowercase();
+        if !branch.short_name.to_lowercase().contains(&text)
+            && !branch.remote.to_lowercase().contains(&text)
+            && !branch.full_ref.to_lowercase().contains(&text)
+        {
+            return false;
+        }
+    }
+    true
 }

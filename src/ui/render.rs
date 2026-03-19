@@ -60,5 +60,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             filter::draw_tag_filter(frame, &*app);
         }
         View::RemoteBranches => remote_branch_list::draw(frame, app),
+        View::RemoteFilter => {
+            remote_branch_list::draw(frame, app);
+            filter::draw_remote_filter(frame, &*app);
+        }
     }
 }
