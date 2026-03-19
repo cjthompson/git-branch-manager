@@ -320,127 +320,211 @@ impl App {
     }
 
     fn handle_mouse_click(&mut self, x: u16, y: u16) {
-        if self.view != View::BranchList {
-            return;
-        }
+        if self.view == View::BranchList {
+            // Layout:
+            //   y=0 — outer border top
+            //   y=1 — header row (column titles)
+            //   y=2+ — branch data rows (first data row at y=2)
+            if y == 1 && !self.header_columns.is_empty() {
+                // Header row click — determine which sort column was clicked
+                let mut clicked_col: Option<usize> = None;
+                for (i, &(col_x, sort_idx)) in self.header_columns.iter().enumerate() {
+                    let next_x = if i + 1 < self.header_columns.len() {
+                        self.header_columns[i + 1].0
+                    } else {
+                        u16::MAX
+                    };
+                    if x >= col_x && x < next_x {
+                        clicked_col = Some(sort_idx);
+                        break;
+                    }
+                }
 
-        // Layout:
-        //   y=0 — outer border top
-        //   y=1 — header row (column titles)
-        //   y=2+ — branch data rows (first data row at y=2)
-        if y == 1 && !self.header_columns.is_empty() {
-            // Header row click — determine which sort column was clicked
-            let mut clicked_col: Option<usize> = None;
-            for (i, &(col_x, sort_idx)) in self.header_columns.iter().enumerate() {
-                let next_x = if i + 1 < self.header_columns.len() {
-                    self.header_columns[i + 1].0
-                } else {
-                    u16::MAX
-                };
-                if x >= col_x && x < next_x {
-                    clicked_col = Some(sort_idx);
-                    break;
+                if let Some(col) = clicked_col {
+                    if self.sort_column == Some(col) {
+                        self.sort_ascending = !self.sort_ascending;
+                    } else {
+                        self.sort_column = Some(col);
+                        self.sort_ascending = true;
+                    }
+                    self.apply_sort();
+                    self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
+                    self.config.sort_asc = Some(self.sort_ascending);
+                    self.config.save();
+                }
+            } else if self.terminal_rows > 0 && y == self.terminal_rows - 1 && !self.status_bar_items.is_empty() {
+                // Status bar row click — look up which item was clicked and simulate its key
+                for &(x_start, x_end, key) in &self.status_bar_items.clone() {
+                    if x >= x_start && x < x_end {
+                        self.handle_branch_list_key(key);
+                        break;
+                    }
+                }
+            } else if y >= 2 {
+                // Data row click — move cursor to clicked row and toggle selection if not pinned
+                let scroll_offset = self.table_state.offset();
+                let clicked_display_row = (y - 2) as usize + scroll_offset;
+
+                // Reconstruct display_indices (same logic as branch_list.rs): pinned first, then non-pinned,
+                // filtered by current search query
+                let filtered_indices: Vec<usize> = self
+                    .branches
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| self.matches_search(b))
+                    .map(|(i, _)| i)
+                    .collect();
+                let pinned_indices: Vec<usize> = filtered_indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| self.branches[i].is_pinned())
+                    .collect();
+                let non_pinned_indices: Vec<usize> = filtered_indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| !self.branches[i].is_pinned())
+                    .collect();
+                let display_indices: Vec<usize> = pinned_indices
+                    .iter()
+                    .chain(non_pinned_indices.iter())
+                    .copied()
+                    .collect();
+
+                if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
+                    self.cursor = branch_idx;
+                    self.table_state.select(Some(clicked_display_row));
+
+                    // Toggle selection only for non-pinned rows
+                    if !self.branches[branch_idx].is_pinned() {
+                        self.selected[branch_idx] = !self.selected[branch_idx];
+                    }
                 }
             }
-
-            if let Some(col) = clicked_col {
-                if self.sort_column == Some(col) {
-                    self.sort_ascending = !self.sort_ascending;
-                } else {
-                    self.sort_column = Some(col);
-                    self.sort_ascending = true;
+        } else if self.view == View::RemoteBranches {
+            if y == 1 && !self.remote_header_columns.is_empty() {
+                let mut clicked_col: Option<usize> = None;
+                for (i, &(col_x, sort_idx)) in self.remote_header_columns.iter().enumerate() {
+                    let next_x = if i + 1 < self.remote_header_columns.len() {
+                        self.remote_header_columns[i + 1].0
+                    } else {
+                        u16::MAX
+                    };
+                    if x >= col_x && x < next_x {
+                        clicked_col = Some(sort_idx);
+                        break;
+                    }
                 }
-                self.apply_sort();
-                self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
-                self.config.sort_asc = Some(self.sort_ascending);
-                self.config.save();
-            }
-        } else if self.terminal_rows > 0 && y == self.terminal_rows - 1 && !self.status_bar_items.is_empty() {
-            // Status bar row click — look up which item was clicked and simulate its key
-            for &(x_start, x_end, key) in &self.status_bar_items.clone() {
-                if x >= x_start && x < x_end {
-                    self.handle_branch_list_key(key);
-                    break;
+
+                if let Some(col) = clicked_col {
+                    if self.remote_sort_column == Some(col) {
+                        self.remote_sort_ascending = !self.remote_sort_ascending;
+                    } else {
+                        self.remote_sort_column = Some(col);
+                        self.remote_sort_ascending = true;
+                    }
+                    self.apply_remote_sort();
                 }
-            }
-        } else if y >= 2 {
-            // Data row click — move cursor to clicked row and toggle selection if not pinned
-            let scroll_offset = self.table_state.offset();
-            let clicked_display_row = (y - 2) as usize + scroll_offset;
+            } else if self.terminal_rows > 0 && y == self.terminal_rows - 1 && !self.remote_status_bar_items.is_empty() {
+                for &(x_start, x_end, key) in &self.remote_status_bar_items.clone() {
+                    if x >= x_start && x < x_end {
+                        self.handle_remote_branches_key(key);
+                        break;
+                    }
+                }
+            } else if y >= 2 {
+                let scroll_offset = self.remote_table_state.offset();
+                let clicked_display_row = (y - 2) as usize + scroll_offset;
 
-            // Reconstruct display_indices (same logic as branch_list.rs): pinned first, then non-pinned,
-            // filtered by current search query
-            let filtered_indices: Vec<usize> = self
-                .branches
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| self.matches_search(b))
-                .map(|(i, _)| i)
-                .collect();
-            let pinned_indices: Vec<usize> = filtered_indices
-                .iter()
-                .copied()
-                .filter(|&i| self.branches[i].is_pinned())
-                .collect();
-            let non_pinned_indices: Vec<usize> = filtered_indices
-                .iter()
-                .copied()
-                .filter(|&i| !self.branches[i].is_pinned())
-                .collect();
-            let display_indices: Vec<usize> = pinned_indices
-                .iter()
-                .chain(non_pinned_indices.iter())
-                .copied()
-                .collect();
+                let filtered_indices: Vec<usize> = self.filtered_remote_indices();
+                let pinned_indices: Vec<usize> = filtered_indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| self.remote_branches[i].is_pinned())
+                    .collect();
+                let non_pinned_indices: Vec<usize> = filtered_indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| !self.remote_branches[i].is_pinned())
+                    .collect();
+                let display_indices: Vec<usize> = pinned_indices
+                    .iter()
+                    .chain(non_pinned_indices.iter())
+                    .copied()
+                    .collect();
 
-            if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
-                self.cursor = branch_idx;
-                self.table_state.select(Some(clicked_display_row));
+                if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
+                    self.remote_cursor = branch_idx;
+                    self.remote_table_state.select(Some(clicked_display_row));
 
-                // Toggle selection only for non-pinned rows
-                if !self.branches[branch_idx].is_pinned() {
-                    self.selected[branch_idx] = !self.selected[branch_idx];
+                    if !self.remote_branches[branch_idx].is_pinned() {
+                        self.remote_selected[branch_idx] = !self.remote_selected[branch_idx];
+                    }
                 }
             }
         }
     }
 
     fn handle_mouse_right_click(&mut self, _x: u16, y: u16) {
-        if self.view != View::BranchList {
-            return;
-        }
+        if self.view == View::BranchList {
+            if y >= 2 {
+                let scroll_offset = self.table_state.offset();
+                let clicked_display_row = (y - 2) as usize + scroll_offset;
 
-        if y >= 2 {
-            let scroll_offset = self.table_state.offset();
-            let clicked_display_row = (y - 2) as usize + scroll_offset;
+                let filtered_indices: Vec<usize> = self
+                    .branches
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| self.matches_search(b))
+                    .map(|(i, _)| i)
+                    .collect();
+                let pinned_indices: Vec<usize> = filtered_indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| self.branches[i].is_pinned())
+                    .collect();
+                let non_pinned_indices: Vec<usize> = filtered_indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| !self.branches[i].is_pinned())
+                    .collect();
+                let display_indices: Vec<usize> = pinned_indices
+                    .iter()
+                    .chain(non_pinned_indices.iter())
+                    .copied()
+                    .collect();
 
-            let filtered_indices: Vec<usize> = self
-                .branches
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| self.matches_search(b))
-                .map(|(i, _)| i)
-                .collect();
-            let pinned_indices: Vec<usize> = filtered_indices
-                .iter()
-                .copied()
-                .filter(|&i| self.branches[i].is_pinned())
-                .collect();
-            let non_pinned_indices: Vec<usize> = filtered_indices
-                .iter()
-                .copied()
-                .filter(|&i| !self.branches[i].is_pinned())
-                .collect();
-            let display_indices: Vec<usize> = pinned_indices
-                .iter()
-                .chain(non_pinned_indices.iter())
-                .copied()
-                .collect();
+                if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
+                    self.cursor = branch_idx;
+                    self.table_state.select(Some(clicked_display_row));
+                    self.view = View::Menu { cursor: 0 };
+                }
+            }
+        } else if self.view == View::RemoteBranches {
+            if y >= 2 {
+                let scroll_offset = self.remote_table_state.offset();
+                let clicked_display_row = (y - 2) as usize + scroll_offset;
 
-            if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
-                self.cursor = branch_idx;
-                self.table_state.select(Some(clicked_display_row));
-                self.view = View::Menu { cursor: 0 };
+                let filtered_indices: Vec<usize> = self.filtered_remote_indices();
+                let pinned_indices: Vec<usize> = filtered_indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| self.remote_branches[i].is_pinned())
+                    .collect();
+                let non_pinned_indices: Vec<usize> = filtered_indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| !self.remote_branches[i].is_pinned())
+                    .collect();
+                let display_indices: Vec<usize> = pinned_indices
+                    .iter()
+                    .chain(non_pinned_indices.iter())
+                    .copied()
+                    .collect();
+
+                if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
+                    self.remote_cursor = branch_idx;
+                    self.remote_table_state.select(Some(clicked_display_row));
+                }
             }
         }
     }
