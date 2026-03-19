@@ -503,12 +503,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // Responsive status bar
         let status_text = if width < 80 {
             format!(
-                " {}br {}sel {}m {}s{} \u{2014} [/]search [\\]filter [?]help [q]uit",
+                " {}br {}sel {}m {}s{} \u{2014} [/]search [r]emotes [?]help [q]uit",
                 total, selected_count, merged_count, squash_count, progress
             )
         } else {
             format!(
-                " {} branches | {} selected | {} merged | {} squashed{} \u{2014} [/]search [\\]filter [c]heckout [d]el [D]el+remote [f]etch [?]help [q]uit",
+                " {} branches | {} selected | {} merged | {} squashed{} \u{2014} [/]search [\\]filter [c]heckout [d]el [D]el+remote [f]etch [r]emotes [?]help [q]uit",
                 total, selected_count, merged_count, squash_count, progress
             )
         };
@@ -532,6 +532,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         'd' => KeyCode::Char('d'),
                         'D' => KeyCode::Char('D'),
                         'f' => KeyCode::Char('f'),
+                        'r' => KeyCode::Char('r'),
                         'E' => KeyCode::Char('E'),
                         _ => {
                             i += 1;
