@@ -44,6 +44,7 @@ pub enum View {
     Filter,
     TagFilter,
     RemoteBranches,
+    RemoteFilter,
 }
 
 pub struct App {
@@ -282,6 +283,7 @@ impl App {
                     View::Filter => self.handle_filter_key(key.code),
                     View::TagFilter => self.handle_tag_filter_key(key.code),
                     View::RemoteBranches => self.handle_remote_branches_key(key.code),
+                    View::RemoteFilter => self.handle_remote_filter_key(key.code),
                 }
             }
             Event::Mouse(mouse) => {
@@ -1079,6 +1081,39 @@ impl App {
         }
     }
 
+    fn handle_remote_filter_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('\\') => {
+                self.view = View::RemoteBranches;
+            }
+            KeyCode::Char('m') => {
+                self.remote_search_query =
+                    FilterSet::toggle_token(&self.remote_search_query, "status:merged");
+                self.reset_remote_cursor();
+                self.view = View::RemoteBranches;
+            }
+            KeyCode::Char('s') => {
+                self.remote_search_query =
+                    FilterSet::toggle_token(&self.remote_search_query, "status:squash");
+                self.reset_remote_cursor();
+                self.view = View::RemoteBranches;
+            }
+            KeyCode::Char('u') => {
+                self.remote_search_query =
+                    FilterSet::toggle_token(&self.remote_search_query, "status:unmerged");
+                self.reset_remote_cursor();
+                self.view = View::RemoteBranches;
+            }
+            KeyCode::Char('c') => {
+                self.remote_search_query.clear();
+                self.remote_search_active = false;
+                self.reset_remote_cursor();
+                self.view = View::RemoteBranches;
+            }
+            _ => {}
+        }
+    }
+
     fn handle_remote_branches_key(&mut self, code: KeyCode) {
         let filtered: Vec<usize> = self.filtered_remote_indices();
         let len = filtered.len();
@@ -1228,7 +1263,7 @@ impl App {
                 self.remote_search_active = true;
             }
             KeyCode::Char('\\') => {
-                // TODO: remote filter view (not yet implemented)
+                self.view = View::RemoteFilter;
             }
             KeyCode::Char('?') => {
                 self.view = View::Help;
@@ -2490,20 +2525,32 @@ impl App {
     }
 
     pub fn filtered_remote_indices(&self) -> Vec<usize> {
-        let query = self.remote_search_query.to_lowercase();
+        let fs = FilterSet::parse(&self.remote_search_query);
         self.remote_branches
             .iter()
             .enumerate()
             .filter(|(_, b)| {
-                if query.is_empty() {
+                if self.remote_search_query.is_empty() {
                     return true;
                 }
                 if b.is_pinned() {
                     return true;
                 }
-                b.short_name.to_lowercase().contains(&query)
-                    || b.remote.to_lowercase().contains(&query)
-                    || b.full_ref.to_lowercase().contains(&query)
+                // Status filter tokens
+                if !fs.statuses.is_empty() && !fs.statuses.contains(&b.merge_status) {
+                    return false;
+                }
+                // Text filter on branch name / remote / full ref
+                if !fs.text.is_empty() {
+                    let text = fs.text.to_lowercase();
+                    if !b.short_name.to_lowercase().contains(&text)
+                        && !b.remote.to_lowercase().contains(&text)
+                        && !b.full_ref.to_lowercase().contains(&text)
+                    {
+                        return false;
+                    }
+                }
+                true
             })
             .map(|(i, _)| i)
             .collect()
