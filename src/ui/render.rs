@@ -1,7 +1,7 @@
 use ratatui::Frame;
 
 use crate::app::{App, View};
-use super::{branch_list, confirm, executing, filter, help, menu, results, settings, tag_list};
+use super::{branch_list, confirm, executing, filter, help, menu, remote_branch_list, results, settings, tag_list};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     match &app.view {
@@ -13,8 +13,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     | git_branch_manager::types::BranchAction::DeleteTagAndRemote
                     | git_branch_manager::types::BranchAction::PushTag
             );
+            let is_remote_action = matches!(
+                action,
+                git_branch_manager::types::BranchAction::DeleteRemoteBranch
+                    | git_branch_manager::types::BranchAction::CheckoutRemote
+            );
             if is_tag_action {
                 tag_list::draw(frame, app);
+            } else if is_remote_action {
+                remote_branch_list::draw(frame, app);
             } else {
                 branch_list::draw(frame, app);
             }
@@ -52,9 +59,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             tag_list::draw(frame, app);
             filter::draw_tag_filter(frame, &*app);
         }
-        View::RemoteBranches => {
-            // TODO: remote_branch_list::draw(frame, app)
-            branch_list::draw(frame, app);
-        }
+        View::RemoteBranches => remote_branch_list::draw(frame, app),
     }
 }
