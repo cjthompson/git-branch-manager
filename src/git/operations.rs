@@ -110,6 +110,43 @@ pub fn checkout_branch(
     result
 }
 
+/// Create a local tracking branch from a remote branch and check it out.
+///
+/// Runs `git checkout -b <short_name> --track <remote>/<short_name>`.
+pub fn checkout_remote_branch(
+    repo_path: &Path,
+    remote: &str,
+    short_name: &str,
+) -> OperationResult {
+    let tracking_ref = format!("{}/{}", remote, short_name);
+    match git_cmd(repo_path)
+        .args(["checkout", "-b", short_name, "--track", &tracking_ref])
+        .output()
+    {
+        Ok(o) if o.status.success() => OperationResult {
+            branch_name: short_name.to_string(),
+            action: BranchAction::CheckoutRemote,
+            success: true,
+            message: format!("Checked out {} from {}", short_name, tracking_ref),
+        },
+        Ok(o) => OperationResult {
+            branch_name: short_name.to_string(),
+            action: BranchAction::CheckoutRemote,
+            success: false,
+            message: format!(
+                "Checkout failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+        },
+        Err(e) => OperationResult {
+            branch_name: short_name.to_string(),
+            action: BranchAction::CheckoutRemote,
+            success: false,
+            message: format!("Failed to run git: {}", e),
+        },
+    }
+}
+
 /// Fetch from all remotes.
 pub fn fetch(repo_path: &Path) -> OperationResult {
     run_fetch_cmd(repo_path, false)

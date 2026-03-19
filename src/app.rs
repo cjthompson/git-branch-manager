@@ -1461,6 +1461,52 @@ impl App {
             return;
         }
 
+        // Delete remote branches: operates on remote selection (or cursor if nothing selected)
+        if action == BranchAction::DeleteRemoteBranch {
+            let selected: Vec<(String, String)> = self
+                .remote_branches
+                .iter()
+                .zip(self.remote_selected.iter())
+                .filter(|&(b, &sel)| sel && !b.is_pinned())
+                .map(|(b, _)| (b.remote.clone(), b.short_name.clone()))
+                .collect();
+            let target: Vec<(String, String)> = if selected.is_empty() {
+                let b = &self.remote_branches[self.remote_cursor];
+                vec![(b.remote.clone(), b.short_name.clone())]
+            } else {
+                selected
+            };
+            // delete_remotes_batch takes short names; group by remote if needed.
+            // Current implementation always uses "origin"; pass short_names only.
+            let short_names: Vec<String> = target.into_iter().map(|(_, s)| s).collect();
+            let repo_path = self.repo_path.clone();
+            self.spawn_op(label, move || {
+                operations::delete_remotes_batch(&repo_path, &short_names)
+                    .into_iter()
+                    .map(|mut r| {
+                        r.action = BranchAction::DeleteRemoteBranch;
+                        r
+                    })
+                    .collect()
+            });
+            return;
+        }
+
+        // CheckoutRemote: create a local tracking branch from the cursor remote branch
+        if action == BranchAction::CheckoutRemote {
+            if self.remote_branches.is_empty() {
+                return;
+            }
+            let b = &self.remote_branches[self.remote_cursor];
+            let remote = b.remote.clone();
+            let short_name = b.short_name.clone();
+            let repo_path = self.repo_path.clone();
+            self.spawn_op(label, move || {
+                vec![operations::checkout_remote_branch(&repo_path, &remote, &short_name)]
+            });
+            return;
+        }
+
         // Bulk branch operations (delete local, delete local+remote)
         let target_branches: Vec<String> = {
             let selected: Vec<String> = self
