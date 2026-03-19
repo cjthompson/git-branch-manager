@@ -4,6 +4,7 @@ pub mod executing;
 pub mod filter;
 pub mod help;
 pub mod menu;
+pub mod remote_branch_list;
 pub mod render;
 pub mod results;
 pub mod settings;
