@@ -260,6 +260,10 @@ impl App {
                     self.handle_tag_search_key(key.code);
                     return;
                 }
+                if self.remote_search_active && matches!(self.view, View::RemoteBranches) {
+                    self.handle_remote_search_key(key.code);
+                    return;
+                }
                 if self.search_active {
                     self.handle_search_key(key.code);
                     return;
@@ -276,7 +280,7 @@ impl App {
                     View::Settings { .. } => self.handle_settings_key(key.code),
                     View::Filter => self.handle_filter_key(key.code),
                     View::TagFilter => self.handle_tag_filter_key(key.code),
-                    View::RemoteBranches => {} // TODO: handle_remote_branches_key
+                    View::RemoteBranches => self.handle_remote_branches_key(key.code),
                 }
             }
             Event::Mouse(mouse) => {
@@ -292,6 +296,8 @@ impl App {
                             self.handle_branch_list_key(KeyCode::Down);
                         } else if self.view == View::Tags {
                             self.handle_tags_key(KeyCode::Down);
+                        } else if self.view == View::RemoteBranches {
+                            self.handle_remote_branches_key(KeyCode::Down);
                         }
                     }
                     MouseEventKind::ScrollUp => {
@@ -299,6 +305,8 @@ impl App {
                             self.handle_branch_list_key(KeyCode::Up);
                         } else if self.view == View::Tags {
                             self.handle_tags_key(KeyCode::Up);
+                        } else if self.view == View::RemoteBranches {
+                            self.handle_remote_branches_key(KeyCode::Up);
                         }
                     }
                     _ => {}
@@ -664,8 +672,14 @@ impl App {
                     &self.view,
                     View::Confirm { action } if matches!(action, BranchAction::DeleteTag | BranchAction::DeleteTagAndRemote | BranchAction::PushTag)
                 );
+                let is_remote_action = matches!(
+                    &self.view,
+                    View::Confirm { action } if matches!(action, BranchAction::DeleteRemoteBranch | BranchAction::CheckoutRemote)
+                );
                 if is_tag_action {
                     self.results_return_view = ResultsReturnView::Tags;
+                } else if is_remote_action {
+                    self.results_return_view = ResultsReturnView::RemoteBranches;
                 }
                 self.execute_action_async();
             }
@@ -675,8 +689,14 @@ impl App {
                     &self.view,
                     View::Confirm { action } if matches!(action, BranchAction::DeleteTag | BranchAction::DeleteTagAndRemote | BranchAction::PushTag)
                 );
+                let is_remote_action = matches!(
+                    &self.view,
+                    View::Confirm { action } if matches!(action, BranchAction::DeleteRemoteBranch | BranchAction::CheckoutRemote)
+                );
                 if is_tag_action {
                     self.view = View::Tags;
+                } else if is_remote_action {
+                    self.view = View::RemoteBranches;
                 } else {
                     self.view = View::BranchList;
                 }
@@ -978,6 +998,28 @@ impl App {
         }
     }
 
+    fn handle_remote_search_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.remote_search_query.clear();
+                self.remote_search_active = false;
+                self.reset_remote_cursor();
+            }
+            KeyCode::Enter => {
+                self.remote_search_active = false;
+            }
+            KeyCode::Backspace => {
+                self.remote_search_query.pop();
+                self.reset_remote_cursor();
+            }
+            KeyCode::Char(c) => {
+                self.remote_search_query.push(c);
+                self.reset_remote_cursor();
+            }
+            _ => {}
+        }
+    }
+
     fn handle_tag_filter_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc | KeyCode::Char('\\') => {
@@ -1032,6 +1074,194 @@ impl App {
                 self.tag_search_active = false;
                 self.reset_tag_cursor();
                 self.view = View::Tags;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_remote_branches_key(&mut self, code: KeyCode) {
+        let filtered: Vec<usize> = self.filtered_remote_indices();
+        let len = filtered.len();
+        if len == 0 {
+            match code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('r') => {
+                    self.view = View::BranchList;
+                }
+                KeyCode::Char('t') => {
+                    let Ok(repo) = git2::Repository::open(&self.repo_path) else {
+                        return;
+                    };
+                    self.tags = tags::list_tags(&repo);
+                    self.tag_selected = vec![false; self.tags.len()];
+                    self.tag_cursor = 0;
+                    self.tag_search_query.clear();
+                    self.tag_search_active = false;
+                    self.tag_sort_by_name = false;
+                    self.tag_table_state = TableState::default().with_selected(
+                        if self.tags.is_empty() { None } else { Some(0) }
+                    );
+                    self.view = View::Tags;
+                }
+                KeyCode::Char('/') => {
+                    self.remote_search_active = true;
+                }
+                KeyCode::Char('T') => {
+                    self.theme = self.theme.next();
+                    let mut config = git_branch_manager::config::Config::load();
+                    config.theme = Some(self.theme.name.to_string());
+                    config.save();
+                }
+                KeyCode::Char('Y') => {
+                    self.symbols = crate::ui::symbols::next(self.symbols);
+                    let mut config = git_branch_manager::config::Config::load();
+                    config.symbols = Some(crate::ui::symbols::name(self.symbols).to_string());
+                    config.save();
+                }
+                KeyCode::Char('?') => {
+                    self.view = View::Help;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Find current cursor position in filtered list
+        let cursor_pos = filtered.iter().position(|&i| i == self.remote_cursor).unwrap_or(0);
+
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if cursor_pos + 1 < len {
+                    self.remote_cursor = filtered[cursor_pos + 1];
+                    self.remote_table_state.select(Some(cursor_pos + 1));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if cursor_pos > 0 {
+                    self.remote_cursor = filtered[cursor_pos - 1];
+                    self.remote_table_state.select(Some(cursor_pos - 1));
+                }
+            }
+            KeyCode::PageDown => {
+                let page_size = 20;
+                let new_pos = (cursor_pos + page_size).min(len - 1);
+                self.remote_cursor = filtered[new_pos];
+                self.remote_table_state.select(Some(new_pos));
+            }
+            KeyCode::PageUp => {
+                let page_size = 20;
+                let new_pos = cursor_pos.saturating_sub(page_size);
+                self.remote_cursor = filtered[new_pos];
+                self.remote_table_state.select(Some(new_pos));
+            }
+            KeyCode::Home => {
+                self.remote_cursor = filtered[0];
+                self.remote_table_state.select(Some(0));
+            }
+            KeyCode::End => {
+                self.remote_cursor = filtered[len - 1];
+                self.remote_table_state.select(Some(len - 1));
+            }
+            KeyCode::Char(' ') => {
+                let branch = &self.remote_branches[self.remote_cursor];
+                if !branch.is_pinned() {
+                    self.remote_selected[self.remote_cursor] = !self.remote_selected[self.remote_cursor];
+                }
+            }
+            KeyCode::Char('a') => {
+                for &i in &filtered {
+                    if !self.remote_branches[i].is_pinned() {
+                        self.remote_selected[i] = true;
+                    }
+                }
+            }
+            KeyCode::Char('n') => {
+                self.remote_selected.fill(false);
+            }
+            KeyCode::Char('i') => {
+                for &i in &filtered {
+                    if !self.remote_branches[i].is_pinned() {
+                        self.remote_selected[i] = !self.remote_selected[i];
+                    }
+                }
+            }
+            KeyCode::Char('m') => {
+                for (i, branch) in self.remote_branches.iter().enumerate() {
+                    self.remote_selected[i] = !branch.is_pinned()
+                        && matches!(
+                            branch.merge_status,
+                            MergeStatus::Merged | MergeStatus::SquashMerged
+                        );
+                }
+            }
+            KeyCode::Char('d') => {
+                let has_selection = self.remote_selected.iter().any(|&s| s);
+                if has_selection || !self.remote_branches.is_empty() {
+                    self.results_return_view = ResultsReturnView::RemoteBranches;
+                    self.view = View::Confirm {
+                        action: BranchAction::DeleteRemoteBranch,
+                    };
+                }
+            }
+            KeyCode::Char('c') => {
+                let branch = &self.remote_branches[self.remote_cursor];
+                if !branch.is_pinned() {
+                    self.results_return_view = ResultsReturnView::RemoteBranches;
+                    self.view = View::Confirm {
+                        action: BranchAction::CheckoutRemote,
+                    };
+                }
+            }
+            KeyCode::Char('s') => {
+                // Cycle sort column: None -> 0=name -> 1=age -> 2=status -> 0...
+                self.remote_sort_column = Some(match self.remote_sort_column {
+                    Some(c) => (c + 1) % 3,
+                    None => 0,
+                });
+                self.remote_sort_ascending = true;
+                self.apply_remote_sort();
+            }
+            KeyCode::Char('S') => {
+                self.remote_sort_ascending = !self.remote_sort_ascending;
+                self.apply_remote_sort();
+            }
+            KeyCode::Char('/') => {
+                self.remote_search_active = true;
+            }
+            KeyCode::Char('\\') => {
+                // TODO: remote filter view (not yet implemented)
+            }
+            KeyCode::Char('?') => {
+                self.view = View::Help;
+            }
+            KeyCode::Char('T') => {
+                self.theme = self.theme.next();
+                let mut config = git_branch_manager::config::Config::load();
+                config.theme = Some(self.theme.name.to_string());
+                config.save();
+            }
+            KeyCode::Char('Y') => {
+                self.symbols = crate::ui::symbols::next(self.symbols);
+                let mut config = git_branch_manager::config::Config::load();
+                config.symbols = Some(crate::ui::symbols::name(self.symbols).to_string());
+                config.save();
+            }
+            KeyCode::Char('t') => {
+                let Ok(repo) = git2::Repository::open(&self.repo_path) else {
+                    return;
+                };
+                self.tags = tags::list_tags(&repo);
+                self.tag_selected = vec![false; self.tags.len()];
+                self.tag_cursor = 0;
+                self.tag_search_query.clear();
+                self.tag_search_active = false;
+                self.tag_sort_by_name = false;
+                self.tag_table_state = TableState::default().with_selected(
+                    if self.tags.is_empty() { None } else { Some(0) }
+                );
+                self.view = View::Tags;
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('r') => {
+                self.view = View::BranchList;
             }
             _ => {}
         }
@@ -2185,6 +2415,26 @@ impl App {
             .collect()
     }
 
+    pub fn filtered_remote_indices(&self) -> Vec<usize> {
+        let query = self.remote_search_query.to_lowercase();
+        self.remote_branches
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| {
+                if query.is_empty() {
+                    return true;
+                }
+                if b.is_pinned() {
+                    return true;
+                }
+                b.short_name.to_lowercase().contains(&query)
+                    || b.remote.to_lowercase().contains(&query)
+                    || b.full_ref.to_lowercase().contains(&query)
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     pub fn matches_tag_search(&self, tag: &TagInfo) -> bool {
         if self.tag_search_query.is_empty() {
             return true;
@@ -2236,6 +2486,20 @@ impl App {
         }
     }
 
+    fn reset_remote_cursor(&mut self) {
+        let filtered = self.filtered_remote_indices();
+        if filtered.is_empty() {
+            return;
+        }
+        if filtered.contains(&self.remote_cursor) {
+            let pos = filtered.iter().position(|&i| i == self.remote_cursor).unwrap();
+            self.remote_table_state.select(Some(pos));
+        } else {
+            self.remote_cursor = filtered[0];
+            self.remote_table_state.select(Some(0));
+        }
+    }
+
     fn apply_tag_sort(&mut self) {
         if self.tag_sort_by_name {
             self.tags.sort_by(|a, b| a.name.cmp(&b.name));
@@ -2245,6 +2509,37 @@ impl App {
         self.tag_selected = vec![false; self.tags.len()];
         self.tag_cursor = 0;
         self.tag_table_state.select(if self.tags.is_empty() { None } else { Some(0) });
+    }
+
+    fn apply_remote_sort(&mut self) {
+        let Some(col) = self.remote_sort_column else { return };
+        let asc = self.remote_sort_ascending;
+
+        // Pinned branches stay at the top — sort only non-pinned
+        let pin_count = self.remote_branches.iter().take_while(|b| b.is_pinned()).count();
+        let sortable = &mut self.remote_branches[pin_count..];
+
+        sortable.sort_by(|a, b| {
+            let ord = match col {
+                0 => a.short_name.cmp(&b.short_name),
+                1 => a.last_commit_date.cmp(&b.last_commit_date),
+                2 => {
+                    let rank = |s: &MergeStatus| match s {
+                        MergeStatus::Merged => 0,
+                        MergeStatus::SquashMerged => 1,
+                        MergeStatus::Unmerged => 2,
+                    };
+                    rank(&a.merge_status).cmp(&rank(&b.merge_status))
+                }
+                _ => std::cmp::Ordering::Equal,
+            };
+            if asc { ord } else { ord.reverse() }
+        });
+
+        // Reset selection and cursor after sort
+        self.remote_selected = vec![false; self.remote_branches.len()];
+        self.remote_cursor = 0;
+        self.remote_table_state.select(if self.remote_branches.is_empty() { None } else { Some(0) });
     }
 }
 
