@@ -112,6 +112,11 @@ pub struct LoadProgress {
 }
 
 /// Payload sent from the background remote-branch-load thread.
+/// Payload sent from the background tag-load thread.
+pub(crate) struct TagLoad {
+    pub tags: Vec<TagInfo>,
+}
+
 pub(crate) struct RemoteLoad {
     remote_branches: Vec<RemoteBranchInfo>,
     candidates: Vec<(String, String)>,
@@ -161,6 +166,10 @@ pub struct App {
     pub tag_search_query: String,
     pub tag_search_active: bool,
     pub tag_sort_by_name: bool,
+    /// True while background tag loading is in progress.
+    pub tag_loading: bool,
+    /// Receiver for background tag loading.
+    pub tag_load_rx: Option<Receiver<TagLoad>>,
     /// Which view to return to after the Results screen (BranchList or Tags).
     pub results_return_view: ResultsReturnView,
     /// Column header x-ranges for mouse click sorting: (x_start, sort_column_index).
@@ -278,6 +287,8 @@ impl App {
             tag_search_query: String::new(),
             tag_search_active: false,
             tag_sort_by_name: false,
+            tag_loading: false,
+            tag_load_rx: None,
             results_return_view: ResultsReturnView::BranchList,
             header_columns: Vec::new(),
             status_bar_items: Vec::new(),
@@ -330,6 +341,7 @@ impl App {
         crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
         while !self.should_exit {
             self.drain_load_rx();
+            self.drain_tag_load_rx();
             self.drain_remote_load_rx();
             self.drain_squash_rx();
             self.drain_remote_squash_rx();
@@ -617,19 +629,11 @@ impl App {
                 self.config.save();
             }
             KeyCode::Char('t') => {
-                let Ok(repo) = git2::Repository::open(&self.repo_path) else {
-                    return;
-                };
-                self.tags = tags::list_tags(&repo);
-                self.tag_selected = vec![false; self.tags.len()];
                 self.tag_cursor = 0;
                 self.tag_search_query.clear();
                 self.tag_search_active = false;
                 self.tag_sort_by_name = false;
-                self.tag_table_state = TableState::default().with_selected(
-                    if self.tags.is_empty() { None } else { Some(0) }
-                );
-                self.view = View::Tags;
+                self.load_tags();
             }
             KeyCode::Char('r') => {
                 self.open_remote_branches_view();
@@ -720,25 +724,9 @@ impl App {
     fn handle_results_key(&mut self, _code: KeyCode) {
         match self.results_return_view {
             ResultsReturnView::Tags => {
-                // Refresh the tag list and return to Tags view
-                let Ok(repo) = git2::Repository::open(&self.repo_path) else {
-                    self.view = View::BranchList;
-                    return;
-                };
-                self.tags = tags::list_tags(&repo);
-                if self.tag_sort_by_name {
-                    self.tags.sort_by(|a, b| a.name.cmp(&b.name));
-                }
-                self.tag_selected = vec![false; self.tags.len()];
-                if self.tag_cursor >= self.tags.len() {
-                    self.tag_cursor = self.tags.len().saturating_sub(1);
-                }
-                self.tag_table_state.select(
-                    if self.tags.is_empty() { None } else { Some(self.tag_cursor) }
-                );
                 self.results.clear();
                 self.results_return_view = ResultsReturnView::BranchList;
-                self.view = View::Tags;
+                self.load_tags();
             }
             ResultsReturnView::BranchList => {
                 self.refresh_branches();
@@ -1122,19 +1110,11 @@ impl App {
                     self.view = View::BranchList;
                 }
                 KeyCode::Char('t') => {
-                    let Ok(repo) = git2::Repository::open(&self.repo_path) else {
-                        return;
-                    };
-                    self.tags = tags::list_tags(&repo);
-                    self.tag_selected = vec![false; self.tags.len()];
                     self.tag_cursor = 0;
                     self.tag_search_query.clear();
                     self.tag_search_active = false;
                     self.tag_sort_by_name = false;
-                    self.tag_table_state = TableState::default().with_selected(
-                        if self.tags.is_empty() { None } else { Some(0) }
-                    );
-                    self.view = View::Tags;
+                    self.load_tags();
                 }
                 KeyCode::Char('/') => {
                     self.remote_search_active = true;
@@ -1224,19 +1204,11 @@ impl App {
                 config.save();
             }
             KeyCode::Char('t') => {
-                let Ok(repo) = git2::Repository::open(&self.repo_path) else {
-                    return;
-                };
-                self.tags = tags::list_tags(&repo);
-                self.tag_selected = vec![false; self.tags.len()];
                 self.tag_cursor = 0;
                 self.tag_search_query.clear();
                 self.tag_search_active = false;
                 self.tag_sort_by_name = false;
-                self.tag_table_state = TableState::default().with_selected(
-                    if self.tags.is_empty() { None } else { Some(0) }
-                );
-                self.view = View::Tags;
+                self.load_tags();
             }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('r') => {
                 self.view = View::BranchList;
@@ -1775,6 +1747,51 @@ impl App {
             Err(TryRecvError::Disconnected) => {
                 self.load_rx = None;
                 self.loading = false;
+            }
+        }
+    }
+
+    /// Spawn background thread to load tags. Results arrive via `tag_load_rx`.
+    fn load_tags(&mut self) {
+        let repo_path = self.repo_path.clone();
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            let Ok(repo) = git2::Repository::open(&repo_path) else { return };
+            let tag_list = tags::list_tags(&repo);
+            let _ = tx.send(TagLoad { tags: tag_list });
+        });
+
+        self.tag_load_rx = Some(rx);
+        self.tag_loading = true;
+        self.view = View::Tags;
+    }
+
+    fn drain_tag_load_rx(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+
+        let Some(rx) = &self.tag_load_rx else { return };
+
+        match rx.try_recv() {
+            Ok(load) => {
+                self.tag_load_rx = None;
+                self.tag_loading = false;
+                self.tags = load.tags;
+                if self.tag_sort_by_name {
+                    self.tags.sort_by(|a, b| a.name.cmp(&b.name));
+                }
+                self.tag_selected = vec![false; self.tags.len()];
+                if self.tag_cursor >= self.tags.len() {
+                    self.tag_cursor = self.tags.len().saturating_sub(1);
+                }
+                self.tag_table_state = TableState::default().with_selected(
+                    if self.tags.is_empty() { None } else { Some(self.tag_cursor) },
+                );
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.tag_load_rx = None;
+                self.tag_loading = false;
             }
         }
     }

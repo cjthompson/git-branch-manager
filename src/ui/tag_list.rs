@@ -22,6 +22,20 @@ fn age_style(date: &chrono::DateTime<chrono::Utc>) -> Style {
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
+    // Show loading screen while tags are being fetched
+    if app.tag_loading {
+        let block = Block::default()
+            .title("Tags")
+            .title_style(app.theme.title)
+            .borders(Borders::ALL);
+        let msg = "  Loading tags...";
+        let loading = Paragraph::new(msg)
+            .style(app.theme.primary_text)
+            .block(block);
+        frame.render_widget(loading, area);
+        return;
+    }
+
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])

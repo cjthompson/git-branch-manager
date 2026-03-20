@@ -37,3 +37,20 @@ before the reload starts.
 **Files changed:**
 - `src/app.rs` — Added `RemoteLoad` struct, `remote_load_rx` field, rewrote
   `populate_remote_branches()`, added `drain_remote_load_rx()` to event loop
+
+## Task #016: Make list_tags() non-blocking
+
+**Problem:** `tags::list_tags()` was called synchronously on the main thread in 4 separate
+locations (branch list `t` key, results return to tags, remote branches `t` key x2). Each
+call opened a fresh `Repository` and iterated all tags. On repos with hundreds of tags,
+this caused 100–500ms freezes.
+
+**Fix:** Added `TagLoad` struct, `tag_load_rx` channel, `tag_loading` flag, `load_tags()`
+helper, and `drain_tag_load_rx()` to the event loop. All 4 call sites now use `load_tags()`
+which spawns a background thread. Added a "Loading tags..." screen to `tag_list.rs` that
+displays while the background load is in progress.
+
+**Files changed:**
+- `src/app.rs` — Added `TagLoad` struct, `tag_load_rx`/`tag_loading` fields, `load_tags()`
+  method, `drain_tag_load_rx()` in event loop; replaced 4 synchronous call sites
+- `src/ui/tag_list.rs` — Added loading screen when `tag_loading` is true
