@@ -111,6 +111,13 @@ pub struct LoadProgress {
     pub message: String,
 }
 
+/// Payload sent from the background remote-branch-load thread.
+pub(crate) struct RemoteLoad {
+    remote_branches: Vec<RemoteBranchInfo>,
+    candidates: Vec<(String, String)>,
+    cache: cache::BranchCache,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
     BranchList,
@@ -212,6 +219,8 @@ pub struct App {
     pub remote_header_columns: Vec<(u16, usize)>,
     /// Status bar clickable items for remote branches view.
     pub remote_status_bar_items: Vec<(u16, u16, KeyCode)>,
+    /// Receiver for background remote branch loading (phase 1 enumeration).
+    pub remote_load_rx: Option<Receiver<RemoteLoad>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,6 +311,7 @@ impl App {
             remote_fetch_rx: None,
             remote_header_columns: Vec::new(),
             remote_status_bar_items: Vec::new(),
+            remote_load_rx: None,
         }
     }
 
@@ -320,6 +330,7 @@ impl App {
         crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
         while !self.should_exit {
             self.drain_load_rx();
+            self.drain_remote_load_rx();
             self.drain_squash_rx();
             self.drain_remote_squash_rx();
             self.drain_pr_rx();
@@ -333,10 +344,11 @@ impl App {
             {
                 self.remote_fetch_rx = None;
                 self.remote_fetched = true;
-                self.remote_loading = false;
                 // Reload branches with updated remote refs
                 if self.view == View::RemoteBranches {
                     self.populate_remote_branches();
+                } else {
+                    self.remote_loading = false;
                 }
             }
 
@@ -1627,58 +1639,43 @@ impl App {
         self.view = View::RemoteBranches;
     }
 
-    /// Populate remote branches from local tracking refs and spawn squash checker.
+    /// Spawn background thread to populate remote branches from local tracking refs.
+    /// Results arrive via `remote_load_rx` and are applied in `drain_remote_load_rx()`.
     fn populate_remote_branches(&mut self) {
-        let Ok(repo) = git2::Repository::open(&self.repo_path) else {
-            return;
-        };
+        let repo_path = self.repo_path.clone();
+        let base_branch = self.base_branch.clone();
+        let (tx, rx) = mpsc::channel();
 
-        let remote_branches =
-            match branch::list_remote_branches_phase1(&repo, &self.base_branch) {
-                Ok(b) => b,
-                Err(_) => return,
+        std::thread::spawn(move || {
+            let Ok(repo) = git2::Repository::open(&repo_path) else { return };
+            let Ok(remote_branches) =
+                branch::list_remote_branches_phase1(&repo, &base_branch)
+            else {
+                return;
             };
 
-        // Build squash-merge candidates: unmerged, non-base remote branches
-        let branch_cache = cache::BranchCache::load(&self.repo_path);
-        let candidates: Vec<(String, String)> = remote_branches
-            .iter()
-            .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base)
-            .filter_map(|b| {
-                let refname = format!("refs/remotes/{}", b.full_ref);
-                repo.find_reference(&refname)
-                    .ok()
-                    .and_then(|r| r.peel_to_commit().ok())
-                    .map(|c| (b.full_ref.clone(), c.id().to_string()))
-            })
-            .collect();
+            let branch_cache = cache::BranchCache::load(&repo_path);
+            let candidates: Vec<(String, String)> = remote_branches
+                .iter()
+                .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base)
+                .filter_map(|b| {
+                    let refname = format!("refs/remotes/{}", b.full_ref);
+                    repo.find_reference(&refname)
+                        .ok()
+                        .and_then(|r| r.peel_to_commit().ok())
+                        .map(|c| (b.full_ref.clone(), c.id().to_string()))
+                })
+                .collect();
 
-        // Reset remote view state
-        let len = remote_branches.len();
-        self.remote_branches = remote_branches;
-        self.remote_selected = vec![false; len];
-        self.remote_cursor = 0;
-        self.remote_search_query.clear();
-        self.remote_search_active = false;
-        self.remote_sort_column = None;
-        self.remote_sort_ascending = true;
-        self.remote_table_state = TableState::default().with_selected(
-            if len == 0 { None } else { Some(0) }
-        );
-
-        // Spawn squash checker for remote candidates
-        self.remote_squash_checked = 0;
-        self.remote_squash_total = candidates.len();
-        self.remote_squash_rx = if candidates.is_empty() {
-            None
-        } else {
-            Some(squash_loader::spawn_squash_checker(
-                self.repo_path.clone(),
-                self.base_branch.clone(),
+            let _ = tx.send(RemoteLoad {
+                remote_branches,
                 candidates,
-                branch_cache,
-            ))
-        };
+                cache: branch_cache,
+            });
+        });
+
+        self.remote_load_rx = Some(rx);
+        self.remote_loading = true;
     }
 
     fn apply_sort(&mut self) {
@@ -1778,6 +1775,49 @@ impl App {
             Err(TryRecvError::Disconnected) => {
                 self.load_rx = None;
                 self.loading = false;
+            }
+        }
+    }
+
+    fn drain_remote_load_rx(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+
+        let Some(rx) = &self.remote_load_rx else { return };
+
+        match rx.try_recv() {
+            Ok(load) => {
+                self.remote_load_rx = None;
+                self.remote_loading = false;
+
+                let len = load.remote_branches.len();
+                self.remote_branches = load.remote_branches;
+                self.remote_selected = vec![false; len];
+                self.remote_cursor = 0;
+                self.remote_search_query.clear();
+                self.remote_search_active = false;
+                self.remote_sort_column = None;
+                self.remote_sort_ascending = true;
+                self.remote_table_state = TableState::default().with_selected(
+                    if len == 0 { None } else { Some(0) },
+                );
+
+                self.remote_squash_checked = 0;
+                self.remote_squash_total = load.candidates.len();
+                self.remote_squash_rx = if load.candidates.is_empty() {
+                    None
+                } else {
+                    Some(squash_loader::spawn_squash_checker(
+                        self.repo_path.clone(),
+                        self.base_branch.clone(),
+                        load.candidates,
+                        load.cache,
+                    ))
+                };
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.remote_load_rx = None;
+                self.remote_loading = false;
             }
         }
     }
