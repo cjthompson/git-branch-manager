@@ -2370,7 +2370,7 @@ impl App {
                 }
             }
             KeyCode::Char(' ') => {
-                // Space toggles on cursor==3 (sort direction) or cursor==4 (auto-fetch)
+                // Space toggles on cursor==3 (sort direction), cursor==4 (auto-fetch), or cursor==5 (load worktrees)
                 let cursor = if let View::Settings { cursor } = self.view { cursor } else { return };
                 if cursor == 3 {
                     self.sort_ascending = !self.sort_ascending;
