@@ -369,7 +369,7 @@ impl App {
                 }
             }
 
-            if event::poll(Duration::from_millis(250))? {
+            if event::poll(Duration::from_millis(50))? {
                 let ev = event::read()?;
                 self.handle_event(ev);
             }
