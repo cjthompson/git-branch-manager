@@ -123,3 +123,16 @@ it to `true` when `auto_fetch` is configured. `drain_load_rx()` propagates this 
 - `src/app.rs` — Added `did_fetch` to `InitialLoad`, set `remote_fetched` in
   `drain_load_rx()` when `did_fetch` is true, set `did_fetch: false` in refresh path
 - `src/main.rs` — Set `did_fetch: auto_fetch` in startup load
+
+## Task #022: Respect auto_fetch setting in Remote Branches view
+
+**Problem:** `open_remote_branches_view()` always spawned a background `git fetch` on first
+open, regardless of the `auto_fetch` config setting. With auto_fetch disabled, the user
+expects no network activity unless explicitly requested.
+
+**Fix:** Gated the background fetch in `open_remote_branches_view()` on
+`self.config.auto_fetch == Some(true)`. When auto_fetch is off, the Remote Branches view
+only shows locally known remote tracking refs without fetching.
+
+**Files changed:**
+- `src/app.rs` — Added `auto_fetch` check to fetch condition in `open_remote_branches_view()`

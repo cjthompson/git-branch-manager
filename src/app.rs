@@ -1596,15 +1596,15 @@ impl App {
 
     /// Open the Remote Branches view.
     ///
-    /// On the first call per session, loads currently known remote tracking refs
-    /// immediately and spawns a background `git fetch`. When the fetch completes,
-    /// branches are silently reloaded. A toast is shown while the fetch runs.
+    /// Loads currently known remote tracking refs in the background. If `auto_fetch`
+    /// is enabled and a fetch hasn't been done this session, spawns a background
+    /// `git fetch` and reloads branches when it completes.
     fn open_remote_branches_view(&mut self) {
         // Load currently known remote refs immediately (local-only, fast)
         // Always load what we already know from local refs
         self.populate_remote_branches();
 
-        if !self.remote_fetched {
+        if !self.remote_fetched && self.config.auto_fetch == Some(true) {
             // Spawn background fetch; branches reload when it completes
             let repo_path = self.repo_path.clone();
             let (tx, rx) = mpsc::channel();
