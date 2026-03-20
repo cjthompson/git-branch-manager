@@ -3,8 +3,8 @@ use crossterm::event::KeyCode;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
-use crate::app::{App, FilterSet};
-use git_branch_manager::types::{MergeStatus, RemoteBranchInfo};
+use crate::app::App;
+use git_branch_manager::types::MergeStatus;
 
 /// Returns a color style for known branch name prefixes (text before the first `/`).
 fn prefix_style(prefix: &str) -> Option<Style> {
@@ -38,6 +38,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     app.terminal_rows = area.height;
 
+    // Show loading screen while fetching
+    if app.remote_loading {
+        let block = Block::default()
+            .title("Remote Branches")
+            .title_style(app.theme.remote_title)
+            .borders(Borders::ALL);
+        let loading = Paragraph::new("Fetching remote branches...")
+            .style(Style::default().fg(Color::Yellow))
+            .block(block)
+            .alignment(Alignment::Center);
+        frame.render_widget(loading, area);
+        return;
+    }
+
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -58,7 +72,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     let block = Block::default()
         .title(title)
-        .title_style(app.theme.title)
+        .title_style(app.theme.remote_title)
         .borders(Borders::ALL);
 
     let sort_arrow = if app.remote_sort_ascending { "\u{25b2}" } else { "\u{25bc}" };
@@ -87,33 +101,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ));
 
     let header = Row::new(header_cells)
-        .style(app.theme.header)
+        .style(app.theme.remote_header)
         .bottom_margin(0);
 
-    let filtered_indices: Vec<usize> = app
-        .remote_branches
-        .iter()
-        .enumerate()
-        .filter(|(_, b)| matches_remote_search(app, b))
-        .map(|(i, _)| i)
-        .collect();
-
-    let pinned_indices: Vec<usize> = filtered_indices
-        .iter()
-        .copied()
-        .filter(|&i| app.remote_branches[i].is_pinned())
-        .collect();
-    let non_pinned_indices: Vec<usize> = filtered_indices
-        .iter()
-        .copied()
-        .filter(|&i| !app.remote_branches[i].is_pinned())
-        .collect();
-
-    let display_indices: Vec<usize> = pinned_indices
-        .iter()
-        .chain(non_pinned_indices.iter())
-        .copied()
-        .collect();
+    let display_indices = app.filtered_remote_indices();
 
     let display_cursor = display_indices
         .iter()
@@ -353,7 +344,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let filter_text = format!(
             " filter: \"{}\" ({}/{} shown) \u{2014} [\\]filter [/]edit [Esc in /]clear",
             app.remote_search_query,
-            filtered_indices.len(),
+            display_indices.len(),
             app.remote_branches.len()
         );
         let status = Paragraph::new(filter_text).style(app.theme.search_bar);
@@ -430,7 +421,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
 
         let key_style = Style::default()
-            .fg(app.theme.title.fg.unwrap_or(Color::White))
+            .fg(app.theme.remote_title.fg.unwrap_or(Color::White))
             .bg(app.theme.status_bar.bg.unwrap_or(Color::Reset))
             .add_modifier(ratatui::style::Modifier::BOLD);
         let mut spans: Vec<Span> = Vec::new();
@@ -467,28 +458,4 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let status = Paragraph::new(Line::from(spans)).style(app.theme.status_bar);
         frame.render_widget(status, status_area);
     }
-}
-
-/// Returns true if the remote branch matches the current remote search query.
-fn matches_remote_search(app: &App, branch: &RemoteBranchInfo) -> bool {
-    if app.remote_search_query.is_empty() {
-        return true;
-    }
-    if branch.is_pinned() {
-        return true;
-    }
-    let fs = FilterSet::parse(&app.remote_search_query);
-    if !fs.statuses.is_empty() && !fs.statuses.contains(&branch.merge_status) {
-        return false;
-    }
-    if !fs.text.is_empty() {
-        let text = fs.text.to_lowercase();
-        if !branch.short_name.to_lowercase().contains(&text)
-            && !branch.remote.to_lowercase().contains(&text)
-            && !branch.full_ref.to_lowercase().contains(&text)
-        {
-            return false;
-        }
-    }
-    true
 }

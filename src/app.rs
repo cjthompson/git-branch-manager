@@ -18,6 +18,86 @@ use crate::ui;
 use crate::ui::symbols::SymbolSet;
 use crate::ui::theme::Theme;
 
+/// Trait for shared list navigation, selection, and mouse click logic.
+trait ListNav {
+    /// Display-ordered filtered indices (pinned first, then non-pinned).
+    fn display_indices(&self) -> Vec<usize>;
+    /// Current cursor position (raw index into the data array).
+    fn cursor(&self) -> usize;
+    /// Set cursor to a raw index and update table_state to the display position.
+    fn set_cursor(&mut self, raw_idx: usize, display_pos: usize);
+    /// The selection boolean vec.
+    fn selection(&self) -> &[bool];
+    /// Mutable access to selection vec.
+    fn selection_mut(&mut self) -> &mut Vec<bool>;
+    /// Whether the item at raw_idx can be selected (i.e. not pinned).
+    fn is_selectable(&self, raw_idx: usize) -> bool;
+    /// Merge status of item at raw_idx.
+    fn merge_status(&self, raw_idx: usize) -> &MergeStatus;
+}
+
+/// Adapter for local branch list navigation.
+struct BranchListNav<'a> {
+    app: &'a mut App,
+}
+
+impl ListNav for BranchListNav<'_> {
+    fn display_indices(&self) -> Vec<usize> {
+        self.app.filtered_branch_indices()
+    }
+    fn cursor(&self) -> usize {
+        self.app.cursor
+    }
+    fn set_cursor(&mut self, raw_idx: usize, display_pos: usize) {
+        self.app.cursor = raw_idx;
+        self.app.table_state.select(Some(display_pos));
+    }
+    fn selection(&self) -> &[bool] {
+        &self.app.selected
+    }
+    fn selection_mut(&mut self) -> &mut Vec<bool> {
+        &mut self.app.selected
+    }
+    fn is_selectable(&self, raw_idx: usize) -> bool {
+        let b = &self.app.branches[raw_idx];
+        !b.is_base && !b.is_current
+    }
+    fn merge_status(&self, raw_idx: usize) -> &MergeStatus {
+        &self.app.branches[raw_idx].merge_status
+    }
+}
+
+/// Adapter for remote branch list navigation.
+struct RemoteListNav<'a> {
+    app: &'a mut App,
+}
+
+impl ListNav for RemoteListNav<'_> {
+    fn display_indices(&self) -> Vec<usize> {
+        self.app.filtered_remote_indices()
+    }
+    #[allow(clippy::misnamed_getters)]
+    fn cursor(&self) -> usize {
+        self.app.remote_cursor
+    }
+    fn set_cursor(&mut self, raw_idx: usize, display_pos: usize) {
+        self.app.remote_cursor = raw_idx;
+        self.app.remote_table_state.select(Some(display_pos));
+    }
+    fn selection(&self) -> &[bool] {
+        &self.app.remote_selected
+    }
+    fn selection_mut(&mut self) -> &mut Vec<bool> {
+        &mut self.app.remote_selected
+    }
+    fn is_selectable(&self, raw_idx: usize) -> bool {
+        !self.app.remote_branches[raw_idx].is_pinned()
+    }
+    fn merge_status(&self, raw_idx: usize) -> &MergeStatus {
+        &self.app.remote_branches[raw_idx].merge_status
+    }
+}
+
 /// Payload sent from the background initial-load thread.
 pub struct InitialLoad {
     pub branches: Vec<BranchInfo>,
@@ -124,6 +204,10 @@ pub struct App {
     pub remote_squash_total: usize,
     /// Whether `git fetch` has been run this session (lazy fetch on first open).
     pub remote_fetched: bool,
+    /// Whether the remote branches view is currently loading (fetch in progress).
+    pub remote_loading: bool,
+    /// Receiver for background `git fetch` completion. When present, a fetch is in progress.
+    pub remote_fetch_rx: Option<Receiver<bool>>,
     /// Column header x-ranges for mouse click sorting in remote branches view.
     pub remote_header_columns: Vec<(u16, usize)>,
     /// Status bar clickable items for remote branches view.
@@ -214,6 +298,8 @@ impl App {
             remote_squash_checked: 0,
             remote_squash_total: 0,
             remote_fetched: false,
+            remote_loading: false,
+            remote_fetch_rx: None,
             remote_header_columns: Vec::new(),
             remote_status_bar_items: Vec::new(),
         }
@@ -240,6 +326,19 @@ impl App {
             self.drain_progress_rx();
             self.drain_op_rx();
             terminal.draw(|frame| ui::render::draw(frame, self))?;
+
+            // Check if background remote fetch completed
+            if let Some(rx) = &self.remote_fetch_rx
+                && rx.try_recv().is_ok()
+            {
+                self.remote_fetch_rx = None;
+                self.remote_fetched = true;
+                self.remote_loading = false;
+                // Reload branches with updated remote refs
+                if self.view == View::RemoteBranches {
+                    self.populate_remote_branches();
+                }
+            }
 
             if event::poll(Duration::from_millis(250))? {
                 let ev = event::read()?;
@@ -361,44 +460,9 @@ impl App {
                     }
                 }
             } else if y >= 2 {
-                // Data row click — move cursor to clicked row and toggle selection if not pinned
                 let scroll_offset = self.table_state.offset();
                 let clicked_display_row = (y - 2) as usize + scroll_offset;
-
-                // Reconstruct display_indices (same logic as branch_list.rs): pinned first, then non-pinned,
-                // filtered by current search query
-                let filtered_indices: Vec<usize> = self
-                    .branches
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, b)| self.matches_search(b))
-                    .map(|(i, _)| i)
-                    .collect();
-                let pinned_indices: Vec<usize> = filtered_indices
-                    .iter()
-                    .copied()
-                    .filter(|&i| self.branches[i].is_pinned())
-                    .collect();
-                let non_pinned_indices: Vec<usize> = filtered_indices
-                    .iter()
-                    .copied()
-                    .filter(|&i| !self.branches[i].is_pinned())
-                    .collect();
-                let display_indices: Vec<usize> = pinned_indices
-                    .iter()
-                    .chain(non_pinned_indices.iter())
-                    .copied()
-                    .collect();
-
-                if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
-                    self.cursor = branch_idx;
-                    self.table_state.select(Some(clicked_display_row));
-
-                    // Toggle selection only for non-pinned rows
-                    if !self.branches[branch_idx].is_pinned() {
-                        self.selected[branch_idx] = !self.selected[branch_idx];
-                    }
-                }
+                list_click_row(&mut BranchListNav { app: self }, clicked_display_row);
             }
         } else if self.view == View::RemoteBranches {
             if y == 1 && !self.remote_header_columns.is_empty() {
@@ -434,32 +498,7 @@ impl App {
             } else if y >= 2 {
                 let scroll_offset = self.remote_table_state.offset();
                 let clicked_display_row = (y - 2) as usize + scroll_offset;
-
-                let filtered_indices: Vec<usize> = self.filtered_remote_indices();
-                let pinned_indices: Vec<usize> = filtered_indices
-                    .iter()
-                    .copied()
-                    .filter(|&i| self.remote_branches[i].is_pinned())
-                    .collect();
-                let non_pinned_indices: Vec<usize> = filtered_indices
-                    .iter()
-                    .copied()
-                    .filter(|&i| !self.remote_branches[i].is_pinned())
-                    .collect();
-                let display_indices: Vec<usize> = pinned_indices
-                    .iter()
-                    .chain(non_pinned_indices.iter())
-                    .copied()
-                    .collect();
-
-                if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
-                    self.remote_cursor = branch_idx;
-                    self.remote_table_state.select(Some(clicked_display_row));
-
-                    if !self.remote_branches[branch_idx].is_pinned() {
-                        self.remote_selected[branch_idx] = !self.remote_selected[branch_idx];
-                    }
-                }
+                list_click_row(&mut RemoteListNav { app: self }, clicked_display_row);
             }
         }
     }
@@ -469,69 +508,20 @@ impl App {
             if y >= 2 {
                 let scroll_offset = self.table_state.offset();
                 let clicked_display_row = (y - 2) as usize + scroll_offset;
-
-                let filtered_indices: Vec<usize> = self
-                    .branches
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, b)| self.matches_search(b))
-                    .map(|(i, _)| i)
-                    .collect();
-                let pinned_indices: Vec<usize> = filtered_indices
-                    .iter()
-                    .copied()
-                    .filter(|&i| self.branches[i].is_pinned())
-                    .collect();
-                let non_pinned_indices: Vec<usize> = filtered_indices
-                    .iter()
-                    .copied()
-                    .filter(|&i| !self.branches[i].is_pinned())
-                    .collect();
-                let display_indices: Vec<usize> = pinned_indices
-                    .iter()
-                    .chain(non_pinned_indices.iter())
-                    .copied()
-                    .collect();
-
-                if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
-                    self.cursor = branch_idx;
-                    self.table_state.select(Some(clicked_display_row));
+                if list_right_click_row(&mut BranchListNav { app: self }, clicked_display_row) {
                     self.view = View::Menu { cursor: 0 };
                 }
             }
-        } else if self.view == View::RemoteBranches {
-            if y >= 2 {
-                let scroll_offset = self.remote_table_state.offset();
-                let clicked_display_row = (y - 2) as usize + scroll_offset;
-
-                let filtered_indices: Vec<usize> = self.filtered_remote_indices();
-                let pinned_indices: Vec<usize> = filtered_indices
-                    .iter()
-                    .copied()
-                    .filter(|&i| self.remote_branches[i].is_pinned())
-                    .collect();
-                let non_pinned_indices: Vec<usize> = filtered_indices
-                    .iter()
-                    .copied()
-                    .filter(|&i| !self.remote_branches[i].is_pinned())
-                    .collect();
-                let display_indices: Vec<usize> = pinned_indices
-                    .iter()
-                    .chain(non_pinned_indices.iter())
-                    .copied()
-                    .collect();
-
-                if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
-                    self.remote_cursor = branch_idx;
-                    self.remote_table_state.select(Some(clicked_display_row));
-                }
-            }
+        } else if self.view == View::RemoteBranches && y >= 2 {
+            let scroll_offset = self.remote_table_state.offset();
+            let clicked_display_row = (y - 2) as usize + scroll_offset;
+            list_right_click_row(&mut RemoteListNav { app: self }, clicked_display_row);
         }
     }
 
     fn handle_branch_list_key(&mut self, code: KeyCode) {
-        let len = self.branches.len();
-        if len == 0 {
+        let filtered = self.filtered_branch_indices();
+        if filtered.is_empty() {
             if matches!(code, KeyCode::Char('q')) {
                 self.should_exit = true;
             }
@@ -539,61 +529,13 @@ impl App {
         }
 
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                let query = self.search_query.to_lowercase();
-                let mut next = self.cursor + 1;
-                while next < len && !branch_matches_query(&self.branches[next], &query) {
-                    next += 1;
-                }
-                if next < len {
-                    self.cursor = next;
-                    self.table_state.select(Some(self.cursor));
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                let query = self.search_query.to_lowercase();
-                if self.cursor > 0 {
-                    let mut prev = self.cursor - 1;
-                    while prev > 0 && !branch_matches_query(&self.branches[prev], &query) {
-                        prev -= 1;
-                    }
-                    if branch_matches_query(&self.branches[prev], &query) {
-                        self.cursor = prev;
-                        self.table_state.select(Some(self.cursor));
-                    }
-                }
-            }
-            KeyCode::Char(' ') => {
-                let branch = &self.branches[self.cursor];
-                if !branch.is_base && !branch.is_current {
-                    self.selected[self.cursor] = !self.selected[self.cursor];
-                }
-            }
-            KeyCode::Char('a') => {
-                for (i, branch) in self.branches.iter().enumerate() {
-                    self.selected[i] = !branch.is_base && !branch.is_current;
-                }
-            }
-            KeyCode::Char('n') => {
-                self.selected.fill(false);
-            }
-            KeyCode::Char('m') => {
-                for (i, branch) in self.branches.iter().enumerate() {
-                    self.selected[i] = !branch.is_base
-                        && !branch.is_current
-                        && matches!(
-                            branch.merge_status,
-                            MergeStatus::Merged | MergeStatus::SquashMerged
-                        );
-                }
-            }
-            KeyCode::Char('i') => {
-                for (i, branch) in self.branches.iter().enumerate() {
-                    if !branch.is_base && !branch.is_current {
-                        self.selected[i] = !self.selected[i];
-                    }
-                }
-            }
+            KeyCode::Char('j') | KeyCode::Down => nav_down(&mut BranchListNav { app: self }),
+            KeyCode::Char('k') | KeyCode::Up => nav_up(&mut BranchListNav { app: self }),
+            KeyCode::Char(' ') => select_toggle(&mut BranchListNav { app: self }),
+            KeyCode::Char('a') => select_all(&mut BranchListNav { app: self }),
+            KeyCode::Char('n') => deselect_all(&mut BranchListNav { app: self }),
+            KeyCode::Char('m') => select_merged(&mut BranchListNav { app: self }),
+            KeyCode::Char('i') => invert_selection(&mut BranchListNav { app: self }),
             KeyCode::Char('d') => {
                 if self.has_selection() {
                     self.view = View::Confirm {
@@ -686,47 +628,10 @@ impl App {
             KeyCode::Char('\\') => {
                 self.view = View::Filter;
             }
-            KeyCode::PageDown => {
-                let page_size = 20;
-                let query = self.search_query.to_lowercase();
-                let mut remaining = page_size;
-                let mut next = self.cursor;
-                while remaining > 0 && next + 1 < len {
-                    let candidate = next + 1;
-                    if branch_matches_query(&self.branches[candidate], &query) {
-                        next = candidate;
-                        remaining -= 1;
-                    } else {
-                        next = candidate;
-                    }
-                }
-                // Ensure we landed on a valid row
-                if branch_matches_query(&self.branches[next], &query) {
-                    self.cursor = next;
-                    self.table_state.select(Some(self.cursor));
-                }
-            }
-            KeyCode::PageUp => {
-                let page_size = 20;
-                let query = self.search_query.to_lowercase();
-                let mut remaining = page_size;
-                let mut prev = self.cursor;
-                while remaining > 0 && prev > 0 {
-                    let candidate = prev - 1;
-                    if branch_matches_query(&self.branches[candidate], &query) {
-                        prev = candidate;
-                        remaining -= 1;
-                    } else if candidate > 0 {
-                        prev = candidate;
-                    } else {
-                        break;
-                    }
-                }
-                if branch_matches_query(&self.branches[prev], &query) {
-                    self.cursor = prev;
-                    self.table_state.select(Some(self.cursor));
-                }
-            }
+            KeyCode::PageDown => nav_page_down(&mut BranchListNav { app: self }),
+            KeyCode::PageUp => nav_page_up(&mut BranchListNav { app: self }),
+            KeyCode::Home => nav_home(&mut BranchListNav { app: self }),
+            KeyCode::End => nav_end(&mut BranchListNav { app: self }),
             KeyCode::Char('T') => {
                 self.theme = self.theme.next();
                 let mut config = git_branch_manager::config::Config::load();
@@ -1199,9 +1104,7 @@ impl App {
     }
 
     fn handle_remote_branches_key(&mut self, code: KeyCode) {
-        let filtered: Vec<usize> = self.filtered_remote_indices();
-        let len = filtered.len();
-        if len == 0 {
+        if self.filtered_remote_indices().is_empty() {
             match code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('r') => {
                     self.view = View::BranchList;
@@ -1244,74 +1147,18 @@ impl App {
             return;
         }
 
-        // Find current cursor position in filtered list
-        let cursor_pos = filtered.iter().position(|&i| i == self.remote_cursor).unwrap_or(0);
-
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if cursor_pos + 1 < len {
-                    self.remote_cursor = filtered[cursor_pos + 1];
-                    self.remote_table_state.select(Some(cursor_pos + 1));
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if cursor_pos > 0 {
-                    self.remote_cursor = filtered[cursor_pos - 1];
-                    self.remote_table_state.select(Some(cursor_pos - 1));
-                }
-            }
-            KeyCode::PageDown => {
-                let page_size = 20;
-                let new_pos = (cursor_pos + page_size).min(len - 1);
-                self.remote_cursor = filtered[new_pos];
-                self.remote_table_state.select(Some(new_pos));
-            }
-            KeyCode::PageUp => {
-                let page_size = 20;
-                let new_pos = cursor_pos.saturating_sub(page_size);
-                self.remote_cursor = filtered[new_pos];
-                self.remote_table_state.select(Some(new_pos));
-            }
-            KeyCode::Home => {
-                self.remote_cursor = filtered[0];
-                self.remote_table_state.select(Some(0));
-            }
-            KeyCode::End => {
-                self.remote_cursor = filtered[len - 1];
-                self.remote_table_state.select(Some(len - 1));
-            }
-            KeyCode::Char(' ') => {
-                let branch = &self.remote_branches[self.remote_cursor];
-                if !branch.is_pinned() {
-                    self.remote_selected[self.remote_cursor] = !self.remote_selected[self.remote_cursor];
-                }
-            }
-            KeyCode::Char('a') => {
-                for &i in &filtered {
-                    if !self.remote_branches[i].is_pinned() {
-                        self.remote_selected[i] = true;
-                    }
-                }
-            }
-            KeyCode::Char('n') => {
-                self.remote_selected.fill(false);
-            }
-            KeyCode::Char('i') => {
-                for &i in &filtered {
-                    if !self.remote_branches[i].is_pinned() {
-                        self.remote_selected[i] = !self.remote_selected[i];
-                    }
-                }
-            }
-            KeyCode::Char('m') => {
-                for (i, branch) in self.remote_branches.iter().enumerate() {
-                    self.remote_selected[i] = !branch.is_pinned()
-                        && matches!(
-                            branch.merge_status,
-                            MergeStatus::Merged | MergeStatus::SquashMerged
-                        );
-                }
-            }
+            KeyCode::Char('j') | KeyCode::Down => nav_down(&mut RemoteListNav { app: self }),
+            KeyCode::Char('k') | KeyCode::Up => nav_up(&mut RemoteListNav { app: self }),
+            KeyCode::PageDown => nav_page_down(&mut RemoteListNav { app: self }),
+            KeyCode::PageUp => nav_page_up(&mut RemoteListNav { app: self }),
+            KeyCode::Home => nav_home(&mut RemoteListNav { app: self }),
+            KeyCode::End => nav_end(&mut RemoteListNav { app: self }),
+            KeyCode::Char(' ') => select_toggle(&mut RemoteListNav { app: self }),
+            KeyCode::Char('a') => select_all(&mut RemoteListNav { app: self }),
+            KeyCode::Char('n') => deselect_all(&mut RemoteListNav { app: self }),
+            KeyCode::Char('i') => invert_selection(&mut RemoteListNav { app: self }),
+            KeyCode::Char('m') => select_merged(&mut RemoteListNav { app: self }),
             KeyCode::Char('d') => {
                 let has_selection = self.remote_selected.iter().any(|&s| s);
                 if has_selection || !self.remote_branches.is_empty() {
@@ -1710,74 +1557,78 @@ impl App {
     }
 
     fn refresh_branches(&mut self) {
-        let Ok(repo) = git2::Repository::open(&self.repo_path) else { return };
-        let Ok(branches) = branch::list_branches_phase1(&repo, &self.base_branch) else {
-            return;
-        };
+        // Spawn background thread — mirrors the initial load pattern in main.rs.
+        // The event loop's drain_load_rx() will pick up the result.
+        let repo_path = self.repo_path.clone();
+        let base_branch = self.base_branch.clone();
+        let (load_tx, load_rx) = mpsc::channel();
+        let (prog_tx, prog_rx) = mpsc::channel();
 
-        self.working_tree_status = status::detect_working_tree_status(&repo);
+        std::thread::spawn(move || {
+            let _ = prog_tx.send(LoadProgress {
+                message: "Refreshing branches...".into(),
+            });
 
-        let branch_cache = cache::BranchCache::load(&self.repo_path);
+            let Ok(repo) = git2::Repository::open(&repo_path) else { return };
+            let Ok(branches) = branch::list_branches_phase1(&repo, &base_branch) else {
+                return;
+            };
 
-        let candidates: Vec<(String, String)> = branches
-            .iter()
-            .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base && !b.is_current)
-            .filter_map(|b| {
-                branch::get_commit_hash(&repo, &b.name)
-                    .map(|hash| (b.name.clone(), hash))
-            })
-            .collect();
+            let working_tree_status = status::detect_working_tree_status(&repo);
+            let cache = cache::BranchCache::load(&repo_path);
 
-        let mut branches = branches;
-        branches.sort_by(|a, b| {
-            let pin_a = if a.is_base { 0 } else if a.is_current { 1 } else { 2 };
-            let pin_b = if b.is_base { 0 } else if b.is_current { 1 } else { 2 };
-            pin_a.cmp(&pin_b).then(b.last_commit_date.cmp(&a.last_commit_date))
+            let candidates: Vec<(String, String)> = branches
+                .iter()
+                .filter(|b| {
+                    b.merge_status == MergeStatus::Unmerged && !b.is_base && !b.is_current
+                })
+                .filter_map(|b| {
+                    branch::get_commit_hash(&repo, &b.name)
+                        .map(|hash| (b.name.clone(), hash))
+                })
+                .collect();
+
+            let _ = load_tx.send(InitialLoad {
+                branches,
+                working_tree_status,
+                candidates,
+                cache,
+            });
         });
 
-        let len = branches.len();
-
-        self.branches = branches;
-        self.selected = vec![false; len];
-        self.cursor = 0;
-        self.list_scroll_offset = 0;
-        self.table_state.select(Some(0));
-        self.results.clear();
-        self.search_query.clear();
-        self.search_active = false;
-
-        self.squash_checked = 0;
-        self.squash_total = candidates.len();
-
-        self.squash_rx = if candidates.is_empty() {
-            None
-        } else {
-            Some(squash_loader::spawn_squash_checker(
-                self.repo_path.clone(),
-                self.base_branch.clone(),
-                candidates,
-                branch_cache,
-            ))
-        };
-
-        // Refresh PR data from GitHub
-        self.pr_rx = Some(pr_loader::spawn_pr_loader(self.repo_path.clone()));
-
-        // Re-apply current sort so it persists across refreshes
-        self.apply_sort();
+        self.load_rx = Some(load_rx);
+        self.load_progress_rx = Some(prog_rx);
+        self.loading = true;
+        self.loading_message = "Refreshing branches...".into();
     }
 
     /// Open the Remote Branches view.
     ///
-    /// On the first call per session, runs `git fetch` before listing.
-    /// Subsequent calls use the already-fetched state.
+    /// On the first call per session, loads currently known remote tracking refs
+    /// immediately and spawns a background `git fetch`. When the fetch completes,
+    /// branches are silently reloaded. A toast is shown while the fetch runs.
     fn open_remote_branches_view(&mut self) {
-        // Lazy fetch: run once per session on first open
+        // Load currently known remote refs immediately (local-only, fast)
+        // Always load what we already know from local refs
+        self.populate_remote_branches();
+
         if !self.remote_fetched {
-            operations::fetch_sync(&self.repo_path);
-            self.remote_fetched = true;
+            // Spawn background fetch; branches reload when it completes
+            let repo_path = self.repo_path.clone();
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let ok = operations::fetch_sync(&repo_path);
+                let _ = tx.send(ok);
+            });
+            self.remote_fetch_rx = Some(rx);
+            self.remote_loading = true;
         }
 
+        self.view = View::RemoteBranches;
+    }
+
+    /// Populate remote branches from local tracking refs and spawn squash checker.
+    fn populate_remote_branches(&mut self) {
         let Ok(repo) = git2::Repository::open(&self.repo_path) else {
             return;
         };
@@ -1828,8 +1679,6 @@ impl App {
                 branch_cache,
             ))
         };
-
-        self.view = View::RemoteBranches;
     }
 
     fn apply_sort(&mut self) {
@@ -1900,8 +1749,12 @@ impl App {
                 self.branches = branches;
                 self.selected = vec![false; len];
                 self.cursor = 0;
+                self.list_scroll_offset = 0;
                 self.table_state.select(Some(0));
                 self.working_tree_status = load.working_tree_status;
+                self.results.clear();
+                self.search_query.clear();
+                self.search_active = false;
 
                 self.squash_total = load.candidates.len();
                 self.squash_checked = 0;
@@ -2526,21 +2379,7 @@ impl App {
 
     /// Reset cursor to the first branch that matches the search filter.
     fn reset_cursor_to_first_match(&mut self) {
-        let first_match = self
-            .branches
-            .iter()
-            .enumerate()
-            .find(|(_, b)| self.matches_search(b))
-            .map(|(i, _)| i);
-
-        if let Some(idx) = first_match {
-            self.cursor = idx;
-            self.table_state.select(Some(idx));
-        } else {
-            // No match: keep cursor at 0
-            self.cursor = 0;
-            self.table_state.select(Some(0));
-        }
+        reset_list_cursor(&mut BranchListNav { app: self });
     }
 
     pub fn has_selection(&self) -> bool {
@@ -2608,9 +2447,28 @@ impl App {
             .collect()
     }
 
+    pub fn filtered_branch_indices(&self) -> Vec<usize> {
+        let filtered: Vec<usize> = self.branches
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| self.matches_search(b))
+            .map(|(i, _)| i)
+            .collect();
+
+        // Return in display order: pinned first, then non-pinned
+        let mut pinned: Vec<usize> = filtered.iter().copied()
+            .filter(|&i| self.branches[i].is_pinned())
+            .collect();
+        let non_pinned: Vec<usize> = filtered.iter().copied()
+            .filter(|&i| !self.branches[i].is_pinned())
+            .collect();
+        pinned.extend(non_pinned);
+        pinned
+    }
+
     pub fn filtered_remote_indices(&self) -> Vec<usize> {
         let fs = FilterSet::parse(&self.remote_search_query);
-        self.remote_branches
+        let filtered: Vec<usize> = self.remote_branches
             .iter()
             .enumerate()
             .filter(|(_, b)| {
@@ -2637,7 +2495,17 @@ impl App {
                 true
             })
             .map(|(i, _)| i)
-            .collect()
+            .collect();
+
+        // Return in display order: pinned first, then non-pinned
+        let mut pinned: Vec<usize> = filtered.iter().copied()
+            .filter(|&i| self.remote_branches[i].is_pinned())
+            .collect();
+        let non_pinned: Vec<usize> = filtered.iter().copied()
+            .filter(|&i| !self.remote_branches[i].is_pinned())
+            .collect();
+        pinned.extend(non_pinned);
+        pinned
     }
 
     pub fn matches_tag_search(&self, tag: &TagInfo) -> bool {
@@ -2692,17 +2560,7 @@ impl App {
     }
 
     fn reset_remote_cursor(&mut self) {
-        let filtered = self.filtered_remote_indices();
-        if filtered.is_empty() {
-            return;
-        }
-        if filtered.contains(&self.remote_cursor) {
-            let pos = filtered.iter().position(|&i| i == self.remote_cursor).unwrap();
-            self.remote_table_state.select(Some(pos));
-        } else {
-            self.remote_cursor = filtered[0];
-            self.remote_table_state.select(Some(0));
-        }
+        reset_list_cursor(&mut RemoteListNav { app: self });
     }
 
     fn apply_tag_sort(&mut self) {
@@ -2855,16 +2713,141 @@ fn parse_age_duration(s: &str) -> Option<i64> {
     }
 }
 
-/// Check if a branch matches the lowercased search query (text portion only).
-/// Used for cursor navigation — skips non-matching branches.
-fn branch_matches_query(branch: &BranchInfo, query_lower: &str) -> bool {
-    if query_lower.is_empty() {
-        return true;
+// ---------------------------------------------------------------------------
+// Shared ListNav free functions
+// ---------------------------------------------------------------------------
+
+fn nav_down(list: &mut impl ListNav) {
+    let indices = list.display_indices();
+    let len = indices.len();
+    if len == 0 { return; }
+    let pos = indices.iter().position(|&i| i == list.cursor()).unwrap_or(0);
+    if pos + 1 < len {
+        list.set_cursor(indices[pos + 1], pos + 1);
     }
-    // Parse filters and only use text portion for name matching
-    let fs = FilterSet::parse(query_lower);
-    if fs.text.is_empty() {
-        return true;
-    }
-    branch.name.to_lowercase().contains(&fs.text.to_lowercase())
 }
+
+fn nav_up(list: &mut impl ListNav) {
+    let indices = list.display_indices();
+    if indices.is_empty() { return; }
+    let pos = indices.iter().position(|&i| i == list.cursor()).unwrap_or(0);
+    if pos > 0 {
+        list.set_cursor(indices[pos - 1], pos - 1);
+    }
+}
+
+fn nav_page_down(list: &mut impl ListNav) {
+    let indices = list.display_indices();
+    let len = indices.len();
+    if len == 0 { return; }
+    let pos = indices.iter().position(|&i| i == list.cursor()).unwrap_or(0);
+    let new_pos = (pos + 20).min(len - 1);
+    list.set_cursor(indices[new_pos], new_pos);
+}
+
+fn nav_page_up(list: &mut impl ListNav) {
+    let indices = list.display_indices();
+    if indices.is_empty() { return; }
+    let pos = indices.iter().position(|&i| i == list.cursor()).unwrap_or(0);
+    let new_pos = pos.saturating_sub(20);
+    list.set_cursor(indices[new_pos], new_pos);
+}
+
+fn nav_home(list: &mut impl ListNav) {
+    let indices = list.display_indices();
+    if let Some(&idx) = indices.first() {
+        list.set_cursor(idx, 0);
+    }
+}
+
+fn nav_end(list: &mut impl ListNav) {
+    let indices = list.display_indices();
+    if let Some(&idx) = indices.last() {
+        list.set_cursor(idx, indices.len() - 1);
+    }
+}
+
+fn select_toggle(list: &mut impl ListNav) {
+    let cursor = list.cursor();
+    if list.is_selectable(cursor) {
+        let sel = list.selection_mut();
+        sel[cursor] = !sel[cursor];
+    }
+}
+
+fn select_all(list: &mut impl ListNav) {
+    let flags: Vec<bool> = (0..list.selection().len())
+        .map(|i| list.is_selectable(i))
+        .collect();
+    let sel = list.selection_mut();
+    for (i, &can_select) in flags.iter().enumerate() {
+        sel[i] = can_select;
+    }
+}
+
+fn deselect_all(list: &mut impl ListNav) {
+    list.selection_mut().fill(false);
+}
+
+fn select_merged(list: &mut impl ListNav) {
+    let flags: Vec<bool> = (0..list.selection().len())
+        .map(|i| {
+            list.is_selectable(i)
+                && matches!(
+                    list.merge_status(i),
+                    MergeStatus::Merged | MergeStatus::SquashMerged
+                )
+        })
+        .collect();
+    let sel = list.selection_mut();
+    for (i, &flag) in flags.iter().enumerate() {
+        sel[i] = flag;
+    }
+}
+
+fn invert_selection(list: &mut impl ListNav) {
+    let flags: Vec<bool> = (0..list.selection().len())
+        .map(|i| list.is_selectable(i))
+        .collect();
+    let sel = list.selection_mut();
+    for (i, &can_select) in flags.iter().enumerate() {
+        if can_select {
+            sel[i] = !sel[i];
+        }
+    }
+}
+
+fn list_click_row(list: &mut impl ListNav, display_row: usize) {
+    let indices = list.display_indices();
+    if let Some(&raw_idx) = indices.get(display_row) {
+        list.set_cursor(raw_idx, display_row);
+        if list.is_selectable(raw_idx) {
+            let sel = list.selection_mut();
+            sel[raw_idx] = !sel[raw_idx];
+        }
+    }
+}
+
+fn list_right_click_row(list: &mut impl ListNav, display_row: usize) -> bool {
+    let indices = list.display_indices();
+    if let Some(&raw_idx) = indices.get(display_row) {
+        list.set_cursor(raw_idx, display_row);
+        true
+    } else {
+        false
+    }
+}
+
+fn reset_list_cursor(list: &mut impl ListNav) {
+    let indices = list.display_indices();
+    if indices.is_empty() {
+        return;
+    }
+    let cursor = list.cursor();
+    if let Some(pos) = indices.iter().position(|&i| i == cursor) {
+        list.set_cursor(cursor, pos);
+    } else {
+        list.set_cursor(indices[0], 0);
+    }
+}
+
