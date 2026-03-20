@@ -132,6 +132,42 @@ impl RemoteBranchInfo {
     }
 }
 
+/// All information about a single git worktree.
+#[derive(Debug, Clone)]
+pub struct WorktreeInfo {
+    /// Absolute path to this worktree directory.
+    pub path: std::path::PathBuf,
+    /// Checked-out branch name, or `None` if detached HEAD.
+    pub branch: Option<String>,
+    /// True for the main (primary) worktree.
+    pub is_main: bool,
+    /// Short (7-char) HEAD commit SHA.
+    pub commit_hash: String,
+    /// Working tree status (staged/unstaged/untracked).
+    pub wt_status: WorkingTreeStatus,
+    /// Age date: newest mtime of dirty files if dirty, else HEAD commit date.
+    pub age_date: chrono::DateTime<chrono::Utc>,
+    // Fields below are populated by phase 2 (branch enrichment):
+    pub merge_status: MergeStatus,
+    pub ahead: Option<u32>,
+    pub behind: Option<u32>,
+    pub pr: Option<crate::git::github::PrStatus>,
+}
+
+impl WorktreeInfo {
+    pub fn is_pinned(&self) -> bool {
+        self.is_main
+    }
+
+    pub fn age_display(&self) -> String {
+        format_age(&self.age_date)
+    }
+
+    pub fn age_short(&self) -> String {
+        format_age_short(&self.age_date)
+    }
+}
+
 /// What the user wants to do with selected branches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchAction {
@@ -153,6 +189,8 @@ pub enum BranchAction {
     PushTag,
     DeleteRemoteBranch,
     CheckoutRemote,
+    WorktreeRemove,
+    WorktreeForceRemove,
 }
 
 impl BranchAction {
@@ -176,6 +214,8 @@ impl BranchAction {
             BranchAction::PushTag => "Push tag",
             BranchAction::DeleteRemoteBranch => "Delete remote branch",
             BranchAction::CheckoutRemote => "Checkout remote branch",
+            BranchAction::WorktreeRemove => "Remove worktree",
+            BranchAction::WorktreeForceRemove => "Force remove worktree",
         }
     }
 }
