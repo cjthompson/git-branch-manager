@@ -87,26 +87,30 @@ fn status_and_age(dir: &Path) -> (WorkingTreeStatus, DateTime<Utc>) {
         }
         let x = line.chars().next().unwrap_or(' ');
         let y = line.chars().nth(1).unwrap_or(' ');
-        let file = line[3..].trim();
+        let file = {
+            let raw = line[3..].trim();
+            // Porcelain v1 renames: "new_name -> old_name" — take the destination (new name)
+            raw.split(" -> ").next().unwrap_or(raw)
+        };
 
         if x == '?' && y == '?' {
             has_untracked = true;
             dirty_paths.push(dir.join(file));
         } else {
+            let mut pushed = false;
             if x != ' ' && x != '?' {
                 has_staged = true;
                 dirty_paths.push(dir.join(file));
+                pushed = true;
             }
             if y != ' ' && y != '?' {
                 has_unstaged = true;
-                dirty_paths.push(dir.join(file));
+                if !pushed {
+                    dirty_paths.push(dir.join(file));
+                }
             }
         }
     }
-
-    // Deduplicate paths (a file can appear in both staged and unstaged)
-    dirty_paths.sort();
-    dirty_paths.dedup();
 
     let wt_status = WorkingTreeStatus { has_staged, has_unstaged, has_untracked };
 
