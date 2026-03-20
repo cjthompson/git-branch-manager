@@ -20,3 +20,20 @@ old synchronous path.
 **Files changed:**
 - `src/app.rs` — Rewrote `refresh_branches()` to spawn background thread; added state
   resets to `drain_load_rx()`
+
+## Task #015: Make populate_remote_branches() non-blocking
+
+**Problem:** `populate_remote_branches()` ran `list_remote_branches_phase1`, cache loading,
+and squash candidate resolution synchronously on the main thread. This caused 100–500ms
+freezes when pressing `r` to open Remote Branches and when the background fetch completed.
+
+**Fix:** Added `RemoteLoad` struct and `remote_load_rx` channel. Converted
+`populate_remote_branches()` to spawn a background thread. Added `drain_remote_load_rx()`
+to the event loop to receive results and apply them. The existing `remote_loading` toast
+("Fetching remote branches...") now shows during both the fetch and the local ref
+enumeration. Fixed fetch completion logic to avoid briefly flashing `remote_loading = false`
+before the reload starts.
+
+**Files changed:**
+- `src/app.rs` — Added `RemoteLoad` struct, `remote_load_rx` field, rewrote
+  `populate_remote_branches()`, added `drain_remote_load_rx()` to event loop
