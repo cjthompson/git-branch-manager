@@ -106,3 +106,20 @@ appear ~5x faster while having negligible CPU impact (the poll syscall is cheap)
 
 **Files changed:**
 - `src/app.rs` — Changed `Duration::from_millis(250)` to `Duration::from_millis(50)`
+
+## Task #021: Skip redundant remote fetch when auto_fetch already ran on startup
+
+**Problem:** When `auto_fetch` is enabled in config, the startup thread runs `git fetch`
+before loading branches. But when the user opens the Remote Branches tab, it checks
+`remote_fetched` (which is `false`) and runs `git fetch` again — a redundant network
+round-trip.
+
+**Fix:** Added `did_fetch: bool` field to `InitialLoad` struct. The startup thread sets
+it to `true` when `auto_fetch` is configured. `drain_load_rx()` propagates this to
+`self.remote_fetched` so `open_remote_branches_view()` skips the second fetch. Refreshes
+(via `refresh_branches()`) always set `did_fetch: false`.
+
+**Files changed:**
+- `src/app.rs` — Added `did_fetch` to `InitialLoad`, set `remote_fetched` in
+  `drain_load_rx()` when `did_fetch` is true, set `did_fetch: false` in refresh path
+- `src/main.rs` — Set `did_fetch: auto_fetch` in startup load
