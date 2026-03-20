@@ -671,6 +671,64 @@ pub fn delete_remotes_batch(repo_path: &Path, branch_names: &[String]) -> Vec<Op
     }
 }
 
+/// Remove a worktree (`git worktree remove <path>`).
+/// Fails if the worktree has uncommitted changes.
+pub fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> OperationResult {
+    let path_str = worktree_path.to_string_lossy().into_owned();
+    match git_cmd(repo_path)
+        .args(["worktree", "remove", &path_str])
+        .output()
+    {
+        Ok(o) if o.status.success() => OperationResult {
+            branch_name: path_str.clone(),
+            action: BranchAction::WorktreeRemove,
+            success: true,
+            message: format!("Removed worktree at {}", path_str),
+        },
+        Ok(o) => OperationResult {
+            branch_name: path_str.clone(),
+            action: BranchAction::WorktreeRemove,
+            success: false,
+            message: format!("Failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
+        },
+        Err(e) => OperationResult {
+            branch_name: path_str,
+            action: BranchAction::WorktreeRemove,
+            success: false,
+            message: format!("Failed: {}", e),
+        },
+    }
+}
+
+/// Force-remove a worktree (`git worktree remove --force <path>`).
+/// Works even if the worktree has uncommitted changes.
+pub fn force_remove_worktree(repo_path: &Path, worktree_path: &Path) -> OperationResult {
+    let path_str = worktree_path.to_string_lossy().into_owned();
+    match git_cmd(repo_path)
+        .args(["worktree", "remove", "--force", &path_str])
+        .output()
+    {
+        Ok(o) if o.status.success() => OperationResult {
+            branch_name: path_str.clone(),
+            action: BranchAction::WorktreeForceRemove,
+            success: true,
+            message: format!("Force-removed worktree at {}", path_str),
+        },
+        Ok(o) => OperationResult {
+            branch_name: path_str.clone(),
+            action: BranchAction::WorktreeForceRemove,
+            success: false,
+            message: format!("Failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
+        },
+        Err(e) => OperationResult {
+            branch_name: path_str,
+            action: BranchAction::WorktreeForceRemove,
+            success: false,
+            message: format!("Failed: {}", e),
+        },
+    }
+}
+
 /// Delete a single branch from the remote using git CLI.
 fn delete_remote(repo_path: &Path, branch_name: &str) -> OperationResult {
     match git_cmd(repo_path)
