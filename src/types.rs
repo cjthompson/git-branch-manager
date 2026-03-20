@@ -11,6 +11,56 @@ pub enum MergeStatus {
     Unmerged,
 }
 
+/// Human-readable age string: "3 days ago", "2 months ago", etc.
+pub fn format_age(date: &DateTime<Utc>) -> String {
+    let duration = Utc::now() - *date;
+    let seconds = duration.num_seconds();
+
+    if seconds < 60 {
+        "just now".to_string()
+    } else if seconds < 3600 {
+        let mins = duration.num_minutes();
+        format!("{} min{} ago", mins, if mins == 1 { "" } else { "s" })
+    } else if seconds < 86400 {
+        let hours = duration.num_hours();
+        format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
+    } else if seconds < 604800 {
+        let days = duration.num_days();
+        format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
+    } else if seconds < 2_592_000 {
+        let weeks = duration.num_weeks();
+        format!("{} week{} ago", weeks, if weeks == 1 { "" } else { "s" })
+    } else if seconds < 31_536_000 {
+        let months = duration.num_days() / 30;
+        format!("{} month{} ago", months, if months == 1 { "" } else { "s" })
+    } else {
+        let years = duration.num_days() / 365;
+        format!("{} year{} ago", years, if years == 1 { "" } else { "s" })
+    }
+}
+
+/// Compact age string for narrow terminals: "3d", "2mo", etc.
+pub fn format_age_short(date: &DateTime<Utc>) -> String {
+    let duration = Utc::now() - *date;
+    let seconds = duration.num_seconds();
+
+    if seconds < 60 {
+        "now".into()
+    } else if seconds < 3600 {
+        format!("{}m", duration.num_minutes())
+    } else if seconds < 86400 {
+        format!("{}h", duration.num_hours())
+    } else if seconds < 604800 {
+        format!("{}d", duration.num_days())
+    } else if seconds < 2_592_000 {
+        format!("{}w", duration.num_weeks())
+    } else if seconds < 31_536_000 {
+        format!("{}mo", duration.num_days() / 30)
+    } else {
+        format!("{}y", duration.num_days() / 365)
+    }
+}
+
 /// Remote tracking relationship.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrackingStatus {
@@ -41,52 +91,44 @@ impl BranchInfo {
 
     /// Human-readable age string: "3 days ago", "2 months ago", etc.
     pub fn age_display(&self) -> String {
-        let duration = Utc::now() - self.last_commit_date;
-        let seconds = duration.num_seconds();
-
-        if seconds < 60 {
-            "just now".to_string()
-        } else if seconds < 3600 {
-            let mins = duration.num_minutes();
-            format!("{} min{} ago", mins, if mins == 1 { "" } else { "s" })
-        } else if seconds < 86400 {
-            let hours = duration.num_hours();
-            format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
-        } else if seconds < 604800 {
-            let days = duration.num_days();
-            format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
-        } else if seconds < 2_592_000 {
-            let weeks = duration.num_weeks();
-            format!("{} week{} ago", weeks, if weeks == 1 { "" } else { "s" })
-        } else if seconds < 31_536_000 {
-            let months = duration.num_days() / 30;
-            format!("{} month{} ago", months, if months == 1 { "" } else { "s" })
-        } else {
-            let years = duration.num_days() / 365;
-            format!("{} year{} ago", years, if years == 1 { "" } else { "s" })
-        }
+        format_age(&self.last_commit_date)
     }
 
     /// Compact age string for narrow terminals: "3d", "2mo", etc.
     pub fn age_short(&self) -> String {
-        let duration = Utc::now() - self.last_commit_date;
-        let seconds = duration.num_seconds();
+        format_age_short(&self.last_commit_date)
+    }
+}
 
-        if seconds < 60 {
-            "now".into()
-        } else if seconds < 3600 {
-            format!("{}m", duration.num_minutes())
-        } else if seconds < 86400 {
-            format!("{}h", duration.num_hours())
-        } else if seconds < 604800 {
-            format!("{}d", duration.num_days())
-        } else if seconds < 2_592_000 {
-            format!("{}w", duration.num_weeks())
-        } else if seconds < 31_536_000 {
-            format!("{}mo", duration.num_days() / 30)
-        } else {
-            format!("{}y", duration.num_days() / 365)
-        }
+/// All information about a single remote branch.
+#[derive(Debug, Clone)]
+pub struct RemoteBranchInfo {
+    /// Full ref name, e.g. "origin/feature-x"
+    pub full_ref: String,
+    /// Remote name, e.g. "origin"
+    pub remote: String,
+    /// Branch name without remote prefix, e.g. "feature-x"
+    pub short_name: String,
+    /// Whether a local branch with the same name exists
+    pub has_local: bool,
+    /// Whether this is the base branch (e.g. origin/main)
+    pub is_base: bool,
+    pub last_commit_date: DateTime<Utc>,
+    pub merge_status: MergeStatus,
+}
+
+impl RemoteBranchInfo {
+    /// Remote branches are pinned if they are the base branch.
+    pub fn is_pinned(&self) -> bool {
+        self.is_base
+    }
+
+    pub fn age_display(&self) -> String {
+        format_age(&self.last_commit_date)
+    }
+
+    pub fn age_short(&self) -> String {
+        format_age_short(&self.last_commit_date)
     }
 }
 
@@ -109,6 +151,8 @@ pub enum BranchAction {
     DeleteTag,
     DeleteTagAndRemote,
     PushTag,
+    DeleteRemoteBranch,
+    CheckoutRemote,
 }
 
 impl BranchAction {
@@ -130,6 +174,8 @@ impl BranchAction {
             BranchAction::DeleteTag => "Delete tag",
             BranchAction::DeleteTagAndRemote => "Delete tag (local + remote)",
             BranchAction::PushTag => "Push tag",
+            BranchAction::DeleteRemoteBranch => "Delete remote branch",
+            BranchAction::CheckoutRemote => "Checkout remote branch",
         }
     }
 }

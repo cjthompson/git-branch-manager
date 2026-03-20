@@ -113,33 +113,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .style(app.theme.header)
         .bottom_margin(0);
 
-    // Build filtered index list: only branches matching the search query
-    let filtered_indices: Vec<usize> = app
-        .branches
-        .iter()
-        .enumerate()
-        .filter(|(_, branch)| app.matches_search(branch))
-        .map(|(i, _)| i)
-        .collect();
-
-    // Split filtered indices into pinned and non-pinned groups, then combine pinned-first
-    let pinned_indices: Vec<usize> = filtered_indices
-        .iter()
-        .copied()
-        .filter(|&i| app.branches[i].is_pinned())
-        .collect();
-    let non_pinned_indices: Vec<usize> = filtered_indices
-        .iter()
-        .copied()
-        .filter(|&i| !app.branches[i].is_pinned())
-        .collect();
-
-    // Combined display order: pinned first, then non-pinned
-    let display_indices: Vec<usize> = pinned_indices
-        .iter()
-        .chain(non_pinned_indices.iter())
-        .copied()
-        .collect();
+    // Display order: pinned first, then non-pinned, filtered by search query
+    let display_indices = app.filtered_branch_indices();
 
     // Map cursor (original branch index) to display row index for table_state
     let display_cursor = display_indices.iter().position(|&i| i == app.cursor);
@@ -477,7 +452,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.status_bar_items.clear();
         let filter_text = format!(
             " filter: \"{}\" ({}/{} shown) \u{2014} [\\]filter [/]edit [Esc in /]clear",
-            app.search_query, filtered_indices.len(), app.branches.len()
+            app.search_query, display_indices.len(), app.branches.len()
         );
         let status = Paragraph::new(filter_text).style(app.theme.search_bar);
         frame.render_widget(status, status_area);
