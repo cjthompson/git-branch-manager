@@ -103,6 +103,7 @@ fn main() -> Result<()> {
             working_tree_status,
             candidates,
             cache,
+            did_fetch: auto_fetch,
         });
     });
 

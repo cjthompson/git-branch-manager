@@ -104,6 +104,8 @@ pub struct InitialLoad {
     pub working_tree_status: WorkingTreeStatus,
     pub candidates: Vec<(String, String)>,
     pub cache: cache::BranchCache,
+    /// True if a `git fetch` was performed as part of this load (auto_fetch on startup).
+    pub did_fetch: bool,
 }
 
 /// Progress message sent from the background load thread.
@@ -1582,6 +1584,7 @@ impl App {
                 working_tree_status,
                 candidates,
                 cache,
+                did_fetch: false,
             });
         });
 
@@ -1742,6 +1745,12 @@ impl App {
                         load.cache,
                     ))
                 };
+
+                // If the load thread already fetched (auto_fetch on startup),
+                // mark remote as fetched so the Remote Branches view doesn't re-fetch.
+                if load.did_fetch {
+                    self.remote_fetched = true;
+                }
 
                 // Spawn PR loader now that branches are loaded
                 self.pr_rx = Some(pr_loader::spawn_pr_loader(self.repo_path.clone()));
