@@ -352,14 +352,19 @@ impl App {
 
             // Check if background remote fetch completed
             if let Some(rx) = &self.remote_fetch_rx
-                && rx.try_recv().is_ok()
+                && let Ok(success) = rx.try_recv()
             {
                 self.remote_fetch_rx = None;
-                self.remote_fetched = true;
-                // Reload branches with updated remote refs
-                if self.view == View::RemoteBranches {
-                    self.populate_remote_branches();
+                if success {
+                    self.remote_fetched = true;
+                    // Reload branches with updated remote refs
+                    if self.view == View::RemoteBranches {
+                        self.populate_remote_branches();
+                    } else {
+                        self.remote_loading = false;
+                    }
                 } else {
+                    // Fetch failed or timed out — clear loading state
                     self.remote_loading = false;
                 }
             }
