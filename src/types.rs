@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use crate::git::github::PrStatus;
 
 /// Merge status of a branch relative to the base branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,12 +147,16 @@ pub struct WorktreeInfo {
     /// Working tree status (staged/unstaged/untracked).
     pub wt_status: WorkingTreeStatus,
     /// Age date: newest mtime of dirty files if dirty, else HEAD commit date.
-    pub age_date: chrono::DateTime<chrono::Utc>,
+    pub age_date: DateTime<Utc>,
     // Fields below are populated by phase 2 (branch enrichment):
+    /// Merge status relative to base branch (defaults to Unmerged until phase-2 enrichment).
     pub merge_status: MergeStatus,
+    /// Commits ahead of remote tracking branch (None until phase-2 enrichment).
     pub ahead: Option<u32>,
+    /// Commits behind remote tracking branch (None until phase-2 enrichment).
     pub behind: Option<u32>,
-    pub pr: Option<crate::git::github::PrStatus>,
+    /// Associated GitHub PR (None until phase-2 enrichment).
+    pub pr: Option<PrStatus>,
 }
 
 impl WorktreeInfo {
