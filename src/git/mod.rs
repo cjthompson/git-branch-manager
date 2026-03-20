@@ -7,3 +7,4 @@ pub mod pr_loader;
 pub mod squash_loader;
 pub mod status;
 pub mod tags;
+pub mod worktree;
