@@ -94,3 +94,15 @@ branch lookup by name.
 **Files changed:**
 - `src/app.rs` — Rewrote `drain_squash_rx()` and `drain_remote_squash_rx()` with per-frame
   cap and HashMap index lookup
+
+## Task #020: Reduce event loop poll timeout from 250ms to 50ms
+
+**Problem:** The event loop used a 250ms poll timeout, meaning background channel results
+(squash detection, fetch completion, operation results) could sit unprocessed for up to
+250ms before being rendered. This created a perceptible lag ceiling for UI updates.
+
+**Fix:** Reduced `event::poll` timeout from 250ms to 50ms. This makes background results
+appear ~5x faster while having negligible CPU impact (the poll syscall is cheap).
+
+**Files changed:**
+- `src/app.rs` — Changed `Duration::from_millis(250)` to `Duration::from_millis(50)`
