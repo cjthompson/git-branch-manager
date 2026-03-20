@@ -95,7 +95,11 @@ fn status_and_age(dir: &Path) -> (WorkingTreeStatus, DateTime<Utc>) {
 
         if x == '?' && y == '?' {
             has_untracked = true;
-            dirty_paths.push(dir.join(file));
+            // Skip untracked directories (trailing slash) — stat-ing a dir gives
+            // the dir's own mtime, not the newest file inside it.
+            if !file.ends_with('/') {
+                dirty_paths.push(dir.join(file));
+            }
         } else {
             let mut pushed = false;
             if x != ' ' && x != '?' {
