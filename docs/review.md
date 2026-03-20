@@ -80,3 +80,17 @@ pattern used by `git_cmd()` for git CLI calls.
 
 **Files changed:**
 - `src/git/github.rs` — Added `stdin(Stdio::null())` to gh Command
+
+## Task #019: Cap squash channel drain per frame and use HashMap for O(1) lookup
+
+**Problem:** `drain_squash_rx()` and `drain_remote_squash_rx()` consumed all available
+channel items in a single frame with O(N) linear search per item. When many cache hits
+arrive simultaneously, this could cause O(N*M) work blocking the next redraw.
+
+**Fix:** Capped both drain loops to process at most 32 items per frame iteration. Replaced
+`Vec::iter_mut().find()` linear search with a pre-built `HashMap<String, usize>` for O(1)
+branch lookup by name.
+
+**Files changed:**
+- `src/app.rs` — Rewrote `drain_squash_rx()` and `drain_remote_squash_rx()` with per-frame
+  cap and HashMap index lookup

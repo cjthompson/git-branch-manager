@@ -1849,17 +1849,27 @@ impl App {
 
         let Some(rx) = &self.squash_rx else { return };
 
+        // Build name→index map for O(1) lookup (only once per drain, not per result)
+        let index_map: HashMap<String, usize> = self
+            .branches
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.name.clone(), i))
+            .collect();
+
+        let mut drained = 0;
         let done = loop {
+            if drained >= 32 {
+                break false;
+            }
             match rx.try_recv() {
                 Ok(result) => {
+                    drained += 1;
                     self.squash_checked += 1;
                     if result.is_squash_merged
-                        && let Some(branch) = self
-                            .branches
-                            .iter_mut()
-                            .find(|b| b.name == result.branch_name)
+                        && let Some(&idx) = index_map.get(result.branch_name.as_str())
                     {
-                        branch.merge_status = MergeStatus::SquashMerged;
+                        self.branches[idx].merge_status = MergeStatus::SquashMerged;
                     }
                 }
                 Err(TryRecvError::Empty) => break false,
@@ -1877,17 +1887,27 @@ impl App {
 
         let Some(rx) = &self.remote_squash_rx else { return };
 
+        // Build ref→index map for O(1) lookup
+        let index_map: HashMap<String, usize> = self
+            .remote_branches
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.full_ref.clone(), i))
+            .collect();
+
+        let mut drained = 0;
         let done = loop {
+            if drained >= 32 {
+                break false;
+            }
             match rx.try_recv() {
                 Ok(result) => {
+                    drained += 1;
                     self.remote_squash_checked += 1;
                     if result.is_squash_merged
-                        && let Some(branch) = self
-                            .remote_branches
-                            .iter_mut()
-                            .find(|b| b.full_ref == result.branch_name)
+                        && let Some(&idx) = index_map.get(result.branch_name.as_str())
                     {
-                        branch.merge_status = MergeStatus::SquashMerged;
+                        self.remote_branches[idx].merge_status = MergeStatus::SquashMerged;
                     }
                 }
                 Err(TryRecvError::Empty) => break false,
