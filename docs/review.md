@@ -54,3 +54,18 @@ displays while the background load is in progress.
 - `src/app.rs` — Added `TagLoad` struct, `tag_load_rx`/`tag_loading` fields, `load_tags()`
   method, `drain_tag_load_rx()` in event loop; replaced 4 synchronous call sites
 - `src/ui/tag_list.rs` — Added loading screen when `tag_loading` is true
+
+## Task #017: Add timeout and cancellation to background git fetch
+
+**Problem:** `fetch_sync()` used `Command::output()` which blocks indefinitely. If the
+remote is unreachable (flaky WiFi, broken SSH), the background thread hangs forever and
+the "Fetching remote branches..." toast never clears.
+
+**Fix:** Replaced `Command::output()` with `Command::spawn()` + a polling loop with a
+30-second deadline. On timeout, the child process is killed and `false` is returned.
+Also improved the fetch completion handler in the event loop to distinguish success from
+failure — a failed/timed-out fetch no longer sets `remote_fetched = true`.
+
+**Files changed:**
+- `src/git/operations.rs` — Rewrote `fetch_sync()` with spawn + timeout
+- `src/app.rs` — Updated fetch completion handler to check success/failure

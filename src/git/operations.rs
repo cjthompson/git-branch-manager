@@ -163,11 +163,32 @@ pub fn fetch_prune(repo_path: &Path) -> OperationResult {
 /// Unlike `fetch()`, this does not produce an `OperationResult` and does not
 /// go through the Executing view.
 pub fn fetch_sync(repo_path: &Path) -> bool {
-    git_cmd(repo_path)
+    let mut child = match git_cmd(repo_path)
         .args(["fetch"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    // Wait up to 30 seconds for the fetch to complete
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(_) => return false,
+        }
+    }
 }
 
 fn run_fetch_cmd(repo_path: &Path, prune: bool) -> OperationResult {
