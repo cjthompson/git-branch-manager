@@ -26,6 +26,8 @@ pub struct Theme {
     pub pr_closed: Style,
     pub remote_title: Style,
     pub remote_header: Style,
+    pub toast_border: Style,
+    pub toast_text: Style,
 }
 
 impl Theme {
@@ -61,6 +63,8 @@ impl Theme {
                 .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
+            toast_border: Style::new().fg(Color::Yellow),
+            toast_text: Style::new().fg(Color::Yellow).add_modifier(Modifier::ITALIC),
         }
     }
 
@@ -96,6 +100,8 @@ impl Theme {
                 .fg(Color::Indexed(92))
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
+            toast_border: Style::new().fg(Color::Indexed(172)),
+            toast_text: Style::new().fg(Color::Indexed(172)).add_modifier(Modifier::ITALIC),
         }
     }
 
@@ -140,6 +146,8 @@ impl Theme {
                 .fg(Color::Indexed(125))
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
+            toast_border: Style::new().fg(Color::Indexed(136)),
+            toast_text: Style::new().fg(Color::Indexed(136)).add_modifier(Modifier::ITALIC),
         }
     }
 
@@ -182,6 +190,8 @@ impl Theme {
                 .fg(Color::Indexed(212))
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
+            toast_border: Style::new().fg(Color::Indexed(228)),
+            toast_text: Style::new().fg(Color::Indexed(228)).add_modifier(Modifier::ITALIC),
         }
     }
 

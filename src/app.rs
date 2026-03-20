@@ -261,6 +261,9 @@ impl App {
             _ => None,
         });
         let init_sort_asc: bool = config.sort_asc.unwrap_or(true);
+        // If auto_fetch is enabled, a fetch is already in progress on startup — mark as fetched
+        // immediately so switching to Remote Branches view doesn't trigger a redundant second fetch.
+        let remote_fetched = config.auto_fetch == Some(true);
 
         Self {
             base_branch,
@@ -319,7 +322,7 @@ impl App {
             remote_squash_rx: None,
             remote_squash_checked: 0,
             remote_squash_total: 0,
-            remote_fetched: false,
+            remote_fetched,
             remote_loading: false,
             remote_fetch_rx: None,
             remote_header_columns: Vec::new(),
@@ -1655,7 +1658,6 @@ impl App {
         });
 
         self.remote_load_rx = Some(rx);
-        self.remote_loading = true;
     }
 
     fn apply_sort(&mut self) {
