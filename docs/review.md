@@ -69,3 +69,14 @@ failure — a failed/timed-out fetch no longer sets `remote_fetched = true`.
 **Files changed:**
 - `src/git/operations.rs` — Rewrote `fetch_sync()` with spawn + timeout
 - `src/app.rs` — Updated fetch completion handler to check success/failure
+
+## Task #018: Add stdin(Stdio::null()) to gh CLI command
+
+**Problem:** The `gh pr list` command in `github.rs` didn't pipe stdin to `/dev/null`. If
+`gh` needs authentication, it could prompt on stdin and hang the background thread forever.
+
+**Fix:** Added `.stdin(std::process::Stdio::null())` to the `gh` Command, matching the
+pattern used by `git_cmd()` for git CLI calls.
+
+**Files changed:**
+- `src/git/github.rs` — Added `stdin(Stdio::null())` to gh Command
