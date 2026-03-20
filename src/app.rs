@@ -10,10 +10,10 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEve
 use ratatui::DefaultTerminal;
 use ratatui::widgets::TableState;
 
-use git_branch_manager::git::{branch, cache, operations, pr_loader, squash_loader, status, tags};
+use git_branch_manager::git::{branch, cache, operations, pr_loader, squash_loader, status, tags, worktree};
 use git_branch_manager::git::github::PrMap;
 use git_branch_manager::git::tags::TagInfo;
-use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, ProgressUpdate, RemoteBranchInfo, SquashResult, TrackingStatus, WorkingTreeStatus};
+use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, ProgressUpdate, RemoteBranchInfo, SquashResult, TrackingStatus, WorkingTreeStatus, WorktreeInfo};
 use crate::ui;
 use crate::ui::symbols::SymbolSet;
 use crate::ui::theme::Theme;
@@ -125,6 +125,14 @@ pub(crate) struct RemoteLoad {
     cache: cache::BranchCache,
 }
 
+pub(crate) struct WorktreeLoad {
+    pub worktrees: Vec<WorktreeInfo>,
+}
+
+pub(crate) struct WorktreeEnrich {
+    pub worktrees: Vec<WorktreeInfo>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
     BranchList,
@@ -139,6 +147,7 @@ pub enum View {
     TagFilter,
     RemoteBranches,
     RemoteFilter,
+    Worktrees,
 }
 
 pub struct App {
@@ -232,6 +241,16 @@ pub struct App {
     pub remote_status_bar_items: Vec<(u16, u16, KeyCode)>,
     /// Receiver for background remote branch loading (phase 1 enumeration).
     pub remote_load_rx: Option<Receiver<RemoteLoad>>,
+    // ── Worktrees state ──
+    pub worktrees: Vec<WorktreeInfo>,
+    pub worktree_cursor: usize,
+    pub worktree_table_state: TableState,
+    pub worktree_selected: Vec<bool>,
+    pub worktree_load_rx: Option<Receiver<WorktreeLoad>>,
+    pub worktree_enrich_rx: Option<Receiver<WorktreeEnrich>>,
+    pub worktree_loading: bool,
+    /// The view that was active before entering View::Menu — used to dispatch the right menu.
+    pub prev_view: View,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,6 +258,7 @@ pub enum ResultsReturnView {
     BranchList,
     Tags,
     RemoteBranches,
+    Worktrees,
 }
 
 impl App {
@@ -328,6 +348,14 @@ impl App {
             remote_header_columns: Vec::new(),
             remote_status_bar_items: Vec::new(),
             remote_load_rx: None,
+            worktrees: Vec::new(),
+            worktree_cursor: 0,
+            worktree_table_state: TableState::default(),
+            worktree_selected: Vec::new(),
+            worktree_load_rx: None,
+            worktree_enrich_rx: None,
+            worktree_loading: false,
+            prev_view: View::BranchList,
         }
     }
 
@@ -348,6 +376,8 @@ impl App {
             self.drain_load_rx();
             self.drain_tag_load_rx();
             self.drain_remote_load_rx();
+            self.drain_worktree_load_rx();
+            self.drain_worktree_enrich_rx();
             self.drain_squash_rx();
             self.drain_remote_squash_rx();
             self.drain_pr_rx();
@@ -417,6 +447,7 @@ impl App {
                     View::TagFilter => self.handle_tag_filter_key(key.code),
                     View::RemoteBranches => self.handle_remote_branches_key(key.code),
                     View::RemoteFilter => self.handle_remote_filter_key(key.code),
+                    View::Worktrees => self.handle_worktrees_key(key.code),
                 }
             }
             Event::Mouse(mouse) => {
@@ -434,6 +465,8 @@ impl App {
                             self.handle_tags_key(KeyCode::Down);
                         } else if self.view == View::RemoteBranches {
                             self.handle_remote_branches_key(KeyCode::Down);
+                        } else if self.view == View::Worktrees {
+                            self.handle_worktrees_key(KeyCode::Down);
                         }
                     }
                     MouseEventKind::ScrollUp => {
@@ -443,6 +476,8 @@ impl App {
                             self.handle_tags_key(KeyCode::Up);
                         } else if self.view == View::RemoteBranches {
                             self.handle_remote_branches_key(KeyCode::Up);
+                        } else if self.view == View::Worktrees {
+                            self.handle_worktrees_key(KeyCode::Up);
                         }
                     }
                     _ => {}
@@ -618,6 +653,7 @@ impl App {
                 });
             }
             KeyCode::Enter => {
+                self.prev_view = View::BranchList;
                 self.view = View::Menu { cursor: 0 };
             }
             KeyCode::Char('s') => {
@@ -647,6 +683,9 @@ impl App {
             }
             KeyCode::Char('r') => {
                 self.open_remote_branches_view();
+            }
+            KeyCode::Char('w') => {
+                self.open_worktrees_view();
             }
             KeyCode::Char('/') => {
                 self.search_active = true;
@@ -694,10 +733,18 @@ impl App {
                     &self.view,
                     View::Confirm { action } if matches!(action, BranchAction::DeleteRemoteBranch | BranchAction::CheckoutRemote)
                 );
+                let is_worktree_action = matches!(
+                    &self.view,
+                    View::Confirm { action } if matches!(action,
+                        BranchAction::WorktreeRemove | BranchAction::WorktreeForceRemove
+                    )
+                );
                 if is_tag_action {
                     self.results_return_view = ResultsReturnView::Tags;
                 } else if is_remote_action {
                     self.results_return_view = ResultsReturnView::RemoteBranches;
+                } else if is_worktree_action {
+                    self.results_return_view = ResultsReturnView::Worktrees;
                 }
                 self.execute_action_async();
             }
@@ -711,10 +758,18 @@ impl App {
                     &self.view,
                     View::Confirm { action } if matches!(action, BranchAction::DeleteRemoteBranch | BranchAction::CheckoutRemote)
                 );
+                let is_worktree_action = matches!(
+                    &self.view,
+                    View::Confirm { action } if matches!(action,
+                        BranchAction::WorktreeRemove | BranchAction::WorktreeForceRemove
+                    )
+                );
                 if is_tag_action {
                     self.view = View::Tags;
                 } else if is_remote_action {
                     self.view = View::RemoteBranches;
+                } else if is_worktree_action {
+                    self.view = View::Worktrees;
                 } else {
                     self.view = View::BranchList;
                 }
@@ -744,6 +799,26 @@ impl App {
             }
             ResultsReturnView::RemoteBranches => {
                 self.open_remote_branches_view();
+            }
+            ResultsReturnView::Worktrees => {
+                for result in &self.results {
+                    if result.success
+                        && matches!(
+                            result.action,
+                            BranchAction::WorktreeRemove | BranchAction::WorktreeForceRemove
+                        )
+                    {
+                        let removed_path = result.branch_name.clone();
+                        self.worktrees.retain(|wt| wt.path.to_string_lossy() != removed_path);
+                    }
+                }
+                self.results.clear();
+                self.results_return_view = ResultsReturnView::BranchList;
+                self.worktree_cursor = self.worktree_cursor.min(self.worktrees.len().saturating_sub(1));
+                self.worktree_table_state.select(
+                    if self.worktrees.is_empty() { None } else { Some(self.worktree_cursor) },
+                );
+                self.view = View::Worktrees;
             }
         }
     }
@@ -888,6 +963,9 @@ impl App {
         let cursor_pos = filtered.iter().position(|&i| i == self.tag_cursor).unwrap_or(0);
 
         match code {
+            KeyCode::Char('w') => {
+                self.open_worktrees_view();
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 if cursor_pos + 1 < len {
                     self.tag_cursor = filtered[cursor_pos + 1];
@@ -1220,7 +1298,89 @@ impl App {
                 self.tag_sort_by_name = false;
                 self.load_tags();
             }
+            KeyCode::Char('w') => {
+                self.open_worktrees_view();
+            }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('r') => {
+                self.view = View::BranchList;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_worktrees_key(&mut self, code: KeyCode) {
+        let len = self.worktrees.len();
+
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if len > 0 && self.worktree_cursor + 1 < len {
+                    self.worktree_cursor += 1;
+                    self.worktree_table_state.select(Some(self.worktree_cursor));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.worktree_cursor > 0 {
+                    self.worktree_cursor -= 1;
+                    self.worktree_table_state.select(Some(self.worktree_cursor));
+                }
+            }
+            KeyCode::PageDown => {
+                let new = (self.worktree_cursor + 20).min(len.saturating_sub(1));
+                self.worktree_cursor = new;
+                self.worktree_table_state.select(Some(new));
+            }
+            KeyCode::PageUp => {
+                self.worktree_cursor = self.worktree_cursor.saturating_sub(20);
+                self.worktree_table_state.select(Some(self.worktree_cursor));
+            }
+            KeyCode::Enter => {
+                self.prev_view = View::Worktrees;
+                self.view = View::Menu { cursor: 0 };
+            }
+            KeyCode::Char('d') => {
+                if !self.worktrees.is_empty() {
+                    let wt = &self.worktrees[self.worktree_cursor];
+                    if !wt.is_main && wt.wt_status.is_clean() {
+                        self.results_return_view = ResultsReturnView::Worktrees;
+                        self.view = View::Confirm { action: BranchAction::WorktreeRemove };
+                    }
+                }
+            }
+            KeyCode::Char('D') => {
+                if !self.worktrees.is_empty() && !self.worktrees[self.worktree_cursor].is_main {
+                    self.results_return_view = ResultsReturnView::Worktrees;
+                    self.view = View::Confirm { action: BranchAction::WorktreeForceRemove };
+                }
+            }
+            KeyCode::Char('w') | KeyCode::Tab => {
+                self.view = View::BranchList;
+            }
+            KeyCode::Char('r') => {
+                self.open_remote_branches_view();
+            }
+            KeyCode::Char('t') => {
+                self.tag_cursor = 0;
+                self.tag_search_query.clear();
+                self.tag_search_active = false;
+                self.tag_sort_by_name = false;
+                self.load_tags();
+            }
+            KeyCode::Char('?') => {
+                self.view = View::Help;
+            }
+            KeyCode::Char('T') => {
+                self.theme = self.theme.next();
+                let mut config = git_branch_manager::config::Config::load();
+                config.theme = Some(self.theme.name.to_string());
+                config.save();
+            }
+            KeyCode::Char('Y') => {
+                self.symbols = crate::ui::symbols::next(self.symbols);
+                let mut config = git_branch_manager::config::Config::load();
+                config.symbols = Some(crate::ui::symbols::name(self.symbols).to_string());
+                config.save();
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
                 self.view = View::BranchList;
             }
             _ => {}
@@ -1467,6 +1627,24 @@ impl App {
             return;
         }
 
+        if action == BranchAction::WorktreeRemove || action == BranchAction::WorktreeForceRemove {
+            if self.worktrees.is_empty() {
+                return;
+            }
+            let wt_path = self.worktrees[self.worktree_cursor].path.clone();
+            let repo_path = self.repo_path.clone();
+            let force = action == BranchAction::WorktreeForceRemove;
+            self.spawn_op(label, move || {
+                let result = if force {
+                    operations::force_remove_worktree(&repo_path, &wt_path)
+                } else {
+                    operations::remove_worktree(&repo_path, &wt_path)
+                };
+                vec![result]
+            });
+            return;
+        }
+
         // Bulk branch operations (delete local, delete local+remote)
         let target_branches: Vec<String> = {
             let selected: Vec<String> = self
@@ -1622,6 +1800,47 @@ impl App {
         self.view = View::RemoteBranches;
     }
 
+    fn open_worktrees_view(&mut self) {
+        self.spawn_worktree_load();
+        self.view = View::Worktrees;
+    }
+
+    fn spawn_worktree_load(&mut self) {
+        let repo_path = self.repo_path.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let worktrees = worktree::list_worktrees(&repo_path);
+            let _ = tx.send(WorktreeLoad { worktrees });
+        });
+        self.worktree_load_rx = Some(rx);
+        self.worktree_loading = true;
+    }
+
+    fn spawn_worktree_enrich(&mut self) {
+        let worktrees = self.worktrees.clone();
+        let branches = self.branches.clone();
+        let pr_map = self.pr_map.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let enriched: Vec<WorktreeInfo> = worktrees
+                .into_iter()
+                .map(|mut wt| {
+                    if let Some(ref branch_name) = wt.branch {
+                        if let Some(b) = branches.iter().find(|b| &b.name == branch_name) {
+                            wt.merge_status = b.merge_status.clone();
+                            wt.ahead = b.ahead;
+                            wt.behind = b.behind;
+                            wt.pr = pr_map.get(branch_name).map(|p| p.status.clone());
+                        }
+                    }
+                    wt
+                })
+                .collect();
+            let _ = tx.send(WorktreeEnrich { worktrees: enriched });
+        });
+        self.worktree_enrich_rx = Some(rx);
+    }
+
     /// Spawn background thread to populate remote branches from local tracking refs.
     /// Results arrive via `remote_load_rx` and are applied in `drain_remote_load_rx()`.
     fn populate_remote_branches(&mut self) {
@@ -1757,6 +1976,10 @@ impl App {
                 // Spawn PR loader now that branches are loaded
                 self.pr_rx = Some(pr_loader::spawn_pr_loader(self.repo_path.clone()));
 
+                if self.config.load_worktrees_on_launch == Some(true) {
+                    self.spawn_worktree_load();
+                }
+
                 self.apply_sort();
             }
             Err(TryRecvError::Empty) => {}
@@ -1851,6 +2074,45 @@ impl App {
             Err(TryRecvError::Disconnected) => {
                 self.remote_load_rx = None;
                 self.remote_loading = false;
+            }
+        }
+    }
+
+    fn drain_worktree_load_rx(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let Some(rx) = &self.worktree_load_rx else { return };
+        match rx.try_recv() {
+            Ok(load) => {
+                self.worktree_load_rx = None;
+                self.worktree_loading = false;
+                let len = load.worktrees.len();
+                self.worktrees = load.worktrees;
+                self.worktree_selected = vec![false; len];
+                self.worktree_cursor = 0;
+                self.worktree_table_state = TableState::default().with_selected(
+                    if len == 0 { None } else { Some(0) },
+                );
+                self.spawn_worktree_enrich();
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.worktree_load_rx = None;
+                self.worktree_loading = false;
+            }
+        }
+    }
+
+    fn drain_worktree_enrich_rx(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let Some(rx) = &self.worktree_enrich_rx else { return };
+        match rx.try_recv() {
+            Ok(enrich) => {
+                self.worktree_enrich_rx = None;
+                self.worktrees = enrich.worktrees;
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.worktree_enrich_rx = None;
             }
         }
     }
@@ -2173,8 +2435,42 @@ impl App {
         items
     }
 
+    pub fn build_worktree_menu_items(&self) -> Vec<ui::menu::MenuItem> {
+        if self.worktrees.is_empty() {
+            return vec![];
+        }
+        let wt = &self.worktrees[self.worktree_cursor];
+        let is_main = wt.is_main;
+        let is_dirty = !wt.wt_status.is_clean();
+
+        vec![
+            ui::menu::MenuItem {
+                label: "Remove worktree".into(),
+                enabled: !is_main && !is_dirty,
+                reason: if is_main {
+                    Some("main worktree".into())
+                } else if is_dirty {
+                    Some("dirty".into())
+                } else {
+                    None
+                },
+                shortcut: Some('d'),
+            },
+            ui::menu::MenuItem {
+                label: "Force remove worktree".into(),
+                enabled: !is_main,
+                reason: if is_main { Some("main worktree".into()) } else { None },
+                shortcut: Some('D'),
+            },
+        ]
+    }
+
     fn handle_menu_key(&mut self, code: KeyCode) {
-        let items = self.build_menu_items();
+        let items = if self.prev_view == View::Worktrees {
+            self.build_worktree_menu_items()
+        } else {
+            self.build_menu_items()
+        };
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if let View::Menu { ref mut cursor } = self.view {
@@ -2210,6 +2506,16 @@ impl App {
                 };
                 let item = &items[menu_cursor];
                 if item.enabled {
+                    if self.prev_view == View::Worktrees {
+                        let action = match menu_cursor {
+                            0 => BranchAction::WorktreeRemove,
+                            1 => BranchAction::WorktreeForceRemove,
+                            _ => return,
+                        };
+                        self.results_return_view = ResultsReturnView::Worktrees;
+                        self.view = View::Confirm { action };
+                        return;
+                    }
                     // Open PR in browser — no confirm needed, fire and forget
                     if menu_cursor == 11 {
                         let branch_name = self.branches[self.cursor].name.clone();
@@ -2241,6 +2547,20 @@ impl App {
                 }
             }
             KeyCode::Char(ch) => {
+                if self.prev_view == View::Worktrees {
+                    if let Some((idx, _)) = items.iter().enumerate().find(|(_, item)| item.shortcut == Some(ch) && item.enabled) {
+                        let action = match idx {
+                            0 => BranchAction::WorktreeRemove,
+                            1 => BranchAction::WorktreeForceRemove,
+                            _ => return,
+                        };
+                        self.results_return_view = ResultsReturnView::Worktrees;
+                        self.view = View::Confirm { action };
+                    } else if ch == 'q' {
+                        self.view = self.prev_view.clone();
+                    }
+                    return;
+                }
                 if let Some((idx, _)) = items.iter().enumerate().find(|(_, item)| item.shortcut == Some(ch) && item.enabled) {
                     // Open PR in browser (index 11) — no confirm needed, fire and forget
                     if idx == 11 {
@@ -2275,7 +2595,7 @@ impl App {
                 }
             }
             KeyCode::Esc => {
-                self.view = View::BranchList;
+                self.view = self.prev_view.clone();
             }
             _ => {}
         }

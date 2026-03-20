@@ -11,3 +11,4 @@ pub mod settings;
 pub mod symbols;
 pub mod tag_list;
 pub mod theme;
+pub mod worktree_list;
