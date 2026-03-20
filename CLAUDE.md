@@ -14,6 +14,8 @@ cargo test test_squash               # run a single test by name
 cargo clippy                         # lint
 ```
 
+**After completing any task, ALWAYS run `cargo build` to verify the code compiles.**
+
 If `cargo` is not on PATH, prefix with: `export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"`
 
 ## Architecture

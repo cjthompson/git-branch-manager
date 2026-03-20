@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use crossterm::event::KeyCode;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
 
 use crate::app::App;
 use git_branch_manager::types::MergeStatus;
@@ -37,20 +37,6 @@ fn age_style(date: &DateTime<Utc>) -> Style {
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     app.terminal_rows = area.height;
-
-    // Show loading screen while fetching
-    if app.remote_loading {
-        let block = Block::default()
-            .title("Remote Branches")
-            .title_style(app.theme.remote_title)
-            .borders(Borders::ALL);
-        let loading = Paragraph::new("Fetching remote branches...")
-            .style(Style::default().fg(Color::Yellow))
-            .block(block)
-            .alignment(Alignment::Center);
-        frame.render_widget(loading, area);
-        return;
-    }
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -457,5 +443,26 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
         let status = Paragraph::new(Line::from(spans)).style(app.theme.status_bar);
         frame.render_widget(status, status_area);
+    }
+
+    // Toast overlay while fetching remote branches
+    if app.remote_loading {
+        let msg = " Fetching remote branches\u{2026} ";
+        let toast_width = msg.len() as u16 + 2; // +2 for border
+        let toast_height: u16 = 3;
+        let x = area.width.saturating_sub(toast_width).saturating_sub(1);
+        let y = area.height.saturating_sub(toast_height).saturating_sub(2); // above status bar
+        let toast_area = Rect::new(x, y, toast_width, toast_height);
+
+        let toast = Paragraph::new(msg)
+            .style(app.theme.toast_text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(app.theme.toast_border),
+            )
+            .alignment(Alignment::Center);
+        frame.render_widget(Clear, toast_area);
+        frame.render_widget(toast, toast_area);
     }
 }
