@@ -2288,7 +2288,7 @@ impl App {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if let View::Settings { ref mut cursor } = self.view {
-                    *cursor = (*cursor + 1).min(4); // 5 rows (index 0..=4)
+                    *cursor = (*cursor + 1).min(5); // 6 rows (index 0..=5)
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -2324,6 +2324,9 @@ impl App {
                 } else if cursor == 4 {
                     // Toggle auto-fetch
                     self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
+                    self.config.save();
+                } else if cursor == 5 {
+                    self.config.load_worktrees_on_launch = Some(self.config.load_worktrees_on_launch != Some(true));
                     self.config.save();
                 }
             }
@@ -2361,6 +2364,9 @@ impl App {
                     // Toggle auto-fetch (same as right)
                     self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
                     self.config.save();
+                } else if cursor == 5 {
+                    self.config.load_worktrees_on_launch = Some(self.config.load_worktrees_on_launch != Some(true));
+                    self.config.save();
                 }
             }
             KeyCode::Char(' ') => {
@@ -2373,6 +2379,9 @@ impl App {
                     self.config.save();
                 } else if cursor == 4 {
                     self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
+                    self.config.save();
+                } else if cursor == 5 {
+                    self.config.load_worktrees_on_launch = Some(self.config.load_worktrees_on_launch != Some(true));
                     self.config.save();
                 }
             }
