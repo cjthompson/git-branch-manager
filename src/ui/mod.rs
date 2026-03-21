@@ -8,6 +8,7 @@ pub mod remote_branch_list;
 pub mod render;
 pub mod results;
 pub mod settings;
+pub mod shared;
 pub mod symbols;
 pub mod tag_list;
 pub mod theme;
