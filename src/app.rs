@@ -610,8 +610,11 @@ impl App {
     fn handle_branch_list_key(&mut self, code: KeyCode) {
         let filtered = self.filtered_branch_indices();
         if filtered.is_empty() {
-            if matches!(code, KeyCode::Char('q')) {
-                self.should_exit = true;
+            match code {
+                KeyCode::Char('q') => self.should_exit = true,
+                KeyCode::Tab => self.next_tab(),
+                KeyCode::BackTab => self.prev_tab(),
+                _ => {}
             }
             return;
         }
@@ -737,12 +740,8 @@ impl App {
             KeyCode::Char('q') => {
                 self.should_exit = true;
             }
-            KeyCode::Tab => {
-                self.open_remote_branches_view();
-            }
-            KeyCode::BackTab => {
-                self.open_worktrees_view();
-            }
+            KeyCode::Tab => self.next_tab(),
+            KeyCode::BackTab => self.prev_tab(),
             _ => {}
         }
     }
@@ -964,7 +963,13 @@ impl App {
         let len = filtered.len();
         if len == 0 {
             match code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
+                KeyCode::Char('q') => {
+                    self.should_exit = true;
+                }
+                KeyCode::Esc | KeyCode::Char('t') => {
+                    self.view = View::BranchList;
+                }
+                KeyCode::Char('l') => {
                     self.view = View::BranchList;
                 }
                 KeyCode::Char('r') => {
@@ -979,6 +984,8 @@ impl App {
                 KeyCode::Char('c') if !self.tag_search_query.is_empty() => {
                     self.tag_search_query.clear();
                 }
+                KeyCode::Tab => self.next_tab(),
+                KeyCode::BackTab => self.prev_tab(),
                 _ => {}
             }
             return;
@@ -1067,7 +1074,13 @@ impl App {
                 self.tag_sort_by_name = !self.tag_sort_by_name;
                 self.apply_tag_sort();
             }
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
+            KeyCode::Char('q') => {
+                self.should_exit = true;
+            }
+            KeyCode::Esc | KeyCode::Char('t') => {
+                self.view = View::BranchList;
+            }
+            KeyCode::Char('l') => {
                 self.view = View::BranchList;
             }
             KeyCode::Char('r') => {
@@ -1076,6 +1089,8 @@ impl App {
             KeyCode::Char('?') => {
                 self.view = View::Help;
             }
+            KeyCode::Tab => self.next_tab(),
+            KeyCode::BackTab => self.prev_tab(),
             _ => {}
         }
     }
@@ -1219,7 +1234,13 @@ impl App {
     fn handle_remote_branches_key(&mut self, code: KeyCode) {
         if self.filtered_remote_indices().is_empty() {
             match code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('r') => {
+                KeyCode::Char('q') => {
+                    self.should_exit = true;
+                }
+                KeyCode::Esc | KeyCode::Char('r') => {
+                    self.view = View::BranchList;
+                }
+                KeyCode::Char('l') => {
                     self.view = View::BranchList;
                 }
                 KeyCode::Char('t') => {
@@ -1247,12 +1268,8 @@ impl App {
                 KeyCode::Char('?') => {
                     self.view = View::Help;
                 }
-                KeyCode::Tab => {
-                    self.open_worktrees_view();
-                }
-                KeyCode::BackTab => {
-                    self.view = View::BranchList;
-                }
+                KeyCode::Tab => self.next_tab(),
+                KeyCode::BackTab => self.prev_tab(),
                 _ => {}
             }
             return;
@@ -1332,13 +1349,15 @@ impl App {
             KeyCode::Char('w') => {
                 self.open_worktrees_view();
             }
-            KeyCode::Tab => {
-                self.open_worktrees_view();
-            }
-            KeyCode::BackTab => {
+            KeyCode::Tab => self.next_tab(),
+            KeyCode::BackTab => self.prev_tab(),
+            KeyCode::Char('l') => {
                 self.view = View::BranchList;
             }
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('r') => {
+            KeyCode::Char('q') => {
+                self.should_exit = true;
+            }
+            KeyCode::Esc | KeyCode::Char('r') => {
                 self.view = View::BranchList;
             }
             _ => {}
@@ -1389,12 +1408,11 @@ impl App {
                     self.view = View::Confirm { action: BranchAction::WorktreeForceRemove };
                 }
             }
-            KeyCode::Char('w') | KeyCode::Tab => {
+            KeyCode::Char('w') => {
                 self.view = View::BranchList;
             }
-            KeyCode::BackTab => {
-                self.open_remote_branches_view();
-            }
+            KeyCode::Tab => self.next_tab(),
+            KeyCode::BackTab => self.prev_tab(),
             KeyCode::Char('r') => {
                 self.open_remote_branches_view();
             }
@@ -1420,7 +1438,13 @@ impl App {
                 config.symbols = Some(crate::ui::symbols::name(self.symbols).to_string());
                 config.save();
             }
-            KeyCode::Esc | KeyCode::Char('q') => {
+            KeyCode::Char('l') => {
+                self.view = View::BranchList;
+            }
+            KeyCode::Char('q') => {
+                self.should_exit = true;
+            }
+            KeyCode::Esc => {
                 self.view = View::BranchList;
             }
             _ => {}
@@ -1843,6 +1867,24 @@ impl App {
     fn open_worktrees_view(&mut self) {
         self.spawn_worktree_load();
         self.view = View::Worktrees;
+    }
+
+    fn next_tab(&mut self) {
+        match self.view {
+            View::BranchList => self.open_remote_branches_view(),
+            View::RemoteBranches => self.open_worktrees_view(),
+            View::Worktrees => self.view = View::BranchList,
+            _ => {}
+        }
+    }
+
+    fn prev_tab(&mut self) {
+        match self.view {
+            View::BranchList => self.open_worktrees_view(),
+            View::RemoteBranches => self.view = View::BranchList,
+            View::Worktrees => self.open_remote_branches_view(),
+            _ => {}
+        }
     }
 
     fn spawn_worktree_load(&mut self) {

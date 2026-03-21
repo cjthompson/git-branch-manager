@@ -116,6 +116,10 @@ pub struct RemoteBranchInfo {
     pub is_base: bool,
     pub last_commit_date: DateTime<Utc>,
     pub merge_status: MergeStatus,
+    /// Commits ahead of base branch (None if not computed)
+    pub ahead: Option<u32>,
+    /// Commits behind base branch (None if not computed)
+    pub behind: Option<u32>,
 }
 
 impl RemoteBranchInfo {
