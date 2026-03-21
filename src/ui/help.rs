@@ -27,6 +27,7 @@ T       Cycle theme
 Y       Cycle symbols
 t       Tags view
 r       Remote branches
+w       Worktrees view
 ,       Settings
 /       Search branches
 \\      Filter menu

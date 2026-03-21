@@ -26,6 +26,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
             | git_branch_manager::types::BranchAction::Rebase
             | git_branch_manager::types::BranchAction::Worktree
     );
+    let is_worktree_action = matches!(
+        action,
+        git_branch_manager::types::BranchAction::WorktreeRemove
+            | git_branch_manager::types::BranchAction::WorktreeForceRemove
+    );
     let mut lines = if is_tag_action {
         let target_names = app.target_tag_names();
         let count = target_names.len();
@@ -40,6 +45,17 @@ pub fn draw(frame: &mut Frame, app: &App) {
             )));
         }
         l
+    } else if is_worktree_action {
+        let wt = &app.worktrees[app.worktree_cursor];
+        let path_display = wt.path.to_string_lossy().to_string();
+        vec![
+            Line::from(format!("{}?", action_label)),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  {}", path_display),
+                app.theme.selected,
+            )),
+        ]
     } else if is_cursor_action {
         let cursor_name = &app.branches[app.cursor].name;
         vec![
