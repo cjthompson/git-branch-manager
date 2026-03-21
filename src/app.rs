@@ -249,6 +249,8 @@ pub struct App {
     pub worktree_load_rx: Option<Receiver<WorktreeLoad>>,
     pub worktree_enrich_rx: Option<Receiver<WorktreeEnrich>>,
     pub worktree_loading: bool,
+    /// Status bar clickable items for worktrees view.
+    pub worktree_status_bar_items: Vec<(u16, u16, KeyCode)>,
     /// The view that was active before entering View::Menu — used to dispatch the right menu.
     pub prev_view: View,
 }
@@ -355,6 +357,7 @@ impl App {
             worktree_load_rx: None,
             worktree_enrich_rx: None,
             worktree_loading: false,
+            worktree_status_bar_items: Vec::new(),
             prev_view: View::BranchList,
         }
     }
@@ -568,6 +571,22 @@ impl App {
                 let scroll_offset = self.remote_table_state.offset();
                 let clicked_display_row = (y - 2) as usize + scroll_offset;
                 list_click_row(&mut RemoteListNav { app: self }, clicked_display_row);
+            }
+        } else if self.view == View::Worktrees {
+            if self.terminal_rows > 0 && y == self.terminal_rows - 1 && !self.worktree_status_bar_items.is_empty() {
+                for &(x_start, x_end, key) in &self.worktree_status_bar_items.clone() {
+                    if x >= x_start && x < x_end {
+                        self.handle_worktrees_key(key);
+                        break;
+                    }
+                }
+            } else if y >= 2 {
+                let scroll_offset = self.worktree_table_state.offset();
+                let clicked_row = (y - 2) as usize + scroll_offset;
+                if clicked_row < self.worktrees.len() {
+                    self.worktree_cursor = clicked_row;
+                    self.worktree_table_state.select(Some(clicked_row));
+                }
             }
         }
     }
