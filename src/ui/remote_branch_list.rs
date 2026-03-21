@@ -4,6 +4,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
 
 use crate::app::{App, View};
+use git_branch_manager::git::github::PrStatus;
 use git_branch_manager::types::MergeStatus;
 use super::shared::tab_bar_line;
 
@@ -49,6 +50,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let width = main_area.width as usize;
     let compact_age = width < 120;
+    let hide_ab = width < 80;
     let hide_local = width < 80;
     let short_status = width < 70;
     let hide_age = width < 60;
@@ -69,15 +71,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let mut header_cells = vec![
         Cell::from(""),
-        Cell::from(sort_label(0, "Name")),
+        Cell::from(sort_label(0, "Remote")),
     ];
+    if !hide_local {
+        header_cells.push(Cell::from("Local"));
+    }
+    if !hide_ab {
+        header_cells.push(Cell::from("A/B"));
+        header_cells.push(Cell::from("PR"));
+    }
     if !hide_age {
         header_cells.push(Cell::from(
             Line::from(sort_label(1, "Age")).alignment(Alignment::Right),
         ));
-    }
-    if !hide_local {
-        header_cells.push(Cell::from("Local"));
     }
     header_cells.push(Cell::from(
         Line::from(sort_label(2, "Status")).alignment(Alignment::Right),
@@ -99,13 +105,39 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let status_min_width: u16 = if short_status { 4 } else { 15 };
     let local_col_width: u16 = 5;
 
+    let max_pr_width: u16 = app.remote_branches.iter()
+        .filter_map(|b| app.pr_map.get(&b.short_name).map(|info| format!("#{}", info.number).len()))
+        .max()
+        .unwrap_or(0)
+        .max("PR".len()) as u16;
+
+    let max_ab_width: u16 = app.remote_branches.iter()
+        .filter_map(|b| {
+            let a = b.ahead.unwrap_or(0);
+            let bk = b.behind.unwrap_or(0);
+            if a > 0 || bk > 0 {
+                let mut s = String::new();
+                if a > 0 { s.push_str(&a.to_string()); }
+                if a > 0 && bk > 0 { s.push(' '); }
+                if bk > 0 { s.push_str(&bk.to_string()); }
+                Some(s.len())
+            } else {
+                None
+            }
+        })
+        .max()
+        .unwrap_or(0)
+        .max("A/B".len()) as u16;
+
     let highlight_width_for_name = app.symbols.cursor_prefix.len() as u16 + 1;
     let checkbox_width: u16 = 3;
     let age_width: u16 = if hide_age { 0 } else if compact_age { 5 } else { 14 };
     let local_width: u16 = if hide_local { 0 } else { local_col_width };
+    let ab_pr_width: u16 = if hide_ab { 0 } else { max_ab_width + 1 + max_pr_width + 1 };
     let gap_count: u16 = 2
         + if hide_age { 0 } else { 1 }
         + if hide_local { 0 } else { 1 }
+        + if hide_ab { 0 } else { 2 }
         + 1;
     let name_col_width = main_area
         .width
@@ -114,6 +146,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .saturating_sub(checkbox_width)
         .saturating_sub(age_width)
         .saturating_sub(local_width)
+        .saturating_sub(ab_pr_width)
         .saturating_sub(status_min_width)
         .saturating_sub(gap_count) as usize;
 
@@ -193,6 +226,62 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             name_cell,
         ];
 
+        if !hide_local {
+            let (local_text, local_style) = if is_pinned {
+                (String::new(), app.theme.pinned_row)
+            } else if branch.has_local {
+                (local_yes.to_string(), app.theme.merged)
+            } else {
+                (local_no.to_string(), app.theme.secondary_text)
+            };
+            cells.push(Cell::from(Span::styled(local_text, local_style)));
+        }
+
+        if !hide_ab {
+            let ahead_behind = if is_pinned {
+                String::new()
+            } else {
+                match (branch.ahead, branch.behind) {
+                    (Some(a), Some(b)) if a > 0 || b > 0 => {
+                        let mut parts = Vec::new();
+                        if a > 0 { parts.push(format!("{}{}", app.symbols.arrow_up, a)); }
+                        if b > 0 { parts.push(format!("{}{}", app.symbols.arrow_down, b)); }
+                        parts.join("")
+                    }
+                    _ => String::new(),
+                }
+            };
+            let ab_style = if is_pinned {
+                app.theme.pinned_row
+            } else {
+                app.theme.ahead_behind
+            };
+            cells.push(Cell::from(Span::styled(ahead_behind, ab_style)));
+
+            // PR column — look up by short_name in pr_map
+            let pr_text = if is_pinned {
+                String::new()
+            } else {
+                app.pr_map
+                    .get(&branch.short_name)
+                    .map(|info| format!("#{}", info.number))
+                    .unwrap_or_default()
+            };
+            let pr_style = if is_pinned {
+                app.theme.pinned_row
+            } else if let Some(info) = app.pr_map.get(&branch.short_name) {
+                match info.status {
+                    PrStatus::Draft => app.theme.pr_draft,
+                    PrStatus::Open => app.theme.pr_open,
+                    PrStatus::Merged => app.theme.pr_merged,
+                    PrStatus::Closed => app.theme.pr_closed,
+                }
+            } else {
+                Style::default()
+            };
+            cells.push(Cell::from(Span::styled(pr_text, pr_style)));
+        }
+
         if !hide_age {
             let age = if compact_age {
                 branch.age_short()
@@ -207,17 +296,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             cells.push(Cell::from(
                 Line::from(Span::styled(age, a_style)).alignment(Alignment::Right),
             ));
-        }
-
-        if !hide_local {
-            let (local_text, local_style) = if is_pinned {
-                (String::new(), app.theme.pinned_row)
-            } else if branch.has_local {
-                (local_yes.to_string(), app.theme.merged)
-            } else {
-                (local_no.to_string(), app.theme.secondary_text)
-            };
-            cells.push(Cell::from(Span::styled(local_text, local_style)));
         }
 
         let (status_text, status_style) = if is_pinned {
@@ -270,11 +348,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Length(3),
         Constraint::Min(20),
     ];
-    if !hide_age {
-        widths.push(Constraint::Length(if compact_age { 5 } else { 14 }));
-    }
     if !hide_local {
         widths.push(Constraint::Length(local_col_width));
+    }
+    if !hide_ab {
+        widths.push(Constraint::Length(max_ab_width));
+        widths.push(Constraint::Length(max_pr_width));
+    }
+    if !hide_age {
+        widths.push(Constraint::Length(if compact_age { 5 } else { 14 }));
     }
     widths.push(Constraint::Length(status_min_width));
 
@@ -285,11 +367,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
         let mut sort_col_map: Vec<Option<usize>> = vec![None];
         sort_col_map.push(Some(0));
-        if !hide_age {
-            sort_col_map.push(Some(1));
-        }
         if !hide_local {
             sort_col_map.push(None);
+        }
+        if !hide_ab {
+            sort_col_map.push(None); // A/B
+            sort_col_map.push(None); // PR
+        }
+        if !hide_age {
+            sort_col_map.push(Some(1));
         }
         sort_col_map.push(Some(2));
 

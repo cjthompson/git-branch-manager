@@ -92,14 +92,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Cell::from(""),
         Cell::from(sort_label(0, "Branch")),
     ];
+    if !hide_ab {
+        header_cells.push(Cell::from(sort_label(2, "A/B")));
+        header_cells.push(Cell::from("PR"));
+    }
     if !hide_age {
         header_cells.push(Cell::from(
             Line::from(sort_label(1, "Age")).alignment(Alignment::Right),
         ));
-    }
-    if !hide_ab {
-        header_cells.push(Cell::from(sort_label(2, "A/B")));
-        header_cells.push(Cell::from("PR"));
     }
     header_cells.push(Cell::from(
         Line::from(sort_label(3, "Status")).alignment(Alignment::Right),
@@ -260,23 +260,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             name_cell,
         ];
 
-        // Age column
-        if !hide_age {
-            let age = if compact_age {
-                branch.age_short()
-            } else {
-                branch.age_display()
-            };
-            let age_style = if is_pinned {
-                app.theme.pinned_row
-            } else {
-                age_style(&branch.last_commit_date)
-            };
-            cells.push(Cell::from(
-                Line::from(Span::styled(age, age_style)).alignment(Alignment::Right),
-            ));
-        }
-
         // Ahead/behind column
         if !hide_ab {
             let ahead_behind = match (branch.ahead, branch.behind) {
@@ -321,6 +304,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 Style::default()
             };
             cells.push(Cell::from(Span::styled(pr_text, pr_style)));
+        }
+
+        // Age column
+        if !hide_age {
+            let age = if compact_age {
+                branch.age_short()
+            } else {
+                branch.age_display()
+            };
+            let age_style = if is_pinned {
+                app.theme.pinned_row
+            } else {
+                age_style(&branch.last_commit_date)
+            };
+            cells.push(Cell::from(
+                Line::from(Span::styled(age, age_style)).alignment(Alignment::Right),
+            ));
         }
 
         // Status column — pinned rows don't show merge status (they are the base)
@@ -376,19 +376,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Length(3),              // checkbox always
         Constraint::Min(20),               // name
     ];
-    if !hide_age {
-        widths.push(Constraint::Length(if compact_age { 5 } else { 14 }));
-    }
     if !hide_ab {
         widths.push(Constraint::Length(max_ab_width));  // A/B
         widths.push(Constraint::Length(max_pr_width));  // PR
+    }
+    if !hide_age {
+        widths.push(Constraint::Length(if compact_age { 5 } else { 14 }));
     }
     widths.push(Constraint::Length(status_min_width)); // status
 
     // Compute header column x positions for mouse click sorting.
     // The table is inside a block with a 1-cell border on the left, so columns start at x=1.
     // The highlight symbol takes some space; ratatui adds it before the first column.
-    // Sort column indices: checkbox=skip, name=0, age=1, A/B(ahead)=2, status=4
+    // Sort column indices: checkbox=skip, name=0, A/B(ahead)=2, age=1, status=4
     {
         let mut col_positions: Vec<(u16, usize)> = Vec::new();
         // Account for left border (1) + highlight symbol width (cursor_prefix + space)
@@ -399,12 +399,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // col 0 = checkbox (no sort), col 1 = name (sort 0), then age/ab/status depending on visibility
         let mut sort_col_map: Vec<Option<usize>> = vec![None]; // checkbox = no sort
         sort_col_map.push(Some(0)); // name
-        if !hide_age {
-            sort_col_map.push(Some(1)); // age
-        }
         if !hide_ab {
             sort_col_map.push(Some(2)); // A/B
             sort_col_map.push(None);    // PR (not sortable)
+        }
+        if !hide_age {
+            sort_col_map.push(Some(1)); // age
         }
         sort_col_map.push(Some(4)); // status
 

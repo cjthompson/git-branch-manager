@@ -147,6 +147,15 @@ pub fn list_remote_branches_phase1(
 
         let has_local = local_names.contains(&short_name);
 
+        // Compute ahead/behind relative to base branch
+        let (ahead, behind) = if let Some(base) = base_oid {
+            repo.graph_ahead_behind(commit.id(), base)
+                .map(|(a, b)| (Some(a as u32), Some(b as u32)))
+                .unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
+
         branches.push(RemoteBranchInfo {
             full_ref,
             remote,
@@ -155,6 +164,8 @@ pub fn list_remote_branches_phase1(
             is_base,
             last_commit_date,
             merge_status,
+            ahead,
+            behind,
         });
     }
 

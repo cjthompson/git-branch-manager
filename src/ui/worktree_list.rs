@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
 use crate::app::{App, View};
 use git_branch_manager::git::github::PrStatus;
 use git_branch_manager::types::MergeStatus;
-use super::shared::tab_bar_line;
+use super::shared::{prefix_style, tab_bar_line};
 
 /// Returns a color style based on how old a date is.
 fn age_style(date: &DateTime<Utc>) -> Style {
@@ -57,15 +57,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .borders(Borders::ALL);
 
     // Header
-    let mut header_cells = vec![Cell::from("Path"), Cell::from("Branch")];
+    let checkbox_width: u16 = 3;
+    let mut header_cells = vec![Cell::from(""), Cell::from("Branch"), Cell::from("Path")];
+    if !hide_ab {
+        header_cells.push(Cell::from("A/B"));
+        header_cells.push(Cell::from("PR"));
+    }
     if !hide_age {
         header_cells.push(Cell::from(
             Line::from("Age").alignment(Alignment::Right),
         ));
-    }
-    if !hide_ab {
-        header_cells.push(Cell::from("A/B"));
-        header_cells.push(Cell::from("PR"));
     }
     header_cells.push(Cell::from(
         Line::from("Status").alignment(Alignment::Right),
@@ -122,13 +123,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Split remaining width evenly between Path and Branch columns
     let fixed_width = 2u16 // borders
         + highlight_width
+        + checkbox_width
         + age_width
         + ab_pr_width
         + status_min_width
         + 3; // gaps between columns
     let remaining = main_area.width.saturating_sub(fixed_width) as usize;
-    let path_col_width = remaining / 2;
-    let branch_col_width = remaining - path_col_width;
+    let branch_col_width = remaining / 2;
+    let path_col_width = remaining - branch_col_width;
 
     let build_row = |i: usize| -> Row {
         let wt = &app.worktrees[i];
@@ -175,29 +177,39 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         } else {
             app.theme.primary_text
         };
-        let branch_cell = Cell::from(Line::from(vec![
-            Span::styled(display_branch, branch_style),
-            Span::styled(wts_label, app.theme.secondary_text),
-        ]));
-
-        let mut cells = vec![path_cell, branch_cell];
-
-        // Age column
-        if !hide_age {
-            let age = if compact_age {
-                wt.age_short()
+        let mut branch_spans: Vec<Span> = Vec::new();
+        if wt.branch.is_some() && !is_pinned {
+            if let Some((prefix_part, rest)) = display_branch.split_once('/') {
+                if let Some(pstyle) = prefix_style(prefix_part) {
+                    branch_spans.push(Span::styled(format!("{}/", prefix_part), pstyle));
+                    branch_spans.push(Span::styled(rest.to_string(), branch_style));
+                } else {
+                    branch_spans.push(Span::styled(display_branch.clone(), branch_style));
+                }
             } else {
-                wt.age_display()
-            };
-            let a_style = if is_pinned {
-                app.theme.pinned_row
-            } else {
-                age_style(&wt.age_date)
-            };
-            cells.push(Cell::from(
-                Line::from(Span::styled(age, a_style)).alignment(Alignment::Right),
-            ));
+                branch_spans.push(Span::styled(display_branch.clone(), branch_style));
+            }
+        } else {
+            branch_spans.push(Span::styled(display_branch.clone(), branch_style));
         }
+        branch_spans.push(Span::styled(wts_label, app.theme.secondary_text));
+        let branch_cell = Cell::from(Line::from(branch_spans));
+
+        // Checkbox column
+        let is_selected = app.worktree_selected.get(i).copied().unwrap_or(false);
+        let (checkbox_text, checkbox_style) = if is_pinned {
+            (String::new(), app.theme.pinned_row)
+        } else if is_selected {
+            (app.symbols.checkbox_on.to_string(), app.theme.selected)
+        } else {
+            (app.symbols.checkbox_off.to_string(), app.theme.secondary_text)
+        };
+
+        let mut cells = vec![
+            Cell::from(Span::styled(checkbox_text, checkbox_style)),
+            branch_cell,
+            path_cell,
+        ];
 
         // Ahead/behind + PR columns
         if !hide_ab {
@@ -234,6 +246,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 }
             };
             cells.push(Cell::from(Span::styled(pr_text, pr_style)));
+        }
+
+        // Age column
+        if !hide_age {
+            let age = if compact_age {
+                wt.age_short()
+            } else {
+                wt.age_display()
+            };
+            let a_style = if is_pinned {
+                app.theme.pinned_row
+            } else {
+                age_style(&wt.age_date)
+            };
+            cells.push(Cell::from(
+                Line::from(Span::styled(age, a_style)).alignment(Alignment::Right),
+            ));
         }
 
         // Status column: merge status (same format as branch_list).
@@ -281,15 +310,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let all_rows: Vec<Row> = (0..app.worktrees.len()).map(build_row).collect();
 
     let mut widths: Vec<Constraint> = vec![
-        Constraint::Length(path_col_width as u16),
+        Constraint::Length(checkbox_width),
+        Constraint::Length(branch_col_width as u16),
         Constraint::Min(10),
     ];
-    if !hide_age {
-        widths.push(Constraint::Length(age_width));
-    }
     if !hide_ab {
         widths.push(Constraint::Length(max_ab_width));
         widths.push(Constraint::Length(max_pr_width));
+    }
+    if !hide_age {
+        widths.push(Constraint::Length(age_width));
     }
     widths.push(Constraint::Length(status_min_width));
 
