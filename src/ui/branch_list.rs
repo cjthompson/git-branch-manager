@@ -3,9 +3,10 @@ use crossterm::event::KeyCode;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
-use crate::app::App;
+use crate::app::{App, View};
 use git_branch_manager::git::github::PrStatus;
 use git_branch_manager::types::{MergeStatus, TrackingStatus};
+use super::shared::tab_bar_line;
 
 /// Returns a style for known branch name prefixes (text before the first `/`).
 fn prefix_style(prefix: &str) -> Option<Style> {
@@ -71,14 +72,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let hide_age = width < 60;
 
     // Main branch list
-    let wt_status = app.working_tree_status.summary();
-    let title = format!(
-        "git-branch-manager \u{2014} base: {} [{}]",
-        app.base_branch, wt_status
-    );
+    let tab_title = tab_bar_line(&View::BranchList, app.theme.title);
     let block = Block::default()
-        .title(title)
-        .title_style(app.theme.title)
+        .title(tab_title)
         .borders(Borders::ALL);
 
     // Sort indicator helper

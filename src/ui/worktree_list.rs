@@ -3,9 +3,10 @@ use crossterm::event::KeyCode;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
 
-use crate::app::App;
+use crate::app::{App, View};
 use git_branch_manager::git::github::PrStatus;
 use git_branch_manager::types::MergeStatus;
+use super::shared::tab_bar_line;
 
 /// Returns a color style based on how old a date is.
 fn age_style(date: &DateTime<Utc>) -> Style {
@@ -50,13 +51,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let short_status = width < 70;
     let hide_age = width < 60;
 
-    let title = format!(
-        "git-branch-manager \u{2014} worktrees (base: {})",
-        app.base_branch
-    );
+    let tab_title = tab_bar_line(&View::Worktrees, app.theme.title);
     let block = Block::default()
-        .title(title)
-        .title_style(app.theme.title)
+        .title(tab_title)
         .borders(Borders::ALL);
 
     // Header

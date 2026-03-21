@@ -737,6 +737,12 @@ impl App {
             KeyCode::Char('q') => {
                 self.should_exit = true;
             }
+            KeyCode::Tab => {
+                self.open_remote_branches_view();
+            }
+            KeyCode::BackTab => {
+                self.open_worktrees_view();
+            }
             _ => {}
         }
     }
@@ -1241,6 +1247,12 @@ impl App {
                 KeyCode::Char('?') => {
                     self.view = View::Help;
                 }
+                KeyCode::Tab => {
+                    self.open_worktrees_view();
+                }
+                KeyCode::BackTab => {
+                    self.view = View::BranchList;
+                }
                 _ => {}
             }
             return;
@@ -1320,6 +1332,12 @@ impl App {
             KeyCode::Char('w') => {
                 self.open_worktrees_view();
             }
+            KeyCode::Tab => {
+                self.open_worktrees_view();
+            }
+            KeyCode::BackTab => {
+                self.view = View::BranchList;
+            }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('r') => {
                 self.view = View::BranchList;
             }
@@ -1373,6 +1391,9 @@ impl App {
             }
             KeyCode::Char('w') | KeyCode::Tab => {
                 self.view = View::BranchList;
+            }
+            KeyCode::BackTab => {
+                self.open_remote_branches_view();
             }
             KeyCode::Char('r') => {
                 self.open_remote_branches_view();

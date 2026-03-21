@@ -3,8 +3,9 @@ use crossterm::event::KeyCode;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
 
-use crate::app::App;
+use crate::app::{App, View};
 use git_branch_manager::types::MergeStatus;
+use super::shared::tab_bar_line;
 
 /// Returns a color style for known branch name prefixes (text before the first `/`).
 fn prefix_style(prefix: &str) -> Option<Style> {
@@ -52,13 +53,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let short_status = width < 70;
     let hide_age = width < 60;
 
-    let title = format!(
-        "git-branch-manager \u{2014} remote branches (base: {})",
-        app.base_branch
-    );
+    let tab_title = tab_bar_line(&View::RemoteBranches, app.theme.remote_title);
     let block = Block::default()
-        .title(title)
-        .title_style(app.theme.remote_title)
+        .title(tab_title)
         .borders(Borders::ALL);
 
     let sort_arrow = if app.remote_sort_ascending { "\u{25b2}" } else { "\u{25bc}" };
