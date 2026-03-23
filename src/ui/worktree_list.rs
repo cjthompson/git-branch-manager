@@ -223,25 +223,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
         // Ahead/behind + PR columns
         if !hide_ab {
-            let ahead_behind = if is_pinned || wt.branch.is_none() {
-                String::new()
-            } else {
-                match (wt.ahead, wt.behind) {
-                    (Some(a), Some(b)) if a > 0 || b > 0 => {
-                        let mut parts = Vec::new();
-                        if a > 0 { parts.push(format!("{}{}", app.symbols.arrow_up, a)); }
-                        if b > 0 { parts.push(format!("{}{}", app.symbols.arrow_down, b)); }
-                        parts.join("")
-                    }
-                    _ => String::new(),
+            let mut ab_spans: Vec<Span> = Vec::new();
+            if is_pinned || wt.branch.is_none() {
+                ab_spans.push(Span::styled("", app.theme.pinned_row));
+            } else if let (Some(a), Some(b)) = (wt.ahead, wt.behind) {
+                if a > 0 {
+                    ab_spans.push(Span::styled(
+                        format!("{}{}", app.symbols.arrow_up, a),
+                        app.theme.merged,
+                    ));
                 }
-            };
-            let ab_style = if is_pinned {
-                app.theme.pinned_row
-            } else {
-                app.theme.ahead_behind
-            };
-            cells.push(Cell::from(Span::styled(ahead_behind, ab_style)));
+                if b > 0 {
+                    ab_spans.push(Span::styled(
+                        format!("{}{}", app.symbols.arrow_down, b),
+                        app.theme.unmerged,
+                    ));
+                }
+            }
+            cells.push(Cell::from(Line::from(ab_spans)));
 
             // PR column — WorktreeInfo only has PrStatus (no number), show icon
             let (pr_text, pr_style) = if is_pinned || wt.branch.is_none() {
