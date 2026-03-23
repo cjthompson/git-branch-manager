@@ -46,7 +46,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let width = main_area.width as usize;
     let compact_age = width < 120;
-    let hide_ab = width < 90;
+    let hide_ab = width < 80;
     let short_status = width < 70;
     let hide_age = width < 60;
 
