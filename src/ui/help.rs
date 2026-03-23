@@ -28,6 +28,9 @@ Y       Cycle symbols
 t       Tags view
 r       Remote branches
 w       Worktrees view
+Tab     Next view
+S-Tab   Prev view
+l       Local branches
 ,       Settings
 /       Search branches
 \\      Filter menu

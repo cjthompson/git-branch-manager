@@ -98,6 +98,46 @@ impl ListNav for RemoteListNav<'_> {
     }
 }
 
+/// Adapter for worktree list navigation.
+struct WorktreeListNav<'a> {
+    app: &'a mut App,
+}
+
+impl ListNav for WorktreeListNav<'_> {
+    fn display_indices(&self) -> Vec<usize> {
+        let mut pinned: Vec<usize> = Vec::new();
+        let mut rest: Vec<usize> = Vec::new();
+        for (i, wt) in self.app.worktrees.iter().enumerate() {
+            if wt.is_pinned() {
+                pinned.push(i);
+            } else {
+                rest.push(i);
+            }
+        }
+        pinned.extend(rest);
+        pinned
+    }
+    fn cursor(&self) -> usize {
+        self.app.worktree_cursor
+    }
+    fn set_cursor(&mut self, raw_idx: usize, display_pos: usize) {
+        self.app.worktree_cursor = raw_idx;
+        self.app.worktree_table_state.select(Some(display_pos));
+    }
+    fn selection(&self) -> &[bool] {
+        &self.app.worktree_selected
+    }
+    fn selection_mut(&mut self) -> &mut Vec<bool> {
+        &mut self.app.worktree_selected
+    }
+    fn is_selectable(&self, raw_idx: usize) -> bool {
+        !self.app.worktrees[raw_idx].is_pinned()
+    }
+    fn merge_status(&self, raw_idx: usize) -> &MergeStatus {
+        &self.app.worktrees[raw_idx].merge_status
+    }
+}
+
 /// Payload sent from the background initial-load thread.
 pub struct InitialLoad {
     pub branches: Vec<BranchInfo>,
@@ -582,11 +622,8 @@ impl App {
                 }
             } else if y >= 2 {
                 let scroll_offset = self.worktree_table_state.offset();
-                let clicked_row = (y - 2) as usize + scroll_offset;
-                if clicked_row < self.worktrees.len() {
-                    self.worktree_cursor = clicked_row;
-                    self.worktree_table_state.select(Some(clicked_row));
-                }
+                let clicked_display_row = (y - 2) as usize + scroll_offset;
+                list_click_row(&mut WorktreeListNav { app: self }, clicked_display_row);
             }
         }
     }
@@ -1365,30 +1402,18 @@ impl App {
     }
 
     fn handle_worktrees_key(&mut self, code: KeyCode) {
-        let len = self.worktrees.len();
-
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if len > 0 && self.worktree_cursor + 1 < len {
-                    self.worktree_cursor += 1;
-                    self.worktree_table_state.select(Some(self.worktree_cursor));
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if self.worktree_cursor > 0 {
-                    self.worktree_cursor -= 1;
-                    self.worktree_table_state.select(Some(self.worktree_cursor));
-                }
-            }
-            KeyCode::PageDown => {
-                let new = (self.worktree_cursor + 20).min(len.saturating_sub(1));
-                self.worktree_cursor = new;
-                self.worktree_table_state.select(Some(new));
-            }
-            KeyCode::PageUp => {
-                self.worktree_cursor = self.worktree_cursor.saturating_sub(20);
-                self.worktree_table_state.select(Some(self.worktree_cursor));
-            }
+            KeyCode::Char('j') | KeyCode::Down => nav_down(&mut WorktreeListNav { app: self }),
+            KeyCode::Char('k') | KeyCode::Up => nav_up(&mut WorktreeListNav { app: self }),
+            KeyCode::PageDown => nav_page_down(&mut WorktreeListNav { app: self }),
+            KeyCode::PageUp => nav_page_up(&mut WorktreeListNav { app: self }),
+            KeyCode::Home => nav_home(&mut WorktreeListNav { app: self }),
+            KeyCode::End => nav_end(&mut WorktreeListNav { app: self }),
+            KeyCode::Char(' ') => select_toggle(&mut WorktreeListNav { app: self }),
+            KeyCode::Char('a') => select_all(&mut WorktreeListNav { app: self }),
+            KeyCode::Char('n') => deselect_all(&mut WorktreeListNav { app: self }),
+            KeyCode::Char('m') => select_merged(&mut WorktreeListNav { app: self }),
+            KeyCode::Char('i') => invert_selection(&mut WorktreeListNav { app: self }),
             KeyCode::Enter => {
                 self.prev_view = View::Worktrees;
                 self.view = View::Menu { cursor: 0 };

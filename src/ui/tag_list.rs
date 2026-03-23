@@ -173,23 +173,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if width < 80 {
         if selected_count > 0 {
             format!(
-                " {} tags ({} sel) \u{2014} [d]el [D]el+remote [p]ush [q]back",
+                " {} tags ({} sel) \u{2014} [d]el [D]el+remote [p]ush [q]uit",
                 total, selected_count
             )
         } else {
             format!(
-                " {} tags \u{2014} [d]el [p]ush [/]search [q]back",
+                " {} tags \u{2014} [d]el [p]ush [/]search [q]uit",
                 total
             )
         }
     } else if selected_count > 0 {
         format!(
-            " {} tags ({} selected) \u{2014} [Space]toggle [a]ll [n]one [i]nvert [d]elete [D]el+remote [s]ort [q]back",
+            " {} tags ({} selected) \u{2014} [Space]toggle [a]ll [n]one [i]nvert [d]elete [D]el+remote [s]ort [q]uit",
             total, selected_count
         )
     } else {
         format!(
-            " {} tags \u{2014} [Space]select [a]ll [d]elete [D]el+remote [p]ush [/]search [\\]filter [s]ort [q]back [?]help",
+            " {} tags \u{2014} [Space]select [a]ll [d]elete [D]el+remote [p]ush [/]search [\\]filter [s]ort [q]uit [?]help",
             total
         )
     };
@@ -199,36 +199,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .style(app.theme.search_bar);
         frame.render_widget(search_bar, status_area);
     } else {
-        let key_style = Style::default().fg(app.theme.title.fg.unwrap_or(Color::White));
-        let mut spans: Vec<Span> = Vec::new();
-        let mut remaining = status_text.as_str();
-        while let Some(open) = remaining.find('[') {
-            if open > 0 {
-                spans.push(Span::styled(remaining[..open].to_string(), app.theme.status_bar));
-            }
-            remaining = &remaining[open..];
-            if let Some(close) = remaining.find(']') {
-                spans.push(Span::styled("[", app.theme.status_bar));
-                spans.push(Span::styled(remaining[1..close].to_string(), key_style));
-                remaining = &remaining[close..];
-                if let Some(next_open) = remaining.find('[') {
-                    spans.push(Span::styled(remaining[..next_open].to_string(), app.theme.status_bar));
-                    remaining = &remaining[next_open..];
-                } else {
-                    spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
-                    remaining = "";
-                    break;
-                }
-            } else {
-                spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
-                remaining = "";
-                break;
-            }
-        }
-        if !remaining.is_empty() {
-            spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
-        }
-        let status = Paragraph::new(Line::from(spans)).style(app.theme.status_bar);
-        frame.render_widget(status, status_area);
+        let _ = super::shared::render_status_bar(
+            frame,
+            status_area,
+            &status_text,
+            app.theme.title.fg.unwrap_or(Color::White),
+            app.theme.status_bar,
+        );
     }
 }
