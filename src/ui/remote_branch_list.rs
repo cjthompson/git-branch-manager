@@ -237,25 +237,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
 
         if !hide_ab {
-            let ahead_behind = if is_pinned {
-                String::new()
-            } else {
-                match (branch.ahead, branch.behind) {
-                    (Some(a), Some(b)) if a > 0 || b > 0 => {
-                        let mut parts = Vec::new();
-                        if a > 0 { parts.push(format!("{}{}", app.symbols.arrow_up, a)); }
-                        if b > 0 { parts.push(format!("{}{}", app.symbols.arrow_down, b)); }
-                        parts.join("")
-                    }
-                    _ => String::new(),
+            let mut ab_spans: Vec<Span> = Vec::new();
+            if is_pinned {
+                ab_spans.push(Span::styled("", app.theme.pinned_row));
+            } else if let (Some(a), Some(b)) = (branch.ahead, branch.behind) {
+                if a > 0 {
+                    ab_spans.push(Span::styled(
+                        format!("{}{}", app.symbols.arrow_up, a),
+                        app.theme.merged,
+                    ));
                 }
-            };
-            let ab_style = if is_pinned {
-                app.theme.pinned_row
-            } else {
-                app.theme.ahead_behind
-            };
-            cells.push(Cell::from(Span::styled(ahead_behind, ab_style)));
+                if b > 0 {
+                    ab_spans.push(Span::styled(
+                        format!("{}{}", app.symbols.arrow_down, b),
+                        app.theme.unmerged,
+                    ));
+                }
+            }
+            cells.push(Cell::from(Line::from(ab_spans)));
 
             // PR column — look up by short_name in pr_map
             let pr_text = if is_pinned {
