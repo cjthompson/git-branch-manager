@@ -291,6 +291,8 @@ pub struct App {
     pub worktree_loading: bool,
     /// Status bar clickable items for worktrees view.
     pub worktree_status_bar_items: Vec<(u16, u16, KeyCode)>,
+    pub worktree_sort_column: Option<usize>,  // 0=branch, 1=path, 2=age, 3=status
+    pub worktree_sort_ascending: bool,
     /// The view that was active before entering View::Menu — used to dispatch the right menu.
     pub prev_view: View,
 }
@@ -398,6 +400,8 @@ impl App {
             worktree_enrich_rx: None,
             worktree_loading: false,
             worktree_status_bar_items: Vec::new(),
+            worktree_sort_column: None,
+            worktree_sort_ascending: true,
             prev_view: View::BranchList,
         }
     }
@@ -1465,6 +1469,16 @@ impl App {
             }
             KeyCode::Char('l') => {
                 self.view = View::BranchList;
+            }
+            KeyCode::Char('s') => {
+                self.worktree_sort_column = Some(
+                    self.worktree_sort_column.map(|c| (c + 1) % 4).unwrap_or(0)
+                );
+                self.apply_worktree_sort();
+            }
+            KeyCode::Char('S') => {
+                self.worktree_sort_ascending = !self.worktree_sort_ascending;
+                self.apply_worktree_sort();
             }
             KeyCode::Char('q') => {
                 self.should_exit = true;
@@ -3132,6 +3146,38 @@ impl App {
         self.remote_selected = vec![false; self.remote_branches.len()];
         self.remote_cursor = 0;
         self.remote_table_state.select(if self.remote_branches.is_empty() { None } else { Some(0) });
+    }
+
+    fn apply_worktree_sort(&mut self) {
+        let Some(col) = self.worktree_sort_column else { return };
+        let asc = self.worktree_sort_ascending;
+
+        // Pinned worktrees (is_main) stay at the top — sort only non-pinned
+        let pin_count = self.worktrees.iter().take_while(|w| w.is_pinned()).count();
+        let sortable = &mut self.worktrees[pin_count..];
+
+        sortable.sort_by(|a, b| {
+            let ord = match col {
+                0 => a.branch.as_deref().unwrap_or("").cmp(b.branch.as_deref().unwrap_or("")),
+                1 => a.path.cmp(&b.path),
+                2 => a.age_date.cmp(&b.age_date),
+                3 => {
+                    let rank = |s: &MergeStatus| match s {
+                        MergeStatus::Merged => 0,
+                        MergeStatus::SquashMerged => 1,
+                        MergeStatus::Unmerged => 2,
+                    };
+                    rank(&a.merge_status).cmp(&rank(&b.merge_status))
+                }
+                _ => std::cmp::Ordering::Equal,
+            };
+            if asc { ord } else { ord.reverse() }
+        });
+
+        // Re-sync selection and cursor after sort
+        self.worktree_selected = vec![false; self.worktrees.len()];
+        self.worktree_cursor = 0;
+        self.worktree_table_state.select(if self.worktrees.is_empty() { None } else { Some(0) });
     }
 }
 
