@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-use crossterm::event::KeyCode;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
 
@@ -444,88 +443,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
         let status_text = if width < 80 {
             format!(
-                " {}br {}sel {}m {}s{} \u{2014} [/]search [d]el [c]heckout [q]back",
+                " {}br {}sel {}m {}s{} \u{2014} [/]search [d]el [c]heckout [q]uit",
                 total, selected_count, merged_count, squash_count, progress
             )
         } else {
             format!(
-                " {} remote branches | {} selected | {} merged | {} squashed{} \u{2014} [/]search [\\]filter [d]el [c]heckout [f]etch [?]help [q]back",
+                " {} remote branches | {} selected | {} merged | {} squashed{} \u{2014} [/]search [\\]filter [d]el [c]heckout [f]etch [?]help [q]uit",
                 total, selected_count, merged_count, squash_count, progress
             )
         };
 
-        {
-            let mut items: Vec<(u16, u16, KeyCode)> = Vec::new();
-            let chars: Vec<char> = status_text.chars().collect();
-            let base_x = status_area.x;
-            let mut i = 0;
-            while i < chars.len() {
-                if chars[i] == '[' && i + 2 < chars.len() && chars[i + 2] == ']' {
-                    let key_char = chars[i + 1];
-                    let key_code = match key_char {
-                        '/' => KeyCode::Char('/'),
-                        '?' => KeyCode::Char('?'),
-                        'q' => KeyCode::Char('q'),
-                        'c' => KeyCode::Char('c'),
-                        'd' => KeyCode::Char('d'),
-                        'f' => KeyCode::Char('f'),
-                        _ => {
-                            i += 1;
-                            continue;
-                        }
-                    };
-                    let x_start = base_x + i as u16;
-                    let mut j = i + 3;
-                    while j < chars.len() && chars[j] != ' ' && chars[j] != '[' {
-                        j += 1;
-                    }
-                    let x_end = base_x + j as u16;
-                    items.push((x_start, x_end, key_code));
-                    i = j;
-                } else {
-                    i += 1;
-                }
-            }
-            app.remote_status_bar_items = items;
-        }
-
-        let key_style = Style::default()
-            .fg(app.theme.remote_title.fg.unwrap_or(Color::White))
-            .bg(app.theme.status_bar.bg.unwrap_or(Color::Reset))
-            .add_modifier(ratatui::style::Modifier::BOLD);
-        let mut spans: Vec<Span> = Vec::new();
-        let mut remaining = status_text.as_str();
-        while let Some(open) = remaining.find('[') {
-            if open > 0 {
-                spans.push(Span::styled(
-                    remaining[..open].to_string(),
-                    app.theme.status_bar,
-                ));
-            }
-            remaining = &remaining[open..];
-            if let Some(close) = remaining.find(']') {
-                spans.push(Span::styled("[".to_string(), app.theme.status_bar));
-                spans.push(Span::styled(remaining[1..close].to_string(), key_style));
-                let after_close = &remaining[close..];
-                let word_end = after_close[1..]
-                    .find(' ')
-                    .map(|idx| idx + 1)
-                    .unwrap_or(after_close.len());
-                spans.push(Span::styled(
-                    after_close[..word_end].to_string(),
-                    app.theme.status_bar,
-                ));
-                remaining = &after_close[word_end..];
-            } else {
-                spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
-                remaining = "";
-            }
-        }
-        if !remaining.is_empty() {
-            spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
-        }
-        let status = Paragraph::new(Line::from(spans)).style(app.theme.status_bar);
-        frame.render_widget(status, status_area);
+        app.remote_status_bar_items = super::shared::render_status_bar(
+            frame,
+            status_area,
+            &status_text,
+            app.theme.remote_title.fg.unwrap_or(Color::White),
+            app.theme.status_bar,
+        );
     }
 
     // Toast overlay while fetching remote branches

@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-use crossterm::event::KeyCode;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
@@ -484,81 +483,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             )
         };
 
-        // Build clickable status bar item regions.
-        // Scan for [X]... patterns and record (x_start, x_end, KeyCode).
-        // x_start is at the '[', x_end is after the last char of the word following ']'.
-        {
-            let mut items: Vec<(u16, u16, KeyCode)> = Vec::new();
-            let chars: Vec<char> = status_text.chars().collect();
-            let base_x = status_area.x;
-            let mut i = 0;
-            while i < chars.len() {
-                if chars[i] == '[' && i + 2 < chars.len() && chars[i + 2] == ']' {
-                    let key_char = chars[i + 1];
-                    let key_code = match key_char {
-                        '/' => KeyCode::Char('/'),
-                        '?' => KeyCode::Char('?'),
-                        'q' => KeyCode::Char('q'),
-                        'c' => KeyCode::Char('c'),
-                        'd' => KeyCode::Char('d'),
-                        'D' => KeyCode::Char('D'),
-                        'f' => KeyCode::Char('f'),
-                        'r' => KeyCode::Char('r'),
-                        'E' => KeyCode::Char('E'),
-                        _ => {
-                            i += 1;
-                            continue;
-                        }
-                    };
-                    let x_start = base_x + i as u16;
-                    // Find end: skip '[X]' then consume word chars (non-space, non-'[')
-                    let mut j = i + 3;
-                    while j < chars.len() && chars[j] != ' ' && chars[j] != '[' {
-                        j += 1;
-                    }
-                    let x_end = base_x + j as u16;
-                    items.push((x_start, x_end, key_code));
-                    i = j;
-                } else {
-                    i += 1;
-                }
-            }
-            app.status_bar_items = items;
-        }
-
-        // Build multi-span line: shortcut key tokens [X]word styled with theme.title fg,
-        // surrounding text styled with status_bar.
-        let key_style = Style::default()
-            .fg(app.theme.title.fg.unwrap_or(Color::White))
-            .bg(app.theme.status_bar.bg.unwrap_or(Color::Reset))
-            .add_modifier(ratatui::style::Modifier::BOLD);
-        let mut spans: Vec<Span> = Vec::new();
-        let mut remaining = status_text.as_str();
-        while let Some(open) = remaining.find('[') {
-            // text before '['
-            if open > 0 {
-                spans.push(Span::styled(remaining[..open].to_string(), app.theme.status_bar));
-            }
-            remaining = &remaining[open..]; // remaining starts with '['
-            if let Some(close) = remaining.find(']') {
-                // '[' itself
-                spans.push(Span::styled("[".to_string(), app.theme.status_bar));
-                // the key letter(s) between '[' and ']'
-                spans.push(Span::styled(remaining[1..close].to_string(), key_style));
-                // ']' + following word (up to next space or end)
-                let after_close = &remaining[close..]; // starts with ']'
-                let word_end = after_close[1..].find(' ').map(|i| i + 1).unwrap_or(after_close.len());
-                spans.push(Span::styled(after_close[..word_end].to_string(), app.theme.status_bar));
-                remaining = &after_close[word_end..];
-            } else {
-                spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
-                remaining = "";
-            }
-        }
-        if !remaining.is_empty() {
-            spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
-        }
-        let status = Paragraph::new(Line::from(spans)).style(app.theme.status_bar);
-        frame.render_widget(status, status_area);
+        app.status_bar_items = super::shared::render_status_bar(
+            frame,
+            status_area,
+            &status_text,
+            app.theme.title.fg.unwrap_or(Color::White),
+            app.theme.status_bar,
+        );
     }
 }

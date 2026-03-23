@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-use crossterm::event::KeyCode;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
 
@@ -304,7 +303,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Line::from(Span::styled(status_text, status_style)).alignment(Alignment::Right),
         ));
 
-        Row::new(cells)
+        if is_selected {
+            Row::new(cells).style(app.theme.checked_row)
+        } else {
+            Row::new(cells)
+        }
     };
 
     let all_rows: Vec<Row> = (0..app.worktrees.len()).map(build_row).collect();
@@ -349,71 +352,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             )
         };
 
-        // Build clickable regions
-        {
-            let mut items: Vec<(u16, u16, KeyCode)> = Vec::new();
-            let chars: Vec<char> = status_text.chars().collect();
-            let base_x = status_area.x;
-            let mut i = 0;
-            while i < chars.len() {
-                if chars[i] == '[' && i + 2 < chars.len() && chars[i + 2] == ']' {
-                    let key_char = chars[i + 1];
-                    let key_code = match key_char {
-                        'd' => KeyCode::Char('d'),
-                        'D' => KeyCode::Char('D'),
-                        'w' => KeyCode::Char('w'),
-                        'r' => KeyCode::Char('r'),
-                        't' => KeyCode::Char('t'),
-                        '?' => KeyCode::Char('?'),
-                        'q' => KeyCode::Char('q'),
-                        _ => { i += 1; continue; }
-                    };
-                    let x_start = base_x + i as u16;
-                    let mut j = i + 3;
-                    while j < chars.len() && chars[j] != ' ' && chars[j] != '[' {
-                        j += 1;
-                    }
-                    items.push((x_start, base_x + j as u16, key_code));
-                    i = j;
-                } else {
-                    i += 1;
-                }
-            }
-            app.worktree_status_bar_items = items;
-        }
-
-        // Render with key characters highlighted
-        let key_style = Style::default()
-            .fg(app.theme.title.fg.unwrap_or(Color::White))
-            .bg(app.theme.status_bar.bg.unwrap_or(Color::Reset))
-            .add_modifier(ratatui::style::Modifier::BOLD);
-        let mut spans: Vec<Span> = Vec::new();
-        let mut remaining = status_text.as_str();
-        while let Some(open) = remaining.find('[') {
-            if open > 0 {
-                spans.push(Span::styled(remaining[..open].to_string(), app.theme.status_bar));
-            }
-            remaining = &remaining[open..];
-            if let Some(close) = remaining.find(']') {
-                spans.push(Span::styled("[".to_string(), app.theme.status_bar));
-                spans.push(Span::styled(remaining[1..close].to_string(), key_style));
-                let after_close = &remaining[close..];
-                let word_end = after_close[1..]
-                    .find(|c: char| c == ' ' || c == '[')
-                    .map(|idx| idx + 1)
-                    .unwrap_or(after_close.len());
-                spans.push(Span::styled(after_close[..word_end].to_string(), app.theme.status_bar));
-                remaining = &after_close[word_end..];
-            } else {
-                spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
-                remaining = "";
-            }
-        }
-        if !remaining.is_empty() {
-            spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
-        }
-        let status = Paragraph::new(Line::from(spans)).style(app.theme.status_bar);
-        frame.render_widget(status, status_area);
+        app.worktree_status_bar_items = super::shared::render_status_bar(
+            frame,
+            status_area,
+            &status_text,
+            app.theme.title.fg.unwrap_or(Color::White),
+            app.theme.status_bar,
+        );
     }
 
     // Loading toast — shown while worktrees are being fetched
