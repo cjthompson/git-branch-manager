@@ -57,18 +57,29 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // Header
     let checkbox_width: u16 = 3;
-    let mut header_cells = vec![Cell::from(""), Cell::from("Branch"), Cell::from("Path")];
+
+    // Sort indicator helper
+    let sort_arrow = if app.worktree_sort_ascending { "\u{25b2}" } else { "\u{25bc}" };
+    let sort_label = |col_index: usize, base: &str| -> String {
+        if app.worktree_sort_column == Some(col_index) {
+            format!("{}{}", base, sort_arrow)
+        } else {
+            base.to_string()
+        }
+    };
+
+    let mut header_cells = vec![Cell::from(""), Cell::from(sort_label(0, "Branch")), Cell::from(sort_label(1, "Path"))];
     if !hide_ab {
         header_cells.push(Cell::from("A/B"));
         header_cells.push(Cell::from("PR"));
     }
     if !hide_age {
         header_cells.push(Cell::from(
-            Line::from("Age").alignment(Alignment::Right),
+            Line::from(sort_label(2, "Age")).alignment(Alignment::Right),
         ));
     }
     header_cells.push(Cell::from(
-        Line::from("Status").alignment(Alignment::Right),
+        Line::from(sort_label(3, "Status")).alignment(Alignment::Right),
     ));
 
     let header = Row::new(header_cells)
