@@ -729,6 +729,148 @@ pub fn force_remove_worktree(repo_path: &Path, worktree_path: &Path) -> Operatio
     }
 }
 
+/// Fetch from a specific remote.
+pub fn fetch_remote(repo_path: &Path, remote: &str) -> Vec<OperationResult> {
+    match git_cmd(repo_path)
+        .args(["fetch", remote])
+        .output()
+    {
+        Ok(o) if o.status.success() => vec![OperationResult {
+            branch_name: remote.to_string(),
+            action: BranchAction::FetchRemote,
+            success: true,
+            message: format!("Fetched from {}", remote),
+        }],
+        Ok(o) => vec![OperationResult {
+            branch_name: remote.to_string(),
+            action: BranchAction::FetchRemote,
+            success: false,
+            message: format!(
+                "Fetch failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+        }],
+        Err(e) => vec![OperationResult {
+            branch_name: remote.to_string(),
+            action: BranchAction::FetchRemote,
+            success: false,
+            message: format!("Failed to run git: {}", e),
+        }],
+    }
+}
+
+/// Pull a remote branch into its local tracking branch.
+///
+/// Uses `git pull <remote> <short_name>` to update the local branch.
+pub fn pull_remote(repo_path: &Path, remote: &str, short_name: &str) -> Vec<OperationResult> {
+    match git_cmd(repo_path)
+        .args(["pull", remote, short_name])
+        .output()
+    {
+        Ok(o) if o.status.success() => vec![OperationResult {
+            branch_name: short_name.to_string(),
+            action: BranchAction::PullRemote,
+            success: true,
+            message: format!("Pulled {}/{}", remote, short_name),
+        }],
+        Ok(o) => vec![OperationResult {
+            branch_name: short_name.to_string(),
+            action: BranchAction::PullRemote,
+            success: false,
+            message: format!(
+                "Pull failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+        }],
+        Err(e) => vec![OperationResult {
+            branch_name: short_name.to_string(),
+            action: BranchAction::PullRemote,
+            success: false,
+            message: format!("Failed to run git: {}", e),
+        }],
+    }
+}
+
+/// Merge a remote branch ref into the current branch.
+pub fn merge_remote_into_current(
+    repo_path: &Path,
+    full_ref: &str,
+    short_name: &str,
+) -> Vec<OperationResult> {
+    match git_cmd(repo_path)
+        .args(["merge", full_ref])
+        .output()
+    {
+        Ok(o) if o.status.success() => vec![OperationResult {
+            branch_name: short_name.to_string(),
+            action: BranchAction::MergeRemoteIntoCurrent,
+            success: true,
+            message: format!("Merged {} into current branch", full_ref),
+        }],
+        Ok(o) => {
+            // Abort the merge on conflict
+            let _ = git_cmd(repo_path)
+                .args(["merge", "--abort"])
+                .output();
+            vec![OperationResult {
+                branch_name: short_name.to_string(),
+                action: BranchAction::MergeRemoteIntoCurrent,
+                success: false,
+                message: format!(
+                    "Merge failed: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+            }]
+        }
+        Err(e) => vec![OperationResult {
+            branch_name: short_name.to_string(),
+            action: BranchAction::MergeRemoteIntoCurrent,
+            success: false,
+            message: format!("Failed to run git: {}", e),
+        }],
+    }
+}
+
+/// Cherry-pick the tip commit of a remote branch.
+pub fn cherry_pick_remote(
+    repo_path: &Path,
+    full_ref: &str,
+    short_name: &str,
+) -> Vec<OperationResult> {
+    match git_cmd(repo_path)
+        .args(["cherry-pick", full_ref])
+        .output()
+    {
+        Ok(o) if o.status.success() => vec![OperationResult {
+            branch_name: short_name.to_string(),
+            action: BranchAction::CherryPickRemote,
+            success: true,
+            message: format!("Cherry-picked tip of {}", full_ref),
+        }],
+        Ok(o) => {
+            // Abort the cherry-pick on conflict
+            let _ = git_cmd(repo_path)
+                .args(["cherry-pick", "--abort"])
+                .output();
+            vec![OperationResult {
+                branch_name: short_name.to_string(),
+                action: BranchAction::CherryPickRemote,
+                success: false,
+                message: format!(
+                    "Cherry-pick failed: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+            }]
+        }
+        Err(e) => vec![OperationResult {
+            branch_name: short_name.to_string(),
+            action: BranchAction::CherryPickRemote,
+            success: false,
+            message: format!("Failed to run git: {}", e),
+        }],
+    }
+}
+
 /// Delete a single branch from the remote using git CLI.
 fn delete_remote(repo_path: &Path, branch_name: &str) -> OperationResult {
     match git_cmd(repo_path)

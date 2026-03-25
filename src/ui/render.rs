@@ -17,6 +17,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 action,
                 git_branch_manager::types::BranchAction::DeleteRemoteBranch
                     | git_branch_manager::types::BranchAction::CheckoutRemote
+                    | git_branch_manager::types::BranchAction::DeleteRemoteAndLocal
+                    | git_branch_manager::types::BranchAction::FetchRemote
+                    | git_branch_manager::types::BranchAction::PullRemote
+                    | git_branch_manager::types::BranchAction::MergeRemoteIntoCurrent
+                    | git_branch_manager::types::BranchAction::CherryPickRemote
             );
             let is_worktree_action = matches!(
                 action,
@@ -50,6 +55,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 let items = app.build_worktree_menu_items();
                 let anchor_row =
                     (app.worktree_cursor as u16).saturating_sub(app.worktree_table_state.offset() as u16) + 2;
+                menu::draw(frame, &items, menu_cursor, anchor_row, &app.theme, app.symbols);
+            } else if app.prev_view == View::RemoteBranches {
+                remote_branch_list::draw(frame, app);
+                let items = app.build_remote_menu_items();
+                let anchor_row =
+                    (app.remote_cursor as u16).saturating_sub(app.remote_table_state.offset() as u16) + 2;
                 menu::draw(frame, &items, menu_cursor, anchor_row, &app.theme, app.symbols);
             } else {
                 branch_list::draw(frame, app);

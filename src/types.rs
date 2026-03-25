@@ -197,9 +197,15 @@ pub enum BranchAction {
     DeleteTagAndRemote,
     PushTag,
     DeleteRemoteBranch,
+    DeleteRemoteAndLocal,
     CheckoutRemote,
     WorktreeRemove,
     WorktreeForceRemove,
+    FetchRemote,
+    PullRemote,
+    MergeRemoteIntoCurrent,
+    CherryPickRemote,
+    ViewRemotePR,
 }
 
 impl BranchAction {
@@ -222,9 +228,15 @@ impl BranchAction {
             BranchAction::DeleteTagAndRemote => "Delete tag (local + remote)",
             BranchAction::PushTag => "Push tag",
             BranchAction::DeleteRemoteBranch => "Delete remote branch",
+            BranchAction::DeleteRemoteAndLocal => "Delete remote + local",
             BranchAction::CheckoutRemote => "Checkout remote branch",
             BranchAction::WorktreeRemove => "Remove worktree",
             BranchAction::WorktreeForceRemove => "Force remove worktree",
+            BranchAction::FetchRemote => "Fetch remote",
+            BranchAction::PullRemote => "Pull remote",
+            BranchAction::MergeRemoteIntoCurrent => "Merge into current",
+            BranchAction::CherryPickRemote => "Cherry-pick latest",
+            BranchAction::ViewRemotePR => "View PR in browser",
         }
     }
 }
