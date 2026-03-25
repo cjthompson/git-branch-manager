@@ -1365,6 +1365,10 @@ impl App {
             KeyCode::Char('\\') => {
                 self.view = View::RemoteFilter;
             }
+            KeyCode::Enter => {
+                self.prev_view = View::RemoteBranches;
+                self.view = View::Menu { cursor: 0 };
+            }
             KeyCode::Char('?') => {
                 self.view = View::Help;
             }
@@ -1726,6 +1730,104 @@ impl App {
             let repo_path = self.repo_path.clone();
             self.spawn_op(label, move || {
                 vec![operations::checkout_remote_branch(&repo_path, &remote, &short_name)]
+            });
+            return;
+        }
+
+        // DeleteRemoteAndLocal: delete the remote branch AND the matching local branch
+        if action == BranchAction::DeleteRemoteAndLocal {
+            if self.remote_branches.is_empty() {
+                return;
+            }
+            let b = &self.remote_branches[self.remote_cursor];
+            let short_name = b.short_name.clone();
+            let repo_path = self.repo_path.clone();
+            self.spawn_op(label, move || {
+                let mut results = Vec::new();
+                // Delete remote first
+                let remote_result = operations::delete_remotes_batch(&repo_path, &[short_name.clone()]);
+                results.extend(remote_result.into_iter().map(|mut r| {
+                    r.action = BranchAction::DeleteRemoteAndLocal;
+                    r
+                }));
+                // Delete local
+                let repo = match git2::Repository::open(&repo_path) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        results.push(OperationResult {
+                            branch_name: short_name,
+                            action: BranchAction::DeleteRemoteAndLocal,
+                            success: false,
+                            message: format!("Failed to open repo: {}", e),
+                        });
+                        return results;
+                    }
+                };
+                let local_result = operations::delete_local(&repo, &short_name);
+                results.push(OperationResult {
+                    action: BranchAction::DeleteRemoteAndLocal,
+                    ..local_result
+                });
+                results
+            });
+            return;
+        }
+
+        // FetchRemote: fetch from the specific remote
+        if action == BranchAction::FetchRemote {
+            if self.remote_branches.is_empty() {
+                return;
+            }
+            let b = &self.remote_branches[self.remote_cursor];
+            let remote = b.remote.clone();
+            let repo_path = self.repo_path.clone();
+            self.spawn_op(label, move || {
+                operations::fetch_remote(&repo_path, &remote)
+            });
+            return;
+        }
+
+        // PullRemote: pull into the local tracking branch
+        if action == BranchAction::PullRemote {
+            if self.remote_branches.is_empty() {
+                return;
+            }
+            let b = &self.remote_branches[self.remote_cursor];
+            let remote = b.remote.clone();
+            let short_name = b.short_name.clone();
+            let repo_path = self.repo_path.clone();
+            self.spawn_op(label, move || {
+                operations::pull_remote(&repo_path, &remote, &short_name)
+            });
+            return;
+        }
+
+        // MergeRemoteIntoCurrent: merge remote ref into the current branch
+        if action == BranchAction::MergeRemoteIntoCurrent {
+            if self.remote_branches.is_empty() {
+                return;
+            }
+            let b = &self.remote_branches[self.remote_cursor];
+            let full_ref = b.full_ref.clone();
+            let short_name = b.short_name.clone();
+            let repo_path = self.repo_path.clone();
+            self.spawn_op(label, move || {
+                operations::merge_remote_into_current(&repo_path, &full_ref, &short_name)
+            });
+            return;
+        }
+
+        // CherryPickRemote: cherry-pick the tip commit of the remote branch
+        if action == BranchAction::CherryPickRemote {
+            if self.remote_branches.is_empty() {
+                return;
+            }
+            let b = &self.remote_branches[self.remote_cursor];
+            let full_ref = b.full_ref.clone();
+            let short_name = b.short_name.clone();
+            let repo_path = self.repo_path.clone();
+            self.spawn_op(label, move || {
+                operations::cherry_pick_remote(&repo_path, &full_ref, &short_name)
             });
             return;
         }
@@ -2586,8 +2688,103 @@ impl App {
         ]
     }
 
+    pub fn build_remote_menu_items(&self) -> Vec<ui::menu::MenuItem> {
+        if self.remote_branches.is_empty() {
+            return vec![];
+        }
+        let branch = &self.remote_branches[self.remote_cursor];
+        let pinned = branch.is_pinned();
+        let has_local = branch.has_local;
+        let has_pr = self.pr_map.contains_key(&branch.short_name);
+
+        vec![
+            // 0: Checkout
+            ui::menu::MenuItem {
+                label: "Checkout".into(),
+                enabled: !pinned && !has_local,
+                reason: if pinned {
+                    Some("base".into())
+                } else if has_local {
+                    Some("local exists".into())
+                } else {
+                    None
+                },
+                shortcut: Some('c'),
+            },
+            // 1: Delete remote branch
+            ui::menu::MenuItem {
+                label: "Delete remote branch".into(),
+                enabled: !pinned,
+                reason: if pinned { Some("base".into()) } else { None },
+                shortcut: Some('d'),
+            },
+            // 2: Delete remote + local
+            ui::menu::MenuItem {
+                label: "Delete remote + local".into(),
+                enabled: !pinned && has_local,
+                reason: if pinned {
+                    Some("base".into())
+                } else if !has_local {
+                    Some("no local".into())
+                } else {
+                    None
+                },
+                shortcut: Some('D'),
+            },
+            // 3: Fetch
+            ui::menu::MenuItem {
+                label: "Fetch remote".into(),
+                enabled: !pinned,
+                reason: if pinned { Some("base".into()) } else { None },
+                shortcut: Some('f'),
+            },
+            // 4: Pull
+            ui::menu::MenuItem {
+                label: "Pull remote".into(),
+                enabled: !pinned && has_local,
+                reason: if pinned {
+                    Some("base".into())
+                } else if !has_local {
+                    Some("no local".into())
+                } else {
+                    None
+                },
+                shortcut: Some('l'),
+            },
+            // 5: Merge into current
+            ui::menu::MenuItem {
+                label: "Merge into current".into(),
+                enabled: !pinned,
+                reason: if pinned { Some("base".into()) } else { None },
+                shortcut: Some('m'),
+            },
+            // 6: Cherry-pick latest
+            ui::menu::MenuItem {
+                label: "Cherry-pick latest".into(),
+                enabled: !pinned,
+                reason: if pinned { Some("base".into()) } else { None },
+                shortcut: Some('p'),
+            },
+            // 7: View PR in browser
+            ui::menu::MenuItem {
+                label: "View PR in browser".into(),
+                enabled: has_pr && !pinned,
+                reason: if pinned {
+                    Some("base".into())
+                } else if !has_pr {
+                    Some("no PR".into())
+                } else {
+                    None
+                },
+                shortcut: Some('o'),
+            },
+        ]
+    }
+
     fn handle_menu_key(&mut self, code: KeyCode) {
-        let items = if self.prev_view == View::Worktrees {
+        let items = if self.prev_view == View::RemoteBranches {
+            self.build_remote_menu_items()
+        } else if self.prev_view == View::Worktrees {
             self.build_worktree_menu_items()
         } else {
             self.build_menu_items()
@@ -2637,6 +2834,35 @@ impl App {
                         self.view = View::Confirm { action };
                         return;
                     }
+                    if self.prev_view == View::RemoteBranches {
+                        // View PR in browser — no confirm needed, fire and forget
+                        if menu_cursor == 7 {
+                            let branch = &self.remote_branches[self.remote_cursor];
+                            let short_name = branch.short_name.clone();
+                            let repo_path = self.repo_path.clone();
+                            std::thread::spawn(move || {
+                                let _ = std::process::Command::new("gh")
+                                    .args(["pr", "view", "--web", &short_name])
+                                    .current_dir(&repo_path)
+                                    .status();
+                            });
+                            self.view = View::RemoteBranches;
+                            return;
+                        }
+                        let action = match menu_cursor {
+                            0 => BranchAction::CheckoutRemote,
+                            1 => BranchAction::DeleteRemoteBranch,
+                            2 => BranchAction::DeleteRemoteAndLocal,
+                            3 => BranchAction::FetchRemote,
+                            4 => BranchAction::PullRemote,
+                            5 => BranchAction::MergeRemoteIntoCurrent,
+                            6 => BranchAction::CherryPickRemote,
+                            _ => return,
+                        };
+                        self.results_return_view = ResultsReturnView::RemoteBranches;
+                        self.view = View::Confirm { action };
+                        return;
+                    }
                     // Open PR in browser — no confirm needed, fire and forget
                     if menu_cursor == 11 {
                         let branch_name = self.branches[self.cursor].name.clone();
@@ -2676,6 +2902,39 @@ impl App {
                             _ => return,
                         };
                         self.results_return_view = ResultsReturnView::Worktrees;
+                        self.view = View::Confirm { action };
+                    } else if ch == 'q' {
+                        self.view = self.prev_view.clone();
+                    }
+                    return;
+                }
+                if self.prev_view == View::RemoteBranches {
+                    if let Some((idx, _)) = items.iter().enumerate().find(|(_, item)| item.shortcut == Some(ch) && item.enabled) {
+                        // View PR in browser (index 7) — no confirm needed, fire and forget
+                        if idx == 7 {
+                            let branch = &self.remote_branches[self.remote_cursor];
+                            let short_name = branch.short_name.clone();
+                            let repo_path = self.repo_path.clone();
+                            std::thread::spawn(move || {
+                                let _ = std::process::Command::new("gh")
+                                    .args(["pr", "view", "--web", &short_name])
+                                    .current_dir(&repo_path)
+                                    .status();
+                            });
+                            self.view = View::RemoteBranches;
+                            return;
+                        }
+                        let action = match idx {
+                            0 => BranchAction::CheckoutRemote,
+                            1 => BranchAction::DeleteRemoteBranch,
+                            2 => BranchAction::DeleteRemoteAndLocal,
+                            3 => BranchAction::FetchRemote,
+                            4 => BranchAction::PullRemote,
+                            5 => BranchAction::MergeRemoteIntoCurrent,
+                            6 => BranchAction::CherryPickRemote,
+                            _ => return,
+                        };
+                        self.results_return_view = ResultsReturnView::RemoteBranches;
                         self.view = View::Confirm { action };
                     } else if ch == 'q' {
                         self.view = self.prev_view.clone();
