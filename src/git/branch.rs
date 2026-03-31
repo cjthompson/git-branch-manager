@@ -246,7 +246,7 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
         };
         if let Some(status) = cache.lookup(&branch.name, &commit_hash) {
             branch.merge_status = status;
-        } else if is_squash_merged(repo_path, base_branch, &branch.name) {
+        } else if is_squash_merged(repo_path, base_branch, &branch.name, None) {
             branch.merge_status = MergeStatus::SquashMerged;
             cache.insert(&branch.name, &MergeStatus::SquashMerged, &commit_hash);
         } else {
@@ -280,7 +280,7 @@ pub fn list_branches_cached(
         };
         if let Some(status) = cache.lookup(&branch.name, &commit_hash) {
             branch.merge_status = status;
-        } else if is_squash_merged(repo_path, base_branch, &branch.name) {
+        } else if is_squash_merged(repo_path, base_branch, &branch.name, None) {
             branch.merge_status = MergeStatus::SquashMerged;
             cache.insert(&branch.name, &MergeStatus::SquashMerged, &commit_hash);
         } else {

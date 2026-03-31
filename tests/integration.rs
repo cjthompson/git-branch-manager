@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use git_branch_manager::git::{branch, operations};
+use git_branch_manager::git::{branch, operations, squash_loader};
 use git_branch_manager::types::MergeStatus;
 
 /// Create a temporary git repository with an initial commit on the "main" branch.
@@ -647,5 +647,72 @@ fn test_remote_branches_sorted_by_date() {
         "newer-branch (pos {}) should come before older-branch (pos {}) in date-descending sort",
         newer_pos,
         older_pos
+    );
+}
+
+#[test]
+fn test_remote_branch_squash_merge_detection() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    // Create a feature branch with unique content
+    run_git(&work_dir, &["checkout", "-b", "squash-feature"]);
+    let f = work_dir.join("squash-feature.txt");
+    std::fs::write(&f, "squash feature content\n").unwrap();
+    run_git(&work_dir, &["add", "squash-feature.txt"]);
+    run_git(&work_dir, &["commit", "-m", "Squash feature commit"]);
+    run_git(&work_dir, &["push", "-u", "origin", "squash-feature"]);
+
+    // Squash-merge into main (without a merge commit)
+    run_git(&work_dir, &["checkout", "main"]);
+    run_git(&work_dir, &["merge", "--squash", "squash-feature"]);
+    run_git(&work_dir, &["commit", "-m", "Squash merge squash-feature"]);
+    run_git(&work_dir, &["push", "origin", "main"]);
+
+    // Reload repo after push
+    let repo = git2::Repository::open(&work_dir).unwrap();
+    let remotes = branch::list_remote_branches_phase1(&repo, "main")
+        .expect("list_remote_branches_phase1 failed");
+
+    // Build candidates for squash checker: (full_ref, commit_hash) for unmerged non-base branches
+    let candidates: Vec<(String, String)> = remotes
+        .iter()
+        .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base)
+        .filter_map(|b| {
+            let refname = format!("refs/remotes/{}", b.full_ref);
+            repo.find_reference(&refname)
+                .ok()
+                .and_then(|r| r.peel_to_commit().ok())
+                .map(|c| (b.full_ref.clone(), c.id().to_string()))
+        })
+        .collect();
+
+    let cache = git_branch_manager::git::cache::BranchCache::load(&work_dir);
+    let rx = squash_loader::spawn_squash_checker(
+        work_dir.clone(),
+        "main".to_string(),
+        candidates,
+        cache,
+    );
+
+    let index_map: std::collections::HashMap<String, usize> = remotes
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.full_ref.clone(), i))
+        .collect();
+
+    let mut remotes = remotes;
+    for result in rx {
+        if result.is_squash_merged {
+            if let Some(&idx) = index_map.get(&result.branch_name) {
+                remotes[idx].merge_status = MergeStatus::SquashMerged;
+            }
+        }
+    }
+
+    let squashed = remotes.iter().find(|r| r.short_name == "squash-feature").unwrap();
+    assert_eq!(
+        squashed.merge_status,
+        MergeStatus::SquashMerged,
+        "squash-feature should be detected as SquashMerged on remote"
     );
 }
