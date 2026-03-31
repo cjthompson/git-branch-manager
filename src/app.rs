@@ -281,6 +281,8 @@ pub struct App {
     pub remote_load_rx: Option<Receiver<RemoteLoad>>,
     /// Receiver for per-branch remote enrichment (merge status, ahead/behind).
     pub remote_enrich_rx: Option<Receiver<RemoteEnrichResult>>,
+    pub remote_enrich_checked: usize,
+    pub remote_enrich_total: usize,
     /// Toast notification message (shown briefly in the status bar).
     pub toast: Option<String>,
     /// When the toast should expire (cleared after this instant).
@@ -292,6 +294,8 @@ pub struct App {
     pub worktree_selected: Vec<bool>,
     pub worktree_load_rx: Option<Receiver<WorktreeLoad>>,
     pub worktree_enrich_rx: Option<Receiver<WorktreeEnrichResult>>,
+    pub worktree_enrich_checked: usize,
+    pub worktree_enrich_total: usize,
     pub worktree_loading: bool,
     /// Status bar clickable items for worktrees view.
     pub worktree_status_bar_items: Vec<(u16, u16, KeyCode)>,
@@ -402,6 +406,8 @@ impl App {
             remote_status_bar_items: Vec::new(),
             remote_load_rx: None,
             remote_enrich_rx: None,
+            remote_enrich_checked: 0,
+            remote_enrich_total: 0,
             toast: None,
             toast_expires: None,
             worktrees: Vec::new(),
@@ -410,6 +416,8 @@ impl App {
             worktree_selected: Vec::new(),
             worktree_load_rx: None,
             worktree_enrich_rx: None,
+            worktree_enrich_checked: 0,
+            worktree_enrich_total: 0,
             worktree_loading: false,
             worktree_status_bar_items: Vec::new(),
             worktree_sort_column: None,
@@ -2160,6 +2168,8 @@ impl App {
     fn spawn_worktree_status_enrich(&mut self) {
         let rx = worktree::enrich_worktrees(self.worktrees.clone());
         self.worktree_enrich_rx = Some(rx);
+        self.worktree_enrich_checked = 0;
+        self.worktree_enrich_total = self.worktrees.len();
     }
 
     fn spawn_remote_enrich(&mut self) {
@@ -2172,12 +2182,15 @@ impl App {
         if unmerged.is_empty() {
             return;
         }
+        let total = unmerged.len();
         let rx = branch::spawn_remote_enricher(
             self.repo_path.clone(),
             self.base_branch.clone(),
             unmerged,
         );
         self.remote_enrich_rx = Some(rx);
+        self.remote_enrich_checked = 0;
+        self.remote_enrich_total = total;
     }
 
     /// Spawn background thread to populate remote branches from local tracking refs.
@@ -2465,6 +2478,7 @@ impl App {
             match rx.try_recv() {
                 Ok(result) => {
                     drained += 1;
+                    self.worktree_enrich_checked += 1;
                     if result.index < self.worktrees.len() {
                         self.worktrees[result.index].wt_status = result.wt_status;
                         self.worktrees[result.index].age_date = result.age_date;
@@ -2495,6 +2509,7 @@ impl App {
             match rx.try_recv() {
                 Ok(result) => {
                     drained += 1;
+                    self.remote_enrich_checked += 1;
                     if let Some(&idx) = index_map.get(&result.full_ref) {
                         self.remote_branches[idx].merge_status = result.merge_status;
                         self.remote_branches[idx].ahead = result.ahead;

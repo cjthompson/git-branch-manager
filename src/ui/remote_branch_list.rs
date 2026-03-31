@@ -436,6 +436,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 " | checking {}/{}",
                 app.remote_squash_checked, app.remote_squash_total
             )
+        } else if app.remote_enrich_total > 0
+            && app.remote_enrich_checked < app.remote_enrich_total
+        {
+            format!(
+                " | enriching {}/{}",
+                app.remote_enrich_checked, app.remote_enrich_total
+            )
         } else {
             String::new()
         };
