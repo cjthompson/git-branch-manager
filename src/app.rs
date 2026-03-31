@@ -14,7 +14,7 @@ use ratatui::widgets::TableState;
 use git_branch_manager::git::{branch, cache, operations, pr_loader, squash_loader, status, tags, worktree};
 use git_branch_manager::git::github::PrMap;
 use git_branch_manager::git::tags::TagInfo;
-use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, ProgressUpdate, RemoteBranchInfo, SquashResult, TrackingStatus, WorkingTreeStatus, WorktreeInfo};
+use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, ProgressUpdate, RemoteBranchInfo, RemoteEnrichResult, SquashResult, TrackingStatus, WorkingTreeStatus, WorktreeEnrichResult, WorktreeInfo};
 use crate::ui;
 use crate::ui::symbols::SymbolSet;
 use crate::ui::theme::Theme;
@@ -170,9 +170,6 @@ pub(crate) struct WorktreeLoad {
     pub worktrees: Vec<WorktreeInfo>,
 }
 
-pub(crate) struct WorktreeEnrich {
-    pub worktrees: Vec<WorktreeInfo>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
@@ -282,13 +279,19 @@ pub struct App {
     pub remote_status_bar_items: Vec<(u16, u16, KeyCode)>,
     /// Receiver for background remote branch loading (phase 1 enumeration).
     pub remote_load_rx: Option<Receiver<RemoteLoad>>,
+    /// Receiver for per-branch remote enrichment (merge status, ahead/behind).
+    pub remote_enrich_rx: Option<Receiver<RemoteEnrichResult>>,
+    /// Toast notification message (shown briefly in the status bar).
+    pub toast: Option<String>,
+    /// When the toast should expire (cleared after this instant).
+    pub toast_expires: Option<Instant>,
     // ── Worktrees state ──
     pub worktrees: Vec<WorktreeInfo>,
     pub worktree_cursor: usize,
     pub worktree_table_state: TableState,
     pub worktree_selected: Vec<bool>,
     pub worktree_load_rx: Option<Receiver<WorktreeLoad>>,
-    pub worktree_enrich_rx: Option<Receiver<WorktreeEnrich>>,
+    pub worktree_enrich_rx: Option<Receiver<WorktreeEnrichResult>>,
     pub worktree_loading: bool,
     /// Status bar clickable items for worktrees view.
     pub worktree_status_bar_items: Vec<(u16, u16, KeyCode)>,
@@ -398,6 +401,9 @@ impl App {
             remote_header_columns: Vec::new(),
             remote_status_bar_items: Vec::new(),
             remote_load_rx: None,
+            remote_enrich_rx: None,
+            toast: None,
+            toast_expires: None,
             worktrees: Vec::new(),
             worktree_cursor: 0,
             worktree_table_state: TableState::default(),
@@ -446,6 +452,7 @@ impl App {
             || self.remote_fetch_rx.is_some()
             || self.load_rx.is_some()
             || self.remote_load_rx.is_some()
+            || self.remote_enrich_rx.is_some()
             || self.worktree_load_rx.is_some()
             || self.worktree_enrich_rx.is_some()
             || self.tag_load_rx.is_some()
@@ -495,6 +502,12 @@ impl App {
         }
     }
 
+    /// Display a temporary toast message for `duration`.
+    pub fn set_toast(&mut self, message: String, duration: Duration) {
+        self.toast = Some(message);
+        self.toast_expires = Some(Instant::now() + duration);
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
         while !self.should_exit {
@@ -503,11 +516,19 @@ impl App {
             self.drain_remote_load_rx();
             self.drain_worktree_load_rx();
             self.drain_worktree_enrich_rx();
+            self.drain_remote_enrich_rx();
             self.drain_squash_rx();
             self.drain_remote_squash_rx();
             self.drain_pr_rx();
             self.drain_progress_rx();
             self.drain_op_rx();
+            // Expire toast notification
+            if let Some(expires) = self.toast_expires {
+                if Instant::now() >= expires {
+                    self.toast = None;
+                    self.toast_expires = None;
+                }
+            }
             terminal.draw(|frame| ui::render::draw(frame, self))?;
             self.timing_check_and_log();
 
@@ -2069,7 +2090,10 @@ impl App {
     fn open_remote_branches_view(&mut self) {
         // Load currently known remote refs immediately (local-only, fast)
         // Always load what we already know from local refs
-        self.populate_remote_branches();
+        // Only populate if not already loading and not already populated
+        if self.remote_load_rx.is_none() && self.remote_branches.is_empty() {
+            self.populate_remote_branches();
+        }
 
         if !self.remote_fetched && self.config.auto_fetch == Some(true) {
             // Spawn background fetch; branches reload when it completes
@@ -2083,11 +2107,18 @@ impl App {
             self.remote_loading = true;
         }
 
+        // Speculatively pre-load worktrees so data is ready when user presses Tab again
+        if self.worktree_load_rx.is_none() && self.worktrees.is_empty() {
+            self.spawn_worktree_load();
+        }
+
         self.view = View::RemoteBranches;
     }
 
     fn open_worktrees_view(&mut self) {
-        self.spawn_worktree_load();
+        if self.worktree_load_rx.is_none() && self.worktrees.is_empty() {
+            self.spawn_worktree_load();
+        }
         self.view = View::Worktrees;
     }
 
@@ -2120,29 +2151,27 @@ impl App {
         self.worktree_loading = true;
     }
 
-    fn spawn_worktree_enrich(&mut self) {
-        let worktrees = self.worktrees.clone();
-        let branches = self.branches.clone();
-        let pr_map = self.pr_map.clone();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let enriched: Vec<WorktreeInfo> = worktrees
-                .into_iter()
-                .map(|mut wt| {
-                    if let Some(ref branch_name) = wt.branch {
-                        if let Some(b) = branches.iter().find(|b| &b.name == branch_name) {
-                            wt.merge_status = b.merge_status.clone();
-                            wt.ahead = b.ahead;
-                            wt.behind = b.behind;
-                            wt.pr = pr_map.get(branch_name).map(|p| p.status.clone());
-                        }
-                    }
-                    wt
-                })
-                .collect();
-            let _ = tx.send(WorktreeEnrich { worktrees: enriched });
-        });
+    fn spawn_worktree_status_enrich(&mut self) {
+        let rx = worktree::enrich_worktrees(self.worktrees.clone());
         self.worktree_enrich_rx = Some(rx);
+    }
+
+    fn spawn_remote_enrich(&mut self) {
+        let unmerged: Vec<RemoteBranchInfo> = self
+            .remote_branches
+            .iter()
+            .filter(|b| !b.is_base)
+            .cloned()
+            .collect();
+        if unmerged.is_empty() {
+            return;
+        }
+        let rx = branch::spawn_remote_enricher(
+            self.repo_path.clone(),
+            self.base_branch.clone(),
+            unmerged,
+        );
+        self.remote_enrich_rx = Some(rx);
     }
 
     /// Spawn background thread to populate remote branches from local tracking refs.
@@ -2181,6 +2210,7 @@ impl App {
         });
 
         self.remote_load_rx = Some(rx);
+        self.remote_loading = true;
     }
 
     fn apply_sort(&mut self) {
@@ -2285,6 +2315,11 @@ impl App {
                 }
 
                 self.apply_sort();
+
+                // Speculatively pre-load remote branches so data is ready when user switches tabs
+                if self.remote_load_rx.is_none() && self.remote_branches.is_empty() {
+                    self.populate_remote_branches();
+                }
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
@@ -2396,7 +2431,7 @@ impl App {
                 self.worktree_table_state = TableState::default().with_selected(
                     if len == 0 { None } else { Some(0) },
                 );
-                self.spawn_worktree_enrich();
+                self.spawn_worktree_status_enrich();
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
@@ -2408,16 +2443,55 @@ impl App {
 
     fn drain_worktree_enrich_rx(&mut self) {
         use std::sync::mpsc::TryRecvError;
-        let Some(rx) = &self.worktree_enrich_rx else { return };
-        match rx.try_recv() {
-            Ok(enrich) => {
-                self.worktree_enrich_rx = None;
-                self.worktrees = enrich.worktrees;
+        let mut drained = 0;
+        let done = loop {
+            if drained >= 32 { break false; }
+            let Some(rx) = &self.worktree_enrich_rx else { break true };
+            match rx.try_recv() {
+                Ok(result) => {
+                    drained += 1;
+                    if result.index < self.worktrees.len() {
+                        self.worktrees[result.index].wt_status = result.wt_status;
+                        self.worktrees[result.index].age_date = result.age_date;
+                    }
+                }
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
             }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                self.worktree_enrich_rx = None;
+        };
+        if done {
+            self.worktree_enrich_rx = None;
+        }
+    }
+
+    fn drain_remote_enrich_rx(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        // Build full_ref→index map once per drain
+        let index_map: HashMap<String, usize> = self
+            .remote_branches
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.full_ref.clone(), i))
+            .collect();
+        let mut drained = 0;
+        let done = loop {
+            if drained >= 32 { break false; }
+            let Some(rx) = &self.remote_enrich_rx else { break true };
+            match rx.try_recv() {
+                Ok(result) => {
+                    drained += 1;
+                    if let Some(&idx) = index_map.get(&result.full_ref) {
+                        self.remote_branches[idx].merge_status = result.merge_status;
+                        self.remote_branches[idx].ahead = result.ahead;
+                        self.remote_branches[idx].behind = result.behind;
+                    }
+                }
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
             }
+        };
+        if done {
+            self.remote_enrich_rx = None;
         }
     }
 
