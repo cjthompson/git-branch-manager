@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
@@ -295,6 +296,11 @@ pub struct App {
     pub worktree_sort_ascending: bool,
     /// The view that was active before entering View::Menu — used to dispatch the right menu.
     pub prev_view: View,
+    // ── Timing instrumentation (GBM_TIMING=1) ──
+    timing_enabled: bool,
+    timing_file: Option<std::fs::File>,
+    timing_start: Option<Instant>,
+    timing_key_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -403,6 +409,17 @@ impl App {
             worktree_sort_column: None,
             worktree_sort_ascending: true,
             prev_view: View::BranchList,
+            timing_enabled: std::env::var("GBM_TIMING").map_or(false, |v| v == "1"),
+            timing_file: std::env::var("GBM_TIMING")
+                .ok()
+                .filter(|v| v == "1")
+                .and_then(|_| std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("key_timing.log")
+                    .ok()),
+            timing_start: None,
+            timing_key_name: None,
         }
     }
 
@@ -414,6 +431,67 @@ impl App {
             3 => "behind",
             4 => "status",
             _ => "name",
+        }
+    }
+
+    /// Returns true if any background loading is currently in progress.
+    fn is_any_loading(&self) -> bool {
+        self.loading
+            || self.tag_loading
+            || self.remote_loading
+            || self.worktree_loading
+            || self.squash_rx.is_some()
+            || self.remote_squash_rx.is_some()
+            || self.pr_rx.is_some()
+            || self.remote_fetch_rx.is_some()
+            || self.load_rx.is_some()
+            || self.remote_load_rx.is_some()
+            || self.worktree_load_rx.is_some()
+            || self.worktree_enrich_rx.is_some()
+            || self.tag_load_rx.is_some()
+            || self.op_rx.is_some()
+    }
+
+    /// Start a timing measurement for the given key name.
+    fn timing_start(&mut self, key: KeyCode) {
+        if !self.timing_enabled { return; }
+        self.timing_start = Some(Instant::now());
+        self.timing_key_name = Some(Self::key_name(key));
+    }
+
+    /// If a timing measurement is pending and all loading is finished, log it.
+    fn timing_check_and_log(&mut self) {
+        if !self.timing_enabled { return; }
+        let (Some(start), Some(name)) = (self.timing_start, &self.timing_key_name) else { return };
+        if self.is_any_loading() { return; }
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let name = name.clone();
+        if let Some(ref mut f) = self.timing_file {
+            let _ = writeln!(f, "{}\t{:.3}", name, elapsed_ms);
+        }
+        self.timing_start = None;
+        self.timing_key_name = None;
+    }
+
+    fn key_name(key: KeyCode) -> String {
+        match key {
+            KeyCode::Char(c) => format!("{}", c),
+            KeyCode::Enter => "Enter".into(),
+            KeyCode::Esc => "Esc".into(),
+            KeyCode::Tab => "Tab".into(),
+            KeyCode::BackTab => "BackTab".into(),
+            KeyCode::Backspace => "Backspace".into(),
+            KeyCode::Up => "Up".into(),
+            KeyCode::Down => "Down".into(),
+            KeyCode::Left => "Left".into(),
+            KeyCode::Right => "Right".into(),
+            KeyCode::Home => "Home".into(),
+            KeyCode::End => "End".into(),
+            KeyCode::PageUp => "PageUp".into(),
+            KeyCode::PageDown => "PageDown".into(),
+            KeyCode::Delete => "Delete".into(),
+            KeyCode::F(n) => format!("F{}", n),
+            _ => format!("{:?}", key),
         }
     }
 
@@ -431,6 +509,7 @@ impl App {
             self.drain_progress_rx();
             self.drain_op_rx();
             terminal.draw(|frame| ui::render::draw(frame, self))?;
+            self.timing_check_and_log();
 
             // Check if background remote fetch completed
             if let Some(rx) = &self.remote_fetch_rx
@@ -466,6 +545,8 @@ impl App {
                 if key.kind != KeyEventKind::Press {
                     return;
                 }
+
+                self.timing_start(key.code);
 
                 // Search input takes priority over all other key handlers
                 if self.tag_search_active && matches!(self.view, View::Tags) {
