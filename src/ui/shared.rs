@@ -2,9 +2,9 @@ use chrono::{DateTime, Utc};
 use crossterm::event::KeyCode;
 use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::View;
+use crate::app::{App, View};
 
 /// Returns a color style for known branch name prefixes (text before the first `/`).
 pub fn prefix_style(prefix: &str) -> Option<Style> {
@@ -165,4 +165,27 @@ pub fn render_status_bar(
     );
 
     items
+}
+
+/// Renders the current toast message from `app.toast` as a bottom-right bordered overlay.
+/// No-op if `app.toast` is None.
+/// `area` should be the full terminal area (frame.area()).
+pub fn draw_toast(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(msg) = &app.toast else { return };
+    let toast_width = msg.len() as u16 + 2; // +2 for left/right borders
+    let toast_height: u16 = 3;
+    let x = area.width.saturating_sub(toast_width).saturating_sub(1);
+    let y = area.height.saturating_sub(toast_height).saturating_sub(2); // above status bar
+    let toast_area = Rect::new(x, y, toast_width, toast_height);
+
+    let toast = Paragraph::new(msg.as_str())
+        .style(app.theme.toast_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.theme.toast_border),
+        )
+        .alignment(Alignment::Center);
+    frame.render_widget(Clear, toast_area);
+    frame.render_widget(toast, toast_area);
 }

@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 
 use crate::app::{App, View};
 use git_branch_manager::git::github::PrStatus;
@@ -371,24 +371,5 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
     }
 
-    // Loading toast — shown while worktrees are being fetched
-    if app.worktree_loading {
-        let msg = " Loading worktrees\u{2026} ";
-        let toast_width = msg.len() as u16 + 2;
-        let toast_height: u16 = 3;
-        let x = area.width.saturating_sub(toast_width).saturating_sub(1);
-        let y = area.height.saturating_sub(toast_height).saturating_sub(2);
-        let toast_area = Rect::new(x, y, toast_width, toast_height);
-
-        let toast = Paragraph::new(msg)
-            .style(app.theme.toast_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(app.theme.toast_border),
-            )
-            .alignment(Alignment::Center);
-        frame.render_widget(Clear, toast_area);
-        frame.render_widget(toast, toast_area);
-    }
+    super::shared::draw_toast(frame, app, area);
 }

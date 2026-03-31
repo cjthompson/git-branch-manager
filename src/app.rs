@@ -544,10 +544,14 @@ impl App {
                         self.populate_remote_branches();
                     } else {
                         self.remote_loading = false;
+                        self.toast = None;
+                        self.toast_expires = None;
                     }
                 } else {
                     // Fetch failed or timed out — clear loading state
                     self.remote_loading = false;
+                    self.toast = None;
+                    self.toast_expires = None;
                 }
             }
 
@@ -2105,6 +2109,7 @@ impl App {
             });
             self.remote_fetch_rx = Some(rx);
             self.remote_loading = true;
+            self.set_toast(" Fetching remote branches\u{2026} ".to_string(), Duration::from_secs(300));
         }
 
         // Speculatively pre-load worktrees so data is ready when user presses Tab again
@@ -2149,6 +2154,7 @@ impl App {
         });
         self.worktree_load_rx = Some(rx);
         self.worktree_loading = true;
+        self.set_toast(" Loading worktrees\u{2026} ".to_string(), Duration::from_secs(300));
     }
 
     fn spawn_worktree_status_enrich(&mut self) {
@@ -2211,6 +2217,7 @@ impl App {
 
         self.remote_load_rx = Some(rx);
         self.remote_loading = true;
+        self.set_toast(" Loading remote branches\u{2026} ".to_string(), Duration::from_secs(300));
     }
 
     fn apply_sort(&mut self) {
@@ -2383,6 +2390,8 @@ impl App {
             Ok(load) => {
                 self.remote_load_rx = None;
                 self.remote_loading = false;
+                self.toast = None;
+                self.toast_expires = None;
 
                 let len = load.remote_branches.len();
                 self.remote_branches = load.remote_branches;
@@ -2413,6 +2422,8 @@ impl App {
             Err(TryRecvError::Disconnected) => {
                 self.remote_load_rx = None;
                 self.remote_loading = false;
+                self.toast = None;
+                self.toast_expires = None;
             }
         }
     }
@@ -2424,6 +2435,8 @@ impl App {
             Ok(load) => {
                 self.worktree_load_rx = None;
                 self.worktree_loading = false;
+                self.toast = None;
+                self.toast_expires = None;
                 let len = load.worktrees.len();
                 self.worktrees = load.worktrees;
                 self.worktree_selected = vec![false; len];
@@ -2437,6 +2450,8 @@ impl App {
             Err(TryRecvError::Disconnected) => {
                 self.worktree_load_rx = None;
                 self.worktree_loading = false;
+                self.toast = None;
+                self.toast_expires = None;
             }
         }
     }
