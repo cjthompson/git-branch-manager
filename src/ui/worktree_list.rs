@@ -350,15 +350,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Status bar
     {
         let total = app.worktrees.len();
+        let progress = if app.worktree_enrich_total > 0
+            && app.worktree_enrich_checked < app.worktree_enrich_total
+        {
+            format!(
+                " | enriching {}/{}",
+                app.worktree_enrich_checked, app.worktree_enrich_total
+            )
+        } else {
+            String::new()
+        };
         let status_text = if width < 80 {
             format!(
-                " {} worktrees \u{2014} [d]rm [D]force-rm [w]branches [?]help [q]uit",
-                total
+                " {} worktrees{} \u{2014} [d]rm [D]force-rm [w]branches [?]help [q]uit",
+                total, progress
             )
         } else {
             format!(
-                " {} worktrees \u{2014} [Enter]menu [d]remove [D]force-remove [w]branches [r]emotes [t]ags [?]help [q]uit",
-                total
+                " {} worktrees{} \u{2014} [Enter]menu [d]remove [D]force-remove [w]branches [r]emotes [t]ags [?]help [q]uit",
+                total, progress
             )
         };
 
