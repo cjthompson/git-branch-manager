@@ -27,7 +27,7 @@ pub fn spawn_squash_checker(
                 Some(MergeStatus::SquashMerged) => true,
                 Some(MergeStatus::Unmerged) => false,
                 _ => {
-                    let result = is_squash_merged(&repo_path, &base_branch, &branch_name);
+                    let result = is_squash_merged(&repo_path, &base_branch, &branch_name, Some(&commit_hash));
                     let status = if result {
                         MergeStatus::SquashMerged
                     } else {
