@@ -1,36 +1,10 @@
-use chrono::{DateTime, Utc};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 
 use crate::app::{App, View};
 use git_branch_manager::git::github::PrStatus;
 use git_branch_manager::types::MergeStatus;
-use super::shared::{prefix_style, tab_bar_line};
-
-/// Returns a color style based on how old a date is.
-fn age_style(date: &DateTime<Utc>) -> Style {
-    let days = (Utc::now() - *date).num_days();
-    if days < 7 {
-        Style::new().fg(Color::Green)
-    } else if days < 30 {
-        Style::new().fg(Color::Yellow)
-    } else if days < 90 {
-        Style::new().fg(Color::Indexed(208))
-    } else {
-        Style::new().fg(Color::Red)
-    }
-}
-
-/// Truncates `s` to fit within `max_chars`, appending `ellipsis` if truncated.
-fn truncate(s: &str, max_chars: usize, ellipsis: &str) -> String {
-    if s.len() <= max_chars {
-        s.to_string()
-    } else if max_chars > ellipsis.len() {
-        format!("{}{}", &s[..max_chars - ellipsis.len()], ellipsis)
-    } else {
-        ellipsis.to_string()
-    }
-}
+use super::shared::{age_style, prefix_style, tab_bar_line, truncate};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
