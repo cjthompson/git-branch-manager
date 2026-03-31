@@ -2,8 +2,11 @@ use anyhow::Result;
 use chrono::DateTime;
 use git2::{BranchType, Repository};
 use thiserror::Error;
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 
-use crate::types::{BranchInfo, MergeStatus, RemoteBranchInfo, TrackingStatus};
+use crate::types::{BranchInfo, MergeStatus, RemoteBranchInfo, RemoteEnrichResult, TrackingStatus};
 
 use super::cache::BranchCache;
 use super::merge_detection::{detect_merged_branches, is_squash_merged};
@@ -146,6 +149,82 @@ pub fn list_remote_branches_phase1(
 
     branches.sort_by(|a, b| b.last_commit_date.cmp(&a.last_commit_date));
     Ok(branches)
+}
+
+/// Spawn a background thread that enriches remote branch metadata.
+///
+/// For each branch, computes:
+/// - `merge_status`: whether the branch tip is an ancestor of the remote base (regular merge)
+/// - `ahead`/`behind`: commits ahead/behind the remote base branch
+///
+/// Sends one `RemoteEnrichResult` per branch via mpsc channel.
+/// The channel closes naturally when the thread completes (Sender is dropped).
+pub fn spawn_remote_enricher(
+    repo_path: PathBuf,
+    base_branch: String,
+    branches: Vec<RemoteBranchInfo>,
+) -> Receiver<RemoteEnrichResult> {
+    let (tx, rx) = mpsc::channel::<RemoteEnrichResult>();
+
+    thread::spawn(move || {
+        let repo = match Repository::open(&repo_path) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        for branch_info in branches {
+            let base_ref_name = format!(
+                "refs/remotes/{}/{}",
+                branch_info.remote, base_branch
+            );
+            let base_oid = match repo
+                .find_reference(&base_ref_name)
+                .and_then(|r| r.peel_to_commit())
+                .map(|c| c.id())
+            {
+                Ok(oid) => oid,
+                Err(_) => continue,
+            };
+
+            let branch_ref_name = format!("refs/remotes/{}", branch_info.full_ref);
+            let branch_oid = match repo
+                .find_reference(&branch_ref_name)
+                .and_then(|r| r.peel_to_commit())
+                .map(|c| c.id())
+            {
+                Ok(oid) => oid,
+                Err(_) => continue,
+            };
+
+            let merge_status = if repo
+                .graph_descendant_of(base_oid, branch_oid)
+                .unwrap_or(false)
+            {
+                MergeStatus::Merged
+            } else {
+                MergeStatus::Unmerged
+            };
+
+            let (ahead, behind) = match repo.graph_ahead_behind(branch_oid, base_oid) {
+                Ok((a, b)) => (Some(a as u32), Some(b as u32)),
+                Err(_) => (None, None),
+            };
+
+            if tx
+                .send(RemoteEnrichResult {
+                    full_ref: branch_info.full_ref,
+                    merge_status,
+                    ahead,
+                    behind,
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    rx
 }
 
 /// List all local branches with full metadata including squash-merge detection.
