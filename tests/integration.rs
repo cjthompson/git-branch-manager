@@ -495,9 +495,22 @@ fn test_remote_branch_merged_detection() {
     run_git(&work_dir, &["push", "origin", "main"]);
 
     // Re-open to see updated refs
-    let repo = git2::Repository::open(work_dir).unwrap();
-    let remotes = branch::list_remote_branches_phase1(&repo, "main")
+    let repo = git2::Repository::open(&work_dir).unwrap();
+    let mut remotes = branch::list_remote_branches_phase1(&repo, "main")
         .expect("list_remote_branches_phase1 failed");
+
+    // Phase-1 now always returns Unmerged; enrichment runs in background thread.
+    let rx = branch::spawn_remote_enricher(work_dir.clone(), "main".to_string(), remotes.clone());
+    let index_map: std::collections::HashMap<String, usize> = remotes
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.full_ref.clone(), i))
+        .collect();
+    for result in rx {
+        if let Some(&idx) = index_map.get(&result.full_ref) {
+            remotes[idx].merge_status = result.merge_status;
+        }
+    }
 
     let merged = remotes.iter().find(|r| r.short_name == "feature-to-merge").unwrap();
     assert_eq!(
