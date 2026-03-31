@@ -82,13 +82,6 @@ pub fn list_remote_branches_phase1(
 ) -> Result<Vec<RemoteBranchInfo>> {
     use git2::BranchType;
 
-    // Find the base branch OID for merge detection
-    let base_oid = repo
-        .find_branch(base_branch, BranchType::Local)
-        .ok()
-        .and_then(|b| b.get().peel_to_commit().ok())
-        .map(|c| c.id());
-
     // Build a set of local branch names for has_local detection
     let local_names: std::collections::HashSet<String> = repo
         .branches(Some(BranchType::Local))
@@ -131,30 +124,12 @@ pub fn list_remote_branches_phase1(
         let last_commit_date = DateTime::from_timestamp(time.seconds(), 0)
             .unwrap_or_default();
 
-        // Regular merge detection: is the branch tip an ancestor of base?
-        let merge_status = if let Some(base) = base_oid {
-            if repo
-                .graph_descendant_of(base, commit.id())
-                .unwrap_or(false)
-            {
-                MergeStatus::Merged
-            } else {
-                MergeStatus::Unmerged
-            }
-        } else {
-            MergeStatus::Unmerged
-        };
+        let merge_status = MergeStatus::Unmerged;
 
         let has_local = local_names.contains(&short_name);
 
-        // Compute ahead/behind relative to base branch
-        let (ahead, behind) = if let Some(base) = base_oid {
-            repo.graph_ahead_behind(commit.id(), base)
-                .map(|(a, b)| (Some(a as u32), Some(b as u32)))
-                .unwrap_or((None, None))
-        } else {
-            (None, None)
-        };
+        let ahead: Option<u32> = None;
+        let behind: Option<u32> = None;
 
         branches.push(RemoteBranchInfo {
             full_ref,
