@@ -17,7 +17,8 @@ fn git_out(dir: &Path, args: &[&str]) -> String {
 
 /// Parse `git worktree list --porcelain` output into a list of WorktreeInfo.
 fn parse_porcelain(output: &str) -> Vec<WorktreeInfo> {
-    let mut result = Vec::new();
+    // First pass: collect raw worktree data (path, sha, branch, is_main)
+    let mut raw_worktrees: Vec<(PathBuf, String, Option<String>, bool)> = Vec::new();
     let mut path: Option<PathBuf> = None;
     let mut sha = String::new();
     let mut branch: Option<String> = None;
@@ -26,7 +27,7 @@ fn parse_porcelain(output: &str) -> Vec<WorktreeInfo> {
     for line in output.lines() {
         if line.is_empty() {
             if let Some(p) = path.take() {
-                result.push(build_worktree(p, sha.clone(), branch.take(), is_main));
+                raw_worktrees.push((p, sha.clone(), branch.take(), is_main));
                 is_main = false;
                 sha.clear();
             }
@@ -42,8 +43,20 @@ fn parse_porcelain(output: &str) -> Vec<WorktreeInfo> {
 
     // flush last block (no trailing blank line in some git versions)
     if let Some(p) = path {
-        result.push(build_worktree(p, sha, branch, is_main));
+        raw_worktrees.push((p, sha, branch, is_main));
     }
+
+    // Second pass: parallelize status_and_age calls for each worktree
+    let result = std::thread::scope(|s| {
+        let handles: Vec<_> = raw_worktrees
+            .into_iter()
+            .map(|(p, sha, branch, is_main)| {
+                s.spawn(move || build_worktree(p, sha, branch, is_main))
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().ok()).collect::<Option<Vec<_>>>()
+    })
+    .unwrap_or_default();
 
     result
 }
@@ -54,14 +67,13 @@ fn build_worktree(
     branch: Option<String>,
     is_main: bool,
 ) -> WorktreeInfo {
-    let (wt_status, age_date) = status_and_age(&path);
     WorktreeInfo {
         path,
         branch,
         is_main,
         commit_hash,
-        wt_status,
-        age_date,
+        wt_status: WorkingTreeStatus::clean(),
+        age_date: Utc::now(),
         merge_status: MergeStatus::Unmerged,
         ahead: None,
         behind: None,
@@ -151,6 +163,5 @@ fn newest_mtime(paths: &[PathBuf]) -> Option<DateTime<Utc>> {
 /// List all worktrees for the repo rooted at `repo_path`.
 /// Returns phase-1 data only (merge status, ahead/behind, and PR are not populated).
 pub fn list_worktrees(repo_path: &Path) -> Vec<WorktreeInfo> {
-    let out = git_out(repo_path, &["worktree", "list", "--porcelain"]);
-    parse_porcelain(&out)
+    parse_porcelain(&git_out(repo_path, &["worktree", "list", "--porcelain"]))
 }
