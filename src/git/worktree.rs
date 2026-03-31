@@ -49,7 +49,7 @@ fn parse_porcelain(output: &str) -> Vec<WorktreeInfo> {
     }
 
     // Second pass: parallelize status_and_age calls for each worktree
-    let result = std::thread::scope(|s| {
+    std::thread::scope(|s| {
         let handles: Vec<_> = raw_worktrees
             .into_iter()
             .map(|(p, sha, branch, is_main)| {
@@ -58,9 +58,7 @@ fn parse_porcelain(output: &str) -> Vec<WorktreeInfo> {
             .collect();
         handles.into_iter().map(|h| h.join().ok()).collect::<Option<Vec<_>>>()
     })
-    .unwrap_or_default();
-
-    result
+    .unwrap_or_default()
 }
 
 fn build_worktree(

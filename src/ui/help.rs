@@ -67,7 +67,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         && area.height < content_height_single;
 
     if use_two_cols {
-        let mid = (all_lines.len() + 1) / 2;
+        let mid = all_lines.len().div_ceil(2);
         let left = &all_lines[..mid];
         let right = &all_lines[mid..];
 

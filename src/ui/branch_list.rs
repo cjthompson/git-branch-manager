@@ -1,39 +1,10 @@
-use chrono::{DateTime, Utc};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::{App, View};
 use git_branch_manager::git::github::PrStatus;
 use git_branch_manager::types::{MergeStatus, TrackingStatus};
-use super::shared::tab_bar_line;
-
-/// Returns a style for known branch name prefixes (text before the first `/`).
-fn prefix_style(prefix: &str) -> Option<Style> {
-    match prefix {
-        "fix" => Some(Style::new().fg(Color::Red)),
-        "feat" | "feature" => Some(Style::new().fg(Color::Green)),
-        "chore" => Some(Style::new().fg(Color::Indexed(130))),
-        "hotfix" => Some(Style::new().fg(Color::Magenta)),
-        "release" => Some(Style::new().fg(Color::Cyan)),
-        _ => None,
-    }
-}
-
-/// Returns a color style based on how old a commit is.
-fn age_style(date: &DateTime<Utc>) -> Style {
-    let duration = Utc::now() - *date;
-    let days = duration.num_days();
-
-    if days < 7 {
-        Style::new().fg(Color::Green)
-    } else if days < 30 {
-        Style::new().fg(Color::Yellow)
-    } else if days < 90 {
-        Style::new().fg(Color::Indexed(208)) // orange
-    } else {
-        Style::new().fg(Color::Red)
-    }
-}
+use super::shared::{age_style, prefix_style, tab_bar_line};
 
 
 pub fn draw(frame: &mut Frame, app: &mut App) {

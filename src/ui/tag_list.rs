@@ -2,22 +2,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::App;
-
-/// Returns a color style based on how old a tag's commit is.
-fn age_style(date: &chrono::DateTime<chrono::Utc>) -> Style {
-    let duration = chrono::Utc::now() - *date;
-    let days = duration.num_days();
-
-    if days < 7 {
-        Style::new().fg(Color::Green)
-    } else if days < 30 {
-        Style::new().fg(Color::Yellow)
-    } else if days < 90 {
-        Style::new().fg(Color::Indexed(208)) // orange
-    } else {
-        Style::new().fg(Color::Red)
-    }
-}
+use super::shared::age_style;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();

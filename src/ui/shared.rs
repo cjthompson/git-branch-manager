@@ -146,7 +146,7 @@ pub fn render_status_bar(
             spans.push(Span::styled(remaining[1..close].to_string(), key_style));
             let after_close = &remaining[close..];
             let word_end = after_close[1..]
-                .find(|c: char| c == ' ' || c == '[')
+                .find([' ', '['])
                 .map(|idx| idx + 1)
                 .unwrap_or(after_close.len());
             spans.push(Span::styled(after_close[..word_end].to_string(), status_bar_style));

@@ -11,6 +11,7 @@ pub struct Theme {
     pub cursor: Style,
     pub selected: Style,
     pub current_branch: Style,
+    #[allow(dead_code)]
     pub ahead_behind: Style,
     pub pinned_row: Style,
     pub checked_row: Style,

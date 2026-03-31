@@ -104,6 +104,7 @@ struct WorktreeListNav<'a> {
     app: &'a mut App,
 }
 
+#[allow(clippy::misnamed_getters)]
 impl ListNav for WorktreeListNav<'_> {
     fn display_indices(&self) -> Vec<usize> {
         let mut pinned: Vec<usize> = Vec::new();
@@ -423,7 +424,7 @@ impl App {
             worktree_sort_column: None,
             worktree_sort_ascending: true,
             prev_view: View::BranchList,
-            timing_enabled: std::env::var("GBM_TIMING").map_or(false, |v| v == "1"),
+            timing_enabled: std::env::var("GBM_TIMING").is_ok_and(|v| v == "1"),
             timing_file: std::env::var("GBM_TIMING")
                 .ok()
                 .filter(|v| v == "1")
@@ -531,11 +532,11 @@ impl App {
             self.drain_progress_rx();
             self.drain_op_rx();
             // Expire toast notification
-            if let Some(expires) = self.toast_expires {
-                if Instant::now() >= expires {
-                    self.toast = None;
-                    self.toast_expires = None;
-                }
+            if let Some(expires) = self.toast_expires
+                && Instant::now() >= expires
+            {
+                self.toast = None;
+                self.toast_expires = None;
             }
             terminal.draw(|frame| ui::render::draw(frame, self))?;
             self.timing_check_and_log();
@@ -1859,7 +1860,7 @@ impl App {
             self.spawn_op(label, move || {
                 let mut results = Vec::new();
                 // Delete remote first
-                let remote_result = operations::delete_remotes_batch(&repo_path, &[short_name.clone()]);
+                let remote_result = operations::delete_remotes_batch(&repo_path, std::slice::from_ref(&short_name));
                 results.extend(remote_result.into_iter().map(|mut r| {
                     r.action = BranchAction::DeleteRemoteAndLocal;
                     r
@@ -2430,6 +2431,9 @@ impl App {
                         load.cache,
                     ))
                 };
+
+                // Kick off background enrichment (ahead/behind counts, etc.)
+                self.spawn_remote_enrich();
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
