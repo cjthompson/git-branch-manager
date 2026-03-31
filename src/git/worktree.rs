@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 
 use chrono::{DateTime, TimeZone, Utc};
 
-use crate::types::{MergeStatus, WorkingTreeStatus, WorktreeInfo};
+use crate::types::{MergeStatus, WorkingTreeStatus, WorktreeEnrichResult, WorktreeInfo};
 
 /// Run a git command in `dir`, return stdout as String.
 fn git_out(dir: &Path, args: &[&str]) -> String {
@@ -164,4 +166,28 @@ fn newest_mtime(paths: &[PathBuf]) -> Option<DateTime<Utc>> {
 /// Returns phase-1 data only (merge status, ahead/behind, and PR are not populated).
 pub fn list_worktrees(repo_path: &Path) -> Vec<WorktreeInfo> {
     parse_porcelain(&git_out(repo_path, &["worktree", "list", "--porcelain"]))
+}
+
+/// Spawn a background thread that computes `wt_status` and `age_date` for each
+/// worktree and sends one [`WorktreeEnrichResult`] per worktree via the returned
+/// channel.
+///
+/// The channel closes naturally when the thread finishes (Sender is dropped).
+pub fn enrich_worktrees(worktrees: Vec<WorktreeInfo>) -> Receiver<WorktreeEnrichResult> {
+    let (tx, rx) = mpsc::channel::<WorktreeEnrichResult>();
+
+    thread::spawn(move || {
+        for (index, worktree) in worktrees.iter().enumerate() {
+            let (wt_status, age_date) = status_and_age(&worktree.path);
+
+            if tx
+                .send(WorktreeEnrichResult { index, wt_status, age_date })
+                .is_err()
+            {
+                break; // Receiver dropped (app exited)
+            }
+        }
+    });
+
+    rx
 }
