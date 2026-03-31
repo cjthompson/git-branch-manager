@@ -306,3 +306,22 @@ pub struct SquashResult {
     pub branch_name: String,
     pub is_squash_merged: bool,
 }
+
+/// Per-item result sent from the remote-branch enrichment background thread.
+#[derive(Debug, Clone)]
+pub struct RemoteEnrichResult {
+    /// Identifies which branch to update (matches `RemoteBranchInfo::full_ref`).
+    pub full_ref: String,
+    pub merge_status: MergeStatus,
+    pub ahead: Option<u32>,
+    pub behind: Option<u32>,
+}
+
+/// Per-item result sent from the worktree status-enrichment background thread.
+#[derive(Debug, Clone)]
+pub struct WorktreeEnrichResult {
+    /// Index into `App::worktrees` (position in the phase-1 list).
+    pub index: usize,
+    pub wt_status: WorkingTreeStatus,
+    pub age_date: DateTime<Utc>,
+}
