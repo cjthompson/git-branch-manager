@@ -3033,6 +3033,9 @@ impl App {
                                 let _ = std::process::Command::new("gh")
                                     .args(["pr", "view", "--web", &short_name])
                                     .current_dir(&repo_path)
+                                    .stdin(std::process::Stdio::null())
+                                    .stdout(std::process::Stdio::null())
+                                    .stderr(std::process::Stdio::null())
                                     .status();
                             });
                             self.view = View::RemoteBranches;
@@ -3060,6 +3063,9 @@ impl App {
                             let _ = std::process::Command::new("gh")
                                 .args(["pr", "view", "--web", &branch_name])
                                 .current_dir(&repo_path)
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
                                 .status();
                         });
                         self.view = View::BranchList;
@@ -3108,6 +3114,9 @@ impl App {
                                 let _ = std::process::Command::new("gh")
                                     .args(["pr", "view", "--web", &short_name])
                                     .current_dir(&repo_path)
+                                    .stdin(std::process::Stdio::null())
+                                    .stdout(std::process::Stdio::null())
+                                    .stderr(std::process::Stdio::null())
                                     .status();
                             });
                             self.view = View::RemoteBranches;
@@ -3139,6 +3148,9 @@ impl App {
                             let _ = std::process::Command::new("gh")
                                 .args(["pr", "view", "--web", &branch_name])
                                 .current_dir(&repo_path)
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
                                 .status();
                         });
                         self.view = View::BranchList;
