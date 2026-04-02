@@ -51,7 +51,6 @@ pub fn tab_bar_line<'a>(active: &View, title_style: Style) -> Line<'a> {
         ("Branches", View::BranchList),
         ("Remote", View::RemoteBranches),
         ("Worktrees", View::Worktrees),
-        ("Help", View::Help),
     ];
 
     let inactive_style = Style::default().add_modifier(Modifier::DIM);
