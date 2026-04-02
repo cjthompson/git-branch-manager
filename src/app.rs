@@ -3029,15 +3029,7 @@ impl App {
                             let branch = &self.remote_branches[self.remote_cursor];
                             let short_name = branch.short_name.clone();
                             let repo_path = self.repo_path.clone();
-                            std::thread::spawn(move || {
-                                let _ = std::process::Command::new("gh")
-                                    .args(["pr", "view", "--web", &short_name])
-                                    .current_dir(&repo_path)
-                                    .stdin(std::process::Stdio::null())
-                                    .stdout(std::process::Stdio::null())
-                                    .stderr(std::process::Stdio::null())
-                                    .status();
-                            });
+                            spawn_gh(repo_path, vec!["pr".into(), "view".into(), "--web".into(), short_name]);
                             self.view = View::RemoteBranches;
                             return;
                         }
@@ -3059,15 +3051,7 @@ impl App {
                     if menu_cursor == 11 {
                         let branch_name = self.branches[self.cursor].name.clone();
                         let repo_path = self.repo_path.clone();
-                        std::thread::spawn(move || {
-                            let _ = std::process::Command::new("gh")
-                                .args(["pr", "view", "--web", &branch_name])
-                                .current_dir(&repo_path)
-                                .stdin(std::process::Stdio::null())
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .status();
-                        });
+                        spawn_gh(repo_path, vec!["pr".into(), "view".into(), "--web".into(), branch_name]);
                         self.view = View::BranchList;
                         return;
                     }
@@ -3110,15 +3094,7 @@ impl App {
                             let branch = &self.remote_branches[self.remote_cursor];
                             let short_name = branch.short_name.clone();
                             let repo_path = self.repo_path.clone();
-                            std::thread::spawn(move || {
-                                let _ = std::process::Command::new("gh")
-                                    .args(["pr", "view", "--web", &short_name])
-                                    .current_dir(&repo_path)
-                                    .stdin(std::process::Stdio::null())
-                                    .stdout(std::process::Stdio::null())
-                                    .stderr(std::process::Stdio::null())
-                                    .status();
-                            });
+                            spawn_gh(repo_path, vec!["pr".into(), "view".into(), "--web".into(), short_name]);
                             self.view = View::RemoteBranches;
                             return;
                         }
@@ -3144,15 +3120,7 @@ impl App {
                     if idx == 11 {
                         let branch_name = self.branches[self.cursor].name.clone();
                         let repo_path = self.repo_path.clone();
-                        std::thread::spawn(move || {
-                            let _ = std::process::Command::new("gh")
-                                .args(["pr", "view", "--web", &branch_name])
-                                .current_dir(&repo_path)
-                                .stdin(std::process::Stdio::null())
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .status();
-                        });
+                        spawn_gh(repo_path, vec!["pr".into(), "view".into(), "--web".into(), branch_name]);
                         self.view = View::BranchList;
                         return;
                     }
@@ -3733,6 +3701,23 @@ impl FilterSet {
 }
 
 /// Parse age duration string like "7d", "30d", "6m", "1y" into seconds.
+/// Spawn `gh <args>` in a background thread with stdio detached from the terminal.
+///
+/// Required because the TUI holds the terminal in raw mode with mouse reporting
+/// active. Without isolation the child process would read mouse events as stdin
+/// and write its own output directly into the TUI's input stream.
+fn spawn_gh(repo_path: std::path::PathBuf, args: Vec<String>) {
+    std::thread::spawn(move || {
+        let _ = std::process::Command::new("gh")
+            .args(&args)
+            .current_dir(&repo_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    });
+}
+
 fn parse_age_duration(s: &str) -> Option<i64> {
     if s.is_empty() {
         return None;
