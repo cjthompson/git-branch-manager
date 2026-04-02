@@ -10,6 +10,8 @@ pub enum MergeStatus {
     SquashMerged,
     /// Branch has not been merged
     Unmerged,
+    /// Squash-merge check has not completed yet (phase-1 placeholder)
+    Pending,
 }
 
 /// Human-readable age string: "3 days ago", "2 months ago", etc.

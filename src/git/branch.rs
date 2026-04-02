@@ -71,6 +71,12 @@ pub fn detect_base_branch(repo: &Repository, override_base: Option<&str>) -> Res
 pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
     let mut branches = collect_branch_metadata(repo, base_branch)?;
     detect_merged_branches(repo, base_branch, &mut branches)?;
+    // Mark non-base, non-current unmerged branches as Pending — squash check hasn't run yet.
+    for b in branches.iter_mut() {
+        if b.merge_status == MergeStatus::Unmerged && !b.is_base && !b.is_current {
+            b.merge_status = MergeStatus::Pending;
+        }
+    }
     branches.sort_by(|a, b| b.last_commit_date.cmp(&a.last_commit_date));
     Ok(branches)
 }
@@ -127,7 +133,8 @@ pub fn list_remote_branches_phase1(
         let last_commit_date = DateTime::from_timestamp(time.seconds(), 0)
             .unwrap_or_default();
 
-        let merge_status = MergeStatus::Unmerged;
+        // Non-base branches start as Pending — enrichment resolves the actual status.
+        let merge_status = if is_base { MergeStatus::Unmerged } else { MergeStatus::Pending };
 
         let has_local = local_names.contains(&short_name);
 

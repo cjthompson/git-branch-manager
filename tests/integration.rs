@@ -536,11 +536,12 @@ fn test_remote_branch_unmerged_detection() {
     let remotes = branch::list_remote_branches_phase1(&repo, "main")
         .expect("list_remote_branches_phase1 failed");
 
+    // Phase-1 sets non-base branches to Pending; squash check resolves to Unmerged/SquashMerged.
     let unmerged = remotes.iter().find(|r| r.short_name == "feature-unmerged").unwrap();
     assert_eq!(
         unmerged.merge_status,
-        MergeStatus::Unmerged,
-        "feature-unmerged should be detected as Unmerged on remote"
+        MergeStatus::Pending,
+        "feature-unmerged should be Pending after phase-1 (squash check not yet run)"
     );
 }
 
@@ -673,10 +674,10 @@ fn test_remote_branch_squash_merge_detection() {
     let remotes = branch::list_remote_branches_phase1(&repo, "main")
         .expect("list_remote_branches_phase1 failed");
 
-    // Build candidates for squash checker: (full_ref, commit_hash) for unmerged non-base branches
+    // Build candidates for squash checker: (full_ref, commit_hash) for pending non-base branches
     let candidates: Vec<(String, String)> = remotes
         .iter()
-        .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base)
+        .filter(|b| b.merge_status == MergeStatus::Pending && !b.is_base)
         .filter_map(|b| {
             let refname = format!("refs/remotes/{}", b.full_ref);
             repo.find_reference(&refname)
@@ -702,10 +703,12 @@ fn test_remote_branch_squash_merge_detection() {
 
     let mut remotes = remotes;
     for result in rx {
-        if result.is_squash_merged {
-            if let Some(&idx) = index_map.get(&result.branch_name) {
-                remotes[idx].merge_status = MergeStatus::SquashMerged;
-            }
+        if let Some(&idx) = index_map.get(&result.branch_name) {
+            remotes[idx].merge_status = if result.is_squash_merged {
+                MergeStatus::SquashMerged
+            } else {
+                MergeStatus::Unmerged
+            };
         }
     }
 

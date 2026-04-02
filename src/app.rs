@@ -2072,7 +2072,7 @@ impl App {
             let candidates: Vec<(String, String)> = branches
                 .iter()
                 .filter(|b| {
-                    b.merge_status == MergeStatus::Unmerged && !b.is_base && !b.is_current
+                    b.merge_status == MergeStatus::Pending && !b.is_base && !b.is_current
                 })
                 .filter_map(|b| {
                     branch::get_commit_hash(&repo, &b.name)
@@ -2212,7 +2212,7 @@ impl App {
             let branch_cache = cache::BranchCache::load(&repo_path);
             let candidates: Vec<(String, String)> = remote_branches
                 .iter()
-                .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base)
+                .filter(|b| b.merge_status == MergeStatus::Pending && !b.is_base)
                 .filter_map(|b| {
                     let refname = format!("refs/remotes/{}", b.full_ref);
                     repo.find_reference(&refname)
@@ -2253,6 +2253,7 @@ impl App {
                         MergeStatus::Merged => 0,
                         MergeStatus::SquashMerged => 1,
                         MergeStatus::Unmerged => 2,
+                        MergeStatus::Pending => 3,
                     };
                     rank(&a.merge_status).cmp(&rank(&b.merge_status))
                 }
@@ -2551,10 +2552,12 @@ impl App {
                 Ok(result) => {
                     drained += 1;
                     self.squash_checked += 1;
-                    if result.is_squash_merged
-                        && let Some(&idx) = index_map.get(result.branch_name.as_str())
-                    {
-                        self.branches[idx].merge_status = MergeStatus::SquashMerged;
+                    if let Some(&idx) = index_map.get(result.branch_name.as_str()) {
+                        self.branches[idx].merge_status = if result.is_squash_merged {
+                            MergeStatus::SquashMerged
+                        } else {
+                            MergeStatus::Unmerged
+                        };
                     }
                 }
                 Err(TryRecvError::Empty) => break false,
@@ -2589,10 +2592,12 @@ impl App {
                 Ok(result) => {
                     drained += 1;
                     self.remote_squash_checked += 1;
-                    if result.is_squash_merged
-                        && let Some(&idx) = index_map.get(result.branch_name.as_str())
-                    {
-                        self.remote_branches[idx].merge_status = MergeStatus::SquashMerged;
+                    if let Some(&idx) = index_map.get(result.branch_name.as_str()) {
+                        self.remote_branches[idx].merge_status = if result.is_squash_merged {
+                            MergeStatus::SquashMerged
+                        } else {
+                            MergeStatus::Unmerged
+                        };
                     }
                 }
                 Err(TryRecvError::Empty) => break false,
@@ -3562,6 +3567,7 @@ impl App {
                         MergeStatus::Merged => 0,
                         MergeStatus::SquashMerged => 1,
                         MergeStatus::Unmerged => 2,
+                        MergeStatus::Pending => 3,
                     };
                     rank(&a.merge_status).cmp(&rank(&b.merge_status))
                 }
@@ -3594,6 +3600,7 @@ impl App {
                         MergeStatus::Merged => 0,
                         MergeStatus::SquashMerged => 1,
                         MergeStatus::Unmerged => 2,
+                        MergeStatus::Pending => 3,
                     };
                     rank(&a.merge_status).cmp(&rank(&b.merge_status))
                 }
@@ -3631,6 +3638,7 @@ impl FilterSet {
                     "merged" => fs.statuses.push(MergeStatus::Merged),
                     "squash" => fs.statuses.push(MergeStatus::SquashMerged),
                     "unmerged" => fs.statuses.push(MergeStatus::Unmerged),
+                    "pending" => fs.statuses.push(MergeStatus::Pending),
                     _ => {}
                 }
             } else if let Some(val) = token.strip_prefix("pr:") {

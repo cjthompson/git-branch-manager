@@ -61,6 +61,7 @@ impl BranchCache {
             MergeStatus::Merged => "merged",
             MergeStatus::SquashMerged => "squash_merged",
             MergeStatus::Unmerged => "unmerged",
+            MergeStatus::Pending => return, // never persist a pending placeholder
         };
         self.entries.insert(
             branch_name.to_string(),
