@@ -4,6 +4,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use chrono::{DateTime, TimeZone, Utc};
+use git2::Repository;
 
 use crate::types::{MergeStatus, WorkingTreeStatus, WorktreeEnrichResult, WorktreeInfo};
 
@@ -18,8 +19,9 @@ fn git_out(dir: &Path, args: &[&str]) -> String {
 }
 
 /// Parse `git worktree list --porcelain` output into a list of WorktreeInfo.
-fn parse_porcelain(output: &str) -> Vec<WorktreeInfo> {
-    // First pass: collect raw worktree data (path, sha, branch, is_main)
+/// Uses `repo` to resolve the HEAD commit date for each worktree in-process.
+fn parse_porcelain(output: &str, repo: &Repository) -> Vec<WorktreeInfo> {
+    // First pass: collect raw worktree data (path, full_sha, branch, is_main)
     let mut raw_worktrees: Vec<(PathBuf, String, Option<String>, bool)> = Vec::new();
     let mut path: Option<PathBuf> = None;
     let mut sha = String::new();
@@ -36,7 +38,7 @@ fn parse_porcelain(output: &str) -> Vec<WorktreeInfo> {
         } else if let Some(rest) = line.strip_prefix("worktree ") {
             path = Some(PathBuf::from(rest));
         } else if let Some(rest) = line.strip_prefix("HEAD ") {
-            sha = rest.chars().take(7).collect();
+            sha = rest.to_string(); // keep full SHA for commit lookup
         } else if let Some(rest) = line.strip_prefix("branch refs/heads/") {
             branch = Some(rest.to_string());
         }
@@ -48,17 +50,21 @@ fn parse_porcelain(output: &str) -> Vec<WorktreeInfo> {
         raw_worktrees.push((p, sha, branch, is_main));
     }
 
-    // Second pass: parallelize status_and_age calls for each worktree
-    std::thread::scope(|s| {
-        let handles: Vec<_> = raw_worktrees
-            .into_iter()
-            .map(|(p, sha, branch, is_main)| {
-                s.spawn(move || build_worktree(p, sha, branch, is_main))
-            })
-            .collect();
-        handles.into_iter().map(|h| h.join().ok()).collect::<Option<Vec<_>>>()
-    })
-    .unwrap_or_default()
+    raw_worktrees
+        .into_iter()
+        .map(|(p, sha, branch, is_main)| {
+            let age_date = git2::Oid::from_str(&sha)
+                .ok()
+                .and_then(|oid| repo.find_commit(oid).ok())
+                .map(|c| {
+                    let ts = c.committer().when().seconds();
+                    Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now)
+                })
+                .unwrap_or_else(Utc::now);
+            let short_sha = sha.chars().take(7).collect();
+            build_worktree(p, short_sha, branch, is_main, age_date)
+        })
+        .collect()
 }
 
 fn build_worktree(
@@ -66,6 +72,7 @@ fn build_worktree(
     commit_hash: String,
     branch: Option<String>,
     is_main: bool,
+    age_date: DateTime<Utc>,
 ) -> WorktreeInfo {
     WorktreeInfo {
         path,
@@ -73,7 +80,7 @@ fn build_worktree(
         is_main,
         commit_hash,
         wt_status: WorkingTreeStatus::clean(),
-        age_date: Utc::now(),
+        age_date,
         merge_status: MergeStatus::Unmerged,
         ahead: None,
         behind: None,
@@ -162,8 +169,13 @@ fn newest_mtime(paths: &[PathBuf]) -> Option<DateTime<Utc>> {
 
 /// List all worktrees for the repo rooted at `repo_path`.
 /// Returns phase-1 data only (merge status, ahead/behind, and PR are not populated).
+/// HEAD commit dates are resolved in-process via git2 — no subprocess per worktree.
 pub fn list_worktrees(repo_path: &Path) -> Vec<WorktreeInfo> {
-    parse_porcelain(&git_out(repo_path, &["worktree", "list", "--porcelain"]))
+    let output = git_out(repo_path, &["worktree", "list", "--porcelain"]);
+    let Ok(repo) = Repository::open(repo_path) else {
+        return Vec::new();
+    };
+    parse_porcelain(&output, &repo)
 }
 
 /// Spawn a background thread that computes `wt_status` and `age_date` for each
