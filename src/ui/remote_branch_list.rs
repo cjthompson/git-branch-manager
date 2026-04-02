@@ -267,15 +267,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             ));
         }
 
-        let enrichment_pending = branch.ahead.is_none() && app.remote_enrich_rx.is_some();
         let (status_text, status_style) = if is_pinned {
             (String::new(), app.theme.pinned_row)
-        } else if enrichment_pending {
-            if short_status {
-                ("p …".to_string(), app.theme.secondary_text)
-            } else {
-                ("pending …".to_string(), app.theme.secondary_text)
-            }
         } else if short_status {
             match branch.merge_status {
                 MergeStatus::Merged => (
@@ -290,6 +283,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     format!("u {}", app.symbols.status_unmerged),
                     app.theme.unmerged,
                 ),
+                MergeStatus::Pending => ("p …".to_string(), app.theme.secondary_text),
             }
         } else {
             match branch.merge_status {
@@ -305,6 +299,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     format!("unmerged {}", app.symbols.status_unmerged),
                     app.theme.unmerged,
                 ),
+                MergeStatus::Pending => ("pending …".to_string(), app.theme.secondary_text),
             }
         };
         cells.push(Cell::from(

@@ -309,6 +309,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     format!("u {}", app.symbols.status_unmerged),
                     app.theme.unmerged,
                 ),
+                MergeStatus::Pending => ("p …".to_string(), app.theme.secondary_text),
             }
         } else {
             match branch.merge_status {
@@ -324,6 +325,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     format!("unmerged {}", app.symbols.status_unmerged),
                     app.theme.unmerged,
                 ),
+                MergeStatus::Pending => ("pending …".to_string(), app.theme.secondary_text),
             }
         };
         cells.push(Cell::from(
