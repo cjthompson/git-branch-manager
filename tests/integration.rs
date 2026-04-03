@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use git_branch_manager::git::{branch, operations, squash_loader, status, worktree};
+use git_branch_manager::git::{branch, merge_detection, operations, squash_loader, status, tags, worktree};
 use git_branch_manager::types::MergeStatus;
 
 /// Create a temporary git repository with an initial commit on the "main" branch.
@@ -1293,4 +1293,127 @@ fn test_enrich_worktrees_clean() {
     assert_eq!(results.len(), 1, "should receive one enrichment result");
     assert_eq!(results[0].index, 0);
     assert!(results[0].wt_status.is_clean(), "clean repo worktree should report clean status");
+}
+
+// ---------------------------------------------------------------------------
+// Additional rewrite-specific tests (tag operations, phase1, direct merge detection)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_list_branches_phase1() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/a"]);
+    std::fs::write(dir.join("a.txt"), "a").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "feature a"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let branches = branch::list_branches_phase1(&repo, "main").unwrap();
+    assert!(branches.len() >= 2);
+    let main_branch = branches.iter().find(|b| b.name == "main").unwrap();
+    assert!(main_branch.is_base);
+    let feature = branches.iter().find(|b| b.name == "feature/a").unwrap();
+    assert!(!feature.is_base);
+    // Phase 1 marks unmerged non-pinned as Pending
+    assert_eq!(feature.merge_status, MergeStatus::Pending);
+}
+
+#[test]
+fn test_create_and_list_worktree() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["checkout", "-b", "feature/wt-test"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let result = operations::create_worktree(dir, "feature/wt-test");
+    assert!(result.success);
+
+    let worktrees = worktree::list_worktrees(dir);
+    assert_eq!(worktrees.len(), 2);
+    let wt = worktrees.iter().find(|w| !w.is_main).unwrap();
+    assert_eq!(wt.branch.as_deref(), Some("feature/wt-test"));
+}
+
+#[test]
+fn test_list_tags_empty() {
+    let (_tmpdir, repo) = setup_test_repo();
+    let result = tags::list_tags(&repo);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_list_tags_lightweight() {
+    let (tmpdir, repo) = setup_test_repo();
+    run_git(tmpdir.path(), &["tag", "v0.1"]);
+    let result = tags::list_tags(&repo);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].name, "v0.1");
+    assert!(!result[0].is_annotated);
+    assert!(result[0].message.is_none());
+}
+
+#[test]
+fn test_list_tags_with_annotated() {
+    let (tmpdir, repo) = setup_test_repo();
+    run_git(tmpdir.path(), &["tag", "-a", "v1.0", "-m", "Release 1.0"]);
+    let result = tags::list_tags(&repo);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].name, "v1.0");
+    assert!(result[0].is_annotated);
+    assert_eq!(result[0].message.as_deref(), Some("Release 1.0"));
+}
+
+#[test]
+fn test_delete_tag() {
+    let (tmpdir, repo) = setup_test_repo();
+    run_git(tmpdir.path(), &["tag", "v1.0"]);
+    let result = tags::delete_tag(&repo, "v1.0");
+    assert!(result.success);
+    let remaining = tags::list_tags(&repo);
+    assert!(remaining.is_empty());
+}
+
+#[test]
+fn test_delete_tags_batch() {
+    let (tmpdir, repo) = setup_test_repo();
+    run_git(tmpdir.path(), &["tag", "v1.0"]);
+    run_git(tmpdir.path(), &["tag", "v2.0"]);
+    let names = vec!["v1.0".to_string(), "v2.0".to_string()];
+    let results = tags::delete_tags_batch(&repo, &names);
+    assert!(results.iter().all(|r| r.success));
+    let remaining = tags::list_tags(&repo);
+    assert!(remaining.is_empty());
+}
+
+#[test]
+fn test_is_squash_merged_direct() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/squashed"]);
+    std::fs::write(dir.join("squash.txt"), "squash content").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "squash commit"]);
+    run_git(dir, &["checkout", "main"]);
+
+    run_git(dir, &["merge", "--squash", "feature/squashed"]);
+    run_git(dir, &["commit", "-m", "squashed feature"]);
+
+    assert!(merge_detection::is_squash_merged(dir, "main", "feature/squashed", None));
+}
+
+#[test]
+fn test_is_not_squash_merged_direct() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/unmerged"]);
+    std::fs::write(dir.join("unmerged.txt"), "unmerged").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "unmerged commit"]);
+    run_git(dir, &["checkout", "main"]);
+
+    assert!(!merge_detection::is_squash_merged(dir, "main", "feature/unmerged", None));
 }
