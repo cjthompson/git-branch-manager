@@ -40,11 +40,44 @@ pub fn draw(frame: &mut Frame, app: &App) {
             | git_branch_manager::types::BranchAction::MergeRemoteIntoCurrent
             | git_branch_manager::types::BranchAction::CherryPickRemote
     );
+    let is_remote_delete_action = matches!(
+        action,
+        git_branch_manager::types::BranchAction::DeleteRemoteBranch
+    );
     let mut lines = if is_tag_action {
         let target_names = app.target_tag_names();
         let count = target_names.len();
         let mut l = vec![
             Line::from(format!("{} {} tag(s)?", action_label, count)),
+            Line::from(""),
+        ];
+        for name in &target_names {
+            l.push(Line::from(Span::styled(
+                format!("  {}", name),
+                app.theme.selected,
+            )));
+        }
+        l
+    } else if is_remote_delete_action {
+        let selected_names: Vec<&str> = app
+            .remote_branches
+            .iter()
+            .zip(app.remote_selected.iter())
+            .filter(|&(_, &sel)| sel)
+            .map(|(b, _)| b.full_ref.as_str())
+            .collect();
+        let target_names: Vec<&str> = if selected_names.is_empty() {
+            if !app.remote_branches.is_empty() {
+                vec![app.remote_branches[app.remote_cursor].full_ref.as_str()]
+            } else {
+                vec!["unknown"]
+            }
+        } else {
+            selected_names
+        };
+        let count = target_names.len();
+        let mut l = vec![
+            Line::from(format!("{} {} branch(es)?", action_label, count)),
             Line::from(""),
         ];
         for name in &target_names {

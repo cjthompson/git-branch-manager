@@ -180,12 +180,14 @@ pub fn spawn_remote_enricher(
         };
 
         for branch_info in branches {
-            let base_ref_name = format!(
-                "refs/remotes/{}/{}",
-                branch_info.remote, base_branch
-            );
+            // Prefer the local base branch so that branches merged locally (but not yet
+            // pushed to the remote) are correctly shown as merged.  Fall back to the
+            // remote-tracking ref when no local branch exists.
+            let local_base_ref = format!("refs/heads/{}", base_branch);
+            let remote_base_ref = format!("refs/remotes/{}/{}", branch_info.remote, base_branch);
             let base_oid = match repo
-                .find_reference(&base_ref_name)
+                .find_reference(&local_base_ref)
+                .or_else(|_| repo.find_reference(&remote_base_ref))
                 .and_then(|r| r.peel_to_commit())
                 .map(|c| c.id())
             {

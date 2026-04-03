@@ -158,23 +158,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if width < 80 {
         if selected_count > 0 {
             format!(
-                " {} tags ({} sel) \u{2014} [d]el [D]el+remote [p]ush [q]uit",
+                " {} tags ({} sel) \u{2014} [d]el [D]el+remote [p]ush [f]etch [q]uit",
                 total, selected_count
             )
         } else {
             format!(
-                " {} tags \u{2014} [d]el [p]ush [/]search [q]uit",
+                " {} tags \u{2014} [d]el [p]ush [f]etch [/]search [q]uit",
                 total
             )
         }
     } else if selected_count > 0 {
         format!(
-            " {} tags ({} selected) \u{2014} [Space]toggle [a]ll [n]one [i]nvert [d]elete [D]el+remote [s]ort [q]uit",
+            " {} tags ({} selected) \u{2014} [Space]toggle [a]ll [n]one [i]nvert [d]elete [D]el+remote [f]etch [s]ort [q]uit",
             total, selected_count
         )
     } else {
         format!(
-            " {} tags \u{2014} [Space]select [a]ll [d]elete [D]el+remote [p]ush [/]search [\\]filter [s]ort [q]uit [?]help",
+            " {} tags \u{2014} [Space]select [a]ll [d]elete [D]el+remote [p]ush [f]etch [/]search [\\]filter [s]ort [q]uit [?]help",
             total
         )
     };

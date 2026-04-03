@@ -338,12 +338,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         };
         let status_text = if width < 80 {
             format!(
-                " {} worktrees{} \u{2014} [d]rm [D]force-rm [w]branches [?]help [q]uit",
+                " {} worktrees{} \u{2014} [d]rm [D]force-rm [f]etch [w]branches [?]help [q]uit",
                 total, progress
             )
         } else {
             format!(
-                " {} worktrees{} \u{2014} [Enter]menu [d]remove [D]force-remove [w]branches [r]emotes [t]ags [?]help [q]uit",
+                " {} worktrees{} \u{2014} [Enter]menu [d]remove [D]force-remove [f]etch [w]branches [r]emotes [t]ags [?]help [q]uit",
                 total, progress
             )
         };
