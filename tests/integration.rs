@@ -877,3 +877,74 @@ fn test_merge_branch_conflict_aborts() {
     let status_str = String::from_utf8_lossy(&status.stdout);
     assert!(!status_str.contains("UU"), "merge should have been aborted, no unresolved conflicts");
 }
+
+// ---------------------------------------------------------------------------
+// Rebase operation tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_rebase_branch_success() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // Feature branch: add a unique file
+    run_git(dir, &["checkout", "-b", "feature-rebase"]);
+    std::fs::write(dir.join("rebase-feature.txt"), "feature content\n").unwrap();
+    run_git(dir, &["add", "rebase-feature.txt"]);
+    run_git(dir, &["commit", "-m", "Feature commit"]);
+
+    // Main gets a new commit (so rebase is non-trivial)
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("main-update.txt"), "main update\n").unwrap();
+    run_git(dir, &["add", "main-update.txt"]);
+    run_git(dir, &["commit", "-m", "Main update"]);
+
+    // Rebase feature onto main (rebase checks out the feature branch internally)
+    let results = operations::rebase_branch(dir, "feature-rebase", "main", false);
+    assert_eq!(results.len(), 1);
+    assert!(results[0].success, "rebase should succeed: {}", results[0].message);
+
+    // After rebase, feature should be 1 commit ahead of main
+    let repo = git2::Repository::open(dir).unwrap();
+    let feature_oid = repo.find_branch("feature-rebase", git2::BranchType::Local)
+        .unwrap().get().peel_to_commit().unwrap().id();
+    let main_oid = repo.find_branch("main", git2::BranchType::Local)
+        .unwrap().get().peel_to_commit().unwrap().id();
+    let (ahead, _behind) = repo.graph_ahead_behind(feature_oid, main_oid).unwrap();
+    assert_eq!(ahead, 1, "feature should be 1 commit ahead of main after rebase");
+}
+
+#[test]
+fn test_rebase_branch_conflict_aborts() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // Create a shared file on main
+    std::fs::write(dir.join("shared.txt"), "original\n").unwrap();
+    run_git(dir, &["add", "shared.txt"]);
+    run_git(dir, &["commit", "-m", "Add shared file"]);
+
+    // Feature branch modifies shared.txt
+    run_git(dir, &["checkout", "-b", "rebase-conflict"]);
+    std::fs::write(dir.join("shared.txt"), "feature version\n").unwrap();
+    run_git(dir, &["add", "shared.txt"]);
+    run_git(dir, &["commit", "-m", "Feature modifies shared"]);
+
+    // Main also modifies shared.txt (divergent history)
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("shared.txt"), "main version\n").unwrap();
+    run_git(dir, &["add", "shared.txt"]);
+    run_git(dir, &["commit", "-m", "Main modifies shared"]);
+
+    let results = operations::rebase_branch(dir, "rebase-conflict", "main", false);
+    assert_eq!(results.len(), 1);
+    assert!(!results[0].success, "conflicting rebase should fail");
+    assert!(
+        results[0].message.contains("Rebase conflicts") || results[0].message.contains("conflict"),
+        "message should mention conflict: {}", results[0].message
+    );
+
+    // Rebase should be aborted: no ongoing rebase state
+    let rebase_head = dir.join(".git").join("REBASE_HEAD");
+    assert!(!rebase_head.exists(), "REBASE_HEAD should not exist after abort");
+}
