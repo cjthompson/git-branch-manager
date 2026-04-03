@@ -91,10 +91,16 @@ pub fn render_list_view<T: ViewItem>(
 
     let header = Row::new(header_cells).height(1);
 
-    // Build column widths: checkbox + visible columns
+    // Build column widths: checkbox + visible columns.
+    // First visible column (name) gets Min (stretchy), rest get Length (fixed).
+    // This matches the original app's pattern and ensures ratatui fills all cells.
     let mut widths: Vec<Constraint> = vec![Constraint::Length(3)]; // checkbox
-    for col in &visible_columns {
-        widths.push(Constraint::Min(col.min_width));
+    for (i, col) in visible_columns.iter().enumerate() {
+        if i == 0 {
+            widths.push(Constraint::Min(col.min_width));
+        } else {
+            widths.push(Constraint::Length(col.min_width));
+        }
     }
 
     let ctx = CellContext {
@@ -146,7 +152,9 @@ pub fn render_list_view<T: ViewItem>(
 
     // Build block with tab bar title
     let tab_title = tab_bar_line(params.active_view, theme);
-    let block = Block::default().title(tab_title).borders(Borders::ALL);
+    let block = Block::default()
+        .title(tab_title)
+        .borders(Borders::ALL);
 
     // Store header column positions for mouse click sorting
     {
@@ -186,7 +194,8 @@ pub fn render_list_view<T: ViewItem>(
     let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(theme.cursor)
-        .highlight_symbol(highlight_sym);
+        .highlight_symbol(highlight_sym)
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
 
     frame.render_stateful_widget(table, inner_area, state.table_state_mut());
 }
