@@ -1242,6 +1242,18 @@ impl App {
             KeyCode::Char('r') => {
                 self.open_remote_branches_view();
             }
+            KeyCode::Char('f') => {
+                self.spawn_op("Fetching...".into(), {
+                    let repo_path = self.repo_path.clone();
+                    move || vec![operations::fetch(&repo_path)]
+                });
+            }
+            KeyCode::Char('F') => {
+                self.spawn_op("Fetching with prune...".into(), {
+                    let repo_path = self.repo_path.clone();
+                    move || vec![operations::fetch_prune(&repo_path)]
+                });
+            }
             KeyCode::Char('?') => {
                 self.view = View::Help;
             }
@@ -1517,6 +1529,18 @@ impl App {
             KeyCode::Char('q') => {
                 self.should_exit = true;
             }
+            KeyCode::Char('f') => {
+                self.spawn_op("Fetching...".into(), {
+                    let repo_path = self.repo_path.clone();
+                    move || vec![operations::fetch(&repo_path)]
+                });
+            }
+            KeyCode::Char('F') => {
+                self.spawn_op("Fetching with prune...".into(), {
+                    let repo_path = self.repo_path.clone();
+                    move || vec![operations::fetch_prune(&repo_path)]
+                });
+            }
             KeyCode::Esc | KeyCode::Char('r') => {
                 self.view = View::BranchList;
             }
@@ -1601,6 +1625,18 @@ impl App {
             }
             KeyCode::Char('q') => {
                 self.should_exit = true;
+            }
+            KeyCode::Char('f') => {
+                self.spawn_op("Fetching...".into(), {
+                    let repo_path = self.repo_path.clone();
+                    move || vec![operations::fetch(&repo_path)]
+                });
+            }
+            KeyCode::Char('F') => {
+                self.spawn_op("Fetching with prune...".into(), {
+                    let repo_path = self.repo_path.clone();
+                    move || vec![operations::fetch_prune(&repo_path)]
+                });
             }
             KeyCode::Esc => {
                 self.view = View::BranchList;

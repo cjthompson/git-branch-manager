@@ -1,0 +1,44 @@
+git-branch-manager verification — 2026-04-03 01:13:03
+Test repo: /tmp/gbm-verify/local
+Passed: 40/40
+
+[PASS] [startup] App launches without error
+[PASS] [startup] Tab bar visible
+[PASS] [startup] Branch list shows 'main'
+[PASS] [startup] Status bar shows branch count — expected 4-6 branches in status bar
+[PASS] [navigation] j moves cursor down
+[PASS] [navigation] k moves cursor back up — screen should match original position
+[PASS] [navigation] PageDown scrolls list
+[PASS] [navigation] Home returns to top
+[PASS] [navigation] Tab switches views
+[PASS] [views] t → Tags view — should show tags tab or tag names
+[PASS] [views] r → Remote Branches view
+[PASS] [views] w → Worktrees view
+[PASS] [views] b → Local Branches view
+[PASS] [selection] Space selects item — status bar should show '1 selected'
+[PASS] [selection] n deselects all
+[PASS] [selection] a selects all — status bar should show multiple selected
+[PASS] [selection] i inverts selection
+[PASS] [selection] m selects merged branches — feature/two was merged into main
+[PASS] [help] ? opens help overlay
+[PASS] [help] Esc closes help overlay
+[PASS] [filter] / opens search bar
+[PASS] [filter] Typing filters branch list — typing 'feature' should hide chore/ and fix/ branches
+[PASS] [filter] \ opens filter builder
+[PASS] [menu] Enter opens context menu
+[PASS] [menu] Esc closes context menu
+[PASS] [settings] , opens settings view
+[PASS] [settings] Esc closes settings
+[PASS] [themes] T cycles through all 4 themes and returns — verified no crash through 4 theme cycles
+[PASS] [themes] Theme cycling does not crash
+[PASS] [symbols] Y changes symbol set — checkbox/cursor symbols in branch rows should differ
+[PASS] [symbols] 3 Y presses returns to original symbols
+[PASS] [sorting] s changes sort column
+[PASS] [sorting] S reverses sort direction
+[PASS] [tags] Tags view shows known tags — test repo has v0.1.0 and v0.2.0
+[PASS] [tags] j navigates tag list
+[PASS] [tags] s sorts tags (no crash)
+[PASS] [remote] Remote view shows pushed branches
+[PASS] [remote] j navigates remote branch list
+[PASS] [worktrees] Worktrees view shows test worktree — test repo has .worktrees/feature-one/
+[PASS] [worktrees] Main worktree is listed

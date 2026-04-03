@@ -91,7 +91,7 @@ fn main() -> Result<()> {
 
         let candidates: Vec<(String, String)> = branches
             .iter()
-            .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base && !b.is_current)
+            .filter(|b| b.merge_status == MergeStatus::Pending && !b.is_base && !b.is_current)
             .filter_map(|b| {
                 git::branch::get_commit_hash(&repo, &b.name)
                     .map(|hash| (b.name.clone(), hash))
