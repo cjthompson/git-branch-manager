@@ -1119,3 +1119,50 @@ fn test_fetch_prune_removes_stale_remote() {
         "origin/prune-me should be removed after fetch --prune"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Remote batch delete tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_delete_remotes_batch_success() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    // Create and push two branches
+    for branch_name in &["batch-del-1", "batch-del-2"] {
+        run_git(&work_dir, &["checkout", "-b", branch_name]);
+        std::fs::write(work_dir.join(format!("{}.txt", branch_name)), "content\n").unwrap();
+        run_git(&work_dir, &["add", &format!("{}.txt", branch_name)]);
+        run_git(&work_dir, &["commit", "-m", &format!("Add {}", branch_name)]);
+        run_git(&work_dir, &["push", "-u", "origin", branch_name]);
+        run_git(&work_dir, &["checkout", "main"]);
+    }
+
+    let names: Vec<String> = vec!["batch-del-1".to_string(), "batch-del-2".to_string()];
+    let results = operations::delete_remotes_batch(&work_dir, &names);
+
+    assert_eq!(results.len(), 2);
+    assert!(results[0].success, "first remote delete should succeed: {}", results[0].message);
+    assert!(results[1].success, "second remote delete should succeed: {}", results[1].message);
+
+    // Fetch to sync tracking refs, then verify branches are gone
+    run_git(&work_dir, &["fetch", "--prune"]);
+    let repo = git2::Repository::open(&work_dir).unwrap();
+    assert!(
+        repo.find_branch("origin/batch-del-1", git2::BranchType::Remote).is_err(),
+        "origin/batch-del-1 should be deleted"
+    );
+    assert!(
+        repo.find_branch("origin/batch-del-2", git2::BranchType::Remote).is_err(),
+        "origin/batch-del-2 should be deleted"
+    );
+}
+
+#[test]
+fn test_delete_remotes_batch_empty() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    // Empty input should return empty results immediately (no git command run)
+    let results = operations::delete_remotes_batch(&work_dir, &[]);
+    assert!(results.is_empty(), "empty input should produce empty results");
+}
