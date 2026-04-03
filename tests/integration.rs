@@ -795,3 +795,85 @@ fn test_wt_status_all_three() {
     assert!(s.has_untracked, "should detect untracked file");
     assert!(!s.is_clean());
 }
+
+// ---------------------------------------------------------------------------
+// Merge operation tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_merge_branch_success() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // Create a feature branch with a unique file
+    run_git(dir, &["checkout", "-b", "feature-to-merge"]);
+    std::fs::write(dir.join("feature.txt"), "feature content\n").unwrap();
+    run_git(dir, &["add", "feature.txt"]);
+    run_git(dir, &["commit", "-m", "Add feature"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let results = operations::merge_branch(dir, "feature-to-merge", "main", false, false);
+    assert_eq!(results.len(), 1);
+    assert!(results[0].success, "merge should succeed: {}", results[0].message);
+
+    // Verify the feature file is present on main
+    assert!(dir.join("feature.txt").exists(), "feature.txt should be on main after merge");
+}
+
+#[test]
+fn test_merge_branch_squash_success() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature-squash"]);
+    std::fs::write(dir.join("squash.txt"), "squash content\n").unwrap();
+    run_git(dir, &["add", "squash.txt"]);
+    run_git(dir, &["commit", "-m", "Squash candidate"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let results = operations::merge_branch(dir, "feature-squash", "main", true, false);
+    assert_eq!(results.len(), 1);
+    assert!(results[0].success, "squash merge should succeed: {}", results[0].message);
+
+    // The squash content should exist on main
+    assert!(dir.join("squash.txt").exists(), "squash.txt should be on main after squash merge");
+
+    // And main should have a single new commit (not a merge commit)
+    let log = std::process::Command::new("git")
+        .args(["log", "--oneline", "-3"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let log_str = String::from_utf8_lossy(&log.stdout);
+    assert!(log_str.contains("Squash merge feature-squash"), "should have squash merge commit");
+}
+
+#[test]
+fn test_merge_branch_conflict_aborts() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // Both branches create the same file with different content → conflict
+    run_git(dir, &["checkout", "-b", "conflict-feature"]);
+    std::fs::write(dir.join("conflict.txt"), "feature version\n").unwrap();
+    run_git(dir, &["add", "conflict.txt"]);
+    run_git(dir, &["commit", "-m", "Feature adds conflict.txt"]);
+
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("conflict.txt"), "main version\n").unwrap();
+    run_git(dir, &["add", "conflict.txt"]);
+    run_git(dir, &["commit", "-m", "Main adds conflict.txt"]);
+
+    let results = operations::merge_branch(dir, "conflict-feature", "main", false, false);
+    assert_eq!(results.len(), 1);
+    assert!(!results[0].success, "conflicting merge should fail");
+
+    // Verify merge was aborted: repo must not be in mid-merge state
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let status_str = String::from_utf8_lossy(&status.stdout);
+    assert!(!status_str.contains("UU"), "merge should have been aborted, no unresolved conflicts");
+}
