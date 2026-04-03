@@ -274,3 +274,29 @@ fn test_fetch_sync() {
     let result = git_branch_manager::git::operations::fetch_sync(local_dir.path());
     assert!(result);
 }
+
+// ===== Worktree Tests =====
+
+#[test]
+fn test_list_worktrees_main_only() {
+    let (dir, _repo) = setup_test_repo();
+    let worktrees = git_branch_manager::git::worktree::list_worktrees(dir.path());
+    assert_eq!(worktrees.len(), 1);
+    assert!(worktrees[0].is_main);
+}
+
+#[test]
+fn test_create_and_list_worktree() {
+    let (dir, _repo) = setup_test_repo();
+    let path = dir.path();
+    run_git(path, &["checkout", "-b", "feature/wt-test"]);
+    run_git(path, &["checkout", "main"]);
+
+    let result = git_branch_manager::git::operations::create_worktree(path, "feature/wt-test");
+    assert!(result.success);
+
+    let worktrees = git_branch_manager::git::worktree::list_worktrees(path);
+    assert_eq!(worktrees.len(), 2);
+    let wt = worktrees.iter().find(|w| !w.is_main).unwrap();
+    assert_eq!(wt.branch.as_deref(), Some("feature/wt-test"));
+}
