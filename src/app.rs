@@ -208,6 +208,10 @@ impl App {
         // Apply initial sort
         list_state::apply_sort(&mut self.branches, &self.branch_columns);
 
+        // Force a full redraw on the first frame by drawing once, then
+        // inserting a resize event so ratatui marks the entire buffer dirty.
+        terminal.clear()?;
+
         loop {
             self.drain_channels();
 
