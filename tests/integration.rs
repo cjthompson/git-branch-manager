@@ -1166,3 +1166,76 @@ fn test_delete_remotes_batch_empty() {
     let results = operations::delete_remotes_batch(&work_dir, &[]);
     assert!(results.is_empty(), "empty input should produce empty results");
 }
+
+// ---------------------------------------------------------------------------
+// Worktree operation tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_create_worktree_simple() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["branch", "wt-feature"]);
+
+    let result = operations::create_worktree(dir, "wt-feature");
+    assert!(result.success, "create_worktree should succeed: {}", result.message);
+
+    let wt_path = dir.join(".worktrees").join("wt-feature");
+    assert!(wt_path.exists(), ".worktrees/wt-feature should be created");
+    // A worktree directory contains a .git file (not a directory like the main repo)
+    assert!(wt_path.join(".git").exists(), "worktree directory should be a valid git working tree");
+}
+
+#[test]
+fn test_create_worktree_sanitizes_slash() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // Branch names with slashes (e.g. "feature/foo") must be sanitized to "feature-foo"
+    run_git(dir, &["branch", "feature/slash-test"]);
+
+    let result = operations::create_worktree(dir, "feature/slash-test");
+    assert!(result.success, "create_worktree with slash should succeed: {}", result.message);
+
+    let wt_path = dir.join(".worktrees").join("feature-slash-test");
+    assert!(wt_path.exists(), ".worktrees/feature-slash-test should be created (slash → dash)");
+}
+
+#[test]
+fn test_remove_worktree_clean() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["branch", "wt-remove"]);
+    run_git(dir, &["worktree", "add", ".worktrees/wt-remove", "wt-remove"]);
+
+    let wt_path = dir.join(".worktrees").join("wt-remove");
+    assert!(wt_path.exists(), "worktree should exist before removal");
+
+    let result = operations::remove_worktree(dir, &wt_path);
+    assert!(result.success, "remove_worktree should succeed on clean worktree: {}", result.message);
+    assert!(!wt_path.exists(), "worktree directory should be removed");
+}
+
+#[test]
+fn test_force_remove_worktree_dirty() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["branch", "wt-dirty"]);
+    run_git(dir, &["worktree", "add", ".worktrees/wt-dirty", "wt-dirty"]);
+
+    let wt_path = dir.join(".worktrees").join("wt-dirty");
+
+    // Create an uncommitted change in the worktree — regular remove should fail
+    std::fs::write(wt_path.join("dirty.txt"), "uncommitted change\n").unwrap();
+
+    let result = operations::remove_worktree(dir, &wt_path);
+    assert!(!result.success, "remove_worktree should fail on dirty worktree");
+
+    // Force remove should succeed regardless
+    let result = operations::force_remove_worktree(dir, &wt_path);
+    assert!(result.success, "force_remove_worktree should succeed even when dirty: {}", result.message);
+    assert!(!wt_path.exists(), "worktree directory should be removed after force-remove");
+}
