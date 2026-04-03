@@ -93,6 +93,14 @@ pub fn list_branches_phase1(
     Ok(branches)
 }
 
+/// Get the commit hash for a local branch.
+pub fn get_commit_hash(repo: &Repository, branch_name: &str) -> Option<String> {
+    repo.find_branch(branch_name, BranchType::Local)
+        .ok()
+        .and_then(|b| b.get().peel_to_commit().ok())
+        .map(|c| c.id().to_string())
+}
+
 /// List remote branches with basic metadata (phase 1).
 pub fn list_remote_branches_phase1(
     repo: &Repository,
