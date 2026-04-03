@@ -300,3 +300,56 @@ fn test_create_and_list_worktree() {
     let wt = worktrees.iter().find(|w| !w.is_main).unwrap();
     assert_eq!(wt.branch.as_deref(), Some("feature/wt-test"));
 }
+
+// ===== Tag Tests =====
+
+#[test]
+fn test_list_tags_empty() {
+    let (_dir, repo) = setup_test_repo();
+    let tags = git_branch_manager::git::tags::list_tags(&repo);
+    assert!(tags.is_empty());
+}
+
+#[test]
+fn test_list_tags_with_annotated() {
+    let (dir, repo) = setup_test_repo();
+    run_git(dir.path(), &["tag", "-a", "v1.0", "-m", "Release 1.0"]);
+    let tags = git_branch_manager::git::tags::list_tags(&repo);
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].name, "v1.0");
+    assert!(tags[0].is_annotated);
+    assert_eq!(tags[0].message.as_deref(), Some("Release 1.0"));
+}
+
+#[test]
+fn test_list_tags_lightweight() {
+    let (dir, repo) = setup_test_repo();
+    run_git(dir.path(), &["tag", "v0.1"]);
+    let tags = git_branch_manager::git::tags::list_tags(&repo);
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].name, "v0.1");
+    assert!(!tags[0].is_annotated);
+    assert!(tags[0].message.is_none());
+}
+
+#[test]
+fn test_delete_tag() {
+    let (dir, repo) = setup_test_repo();
+    run_git(dir.path(), &["tag", "v1.0"]);
+    let result = git_branch_manager::git::tags::delete_tag(&repo, "v1.0");
+    assert!(result.success);
+    let tags = git_branch_manager::git::tags::list_tags(&repo);
+    assert!(tags.is_empty());
+}
+
+#[test]
+fn test_delete_tags_batch() {
+    let (dir, repo) = setup_test_repo();
+    run_git(dir.path(), &["tag", "v1.0"]);
+    run_git(dir.path(), &["tag", "v2.0"]);
+    let names = vec!["v1.0".to_string(), "v2.0".to_string()];
+    let results = git_branch_manager::git::tags::delete_tags_batch(&repo, &names);
+    assert!(results.iter().all(|r| r.success));
+    let tags = git_branch_manager::git::tags::list_tags(&repo);
+    assert!(tags.is_empty());
+}
