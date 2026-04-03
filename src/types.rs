@@ -327,3 +327,192 @@ pub struct WorktreeEnrichResult {
     pub wt_status: WorkingTreeStatus,
     pub age_date: DateTime<Utc>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, Utc};
+
+    fn ago(secs: i64) -> chrono::DateTime<Utc> {
+        Utc::now() - Duration::seconds(secs)
+    }
+
+    // --- format_age ---
+
+    #[test]
+    fn format_age_just_now() {
+        assert_eq!(format_age(&ago(30)), "just now");
+    }
+
+    #[test]
+    fn format_age_singular_minute() {
+        // 65 s → 1 min
+        assert_eq!(format_age(&ago(65)), "1 min ago");
+    }
+
+    #[test]
+    fn format_age_plural_minutes() {
+        // 305 s → 5 mins
+        assert_eq!(format_age(&ago(305)), "5 mins ago");
+    }
+
+    #[test]
+    fn format_age_singular_hour() {
+        // 3665 s → 1 hour
+        assert_eq!(format_age(&ago(3_665)), "1 hour ago");
+    }
+
+    #[test]
+    fn format_age_plural_hours() {
+        // 7265 s → 2 hours
+        assert_eq!(format_age(&ago(7_265)), "2 hours ago");
+    }
+
+    #[test]
+    fn format_age_singular_day() {
+        assert_eq!(format_age(&ago(86_465)), "1 day ago");
+    }
+
+    #[test]
+    fn format_age_plural_days() {
+        // 3 days
+        assert_eq!(format_age(&ago(259_265)), "3 days ago");
+    }
+
+    #[test]
+    fn format_age_singular_week() {
+        assert_eq!(format_age(&ago(604_865)), "1 week ago");
+    }
+
+    #[test]
+    fn format_age_plural_weeks() {
+        assert_eq!(format_age(&ago(1_209_665)), "2 weeks ago");
+    }
+
+    #[test]
+    fn format_age_singular_month() {
+        // 30 days + 65 s — falls into months bucket (num_days=30, 30/30=1)
+        assert_eq!(format_age(&ago(2_592_065)), "1 month ago");
+    }
+
+    #[test]
+    fn format_age_plural_months() {
+        // 90 days (3 months)
+        assert_eq!(format_age(&ago(7_776_065)), "3 months ago");
+    }
+
+    #[test]
+    fn format_age_singular_year() {
+        // 365 days + 65 s
+        assert_eq!(format_age(&ago(31_536_065)), "1 year ago");
+    }
+
+    #[test]
+    fn format_age_plural_years() {
+        // 730 days (2 years)
+        assert_eq!(format_age(&ago(63_072_065)), "2 years ago");
+    }
+
+    // --- format_age_short ---
+
+    #[test]
+    fn format_age_short_now() {
+        assert_eq!(format_age_short(&ago(30)), "now");
+    }
+
+    #[test]
+    fn format_age_short_minutes() {
+        assert_eq!(format_age_short(&ago(305)), "5m");
+    }
+
+    #[test]
+    fn format_age_short_hours() {
+        assert_eq!(format_age_short(&ago(7_265)), "2h");
+    }
+
+    #[test]
+    fn format_age_short_days() {
+        assert_eq!(format_age_short(&ago(172_865)), "2d");
+    }
+
+    #[test]
+    fn format_age_short_weeks() {
+        assert_eq!(format_age_short(&ago(1_209_665)), "2w");
+    }
+
+    #[test]
+    fn format_age_short_months() {
+        // 60 days → 2mo
+        assert_eq!(format_age_short(&ago(5_184_065)), "2mo");
+    }
+
+    #[test]
+    fn format_age_short_years() {
+        // 730 days → 2y
+        assert_eq!(format_age_short(&ago(63_072_065)), "2y");
+    }
+
+    // --- WorkingTreeStatus ---
+
+    #[test]
+    fn working_tree_status_clean_is_clean() {
+        let s = WorkingTreeStatus::clean();
+        assert!(s.is_clean());
+        assert!(!s.has_staged);
+        assert!(!s.has_unstaged);
+        assert!(!s.has_untracked);
+    }
+
+    #[test]
+    fn working_tree_status_not_clean_when_staged() {
+        let s = WorkingTreeStatus { has_staged: true, has_unstaged: false, has_untracked: false };
+        assert!(!s.is_clean());
+    }
+
+    #[test]
+    fn working_tree_status_not_clean_when_unstaged() {
+        let s = WorkingTreeStatus { has_staged: false, has_unstaged: true, has_untracked: false };
+        assert!(!s.is_clean());
+    }
+
+    #[test]
+    fn working_tree_status_not_clean_when_untracked() {
+        let s = WorkingTreeStatus { has_staged: false, has_unstaged: false, has_untracked: true };
+        assert!(!s.is_clean());
+    }
+
+    #[test]
+    fn working_tree_status_summary_clean() {
+        assert_eq!(WorkingTreeStatus::clean().summary(), "clean");
+    }
+
+    #[test]
+    fn working_tree_status_summary_staged_only() {
+        let s = WorkingTreeStatus { has_staged: true, has_unstaged: false, has_untracked: false };
+        assert_eq!(s.summary(), "staged");
+    }
+
+    #[test]
+    fn working_tree_status_summary_unstaged_only() {
+        let s = WorkingTreeStatus { has_staged: false, has_unstaged: true, has_untracked: false };
+        assert_eq!(s.summary(), "unstaged");
+    }
+
+    #[test]
+    fn working_tree_status_summary_untracked_only() {
+        let s = WorkingTreeStatus { has_staged: false, has_unstaged: false, has_untracked: true };
+        assert_eq!(s.summary(), "untracked");
+    }
+
+    #[test]
+    fn working_tree_status_summary_staged_and_unstaged() {
+        let s = WorkingTreeStatus { has_staged: true, has_unstaged: true, has_untracked: false };
+        assert_eq!(s.summary(), "staged+unstaged");
+    }
+
+    #[test]
+    fn working_tree_status_summary_all() {
+        let s = WorkingTreeStatus { has_staged: true, has_unstaged: true, has_untracked: true };
+        assert_eq!(s.summary(), "staged+unstaged+untracked");
+    }
+}
