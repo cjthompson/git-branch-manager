@@ -1239,3 +1239,58 @@ fn test_force_remove_worktree_dirty() {
     assert!(result.success, "force_remove_worktree should succeed even when dirty: {}", result.message);
     assert!(!wt_path.exists(), "worktree directory should be removed after force-remove");
 }
+
+// ---------------------------------------------------------------------------
+// Worktree listing and enrichment tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_list_worktrees_main_only() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    let worktrees = worktree::list_worktrees(dir);
+    assert_eq!(worktrees.len(), 1, "should have exactly 1 worktree (main)");
+
+    let main_wt = &worktrees[0];
+    assert!(main_wt.is_main, "first worktree should be the main worktree");
+    assert_eq!(main_wt.branch.as_deref(), Some("main"), "main worktree should be on 'main'");
+    assert_eq!(main_wt.commit_hash.len(), 7, "commit_hash should be 7 chars");
+}
+
+#[test]
+fn test_list_worktrees_with_additional() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["branch", "wt-list-test"]);
+    run_git(dir, &["worktree", "add", ".worktrees/wt-list-test", "wt-list-test"]);
+
+    let worktrees = worktree::list_worktrees(dir);
+    assert_eq!(worktrees.len(), 2, "should have 2 worktrees");
+
+    let main_wt = worktrees.iter().find(|w| w.is_main).expect("should have a main worktree");
+    assert_eq!(main_wt.branch.as_deref(), Some("main"));
+
+    let extra_wt = worktrees.iter().find(|w| !w.is_main).expect("should have a non-main worktree");
+    assert_eq!(extra_wt.branch.as_deref(), Some("wt-list-test"));
+
+    // Clean up before tmpdir drops
+    run_git(dir, &["worktree", "remove", ".worktrees/wt-list-test"]);
+}
+
+#[test]
+fn test_enrich_worktrees_clean() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    let worktrees = worktree::list_worktrees(dir);
+    assert_eq!(worktrees.len(), 1);
+
+    let rx = worktree::enrich_worktrees(worktrees);
+    let results: Vec<_> = rx.iter().collect();
+
+    assert_eq!(results.len(), 1, "should receive one enrichment result");
+    assert_eq!(results[0].index, 0);
+    assert!(results[0].wt_status.is_clean(), "clean repo worktree should report clean status");
+}
