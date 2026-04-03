@@ -217,3 +217,60 @@ fn test_list_branches_phase1() {
     let feature = branches.iter().find(|b| b.name == "feature/a").unwrap();
     assert!(!feature.is_base);
 }
+
+// ===== Operations Tests =====
+
+#[test]
+fn test_delete_local_branch() {
+    let (dir, repo) = setup_test_repo();
+    let path = dir.path();
+    run_git(path, &["checkout", "-b", "to-delete"]);
+    run_git(path, &["checkout", "main"]);
+
+    let result = git_branch_manager::git::operations::delete_local(&repo, "to-delete");
+    assert!(result.success);
+
+    let branches =
+        git_branch_manager::git::branch::list_branches_phase1(&repo, "main").unwrap();
+    assert!(branches.iter().all(|b| b.name != "to-delete"));
+}
+
+#[test]
+fn test_checkout_branch() {
+    let (dir, repo) = setup_test_repo();
+    let path = dir.path();
+    run_git(path, &["checkout", "-b", "feature/checkout-test"]);
+    run_git(path, &["checkout", "main"]);
+
+    let result = git_branch_manager::git::operations::checkout_branch(
+        &repo,
+        path,
+        "feature/checkout-test",
+        false,
+    );
+    assert!(result.success);
+    // Reopen repo to see updated HEAD
+    let repo = Repository::open(path).unwrap();
+    let head = repo.head().unwrap();
+    assert_eq!(head.shorthand().unwrap(), "feature/checkout-test");
+}
+
+#[test]
+fn test_push_branch() {
+    let (local_dir, _remote_dir, _repo) = setup_remote_test_repo();
+    let path = local_dir.path();
+    run_git(path, &["checkout", "-b", "feature/push-test"]);
+    std::fs::write(path.join("push.txt"), "push").unwrap();
+    run_git(path, &["add", "."]);
+    run_git(path, &["commit", "-m", "push commit"]);
+
+    let result = git_branch_manager::git::operations::push_branch(path, "feature/push-test");
+    assert!(result.success);
+}
+
+#[test]
+fn test_fetch_sync() {
+    let (local_dir, _remote_dir, _repo) = setup_remote_test_repo();
+    let result = git_branch_manager::git::operations::fetch_sync(local_dir.path());
+    assert!(result);
+}
