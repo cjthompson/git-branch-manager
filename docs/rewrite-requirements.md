@@ -8,9 +8,32 @@ The current app is ~4000-line `app.rs` monolith plus numerous supporting modules
 
 ---
 
-## Phase 1: Feature Inventory (for review)
+## Rewrite Goals
 
-This list needs step-by-step verification against the running application before implementation begins.
+### Primary Goal
+
+Rewrite the codebase to keep the same features but produce a well-organized codebase that leverages shared abstractions and reusability to create a consistent interface across all views.
+
+### Design Principles
+
+1. **All 4 views are peers**: Local Branches, Remote Branches, Worktrees, and Tags must share the same core structures for display, column layout, sorting, row rendering, key handling, filtering, and selection. No view is "special" — they all inherit from common abstractions.
+
+2. **Modularity and reuse over copy-paste**: The current codebase has significant duplication between views. The rewrite must eliminate this by extracting shared behavior into traits/generics that each view implements.
+
+3. **Consistency**: All views must behave identically for common operations (navigation, selection, sorting, filtering, search, tab switching). View-specific behavior is layered on top.
+
+4. **Testability**: New code prefers modularity and reuse that enables unit testing of individual components.
+
+5. **Implementation freedom**: The rewrite can ignore the existing implementation completely. The current code is a reference for understanding *what* the feature does, not *how* it should be built.
+
+### Action Model
+
+Actions follow a consistent two-tier model across all views:
+
+- **View-level shortcut keys** (e.g., `d`, `f`, `D`): Act on **all selected items** or the **entire repo**. These are bulk/global operations.
+- **Context menu** (opened via `Enter` or right-click): Acts on the **single item under the cursor**. These are per-item operations.
+
+Example: `p` at the view level pulls all selected branches. To pull just one branch, press `Enter` to open its context menu, then `p`.
 
 ---
 
@@ -19,7 +42,7 @@ This list needs step-by-step verification against the running application before
 ### 1.1 CLI Flags
 - `--base <branch>`: Override auto-detected base branch
 - `--list`: Non-interactive branch list to stdout (no TUI)
-- `--symbols <ascii|unicode|powerline>`: Override symbol set
+- `--symbols <ascii|unicode|powerline>`: Override symbol set (new: not in current codebase)
 
 ### 1.2 Startup Sequence
 - Open git repo from current working directory (error if not in a git repo)
@@ -76,7 +99,8 @@ This list needs step-by-step verification against the running application before
 - `name`: String
 - `commit_hash`: String
 - `date`: DateTime
-- `message`: Option<String>
+- `message`: Option<String> (new: annotated tag message, not in current codebase)
+- `is_annotated`: bool
 
 ### 2.5 Enums
 - `MergeStatus`: Merged | SquashMerged | Unmerged | Pending
@@ -91,7 +115,7 @@ This list needs step-by-step verification against the running application before
 
 A **view** is a full-screen panel with its own list, columns, keybindings, and state. The **tab bar** is the mechanism for selecting which view is active — it does not imply any hierarchy between views.
 
-There are exactly 4 primary views, all peers:
+There are exactly 4 primary views, all peers. **All 4 views must share the same base behavior** — navigation, selection, sorting, filtering, search, column rendering, and key handling are implemented once and reused. View-specific behavior (columns, operations, context menu items) is layered on top of this shared foundation.
 
 | Tab | Direct key | Description |
 |-----|-----------|-------------|
@@ -112,12 +136,13 @@ Each view has a **toggle key** that works from any other primary view:
 - Rendered as part of the top Block title
 - All 4 tabs displayed; active tab highlighted
 - `Tab` / `Shift+Tab` cycles forward/backward through all 4 views in a fixed order
-- Fixed cycle order: Local Branches → Tags → Remote Branches → Worktrees → (back to Local Branches)
+- Fixed cycle order: Local Branches → Remote Branches → Tags → Worktrees → (back to Local Branches)
+- **All 4 views participate in the Tab cycle** (current codebase only cycles 3; Tags must be added)
 
 ### Overlay views (not tabs)
 These render *on top of* the active primary view and do not appear in the tab bar:
 - `Help` — keybinding reference overlay
-- `Menu` — per-item context menu
+- `Menu` — per-item context menu (for single-item actions on the cursor row)
 - `Confirm` — destructive action confirmation dialog
 - `Executing` — operation in-progress screen
 - `Results` — operation outcome screen (any key → return)
@@ -127,6 +152,8 @@ These render *on top of* the active primary view and do not appear in the tab ba
 ---
 
 ## 4. Common Behavior (all 4 primary views)
+
+All behavior described in this section is implemented **once** in shared code and reused by all 4 views. Views do not duplicate this logic.
 
 ### 4.0 Global Keys
 These keys work identically from every primary view:
@@ -146,11 +173,11 @@ These keys work identically from every primary view:
 Every list has:
 1. **Checkbox** column — `[ ]` / `[x]` (ASCII), `◯`/`◉` (Unicode), icons (Powerline)
 2. **View-specific columns** (see per-view sections)
-3. **A/B column** — ahead/behind counts (`↑3 ↓2`)
+3. **A/B column** — ahead/behind counts (`↑3 ↓2`) (omitted if not applicable to the view)
 4. **Age column** — relative age (`2d`, `3w`, `1y`)
-5. **Status column** — merge status icon + working tree status
+5. **Status column** — merge status icon + working tree status (where applicable)
 
-Column headers are clickable to sort by that column.
+Column headers are clickable to sort by that column. All 4 views support clickable column headers consistently.
 
 ### 4.2 Navigation
 - `j`/`↓`: move cursor down
@@ -163,21 +190,29 @@ Column headers are clickable to sort by that column.
 - `a`: select all visible items
 - `n`: deselect all
 - `i`: invert selection
-- `m`: select all merged + squash-merged branches (branches view only)
+- `m`: select all merged + squash-merged items (views with merge status only)
 
 ### 4.4 Sorting
-- `s`: cycle sort column
+- `s`: cycle sort column (cycles through the columns defined for the active view)
 - `S`: toggle ascending/descending order
 - Mouse click on column header: sort by that column
 - Sort state persisted to config file
+- **All 4 views use the same sorting mechanism** — only the set of sortable columns differs per view
 
-### 4.5 Context Menu (Enter)
+### 4.5 Context Menu (Enter / Right-click)
 - `Enter`: open context menu for item under cursor
-- Menu shows available actions for the item type
+- Right-click: open context menu for the clicked row
+- Menu shows available actions **for the single item under the cursor**
+- Context menu actions operate on **one item only** (the cursor row), never on the selection
 - Disabled items shown grayed-out with shortcut key still colored
 - Escape or `q` to close menu
 
-### 4.6 Mouse Support
+### 4.6 View-Level Action Keys
+- View-level shortcut keys (e.g., `d`, `D`, `p`) act on **all selected items**
+- If no items are selected, they act on the item under the cursor
+- These are bulk/global operations (delete selected, push selected, etc.)
+
+### 4.7 Mouse Support
 - Scroll wheel: navigate list
 - Left-click: move cursor to clicked row
 - Left-click checkbox column: toggle selection
@@ -185,10 +220,15 @@ Column headers are clickable to sort by that column.
 - Left-click status bar shortcut: trigger that action
 - Right-click: open context menu for that row
 
-### 4.7 Search / Filter
+### 4.8 Search / Filter
 - `/`: toggle inline search bar (live substring filter on names)
 - `\`: open filter builder UI (composable token filters)
 - Filter persists while view is active, cleared on `Esc`
+- **Filters correspond to columns**: each view offers filter tokens for the columns it displays. Filter tokens for columns that don't exist in a view are not shown/ignored.
+- Common filter tokens available across views (where the column exists):
+  - `status:merged` / `status:squash` / `status:unmerged` — filter by merge status
+  - `age:<7d` / `age:<30d` / `age:>30d` / `age:>90d` — filter by age
+- View-specific filter tokens are defined in each view's section
 
 ---
 
@@ -213,33 +253,20 @@ Column headers are clickable to sort by that column.
 - Unmerged: red ✘
 - Pending (still loading): gray …
 
-### 5.4 Keybindings
+### 5.4 View-Level Keybindings (act on selection)
 | Key | Action |
 |-----|--------|
-| `j`/`↓` | Move cursor down |
-| `k`/`↑` | Move cursor up |
-| `PageDown`/`PageUp` | Scroll by page |
-| `Home`/`End` | Jump to first/last |
-| `Space` | Toggle selection |
-| `a`/`n`/`i`/`m` | Select all / none / invert / merged |
 | `d` | Delete selected branches (local only) |
 | `D` | Delete selected branches (local + remote) |
-| `c` | Checkout branch under cursor |
-| `x` | Quick-delete branch under cursor |
-| `f` | Fetch all remotes |
-| `F` | Fetch all remotes + prune |
+| `p` | Push selected branches to remote |
 | `R` | Clear squash-merge cache + refresh |
-| `T` | Cycle theme |
-| `Y` | Cycle symbol set |
-| `,` | Open settings |
-| `Tab`/`Shift+Tab` | Cycle tabs |
-| `?` | Show help overlay |
-| `q` | Quit |
 
-### 5.5 Context Menu Actions
+Plus all common keys from §4 (navigation, selection, sorting, search, filter, tab, theme, symbols, settings, help, quit, fetch).
+
+### 5.5 Context Menu Actions (act on cursor row only)
+- Checkout
 - Delete Local
 - Delete Local + Remote
-- Checkout
 - Merge into current (regular)
 - Merge into current (squash)
 - Rebase onto base
@@ -247,12 +274,17 @@ Column headers are clickable to sort by that column.
 - Force push (--force-with-lease)
 - Pull (fast-forward)
 - Fast-forward (update without checkout)
-- Fetch remote
-- Fetch + Prune
 - Create Worktree
 - (if PR exists) Open PR in browser
 
-### 5.6 Branch Name Prefix Colors
+### 5.6 Filter Tokens
+- `status:merged` / `status:squash` / `status:unmerged` — filter by merge status
+- `pr:yes` / `pr:no` — filter by PR association
+- `sync:ahead` / `sync:behind` — filter by sync status
+- `age:<7d` / `age:<30d` / `age:>30d` / `age:>90d` — filter by age
+- Text search on branch name (via `/`)
+
+### 5.7 Branch Name Prefix Colors
 Prefix groups with distinct colors (e.g. `feat/`, `fix/`, `chore/`, `release/`):
 - `feat/` or `feature/`: blue/cyan
 - `fix/` or `bugfix/`: red/orange
@@ -263,9 +295,9 @@ Prefix groups with distinct colors (e.g. `feat/`, `fix/`, `chore/`, `release/`):
 
 ---
 
-## 6. Tags View (Tab 4)
+## 6. Tags View (Tab 3)
 
-Tags is a primary view and full peer of the other three tabs. It is lazy-loaded on first visit.
+Tags is a primary view and full peer of the other three tabs. It shares the same base view infrastructure (navigation, selection, sorting, filtering, search, context menu) as all other views. Lazy-loaded on first visit.
 
 ### 6.1 Columns
 Every row follows the same structure as other views:
@@ -273,42 +305,32 @@ Every row follows the same structure as other views:
 2. Tag name (with prefix color coding)
 3. Commit hash (short)
 4. Age
-5. Status / message (truncated)
+5. Message (annotated tag message, truncated) (new: not in current codebase)
 
-A/B (ahead/behind) column is not applicable to tags and is omitted.
+A/B (ahead/behind) and merge status columns are not applicable to tags and are omitted.
 
 ### 6.2 Loading
 - Tags are lazy-loaded the first time the Tags tab is activated
 - Progress indicator shown during load
 - Sort and filter state persists between tab switches
 
-### 6.3 Keybindings
+### 6.3 View-Level Keybindings (act on selection)
 | Key | Action |
 |-----|--------|
-| `j`/`↓` | Move cursor down |
-| `k`/`↑` | Move cursor up |
-| `PageDown`/`PageUp` | Scroll by page |
-| `Home`/`End` | Jump to first/last |
-| `Space` | Toggle selection |
-| `a` | Select all |
-| `n` | Deselect all |
-| `i` | Invert selection |
 | `d` | Delete selected tags (local) |
 | `D` | Delete selected tags (local + remote) |
-| `p` | Push tag under cursor to remote |
-| `f` | Fetch all remotes |
-| `F` | Fetch all remotes + prune |
-| `/` | Inline search |
-| `\` | Filter builder |
-| `s` | Toggle sort (name vs date) |
-| `Tab`/`Shift+Tab` | Cycle to next/previous tab |
-| `?` | Help overlay |
-| `q` | Quit |
+| `p` | Push selected tags to remote |
 
-### 6.4 Context Menu Actions
+Plus all common keys from §4 (navigation, selection, sorting, search, filter, tab, theme, symbols, settings, help, quit, fetch).
+
+### 6.4 Context Menu Actions (act on cursor row only)
 - Delete local tag
 - Delete local + remote tag
 - Push tag to remote
+
+### 6.5 Filter Tokens
+- `age:<7d` / `age:<30d` / `age:>30d` / `age:>90d` — filter by age
+- Text search on tag name (via `/`)
 
 ---
 
@@ -328,38 +350,35 @@ A/B (ahead/behind) column is not applicable to tags and is omitted.
 6. Status (merge status + PR)
 7. PR number
 
-### 7.3 Keybindings
+### 7.3 View-Level Keybindings (act on selection)
 | Key | Action |
 |-----|--------|
-| `j`/`↓` | Move cursor down |
-| `k`/`↑` | Move cursor up |
-| `Space` | Toggle selection |
-| `a`/`n`/`i` | Select all / none / invert |
-| `c` | Checkout as local tracking branch |
 | `d` | Delete selected remote branches |
-| `f` | Fetch all remotes |
-| `F` | Fetch all remotes + prune |
-| `p` | Pull into local tracking branch |
-| `m` | Merge remote branch into current local |
-| `y` | Cherry-pick tip commit of remote branch |
-| `v` | Open PR in browser (`gh pr view`) |
-| `Tab`/`Shift+Tab` | Cycle tabs |
-| `?` | Help overlay |
-| `q` | Quit |
 
-### 7.4 Context Menu Actions
+Plus all common keys from §4 (navigation, selection, sorting, search, filter, tab, theme, symbols, settings, help, quit, fetch).
+
+### 7.4 Context Menu Actions (act on cursor row only)
+- Checkout (create local tracking branch)
 - Delete remote branch
 - Delete remote + local
-- Checkout (create tracking branch)
 - Fetch remote
 - Pull remote into local
 - Merge remote into current branch
 - Cherry-pick tip of remote
 - Open PR in browser
 
+### 7.5 Filter Tokens
+- `status:merged` / `status:squash` / `status:unmerged` — filter by merge status
+- `pr:yes` / `pr:no` — filter by PR association
+- `sync:ahead` / `sync:behind` — filter by sync status
+- `age:<7d` / `age:<30d` / `age:>30d` / `age:>90d` — filter by age
+- Text search on branch name (via `/`)
+
 ---
 
-## 8. Worktrees View (Tab 3)
+## 8. Worktrees View (Tab 4)
+
+Worktree branches are already visible in the Local Branches view. This view focuses on **worktree-specific operations** — actions that apply to worktrees as filesystem entities, not to their underlying branches.
 
 ### 8.1 Loading
 - Optionally preloaded on startup (`load_worktrees_on_launch` config)
@@ -374,26 +393,22 @@ A/B (ahead/behind) column is not applicable to tags and is omitted.
 6. Age
 7. Merge status
 
-### 8.3 Keybindings
+### 8.3 View-Level Keybindings (act on selection)
 | Key | Action |
 |-----|--------|
-| `j`/`↓` | Move cursor down |
-| `k`/`↑` | Move cursor up |
-| `Space` | Toggle selection |
-| `a`/`n`/`i` | Select all / none / invert |
 | `d` | Remove selected worktrees (clean only) |
 | `D` | Force remove selected worktrees |
-| `c` | Checkout branch associated with worktree |
-| `f` | Fetch all remotes |
-| `F` | Fetch all remotes + prune |
-| `Tab`/`Shift+Tab` | Cycle tabs |
-| `?` | Help overlay |
-| `q` | Quit |
 
-### 8.4 Context Menu Actions
+Plus all common keys from §4 (navigation, selection, sorting, search, filter, tab, theme, symbols, settings, help, quit, fetch).
+
+### 8.4 Context Menu Actions (act on cursor row only)
 - Remove worktree (fails if dirty)
 - Force remove worktree
-- Checkout branch
+
+### 8.5 Filter Tokens
+- `status:merged` / `status:squash` / `status:unmerged` — filter by merge status
+- `age:<7d` / `age:<30d` / `age:>30d` / `age:>90d` — filter by age
+- Text search on path/branch name (via `/`)
 
 ---
 
@@ -471,18 +486,21 @@ A/B (ahead/behind) column is not applicable to tags and is omitted.
 
 ### 15.2 Filter Builder (`\`)
 - Menu-based composable filters
-- Filter tokens:
-
-| Token | Values | Description |
-|-------|--------|-------------|
-| `status:` | merged / squash / unmerged | Filter by merge status |
-| `pr:` | yes / no | Filter by PR association |
-| `sync:` | ahead / behind | Filter by sync status |
-| `age:` | <7d / <30d / >30d / >90d | Filter by last commit age |
-
-- Quick-toggle keys in filter menu: `m` (merged), `s` (squash), `u` (unmerged), `p` (PR), `P` (no PR), `a` (ahead), `b` (behind), `1`-`4` (age presets)
+- **Filters correspond to columns**: each view's filter builder shows tokens for the columns present in that view. Tokens for columns that don't exist in the active view are not shown.
 - Filters are composable (AND logic)
 - Active filters shown in status bar
+
+### 15.3 Filter Tokens (full set)
+
+| Token | Values | Applicable views | Description |
+|-------|--------|-----------------|-------------|
+| `status:` | merged / squash / unmerged | Local, Remote, Worktrees | Filter by merge status |
+| `pr:` | yes / no | Local, Remote | Filter by PR association |
+| `sync:` | ahead / behind | Local, Remote | Filter by sync status |
+| `age:` | <7d / <30d / >30d / >90d | All 4 views | Filter by last commit age |
+
+- Quick-toggle keys in filter menu: `m` (merged), `s` (squash), `u` (unmerged), `p` (PR), `P` (no PR), `a` (ahead), `b` (behind), `1`-`4` (age presets)
+- Keys for inapplicable filters are not shown in a given view's filter builder
 
 ---
 
@@ -660,3 +678,30 @@ Before implementation:
 8. Verify background loading indicators
 
 Automation option: Use iTerm2 AppleScript + `expect`/`tmux send-keys` to drive the TUI programmatically for verification.
+
+---
+
+## Implementation Status (as of 2026-04-03)
+
+Code analysis confirms ~95% of requirements are implemented in the current codebase. The following items are gaps or changes from current behavior:
+
+### Structural Changes for Rewrite
+
+1. **Tags not in Tab/Shift+Tab cycle** (§3): Current code cycles 3 views; Tags must be added as Tab 3 in the fixed cycle order.
+
+2. **Action model consistency** (§4.5, §4.6): Current code mixes single-item and multi-item actions at the view level. Rewrite must enforce: context menu = single cursor item, view-level keys = selection/bulk.
+
+3. **Shared view infrastructure** (§3, §4): Current views duplicate navigation, selection, sorting, filtering, and rendering logic. Rewrite must extract into shared abstractions that all 4 views inherit from.
+
+4. **Column-based filter system** (§15): Current filter builder varies ad-hoc per view. Rewrite should derive available filters from the columns defined for each view.
+
+### New Features (not in current codebase)
+
+1. **`--symbols` CLI flag** (§1.1): Override symbol set from command line.
+2. **TagInfo `message` field** (§2.4): Display annotated tag messages in the tag list.
+3. **Right-click context menu** (§4.5): Open context menu on right-click.
+4. **Tags view context menu** (§6.4): Tags currently use direct keys only; rewrite adds Enter/right-click context menu.
+
+### Preserved Features
+
+All other sections — data models, git operations, themes, symbol sets, mouse support, background threading, settings persistence, PR integration, squash-merge cache, toast system, and all existing keybindings — are fully implemented in current code and must be preserved.
