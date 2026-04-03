@@ -58,11 +58,9 @@ pub fn detect_base_branch(repo: &Repository, override_base: Option<&str>) -> Res
 
     // Last resort: first branch
     let branches = repo.branches(Some(BranchType::Local))?;
-    for branch_result in branches {
-        if let Ok((branch, _)) = branch_result {
-            if let Some(name) = branch.name()? {
-                return Ok(name.to_string());
-            }
+    for (branch, _) in branches.flatten() {
+        if let Some(name) = branch.name()? {
+            return Ok(name.to_string());
         }
     }
 
