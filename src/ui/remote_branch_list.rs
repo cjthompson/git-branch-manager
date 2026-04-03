@@ -3,28 +3,12 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::{App, View};
 use git_branch_manager::git::github::PrStatus;
-use git_branch_manager::types::{MergeStatus, TrackingStatus};
+use git_branch_manager::types::MergeStatus;
 use super::shared::{age_style, prefix_style, tab_bar_line};
-
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
-    // Update terminal_rows so handle_mouse_click can detect status bar row
     app.terminal_rows = area.height;
-
-    // Show loading screen while initial branch data is being fetched
-    if app.loading {
-        let block = Block::default()
-            .title("git-branch-manager")
-            .title_style(app.theme.title)
-            .borders(Borders::ALL);
-        let msg = format!("  {}", app.loading_message);
-        let loading = Paragraph::new(msg)
-            .style(app.theme.primary_text)
-            .block(block);
-        frame.render_widget(loading, area);
-        return;
-    }
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -34,36 +18,36 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let main_area = layout[0];
     let status_area = layout[1];
 
-    // Responsive width thresholds
     let width = main_area.width as usize;
     let compact_age = width < 120;
     let hide_ab = width < 80;
+    let hide_local = width < 80;
     let short_status = width < 70;
     let hide_age = width < 60;
 
-    // Main branch list
-    let tab_title = tab_bar_line(&View::BranchList, app.theme.title);
+    let tab_title = tab_bar_line(&View::RemoteBranches, app.theme.remote_title);
     let block = Block::default()
         .title(tab_title)
         .borders(Borders::ALL);
 
-    // Sort indicator helper
-    let sort_arrow = if app.sort_ascending { "\u{25b2}" } else { "\u{25bc}" };
+    let sort_arrow = if app.remote_sort_ascending { "\u{25b2}" } else { "\u{25bc}" };
     let sort_label = |col_index: usize, base: &str| -> String {
-        if app.sort_column == Some(col_index) {
+        if app.remote_sort_column == Some(col_index) {
             format!("{}{}", base, sort_arrow)
         } else {
             base.to_string()
         }
     };
 
-    // Header row — build dynamically based on visible columns
     let mut header_cells = vec![
         Cell::from(""),
-        Cell::from(sort_label(0, "Branch")),
+        Cell::from(sort_label(0, "Remote")),
     ];
+    if !hide_local {
+        header_cells.push(Cell::from("Local"));
+    }
     if !hide_ab {
-        header_cells.push(Cell::from(sort_label(2, "A/B")));
+        header_cells.push(Cell::from("A/B"));
         header_cells.push(Cell::from("PR"));
     }
     if !hide_age {
@@ -72,34 +56,32 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ));
     }
     header_cells.push(Cell::from(
-        Line::from(sort_label(3, "Status")).alignment(Alignment::Right),
+        Line::from(sort_label(2, "Status")).alignment(Alignment::Right),
     ));
 
     let header = Row::new(header_cells)
-        .style(app.theme.header)
+        .style(app.theme.remote_header)
         .bottom_margin(0);
 
-    // Display order: pinned first, then non-pinned, filtered by search query
-    let display_indices = app.filtered_branch_indices();
+    let display_indices = app.filtered_remote_indices();
 
-    // Map cursor (original branch index) to display row index for table_state
-    let display_cursor = display_indices.iter().position(|&i| i == app.cursor);
+    let display_cursor = display_indices
+        .iter()
+        .position(|&i| i == app.remote_cursor);
     if let Some(row_idx) = display_cursor {
-        app.table_state.select(Some(row_idx));
+        app.remote_table_state.select(Some(row_idx));
     }
 
-    // Status min-width: "squash-merged " (14) + symbol (1) = 15; short form: 4
     let status_min_width: u16 = if short_status { 4 } else { 15 };
+    let local_col_width: u16 = 5;
 
-    // PR column: widest "#NNNN" across all branches, minimum = "PR".len() = 2
-    let max_pr_width: u16 = app.branches.iter()
-        .filter_map(|b| app.pr_map.get(&b.name).map(|info| format!("#{}", info.number).len()))
+    let max_pr_width: u16 = app.remote_branches.iter()
+        .filter_map(|b| app.pr_map.get(&b.short_name).map(|info| format!("#{}", info.number).len()))
         .max()
         .unwrap_or(0)
         .max("PR".len()) as u16;
 
-    // A/B column: widest ahead+behind string, minimum = "A/B".len() = 3
-    let max_ab_width: u16 = app.branches.iter()
+    let max_ab_width: u16 = app.remote_branches.iter()
         .filter_map(|b| {
             let a = b.ahead.unwrap_or(0);
             let bk = b.behind.unwrap_or(0);
@@ -117,29 +99,36 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .unwrap_or(0)
         .max("A/B".len()) as u16;
 
-    // Name column available width (for ellipsis trimming)
     let highlight_width_for_name = app.symbols.cursor_prefix.len() as u16 + 1;
     let checkbox_width: u16 = 3;
     let age_width: u16 = if hide_age { 0 } else if compact_age { 5 } else { 14 };
+    let local_width: u16 = if hide_local { 0 } else { local_col_width };
     let ab_pr_width: u16 = if hide_ab { 0 } else { max_ab_width + 1 + max_pr_width + 1 };
-    // widths count: checkbox + name + optional_age + optional_ab + optional_pr + status
-    let gap_count: u16 = 2 + if hide_age { 0 } else { 1 } + if hide_ab { 0 } else { 2 } + 1;
-    let name_col_width = main_area.width
-        .saturating_sub(2) // borders
+    let gap_count: u16 = 2
+        + if hide_age { 0 } else { 1 }
+        + if hide_local { 0 } else { 1 }
+        + if hide_ab { 0 } else { 2 }
+        + 1;
+    let name_col_width = main_area
+        .width
+        .saturating_sub(2)
         .saturating_sub(highlight_width_for_name)
         .saturating_sub(checkbox_width)
         .saturating_sub(age_width)
+        .saturating_sub(local_width)
         .saturating_sub(ab_pr_width)
         .saturating_sub(status_min_width)
         .saturating_sub(gap_count) as usize;
 
-    // Helper closure to build a Row from a branch index
+    let is_ascii = app.symbols.cursor_prefix == ">";
+    let local_yes = if is_ascii { "Y" } else { "\u{2713}" };
+    let local_no = if is_ascii { "-" } else { "\u{2014}" };
+
     let build_row = |i: usize| -> Row {
-        let branch = &app.branches[i];
-        let is_selected = app.selected[i];
+        let branch = &app.remote_branches[i];
+        let is_selected = app.remote_selected.get(i).copied().unwrap_or(false);
         let is_pinned = branch.is_pinned();
 
-        // Checkbox column — pinned rows show empty space
         let (checkbox_text, checkbox_style) = if is_pinned {
             ("   ".to_string(), Style::default())
         } else if is_selected {
@@ -148,16 +137,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             (app.symbols.checkbox_off.to_string(), app.theme.secondary_text)
         };
 
-        // Branch name column
-        let current_marker = if branch.is_current {
-            format!("{} ", app.symbols.current_branch)
-        } else {
-            "  ".to_string()
-        };
-
-        let name_style = if branch.is_current {
-            app.theme.current_branch
-        } else if is_pinned {
+        let name_style = if is_pinned {
             app.theme.pinned_row
         } else if is_selected {
             app.theme.selected
@@ -165,72 +145,68 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.theme.primary_text
         };
 
-        let ellipsis = if app.symbols.cursor_prefix == ">" { "..." } else { "\u{2026}" };
-        let name_available = name_col_width.saturating_sub(current_marker.len());
-        let display_name = if branch.name.len() > name_available && name_available > ellipsis.len() {
-            format!("{}{}", &branch.name[..name_available - ellipsis.len()], ellipsis)
-        } else if branch.name.len() > name_available {
-            ellipsis.to_string()
-        } else {
-            branch.name.clone()
-        };
+        let ellipsis = if is_ascii { "..." } else { "\u{2026}" };
+        let remote_prefix = format!("{}/", branch.remote);
+        let name_available = name_col_width.saturating_sub(remote_prefix.len());
+        let display_name =
+            if branch.short_name.len() > name_available && name_available > ellipsis.len() {
+                format!(
+                    "{}{}",
+                    &branch.short_name[..name_available - ellipsis.len()],
+                    ellipsis
+                )
+            } else if branch.short_name.len() > name_available {
+                ellipsis.to_string()
+            } else {
+                branch.short_name.clone()
+            };
 
-        let tracking_text = match &branch.tracking {
-            TrackingStatus::Tracked { remote_ref, gone } => {
-                if *gone {
-                    " (gone)".to_string()
-                } else {
-                    format!(" \u{2192} {}", remote_ref)
-                }
-            }
-            TrackingStatus::Local => " (local)".to_string(),
-        };
+        let pinned_label = if is_pinned { " [base]" } else { "" };
 
-        let pinned_label = if branch.is_current && branch.is_base {
-            " [base] [current]"
-        } else if branch.is_base {
-            " [base]"
-        } else if branch.is_current {
-            " [current]"
-        } else {
-            ""
-        };
-
-        // Build name spans — colorize known prefixes (e.g. fix/, feat/)
         let mut name_spans: Vec<Span> = Vec::new();
+        if is_pinned {
+            name_spans.push(Span::styled(remote_prefix, app.theme.pinned_row));
+        } else {
+            name_spans.push(Span::styled(remote_prefix, app.theme.secondary_text));
+        }
         if let Some((prefix_part, rest)) = display_name.split_once('/') {
             if let Some(pstyle) = prefix_style(prefix_part) {
-                name_spans.push(Span::styled(
-                    format!("{}{}/", current_marker, prefix_part),
-                    pstyle,
-                ));
-                name_spans.push(Span::styled(rest.to_string(), name_style));
+                if is_pinned {
+                    name_spans.push(Span::styled(
+                        format!("{}/", prefix_part),
+                        app.theme.pinned_row,
+                    ));
+                    name_spans.push(Span::styled(rest.to_string(), app.theme.pinned_row));
+                } else {
+                    name_spans.push(Span::styled(format!("{}/", prefix_part), pstyle));
+                    name_spans.push(Span::styled(rest.to_string(), name_style));
+                }
             } else {
-                // Unknown prefix — render entire name in name_style
-                name_spans.push(Span::styled(
-                    format!("{}{}", current_marker, display_name),
-                    name_style,
-                ));
+                name_spans.push(Span::styled(display_name.clone(), name_style));
             }
         } else {
-            // No slash — render entire name in name_style
-            name_spans.push(Span::styled(
-                format!("{}{}", current_marker, display_name),
-                name_style,
-            ));
+            name_spans.push(Span::styled(display_name.clone(), name_style));
         }
         name_spans.push(Span::styled(pinned_label, app.theme.secondary_text));
-        name_spans.push(Span::styled(tracking_text, app.theme.secondary_text));
 
         let name_cell = Cell::from(Line::from(name_spans));
 
-        // Build cells dynamically based on visible columns
         let mut cells = vec![
-            Cell::from(Span::styled(checkbox_text.clone(), checkbox_style)),
+            Cell::from(Span::styled(checkbox_text, checkbox_style)),
             name_cell,
         ];
 
-        // Ahead/behind column
+        if !hide_local {
+            let (local_text, local_style) = if is_pinned {
+                (String::new(), app.theme.pinned_row)
+            } else if branch.has_local {
+                (local_yes.to_string(), app.theme.merged)
+            } else {
+                (local_no.to_string(), app.theme.secondary_text)
+            };
+            cells.push(Cell::from(Span::styled(local_text, local_style)));
+        }
+
         if !hide_ab {
             let mut ab_spans: Vec<Span> = Vec::new();
             if is_pinned {
@@ -251,18 +227,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             }
             cells.push(Cell::from(Line::from(ab_spans)));
 
-            // PR# column
+            // PR column — look up by short_name in pr_map
             let pr_text = if is_pinned {
                 String::new()
             } else {
                 app.pr_map
-                    .get(&branch.name)
+                    .get(&branch.short_name)
                     .map(|info| format!("#{}", info.number))
                     .unwrap_or_default()
             };
             let pr_style = if is_pinned {
                 app.theme.pinned_row
-            } else if let Some(info) = app.pr_map.get(&branch.name) {
+            } else if let Some(info) = app.pr_map.get(&branch.short_name) {
                 match info.status {
                     PrStatus::Draft => app.theme.pr_draft,
                     PrStatus::Open => app.theme.pr_open,
@@ -275,24 +251,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             cells.push(Cell::from(Span::styled(pr_text, pr_style)));
         }
 
-        // Age column
         if !hide_age {
             let age = if compact_age {
                 branch.age_short()
             } else {
                 branch.age_display()
             };
-            let age_style = if is_pinned {
+            let a_style = if is_pinned {
                 app.theme.pinned_row
             } else {
                 age_style(&branch.last_commit_date)
             };
             cells.push(Cell::from(
-                Line::from(Span::styled(age, age_style)).alignment(Alignment::Right),
+                Line::from(Span::styled(age, a_style)).alignment(Alignment::Right),
             ));
         }
 
-        // Status column — pinned rows don't show merge status (they are the base)
         let (status_text, status_style) = if is_pinned {
             (String::new(), app.theme.pinned_row)
         } else if short_status {
@@ -339,47 +313,43 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     };
 
-    // Build all rows in display order (pinned first, then non-pinned)
     let all_rows: Vec<Row> = display_indices.iter().map(|&i| build_row(i)).collect();
 
-    // Dynamic column widths based on what's visible
     let mut widths: Vec<Constraint> = vec![
-        Constraint::Length(3),              // checkbox always
-        Constraint::Min(20),               // name
+        Constraint::Length(3),
+        Constraint::Min(20),
     ];
+    if !hide_local {
+        widths.push(Constraint::Length(local_col_width));
+    }
     if !hide_ab {
-        widths.push(Constraint::Length(max_ab_width));  // A/B
-        widths.push(Constraint::Length(max_pr_width));  // PR
+        widths.push(Constraint::Length(max_ab_width));
+        widths.push(Constraint::Length(max_pr_width));
     }
     if !hide_age {
         widths.push(Constraint::Length(if compact_age { 5 } else { 14 }));
     }
-    widths.push(Constraint::Length(status_min_width)); // status
+    widths.push(Constraint::Length(status_min_width));
 
-    // Compute header column x positions for mouse click sorting.
-    // The table is inside a block with a 1-cell border on the left, so columns start at x=1.
-    // The highlight symbol takes some space; ratatui adds it before the first column.
-    // Sort column indices: checkbox=skip, name=0, A/B(ahead)=2, age=1, status=4
     {
         let mut col_positions: Vec<(u16, usize)> = Vec::new();
-        // Account for left border (1) + highlight symbol width (cursor_prefix + space)
         let highlight_width = app.symbols.cursor_prefix.len() as u16 + 1;
         let x = main_area.x + 1 + highlight_width;
 
-        // Map table column index to sort column index
-        // col 0 = checkbox (no sort), col 1 = name (sort 0), then age/ab/status depending on visibility
-        let mut sort_col_map: Vec<Option<usize>> = vec![None]; // checkbox = no sort
-        sort_col_map.push(Some(0)); // name
+        let mut sort_col_map: Vec<Option<usize>> = vec![None];
+        sort_col_map.push(Some(0));
+        if !hide_local {
+            sort_col_map.push(None);
+        }
         if !hide_ab {
-            sort_col_map.push(Some(2)); // A/B
-            sort_col_map.push(None);    // PR (not sortable)
+            sort_col_map.push(None); // A/B
+            sort_col_map.push(None); // PR
         }
         if !hide_age {
-            sort_col_map.push(Some(1)); // age
+            sort_col_map.push(Some(1));
         }
-        sort_col_map.push(Some(4)); // status
+        sort_col_map.push(Some(2));
 
-        // Resolve constraint widths using the main_area width minus borders and highlight
         let available = main_area.width.saturating_sub(2 + highlight_width);
         let resolved = Layout::horizontal(&widths).split(Rect::new(0, 0, available, 1));
 
@@ -387,16 +357,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             if let Some(&Some(sort_idx)) = sort_col_map.get(i) {
                 col_positions.push((x + rect.x, sort_idx));
             }
-            // x advances based on resolved rect positions
         }
 
-        app.header_columns = col_positions;
+        app.remote_header_columns = col_positions;
     }
 
     let highlight_sym = format!("{} ", app.symbols.cursor_prefix);
 
-    // Render all rows in a single stateful table with cursor highlight.
-    // Pinned rows appear first (sorted to top), cursor can move onto them.
     let inner_area = block.inner(main_area);
     frame.render_widget(block, main_area);
 
@@ -405,62 +372,74 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .row_highlight_style(app.theme.cursor)
         .highlight_symbol(highlight_sym);
 
-    frame.render_stateful_widget(table, inner_area, &mut app.table_state);
+    frame.render_stateful_widget(table, inner_area, &mut app.remote_table_state);
 
-    // Status bar / search bar
-    if app.search_active {
-        // Show search input — no clickable items
-        app.status_bar_items.clear();
-        let search_text = format!(" / {}_", app.search_query);
+    if app.remote_search_active {
+        app.remote_status_bar_items.clear();
+        let search_text = format!(" / {}_", app.remote_search_query);
         let search_bar = Paragraph::new(search_text).style(app.theme.search_bar);
         frame.render_widget(search_bar, status_area);
-    } else if !app.search_query.is_empty() {
-        // Show active filter indicator in status bar — no clickable items
-        app.status_bar_items.clear();
+    } else if !app.remote_search_query.is_empty() {
+        app.remote_status_bar_items.clear();
         let filter_text = format!(
             " filter: \"{}\" ({}/{} shown) \u{2014} [\\]filter [/]edit [Esc in /]clear",
-            app.search_query, display_indices.len(), app.branches.len()
+            app.remote_search_query,
+            display_indices.len(),
+            app.remote_branches.len()
         );
         let status = Paragraph::new(filter_text).style(app.theme.search_bar);
         frame.render_widget(status, status_area);
     } else {
-        let selected_count = app.selection_count();
-        let total = app.branches.len();
+        let selected_count = app.remote_selected.iter().filter(|&&s| s).count();
+        let total = app.remote_branches.len();
         let merged_count = app
-            .branches
+            .remote_branches
             .iter()
             .filter(|b| b.merge_status == MergeStatus::Merged)
             .count();
         let squash_count = app
-            .branches
+            .remote_branches
             .iter()
             .filter(|b| b.merge_status == MergeStatus::SquashMerged)
             .count();
-        let progress = if app.squash_total > 0 && app.squash_checked < app.squash_total {
-            format!(" | checking {}/{}", app.squash_checked, app.squash_total)
+        let progress = if app.remote_squash_total > 0
+            && app.remote_squash_checked < app.remote_squash_total
+        {
+            format!(
+                " | checking {}/{}",
+                app.remote_squash_checked, app.remote_squash_total
+            )
+        } else if app.remote_enrich_total > 0
+            && app.remote_enrich_checked < app.remote_enrich_total
+        {
+            format!(
+                " | enriching {}/{}",
+                app.remote_enrich_checked, app.remote_enrich_total
+            )
         } else {
             String::new()
         };
 
-        // Responsive status bar
         let status_text = if width < 80 {
             format!(
-                " {}br {}sel {}m {}s{} \u{2014} [/]search [r]emotes [?]help [q]uit",
+                " {}br {}sel {}m {}s{} \u{2014} [/]search [d]el [c]heckout [q]uit",
                 total, selected_count, merged_count, squash_count, progress
             )
         } else {
             format!(
-                " {} branches | {} selected | {} merged | {} squashed{} \u{2014} [/]search [\\]filter [c]heckout [d]el [D]el+remote [f]etch [r]emotes [?]help [q]uit",
+                " {} remote branches | {} selected | {} merged | {} squashed{} \u{2014} [/]search [\\]filter [d]el [c]heckout [f]etch [?]help [q]uit",
                 total, selected_count, merged_count, squash_count, progress
             )
         };
 
-        app.status_bar_items = super::shared::render_status_bar(
+        app.remote_status_bar_items = super::shared::render_status_bar(
             frame,
             status_area,
             &status_text,
-            app.theme.title.fg.unwrap_or(Color::White),
+            app.theme.remote_title.fg.unwrap_or(Color::White),
             app.theme.status_bar,
         );
     }
+
+    super::shared::draw_toast(frame, app, area);
 }

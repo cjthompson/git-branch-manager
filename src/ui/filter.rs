@@ -135,6 +135,54 @@ pub fn draw_tag_filter(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, rect);
 }
 
+pub fn draw_remote_filter(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let query = &app.remote_search_query;
+
+    let key_style = Style::default()
+        .fg(app.theme.title.fg.unwrap_or(Color::White))
+        .add_modifier(Modifier::BOLD);
+    let active_style = Style::default()
+        .fg(Color::Green)
+        .add_modifier(Modifier::BOLD);
+    let label_style = Style::default();
+    let section_style = Style::default()
+        .fg(app.theme.title.fg.unwrap_or(Color::White))
+        .add_modifier(Modifier::BOLD);
+
+    let fl = |key, label, token| filter_line(key, label, token, query, key_style, active_style, label_style);
+
+    let lines: Vec<Line> = vec![
+        Line::from(Span::styled("Status", section_style)),
+        fl("m", "Merged", "status:merged"),
+        fl("s", "Squash-merged", "status:squash"),
+        fl("u", "Unmerged", "status:unmerged"),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("c", key_style),
+            Span::styled("  Clear all filters", label_style),
+        ]),
+    ];
+
+    let content_height = lines.len() as u16 + 2;
+    let width = 36u16.min(area.width);
+    let height = content_height.min(area.height);
+
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let rect = Rect::new(x, y, width.min(area.width), height.min(area.height));
+
+    let block = Block::default()
+        .title("Remote Filters")
+        .title_style(app.theme.title)
+        .borders(Borders::ALL);
+
+    let paragraph = Paragraph::new(lines).block(block);
+
+    frame.render_widget(Clear, rect);
+    frame.render_widget(paragraph, rect);
+}
+
 fn filter_line<'a>(
     key: &'a str,
     label: &'a str,

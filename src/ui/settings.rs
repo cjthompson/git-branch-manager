@@ -6,7 +6,7 @@ use crate::app::{App, View};
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let width = 60u16.min(area.width);
-    let height = 13u16.min(area.height);
+    let height = 14u16.min(area.height);
     let rect = centered_rect(width, height, area);
 
     let block = Block::default()
@@ -32,6 +32,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let sort_dir_display = if app.sort_ascending { "ascending".to_string() } else { "descending".to_string() };
 
     let auto_fetch_display = if app.config.auto_fetch == Some(true) { "on".to_string() } else { "off".to_string() };
+    let load_worktrees_display = if app.config.load_worktrees_on_launch == Some(true) { "on".to_string() } else { "off".to_string() };
 
     let rows: &[(&str, String)] = &[
         ("Symbol set", crate::ui::symbols::name(app.symbols).to_string()),
@@ -39,6 +40,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         ("Default sort column", sort_col_display),
         ("Default sort direction", sort_dir_display),
         ("Auto-fetch on launch", auto_fetch_display),
+        ("Load worktrees on launch", load_worktrees_display),
     ];
 
     let mut lines: Vec<Line> = rows.iter().enumerate().map(|(i, (label, value))| {

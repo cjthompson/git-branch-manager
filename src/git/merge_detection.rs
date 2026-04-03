@@ -40,8 +40,17 @@ pub fn detect_merged_branches(
 
 /// Check if a single branch was squash-merged into the base branch.
 ///
+/// `commit_hash` is optional: if provided, it is used instead of `branch_name^{tree}` in
+/// the `commit-tree` step, which is required for remote branch names like `"origin/feature-x"`
+/// that git cannot resolve as a revision in that context.
+///
 /// Runs three git CLI commands in the given repo directory.
-pub(crate) fn is_squash_merged(repo_path: &Path, base_branch: &str, branch_name: &str) -> bool {
+pub(crate) fn is_squash_merged(
+    repo_path: &Path,
+    base_branch: &str,
+    branch_name: &str,
+    commit_hash: Option<&str>,
+) -> bool {
     // Step 1: git merge-base <base> <branch>
     let ancestor = match Command::new("git")
         .current_dir(repo_path)
@@ -55,7 +64,11 @@ pub(crate) fn is_squash_merged(repo_path: &Path, base_branch: &str, branch_name:
     };
 
     // Step 2: git commit-tree <branch>^{tree} -p <ancestor> -m _
-    let tree_spec = format!("{}^{{tree}}", branch_name);
+    // Use the commit hash directly if provided (needed for remote branch names).
+    let tree_spec = match commit_hash {
+        Some(hash) => format!("{}^{{tree}}", hash),
+        None => format!("{}^{{tree}}", branch_name),
+    };
     let temp_commit = match Command::new("git")
         .current_dir(repo_path)
         .args(["commit-tree", &tree_spec, "-p", &ancestor, "-m", "_"])

@@ -17,6 +17,8 @@ pub struct Config {
     pub sort_asc: Option<bool>,
     #[serde(default)]
     pub auto_fetch: Option<bool>,
+    #[serde(default)]
+    pub load_worktrees_on_launch: Option<bool>,
 }
 
 impl Config {

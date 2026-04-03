@@ -28,6 +28,7 @@ pub fn fetch_open_prs(repo_path: &Path) -> PrMap {
     let output = Command::new("gh")
         .args(["pr", "list", "--json", "number,headRefName,isDraft,state", "--state", "all", "--limit", "200"])
         .current_dir(repo_path)
+        .stdin(std::process::Stdio::null())
         .output();
 
     let output = match output {

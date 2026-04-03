@@ -41,7 +41,7 @@ fn main() -> Result<()> {
             let status = match b.merge_status {
                 MergeStatus::Merged => "merged",
                 MergeStatus::SquashMerged => "squash-merged",
-                MergeStatus::Unmerged => "unmerged",
+                MergeStatus::Unmerged | MergeStatus::Pending => "unmerged",
             };
             let tracking = match &b.tracking {
                 TrackingStatus::Tracked { remote_ref, gone } => {
@@ -103,6 +103,7 @@ fn main() -> Result<()> {
             working_tree_status,
             candidates,
             cache,
+            did_fetch: auto_fetch,
         });
     });
 

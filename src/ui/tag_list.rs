@@ -2,25 +2,24 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::App;
-
-/// Returns a color style based on how old a tag's commit is.
-fn age_style(date: &chrono::DateTime<chrono::Utc>) -> Style {
-    let duration = chrono::Utc::now() - *date;
-    let days = duration.num_days();
-
-    if days < 7 {
-        Style::new().fg(Color::Green)
-    } else if days < 30 {
-        Style::new().fg(Color::Yellow)
-    } else if days < 90 {
-        Style::new().fg(Color::Indexed(208)) // orange
-    } else {
-        Style::new().fg(Color::Red)
-    }
-}
+use super::shared::age_style;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+
+    // Show loading screen while tags are being fetched
+    if app.tag_loading {
+        let block = Block::default()
+            .title("Tags")
+            .title_style(app.theme.title)
+            .borders(Borders::ALL);
+        let msg = "  Loading tags...";
+        let loading = Paragraph::new(msg)
+            .style(app.theme.primary_text)
+            .block(block);
+        frame.render_widget(loading, area);
+        return;
+    }
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -159,23 +158,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if width < 80 {
         if selected_count > 0 {
             format!(
-                " {} tags ({} sel) \u{2014} [d]el [D]el+remote [p]ush [q]back",
+                " {} tags ({} sel) \u{2014} [d]el [D]el+remote [p]ush [q]uit",
                 total, selected_count
             )
         } else {
             format!(
-                " {} tags \u{2014} [d]el [p]ush [/]search [q]back",
+                " {} tags \u{2014} [d]el [p]ush [/]search [q]uit",
                 total
             )
         }
     } else if selected_count > 0 {
         format!(
-            " {} tags ({} selected) \u{2014} [Space]toggle [a]ll [n]one [i]nvert [d]elete [D]el+remote [s]ort [q]back",
+            " {} tags ({} selected) \u{2014} [Space]toggle [a]ll [n]one [i]nvert [d]elete [D]el+remote [s]ort [q]uit",
             total, selected_count
         )
     } else {
         format!(
-            " {} tags \u{2014} [Space]select [a]ll [d]elete [D]el+remote [p]ush [/]search [\\]filter [s]ort [q]back [?]help",
+            " {} tags \u{2014} [Space]select [a]ll [d]elete [D]el+remote [p]ush [/]search [\\]filter [s]ort [q]uit [?]help",
             total
         )
     };
@@ -185,36 +184,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .style(app.theme.search_bar);
         frame.render_widget(search_bar, status_area);
     } else {
-        let key_style = Style::default().fg(app.theme.title.fg.unwrap_or(Color::White));
-        let mut spans: Vec<Span> = Vec::new();
-        let mut remaining = status_text.as_str();
-        while let Some(open) = remaining.find('[') {
-            if open > 0 {
-                spans.push(Span::styled(remaining[..open].to_string(), app.theme.status_bar));
-            }
-            remaining = &remaining[open..];
-            if let Some(close) = remaining.find(']') {
-                spans.push(Span::styled("[", app.theme.status_bar));
-                spans.push(Span::styled(remaining[1..close].to_string(), key_style));
-                remaining = &remaining[close..];
-                if let Some(next_open) = remaining.find('[') {
-                    spans.push(Span::styled(remaining[..next_open].to_string(), app.theme.status_bar));
-                    remaining = &remaining[next_open..];
-                } else {
-                    spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
-                    remaining = "";
-                    break;
-                }
-            } else {
-                spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
-                remaining = "";
-                break;
-            }
-        }
-        if !remaining.is_empty() {
-            spans.push(Span::styled(remaining.to_string(), app.theme.status_bar));
-        }
-        let status = Paragraph::new(Line::from(spans)).style(app.theme.status_bar);
-        frame.render_widget(status, status_area);
+        let _ = super::shared::render_status_bar(
+            frame,
+            status_area,
+            &status_text,
+            app.theme.title.fg.unwrap_or(Color::White),
+            app.theme.status_bar,
+        );
     }
 }
