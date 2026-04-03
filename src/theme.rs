@@ -219,6 +219,16 @@ impl Theme {
         }
     }
 
+    /// Returns the dim foreground color (from the `dim` style's fg, or DarkGray fallback).
+    pub fn dim_fg(&self) -> Color {
+        self.dim.fg.unwrap_or(Color::DarkGray)
+    }
+
+    /// Returns the accent color (from the `title` style's fg, or White fallback).
+    pub fn accent_fg(&self) -> Color {
+        self.title.fg.unwrap_or(Color::White)
+    }
+
     pub fn from_name(name: &str) -> Self {
         match name {
             "light" => Self::light(),
