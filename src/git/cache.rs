@@ -1,11 +1,10 @@
+use crate::types::MergeStatus;
+use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-
-use serde::{Deserialize, Serialize};
-
-use crate::types::MergeStatus;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CacheEntry {
@@ -13,54 +12,56 @@ struct CacheEntry {
     commit_hash: String,
 }
 
-#[derive(Debug)]
 pub struct BranchCache {
     path: PathBuf,
     entries: HashMap<String, CacheEntry>,
 }
 
 impl BranchCache {
-    /// Load cache from disk. Returns empty cache if file is missing or corrupt.
     pub fn load(repo_path: &Path) -> Self {
         let path = cache_path(repo_path);
-        let entries = std::fs::read_to_string(&path)
+        let entries = fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         Self { path, entries }
     }
 
-    /// Write cache to disk.
     pub fn save(&self) {
         if let Ok(json) = serde_json::to_string(&self.entries) {
-            let _ = std::fs::write(&self.path, json);
+            let _ = fs::write(&self.path, json);
         }
     }
 
-    /// Look up a branch's cached status. Returns None if not cached or commit hash changed
-    /// (for unmerged branches). Merged/squash-merged entries are permanent.
     pub fn lookup(&self, branch_name: &str, current_commit_hash: &str) -> Option<MergeStatus> {
         let entry = self.entries.get(branch_name)?;
-        match entry.merge_status.as_str() {
-            "merged" => Some(MergeStatus::Merged),
-            "squash_merged" => Some(MergeStatus::SquashMerged),
-            "unmerged" if entry.commit_hash == current_commit_hash => Some(MergeStatus::Unmerged),
+        let status = match entry.merge_status.as_str() {
+            "merged" => MergeStatus::Merged,
+            "squash_merged" => MergeStatus::SquashMerged,
+            "unmerged" => MergeStatus::Unmerged,
+            _ => return None,
+        };
+        match status {
+            // Merged and SquashMerged are permanent
+            MergeStatus::Merged | MergeStatus::SquashMerged => Some(status),
+            // Unmerged is only valid if commit hasn't changed
+            MergeStatus::Unmerged => {
+                if entry.commit_hash == current_commit_hash {
+                    Some(status)
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
 
-    /// Delete the cache file and clear in-memory entries.
-    pub fn clear(&mut self) {
-        self.entries.clear();
-        let _ = std::fs::remove_file(&self.path);
-    }
-
-    /// Insert or update a branch's cached status.
     pub fn insert(&mut self, branch_name: &str, status: &MergeStatus, commit_hash: &str) {
         let status_str = match status {
             MergeStatus::Merged => "merged",
             MergeStatus::SquashMerged => "squash_merged",
             MergeStatus::Unmerged => "unmerged",
+            MergeStatus::Pending => return, // Never cache Pending
         };
         self.entries.insert(
             branch_name.to_string(),
@@ -70,63 +71,80 @@ impl BranchCache {
             },
         );
     }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 fn cache_path(repo_path: &Path) -> PathBuf {
     let mut hasher = DefaultHasher::new();
     repo_path.hash(&mut hasher);
     let hash = hasher.finish();
-    PathBuf::from(format!("/tmp/git-bm-cache-{:x}.json", hash))
+    PathBuf::from(format!("/tmp/git-bm-cache-{hash:x}.json"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
-    fn test_clear_removes_entries_and_file() {
-        // Use a unique fake repo path so this test doesn't collide with real caches
-        let fake_repo = Path::new("/tmp/test-clear-cache-repo-unique-12345");
-        let mut cache = BranchCache::load(fake_repo);
-
-        // Insert some entries and save to disk
-        cache.insert("feature-a", &MergeStatus::Merged, "abc123");
-        cache.insert("feature-b", &MergeStatus::Unmerged, "def456");
-        cache.save();
-
-        // Verify the cache file exists
-        assert!(cache.path.exists(), "cache file should exist after save");
-
-        // Verify lookups work before clear
-        assert_eq!(cache.lookup("feature-a", ""), Some(MergeStatus::Merged));
+    fn cache_insert_and_lookup() {
+        let dir = TempDir::new().unwrap();
+        let mut cache = BranchCache::load(dir.path());
+        cache.insert("feature/x", &MergeStatus::SquashMerged, "abc123");
         assert_eq!(
-            cache.lookup("feature-b", "def456"),
-            Some(MergeStatus::Unmerged)
-        );
-
-        // Clear the cache
-        cache.clear();
-
-        // In-memory entries should be gone
-        assert!(cache.lookup("feature-a", "").is_none());
-        assert!(cache.lookup("feature-b", "def456").is_none());
-
-        // Cache file should be removed from disk
-        assert!(
-            !cache.path.exists(),
-            "cache file should be removed after clear"
+            cache.lookup("feature/x", "abc123"),
+            Some(MergeStatus::SquashMerged)
         );
     }
 
     #[test]
-    fn test_clear_on_empty_cache_is_noop() {
-        let fake_repo = Path::new("/tmp/test-clear-empty-cache-repo-unique-67890");
-        let mut cache = BranchCache::load(fake_repo);
+    fn cache_unmerged_invalidated_on_new_commit() {
+        let dir = TempDir::new().unwrap();
+        let mut cache = BranchCache::load(dir.path());
+        cache.insert("feature/x", &MergeStatus::Unmerged, "abc123");
+        assert_eq!(
+            cache.lookup("feature/x", "abc123"),
+            Some(MergeStatus::Unmerged)
+        );
+        assert_eq!(cache.lookup("feature/x", "def456"), None);
+    }
 
-        // Clear on an empty cache (no file on disk) should not panic
+    #[test]
+    fn cache_merged_permanent() {
+        let dir = TempDir::new().unwrap();
+        let mut cache = BranchCache::load(dir.path());
+        cache.insert("feature/x", &MergeStatus::Merged, "abc123");
+        // Merged is permanent regardless of commit hash
+        assert_eq!(
+            cache.lookup("feature/x", "def456"),
+            Some(MergeStatus::Merged)
+        );
+    }
+
+    #[test]
+    fn cache_clear_removes_entries() {
+        let dir = TempDir::new().unwrap();
+        let mut cache = BranchCache::load(dir.path());
+        cache.insert("feature/x", &MergeStatus::Merged, "abc123");
         cache.clear();
+        assert_eq!(cache.lookup("feature/x", "abc123"), None);
+    }
 
-        assert!(cache.lookup("anything", "").is_none());
-        assert!(!cache.path.exists());
+    #[test]
+    fn cache_save_and_reload() {
+        let dir = TempDir::new().unwrap();
+        let mut cache = BranchCache::load(dir.path());
+        cache.insert("feature/x", &MergeStatus::SquashMerged, "abc123");
+        cache.save();
+
+        let reloaded = BranchCache::load(dir.path());
+        assert_eq!(
+            reloaded.lookup("feature/x", "abc123"),
+            Some(MergeStatus::SquashMerged)
+        );
     }
 }

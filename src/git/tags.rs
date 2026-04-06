@@ -1,249 +1,172 @@
+use crate::types::{BranchAction, OperationResult, TagInfo};
+use chrono::{TimeZone, Utc};
+use git2::{ObjectType, Repository};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
-use chrono::{DateTime, TimeZone, Utc};
-use git2::Repository;
-
-use crate::types::{BranchAction, OperationResult};
-
-/// Information about a single git tag.
-#[derive(Debug, Clone)]
-pub struct TagInfo {
-    pub name: String,
-    pub commit_hash: String,
-    pub date: DateTime<Utc>,
-    pub message: Option<String>,
-}
-
-impl TagInfo {
-    /// Human-readable age string: "3 days ago", "2 months ago", etc.
-    pub fn age_display(&self) -> String {
-        let duration = Utc::now() - self.date;
-        let seconds = duration.num_seconds();
-
-        if seconds < 60 {
-            "just now".to_string()
-        } else if seconds < 3600 {
-            let mins = duration.num_minutes();
-            format!("{} min{} ago", mins, if mins == 1 { "" } else { "s" })
-        } else if seconds < 86400 {
-            let hours = duration.num_hours();
-            format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
-        } else if seconds < 604800 {
-            let days = duration.num_days();
-            format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
-        } else if seconds < 2_592_000 {
-            let weeks = duration.num_weeks();
-            format!("{} week{} ago", weeks, if weeks == 1 { "" } else { "s" })
-        } else if seconds < 31_536_000 {
-            let months = duration.num_days() / 30;
-            format!("{} month{} ago", months, if months == 1 { "" } else { "s" })
-        } else {
-            let years = duration.num_days() / 365;
-            format!("{} year{} ago", years, if years == 1 { "" } else { "s" })
-        }
-    }
-
-    /// Compact age string for narrow terminals: "3d", "2mo", etc.
-    pub fn age_short(&self) -> String {
-        let duration = Utc::now() - self.date;
-        let seconds = duration.num_seconds();
-
-        if seconds < 60 {
-            "now".into()
-        } else if seconds < 3600 {
-            format!("{}m", duration.num_minutes())
-        } else if seconds < 86400 {
-            format!("{}h", duration.num_hours())
-        } else if seconds < 604800 {
-            format!("{}d", duration.num_days())
-        } else if seconds < 2_592_000 {
-            format!("{}w", duration.num_weeks())
-        } else if seconds < 31_536_000 {
-            format!("{}mo", duration.num_days() / 30)
-        } else {
-            format!("{}y", duration.num_days() / 365)
-        }
-    }
-}
-
-/// List all tags in the repository using git2.
-/// Returns tags sorted by date descending (newest first).
+/// List all tags in the repository sorted by date descending.
+/// Annotated tags include the tag message; lightweight tags have message = None.
 pub fn list_tags(repo: &Repository) -> Vec<TagInfo> {
-    let mut tags = Vec::new();
-
-    let Ok(tag_names) = repo.tag_names(None) else {
-        return tags;
+    let tag_names = match repo.tag_names(None) {
+        Ok(names) => names,
+        Err(_) => return vec![],
     };
 
-    for name in tag_names.iter().flatten() {
-        let refname = format!("refs/tags/{}", name);
-        let Ok(reference) = repo.find_reference(&refname) else {
-            continue;
-        };
+    let mut tags: Vec<TagInfo> = tag_names
+        .iter()
+        .flatten()
+        .filter_map(|name| {
+            let ref_name = format!("refs/tags/{name}");
+            let reference = repo.find_reference(&ref_name).ok()?;
 
-        // Resolve to the target object — could be a tag object (annotated) or a commit (lightweight)
-        let Ok(obj) = reference.peel(git2::ObjectType::Commit) else {
-            continue;
-        };
+            // Check the direct target to determine if annotated.
+            // Annotated tags point to a tag object; lightweight tags point to a commit.
+            let target_oid = reference.target()?;
+            let target_obj = repo.find_object(target_oid, None).ok()?;
 
-        let Ok(commit) = obj.peel_to_commit() else {
-            continue;
-        };
+            let (is_annotated, message, date, commit_hash) =
+                if target_obj.kind() == Some(ObjectType::Tag) {
+                    // Annotated tag
+                    let tag = repo.find_tag(target_oid).ok()?;
+                    let msg = tag.message().map(|m| m.trim().to_string());
+                    let commit_obj = reference.peel(ObjectType::Commit).ok()?;
+                    let commit = commit_obj.as_commit()?;
+                    let time = commit.committer().when();
+                    let date = Utc.timestamp_opt(time.seconds(), 0).single()?;
+                    let hash = commit.id().to_string();
+                    (true, msg, date, hash)
+                } else {
+                    // Lightweight tag: directly points to a commit
+                    let commit = reference.peel(ObjectType::Commit).ok()?;
+                    let commit = commit.as_commit()?;
+                    let time = commit.committer().when();
+                    let date = Utc.timestamp_opt(time.seconds(), 0).single()?;
+                    let hash = commit.id().to_string();
+                    (false, None, date, hash)
+                };
 
-        let commit_hash = commit.id().to_string();
-        let time = commit.time();
-        let date = Utc
-            .timestamp_opt(time.seconds(), 0)
-            .single()
-            .unwrap_or_else(Utc::now);
+            Some(TagInfo {
+                name: name.to_string(),
+                commit_hash: commit_hash[..7.min(commit_hash.len())].to_string(),
+                date,
+                message,
+                is_annotated,
+            })
+        })
+        .collect();
 
-        // Check if this is an annotated tag with a message
-        let message = if let Ok(tag_obj) = reference.peel(git2::ObjectType::Tag) {
-            tag_obj
-                .as_tag()
-                .and_then(|t| t.message().map(|m| m.trim().to_string()))
-        } else {
-            None
-        };
-
-        tags.push(TagInfo {
-            name: name.to_string(),
-            commit_hash,
-            date,
-            message,
-        });
-    }
-
-    // Sort by date descending (newest first)
     tags.sort_by(|a, b| b.date.cmp(&a.date));
     tags
 }
 
-/// Delete a local tag using git2.
+/// Delete a local tag.
 pub fn delete_tag(repo: &Repository, tag_name: &str) -> OperationResult {
     match repo.tag_delete(tag_name) {
         Ok(()) => OperationResult {
             branch_name: tag_name.to_string(),
             action: BranchAction::DeleteTag,
             success: true,
-            message: format!("Deleted tag {}", tag_name),
+            message: format!("Deleted tag {tag_name}"),
         },
         Err(e) => OperationResult {
             branch_name: tag_name.to_string(),
             action: BranchAction::DeleteTag,
             success: false,
-            message: format!("Failed to delete tag: {}", e),
+            message: format!("Failed: {e}"),
         },
     }
 }
 
-/// Delete multiple local tags using git2.
+/// Batch delete local tags.
 pub fn delete_tags_batch(repo: &Repository, tag_names: &[String]) -> Vec<OperationResult> {
-    tag_names
-        .iter()
-        .map(|name| delete_tag(repo, name))
-        .collect()
+    tag_names.iter().map(|name| delete_tag(repo, name)).collect()
 }
 
-/// Delete multiple tags from the remote in a single git push.
-/// Falls back to individual deletes if the batch fails.
+/// Batch delete remote tags with fallback to individual deletes.
 pub fn delete_remote_tags_batch(repo_path: &Path, tag_names: &[String]) -> Vec<OperationResult> {
     if tag_names.is_empty() {
-        return Vec::new();
+        return vec![];
     }
 
-    let mut cmd = Command::new("git");
-    cmd.current_dir(repo_path)
-        .stdin(std::process::Stdio::null())
+    let mut args = vec!["push", "origin", "--delete"];
+    let refs: Vec<&str> = tag_names.iter().map(|s| s.as_str()).collect();
+    args.extend(&refs);
+
+    let out = Command::new("git")
+        .args(&args)
+        .current_dir(repo_path)
+        .stdin(Stdio::null())
         .env("GIT_TERMINAL_PROMPT", "0")
-        .arg("push")
-        .arg("origin")
-        .arg("--delete");
-    for name in tag_names {
-        cmd.arg(name);
-    }
+        .output();
 
-    match cmd.output() {
-        Ok(o) if o.status.success() => tag_names
+    if matches!(&out, Ok(o) if o.status.success()) {
+        return tag_names
             .iter()
             .map(|name| OperationResult {
                 branch_name: name.clone(),
                 action: BranchAction::DeleteTagAndRemote,
                 success: true,
-                message: format!("Deleted remote tag {}", name),
+                message: format!("Deleted remote tag {name}"),
             })
-            .collect(),
-        _ => {
-            // Fallback: delete individually
-            tag_names
-                .iter()
-                .map(|name| {
-                    let mut fallback = Command::new("git");
-                    fallback
-                        .current_dir(repo_path)
-                        .stdin(std::process::Stdio::null())
-                        .env("GIT_TERMINAL_PROMPT", "0")
-                        .args(["push", "origin", "--delete", name]);
-                    match fallback.output() {
-                        Ok(o) if o.status.success() => OperationResult {
-                            branch_name: name.clone(),
-                            action: BranchAction::DeleteTagAndRemote,
-                            success: true,
-                            message: format!("Deleted remote tag {}", name),
-                        },
-                        Ok(o) => OperationResult {
-                            branch_name: name.clone(),
-                            action: BranchAction::DeleteTagAndRemote,
-                            success: false,
-                            message: format!(
-                                "Failed to delete remote tag: {}",
-                                String::from_utf8_lossy(&o.stderr).trim()
-                            ),
-                        },
-                        Err(e) => OperationResult {
-                            branch_name: name.clone(),
-                            action: BranchAction::DeleteTagAndRemote,
-                            success: false,
-                            message: format!("Failed to run git: {}", e),
-                        },
-                    }
-                })
-                .collect()
-        }
+            .collect();
     }
+
+    // Fallback to individual deletes
+    tag_names
+        .iter()
+        .map(|name| {
+            let out = Command::new("git")
+                .args(["push", "origin", "--delete", name])
+                .current_dir(repo_path)
+                .stdin(Stdio::null())
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output();
+
+            match out {
+                Ok(o) if o.status.success() => OperationResult {
+                    branch_name: name.clone(),
+                    action: BranchAction::DeleteTagAndRemote,
+                    success: true,
+                    message: format!("Deleted remote tag {name}"),
+                },
+                _ => OperationResult {
+                    branch_name: name.clone(),
+                    action: BranchAction::DeleteTagAndRemote,
+                    success: false,
+                    message: format!("Failed to delete remote tag {name}"),
+                },
+            }
+        })
+        .collect()
 }
 
-/// Push a tag to the remote using git CLI.
+/// Push a tag to the remote.
 pub fn push_tag(repo_path: &Path, tag_name: &str) -> OperationResult {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(repo_path)
-        .stdin(std::process::Stdio::null())
-        .env("GIT_TERMINAL_PROMPT", "0");
-    match cmd
+    let out = Command::new("git")
         .args(["push", "origin", tag_name])
-        .output()
-    {
+        .current_dir(repo_path)
+        .stdin(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output();
+
+    match out {
         Ok(o) if o.status.success() => OperationResult {
             branch_name: tag_name.to_string(),
             action: BranchAction::PushTag,
             success: true,
-            message: format!("Pushed tag {} to origin", tag_name),
+            message: format!("Pushed tag {tag_name}"),
         },
         Ok(o) => OperationResult {
             branch_name: tag_name.to_string(),
             action: BranchAction::PushTag,
             success: false,
-            message: format!(
-                "Push failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            ),
+            message: String::from_utf8_lossy(&o.stderr).trim().to_string(),
         },
         Err(e) => OperationResult {
             branch_name: tag_name.to_string(),
             action: BranchAction::PushTag,
             success: false,
-            message: format!("Failed to run git: {}", e),
+            message: e.to_string(),
         },
     }
 }

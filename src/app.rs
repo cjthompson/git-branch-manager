@@ -1,218 +1,430 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
-use ratatui::DefaultTerminal;
-use ratatui::widgets::TableState;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
+use ratatui::backend::CrosstermBackend;
+use ratatui::prelude::*;
+use ratatui::widgets::Cell;
+use ratatui::Terminal;
 
-use git_branch_manager::git::{branch, cache, operations, pr_loader, squash_loader, status, tags};
-use git_branch_manager::git::github::PrMap;
-use git_branch_manager::git::tags::TagInfo;
-use git_branch_manager::types::{BranchAction, BranchInfo, MergeStatus, OperationResult, ProgressUpdate, SquashResult, TrackingStatus, WorkingTreeStatus};
-use crate::ui;
-use crate::ui::symbols::SymbolSet;
-use crate::ui::theme::Theme;
-
-/// Payload sent from the background initial-load thread.
-pub struct InitialLoad {
-    pub branches: Vec<BranchInfo>,
-    pub working_tree_status: WorkingTreeStatus,
-    pub candidates: Vec<(String, String)>,
-    pub cache: cache::BranchCache,
-}
-
-/// Progress message sent from the background load thread.
-pub struct LoadProgress {
-    pub message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum View {
-    BranchList,
-    Confirm { action: BranchAction },
-    Executing,
-    Results,
-    Help,
-    Menu { cursor: usize },
-    Tags,
-    Settings { cursor: usize },
-    Filter,
-    TagFilter,
-}
+use git_branch_manager::config::Config;
+use git_branch_manager::git::{branch, cache, operations, pr_loader, squash_loader, tags, worktree};
+use git_branch_manager::symbols::SymbolSet;
+use git_branch_manager::theme::Theme;
+use git_branch_manager::types::*;
+use git_branch_manager::ui::list_render::CellContext;
+use git_branch_manager::ui::menu::MenuItem;
+use git_branch_manager::ui::render::{Overlay, RenderContext};
+use git_branch_manager::ui::shared::{age_style, prefix_style, truncate};
+use git_branch_manager::ui::toast::Toast;
+use git_branch_manager::view::branches::BranchesViewDef;
+use git_branch_manager::view::column::ColumnDef;
+use git_branch_manager::view::filter::{FilterSet, FilterTokenDef};
+use git_branch_manager::view::list_state::{self, ListState};
+use git_branch_manager::view::remotes::RemotesViewDef;
+use git_branch_manager::view::tags::TagsViewDef;
+use git_branch_manager::view::worktrees::WorktreesViewDef;
+use git_branch_manager::view::ViewId;
 
 pub struct App {
-    pub base_branch: String,
+    // Core
     pub repo_path: PathBuf,
-    pub branches: Vec<BranchInfo>,
-    pub view: View,
-    pub cursor: usize,
-    pub selected: Vec<bool>,
-    pub list_scroll_offset: usize,
-    pub results: Vec<OperationResult>,
+    pub base_branch: String,
+    pub config: Config,
+    pub theme: Theme,
+    pub symbols: SymbolSet,
     pub should_exit: bool,
+
+    // View state -- 4 peers
+    pub active_view: ViewId,
+    pub branches: ListState<BranchInfo>,
+    pub remotes: ListState<RemoteBranchInfo>,
+    pub tags: ListState<TagInfo>,
+    pub worktrees: ListState<WorktreeInfo>,
+
+    // View definitions (columns + filter tokens)
+    branch_columns: Vec<ColumnDef<BranchInfo>>,
+    remote_columns: Vec<ColumnDef<RemoteBranchInfo>>,
+    tag_columns: Vec<ColumnDef<TagInfo>>,
+    worktree_columns: Vec<ColumnDef<WorktreeInfo>>,
+    branch_filter_tokens: Vec<FilterTokenDef>,
+    remote_filter_tokens: Vec<FilterTokenDef>,
+    tag_filter_tokens: Vec<FilterTokenDef>,
+    worktree_filter_tokens: Vec<FilterTokenDef>,
+
+    // Overlay
+    pub overlay: Option<Overlay>,
+    /// Which view was active before the overlay opened (for Menu/Confirm return)
+    pub return_view: ViewId,
+
+    // Background channels
     pub squash_rx: Option<Receiver<SquashResult>>,
     pub squash_checked: usize,
     pub squash_total: usize,
-    pub working_tree_status: WorkingTreeStatus,
-    pub table_state: TableState,
-    pub symbols: &'static SymbolSet,
-    pub sort_column: Option<usize>,  // 0=name, 1=age, 2=ahead, 3=status
-    pub sort_ascending: bool,
-    pub search_query: String,
-    pub search_active: bool,
-    pub tags: Vec<TagInfo>,
-    pub tag_cursor: usize,
-    pub tag_table_state: TableState,
-    pub tag_selected: Vec<bool>,
-    pub tag_search_query: String,
-    pub tag_search_active: bool,
-    pub tag_sort_by_name: bool,
-    /// Which view to return to after the Results screen (BranchList or Tags).
-    pub results_return_view: ResultsReturnView,
-    /// Column header x-ranges for mouse click sorting: (x_start, sort_column_index).
-    /// Populated during branch_list rendering. The last entry extends to the end of the row.
-    pub header_columns: Vec<(u16, usize)>,
-    /// Status bar clickable items: (x_start, x_end_exclusive, key_to_simulate).
-    /// Populated during branch_list rendering.
-    pub status_bar_items: Vec<(u16, u16, KeyCode)>,
-    /// Terminal height in rows, updated each frame. Used to detect status bar row clicks.
-    pub terminal_rows: u16,
-    /// GitHub PR numbers keyed by branch name.
-    pub pr_map: PrMap,
-    /// Receiver for background PR data fetch. Receives exactly one PrMap, then closes.
+    pub remote_squash_rx: Option<Receiver<SquashResult>>,
+    pub remote_enrich_rx: Option<Receiver<RemoteEnrichResult>>,
+    pub worktree_enrich_rx: Option<Receiver<WorktreeEnrichResult>>,
     pub pr_rx: Option<Receiver<PrMap>>,
-    /// Active color theme.
-    pub theme: Theme,
-    /// Persisted configuration (used for saving sort state and other settings).
-    pub config: git_branch_manager::config::Config,
-    /// Receiver for background git operation results.
+    pub pr_map: PrMap,
     pub op_rx: Option<Receiver<Vec<OperationResult>>>,
-    /// Description of the currently executing operation (shown in the Executing view).
-    pub executing_label: String,
-    /// Receiver for per-item progress updates from background operations.
     pub progress_rx: Option<Receiver<ProgressUpdate>>,
-    /// Current progress state (updated each tick from progress_rx).
     pub progress: Option<ProgressUpdate>,
-    /// Shared cancellation flag: set to true when user presses Esc during Executing.
+    pub remote_fetch_rx: Option<Receiver<bool>>,
+    pub tag_load_rx: Option<Receiver<Vec<TagInfo>>>,
+    pub worktree_load_rx: Option<Receiver<Vec<WorktreeInfo>>>,
+    #[allow(clippy::type_complexity)]
+    pub remote_load_rx: Option<Receiver<(Vec<RemoteBranchInfo>, Vec<(String, String)>, cache::BranchCache)>>,
+
+    // Working tree status (for the main repo)
+    pub working_tree_status: WorkingTreeStatus,
+
+    // Cache (used for R-key cache clearing)
+    #[allow(dead_code)]
+    pub cache: cache::BranchCache,
+
+    // Toast
+    pub toast: Option<Toast>,
+
+    // Operation cancellation
     pub cancel_flag: Option<Arc<AtomicBool>>,
-    /// True while the initial branch load is in progress.
-    pub loading: bool,
-    /// Receiver for the initial background load (branches + working tree status).
-    pub load_rx: Option<Receiver<InitialLoad>>,
-    /// Receiver for loading progress messages (e.g. "Fetching from remote...").
-    pub load_progress_rx: Option<Receiver<LoadProgress>>,
-    /// Current loading status message shown on the loading screen.
-    pub loading_message: String,
+
+    // Terminal dimensions (for mouse handling)
+    pub terminal_rows: u16,
+
+    // Whether remote fetch has been done this session
+    pub remote_fetched: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResultsReturnView {
-    BranchList,
-    Tags,
+// ---- Generic channel drain helper ----
+
+fn drain_channel<T>(rx: &mut Option<Receiver<T>>, max_per_tick: usize) -> Vec<T> {
+    let Some(receiver) = rx.as_ref() else {
+        return vec![];
+    };
+    let mut results = Vec::new();
+
+    for _ in 0..max_per_tick {
+        match receiver.try_recv() {
+            Ok(item) => results.push(item),
+            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                *rx = None;
+                break;
+            }
+        }
+    }
+
+    results
 }
 
 impl App {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        base_branch: String,
         repo_path: PathBuf,
-        symbols: &'static SymbolSet,
-        theme: Theme,
-        config: git_branch_manager::config::Config,
-        load_rx: Receiver<InitialLoad>,
-        load_progress_rx: Receiver<LoadProgress>,
+        base_branch: String,
+        branches: Vec<BranchInfo>,
+        working_tree_status: WorkingTreeStatus,
+        cache: cache::BranchCache,
+        config: Config,
     ) -> Self {
-        let init_sort_col: Option<usize> = config.sort_column.as_deref().and_then(|s| match s {
-            "name" => Some(0),
-            "age" => Some(1),
-            "ahead" => Some(2),
-            "behind" => Some(3),
-            "status" => Some(4),
+        let theme = Theme::from_name(config.theme.as_deref().unwrap_or("dark"));
+        let symbols = SymbolSet::from_name(config.symbols.as_deref().unwrap_or("auto"));
+
+        // Init sort from config
+        let sort_col: Option<usize> = config.sort_column.as_deref().and_then(|s| match s {
+            "name"   => Some(0),
+            "remote" => Some(1),
+            "ahead"  => Some(2),
+            "pr"     => Some(3),
+            "age"    => Some(4),
+            "status" => Some(5),
             _ => None,
         });
-        let init_sort_asc: bool = config.sort_asc.unwrap_or(true);
+        let sort_asc = config.sort_asc.unwrap_or(true);
+
+        let branch_def = BranchesViewDef;
+        let remote_def = RemotesViewDef;
+        let tag_def = TagsViewDef;
+        let worktree_def = WorktreesViewDef;
+
+        let mut branch_state = ListState::new(branches);
+        branch_state.set_sort(sort_col, sort_asc);
+
+        let remote_fetched = config.auto_fetch == Some(true);
 
         Self {
-            base_branch,
             repo_path,
-            branches: Vec::new(),
-            view: View::BranchList,
-            cursor: 0,
-            selected: Vec::new(),
-            list_scroll_offset: 0,
-            results: Vec::new(),
+            base_branch,
+            config,
+            theme,
+            symbols,
             should_exit: false,
+            active_view: ViewId::Branches,
+            branches: branch_state,
+            remotes: ListState::empty(),
+            tags: ListState::empty(),
+            worktrees: ListState::empty(),
+            branch_columns: branch_def.columns(),
+            remote_columns: remote_def.columns(),
+            tag_columns: tag_def.columns(),
+            worktree_columns: worktree_def.columns(),
+            branch_filter_tokens: branch_def.filter_tokens(),
+            remote_filter_tokens: remote_def.filter_tokens(),
+            tag_filter_tokens: tag_def.filter_tokens(),
+            worktree_filter_tokens: worktree_def.filter_tokens(),
+            overlay: None,
+            return_view: ViewId::Branches,
             squash_rx: None,
             squash_checked: 0,
             squash_total: 0,
-            working_tree_status: WorkingTreeStatus::clean(),
-            table_state: TableState::default().with_selected(Some(0)),
-            symbols,
-            sort_column: init_sort_col,
-            sort_ascending: init_sort_asc,
-            search_query: String::new(),
-            search_active: false,
-            tags: Vec::new(),
-            tag_cursor: 0,
-            tag_table_state: TableState::default(),
-            tag_selected: Vec::new(),
-            tag_search_query: String::new(),
-            tag_search_active: false,
-            tag_sort_by_name: false,
-            results_return_view: ResultsReturnView::BranchList,
-            header_columns: Vec::new(),
-            status_bar_items: Vec::new(),
-            terminal_rows: 0,
-            pr_map: HashMap::new(),
+            remote_squash_rx: None,
+            remote_enrich_rx: None,
+            worktree_enrich_rx: None,
             pr_rx: None,
-            theme,
-            config,
+            pr_map: PrMap::new(),
             op_rx: None,
-            executing_label: String::new(),
             progress_rx: None,
             progress: None,
+            remote_fetch_rx: None,
+            tag_load_rx: None,
+            worktree_load_rx: None,
+            remote_load_rx: None,
+            working_tree_status,
+            cache,
+            toast: None,
             cancel_flag: None,
-            loading: true,
-            load_rx: Some(load_rx),
-            load_progress_rx: Some(load_progress_rx),
-            loading_message: "Loading...".into(),
+            terminal_rows: 0,
+            remote_fetched,
         }
     }
 
-    fn sort_col_name(col: usize) -> &'static str {
-        match col {
-            0 => "name",
-            1 => "age",
-            2 => "ahead",
-            3 => "behind",
-            4 => "status",
-            _ => "name",
-        }
-    }
+    // ---- Event Loop ----
 
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
-        while !self.should_exit {
-            self.drain_load_rx();
-            self.drain_squash_rx();
-            self.drain_pr_rx();
-            self.drain_progress_rx();
-            self.drain_op_rx();
-            terminal.draw(|frame| ui::render::draw(frame, self))?;
+    pub fn run(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> std::io::Result<()> {
+        // Apply initial sort
+        list_state::apply_sort(&mut self.branches, &self.branch_columns);
 
-            if event::poll(Duration::from_millis(250))? {
+        // Force a full redraw on the first frame by drawing once, then
+        // inserting a resize event so ratatui marks the entire buffer dirty.
+        terminal.clear()?;
+
+        loop {
+            self.drain_channels();
+
+            terminal.draw(|frame| {
+                self.terminal_rows = frame.area().height;
+                let mut ctx = self.build_render_context();
+                git_branch_manager::ui::render::draw(frame, &mut ctx);
+            })?;
+
+            if self.should_exit {
+                return Ok(());
+            }
+
+            if event::poll(Duration::from_millis(50))? {
                 let ev = event::read()?;
                 self.handle_event(ev);
             }
         }
-        crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
-        Ok(())
     }
+
+    fn build_render_context(&mut self) -> RenderContext<'_> {
+        let active_filter_tokens: &[FilterTokenDef] = match self.active_view {
+            ViewId::Branches => &self.branch_filter_tokens,
+            ViewId::Remotes => &self.remote_filter_tokens,
+            ViewId::Tags => &self.tag_filter_tokens,
+            ViewId::Worktrees => &self.worktree_filter_tokens,
+        };
+
+        RenderContext {
+            active_view: self.active_view,
+            overlay: self.overlay.as_ref(),
+            toast: self.toast.as_ref(),
+            theme: &self.theme,
+            symbols: &self.symbols,
+            config: &self.config,
+            branches: &mut self.branches,
+            remotes: &mut self.remotes,
+            tags: &mut self.tags,
+            worktrees: &mut self.worktrees,
+            branch_columns: &self.branch_columns,
+            remote_columns: &self.remote_columns,
+            tag_columns: &self.tag_columns,
+            worktree_columns: &self.worktree_columns,
+            active_filter_tokens,
+            render_branch_row,
+            render_remote_row,
+            render_tag_row,
+            render_worktree_row,
+        }
+    }
+
+    // ---- Channel Draining ----
+
+    fn drain_channels(&mut self) {
+        // Squash-merge results (cap 32 per tick)
+        for result in drain_channel(&mut self.squash_rx, 32) {
+            self.squash_checked += 1;
+            if let Some(b) = self
+                .branches
+                .items_mut()
+                .iter_mut()
+                .find(|b| b.name == result.branch_name)
+            {
+                b.merge_status = if result.is_squash_merged {
+                    MergeStatus::SquashMerged
+                } else {
+                    MergeStatus::Unmerged
+                };
+            }
+        }
+
+        // Remote squash-merge results
+        for result in drain_channel(&mut self.remote_squash_rx, 32) {
+            if let Some(b) = self
+                .remotes
+                .items_mut()
+                .iter_mut()
+                .find(|b| b.full_ref == result.branch_name)
+            {
+                b.merge_status = if result.is_squash_merged {
+                    MergeStatus::SquashMerged
+                } else {
+                    MergeStatus::Unmerged
+                };
+            }
+        }
+
+        // Remote enrichment
+        for result in drain_channel(&mut self.remote_enrich_rx, 32) {
+            if let Some(b) = self
+                .remotes
+                .items_mut()
+                .iter_mut()
+                .find(|b| b.full_ref == result.full_ref)
+            {
+                b.merge_status = result.merge_status;
+                b.ahead = result.ahead;
+                b.behind = result.behind;
+            }
+        }
+
+        // Worktree enrichment
+        for result in drain_channel(&mut self.worktree_enrich_rx, 32) {
+            if let Some(wt) = self.worktrees.items_mut().get_mut(result.index) {
+                wt.wt_status = result.wt_status;
+                wt.age_date = result.age_date;
+            }
+        }
+
+        // PR map (one-shot)
+        for map in drain_channel(&mut self.pr_rx, 1) {
+            self.pr_map = map;
+            // Push PR data into branch items
+            for branch in self.branches.items_mut() {
+                branch.pr = self.pr_map.get(&branch.name).cloned();
+            }
+            // Push PR data into remote items (keyed by short_name)
+            for remote in self.remotes.items_mut() {
+                remote.pr = self.pr_map.get(&remote.short_name).cloned();
+            }
+            self.branches.rebuild_display_indices();
+            self.remotes.rebuild_display_indices();
+        }
+
+        // Tag loading (one-shot)
+        for items in drain_channel(&mut self.tag_load_rx, 1) {
+            self.tags.set_items(items);
+            self.tags.loading = false;
+            self.clear_toast();
+        }
+
+        // Remote loading (one-shot)
+        for (remotes, candidates, remote_cache) in drain_channel(&mut self.remote_load_rx, 1) {
+            self.remotes.set_items(remotes);
+            self.remotes.loading = false;
+            self.clear_toast();
+
+            // Spawn remote enrichment
+            let unmerged: Vec<RemoteBranchInfo> = self
+                .remotes
+                .items()
+                .iter()
+                .filter(|b| !b.is_base)
+                .cloned()
+                .collect();
+            if !unmerged.is_empty() {
+                self.remote_enrich_rx = Some(branch::spawn_remote_enricher(
+                    self.repo_path.clone(),
+                    self.base_branch.clone(),
+                    unmerged,
+                ));
+            }
+
+            // Spawn remote squash checker
+            if !candidates.is_empty() {
+                self.remote_squash_rx = Some(squash_loader::spawn_squash_checker(
+                    self.repo_path.clone(),
+                    self.base_branch.clone(),
+                    candidates,
+                    remote_cache,
+                ));
+            }
+        }
+
+        // Worktree loading (one-shot)
+        for items in drain_channel(&mut self.worktree_load_rx, 1) {
+            self.worktrees.set_items(items);
+            self.worktrees.loading = false;
+            self.clear_toast();
+
+            // Spawn worktree enrichment
+            let rx = worktree::enrich_worktrees(self.worktrees.items().to_vec());
+            self.worktree_enrich_rx = Some(rx);
+        }
+
+        // Operation results (one-shot)
+        for results in drain_channel(&mut self.op_rx, 1) {
+            self.cancel_flag = None;
+            self.progress_rx = None;
+            self.progress = None;
+            self.overlay = Some(Overlay::Results { results });
+        }
+
+        // Progress updates
+        for update in drain_channel(&mut self.progress_rx, 32) {
+            self.progress = Some(update.clone());
+            if let Some(Overlay::Executing { progress, .. }) = &mut self.overlay {
+                *progress = Some(update);
+            }
+        }
+
+        // Remote fetch completion
+        for success in drain_channel(&mut self.remote_fetch_rx, 1) {
+            if success {
+                self.remote_fetched = true;
+                // Reload remote branches if we're on that view
+                if self.active_view == ViewId::Remotes {
+                    self.spawn_remote_load();
+                }
+            }
+            self.clear_toast();
+        }
+
+        // Expire toast
+        if let Some(ref toast) = self.toast {
+            if toast.is_expired() {
+                self.toast = None;
+            }
+        }
+    }
+
+    // ---- Event Dispatch ----
 
     fn handle_event(&mut self, event: Event) {
         match event {
@@ -220,2038 +432,2156 @@ impl App {
                 if key.kind != KeyEventKind::Press {
                     return;
                 }
-
-                // Search input takes priority over all other key handlers
-                if self.tag_search_active && matches!(self.view, View::Tags) {
-                    self.handle_tag_search_key(key.code);
-                    return;
-                }
-                if self.search_active {
-                    self.handle_search_key(key.code);
-                    return;
-                }
-
-                match &self.view {
-                    View::BranchList => self.handle_branch_list_key(key.code),
-                    View::Confirm { .. } => self.handle_confirm_key(key.code),
-                    View::Executing => self.handle_executing_key(key.code),
-                    View::Results => self.handle_results_key(key.code),
-                    View::Help => self.handle_help_key(key.code),
-                    View::Menu { .. } => self.handle_menu_key(key.code),
-                    View::Tags => self.handle_tags_key(key.code),
-                    View::Settings { .. } => self.handle_settings_key(key.code),
-                    View::Filter => self.handle_filter_key(key.code),
-                    View::TagFilter => self.handle_tag_filter_key(key.code),
-                }
+                self.handle_key(key);
             }
-            Event::Mouse(mouse) => {
-                match mouse.kind {
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        self.handle_mouse_click(mouse.column, mouse.row);
-                    }
-                    MouseEventKind::Down(MouseButton::Right) => {
-                        self.handle_mouse_right_click(mouse.column, mouse.row);
-                    }
-                    MouseEventKind::ScrollDown => {
-                        if self.view == View::BranchList {
-                            self.handle_branch_list_key(KeyCode::Down);
-                        } else if self.view == View::Tags {
-                            self.handle_tags_key(KeyCode::Down);
-                        }
-                    }
-                    MouseEventKind::ScrollUp => {
-                        if self.view == View::BranchList {
-                            self.handle_branch_list_key(KeyCode::Up);
-                        } else if self.view == View::Tags {
-                            self.handle_tags_key(KeyCode::Up);
-                        }
-                    }
-                    _ => {}
+            Event::Mouse(mouse) => self.handle_mouse(mouse),
+            _ => {}
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) {
+        // If search is active, route to search handler first
+        if self.is_search_active() {
+            self.handle_search_key(key);
+            return;
+        }
+
+        // Route to overlay handler if overlay is active
+        if self.overlay.is_some() {
+            self.handle_overlay_key(key);
+            return;
+        }
+
+        // Global keys (work in every view, take priority)
+        match key.code {
+            KeyCode::Char('q') => {
+                self.should_exit = true;
+                return;
+            }
+            KeyCode::Char('?') => {
+                self.overlay = Some(Overlay::Help);
+                return;
+            }
+            KeyCode::Char(',') => {
+                self.overlay = Some(Overlay::Settings { cursor: 0 });
+                return;
+            }
+            KeyCode::Char('T') => {
+                self.theme = self.theme.next();
+                self.save_config();
+                return;
+            }
+            KeyCode::Char('Y') => {
+                self.symbols = self.symbols.next();
+                self.save_config();
+                return;
+            }
+            KeyCode::Tab => {
+                if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
+                    self.active_view = self.active_view.prev();
+                } else {
+                    self.active_view = self.active_view.next();
                 }
+                self.ensure_view_loaded();
+                return;
+            }
+            KeyCode::BackTab => {
+                self.active_view = self.active_view.prev();
+                self.ensure_view_loaded();
+                return;
+            }
+            KeyCode::Char('/') => {
+                self.toggle_search();
+                return;
+            }
+            KeyCode::Char('\\') => {
+                self.overlay = Some(Overlay::Filter);
+                return;
+            }
+            _ => {}
+        }
+
+        // Common navigation/selection keys (work in every view)
+        if self.handle_common_list_key(key) {
+            return;
+        }
+
+        // View-specific keys
+        match self.active_view {
+            ViewId::Branches => self.handle_branches_key(key),
+            ViewId::Remotes => self.handle_remotes_key(key),
+            ViewId::Tags => self.handle_tags_key(key),
+            ViewId::Worktrees => self.handle_worktrees_key(key),
+        }
+    }
+
+    /// Keys shared by all 4 views: navigation, selection, sorting.
+    /// Returns true if the key was handled.
+    fn handle_common_list_key(&mut self, key: KeyEvent) -> bool {
+        macro_rules! with_state {
+            ($op:expr) => {
+                match self.active_view {
+                    ViewId::Branches => $op(&mut self.branches),
+                    ViewId::Remotes => $op(&mut self.remotes),
+                    ViewId::Tags => $op(&mut self.tags),
+                    ViewId::Worktrees => $op(&mut self.worktrees),
+                }
+            };
+        }
+
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                with_state!(list_state::nav_down);
+                true
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                with_state!(list_state::nav_up);
+                true
+            }
+            KeyCode::PageDown => {
+                with_state!(|s| list_state::nav_page_down(s, 20));
+                true
+            }
+            KeyCode::PageUp => {
+                with_state!(|s| list_state::nav_page_up(s, 20));
+                true
+            }
+            KeyCode::Home => {
+                with_state!(list_state::nav_home);
+                true
+            }
+            KeyCode::End => {
+                with_state!(list_state::nav_end);
+                true
+            }
+            KeyCode::Char(' ') => {
+                with_state!(list_state::select_toggle);
+                true
+            }
+            KeyCode::Char('a') => {
+                with_state!(list_state::select_all);
+                true
+            }
+            KeyCode::Char('n') => {
+                with_state!(list_state::deselect_all);
+                true
+            }
+            KeyCode::Char('i') => {
+                with_state!(list_state::invert_selection);
+                true
+            }
+            KeyCode::Char('m') => {
+                with_state!(list_state::select_merged);
+                true
+            }
+            KeyCode::Char('s') => {
+                self.cycle_sort();
+                true
+            }
+            KeyCode::Char('S') => {
+                self.toggle_sort_direction();
+                true
+            }
+            KeyCode::Enter => {
+                self.open_context_menu();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    // ---- View-specific key handlers ----
+
+    fn handle_branches_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('d') => self.delete_selected_branches(false),
+            KeyCode::Char('D') => self.delete_selected_branches(true),
+            KeyCode::Char('p') => self.push_selected_branches(),
+            KeyCode::Char('R') => self.clear_cache_and_refresh(),
+            KeyCode::Char('f') => self.start_fetch(false),
+            KeyCode::Char('F') => self.start_fetch(true),
+            KeyCode::Char('r') => {
+                self.active_view = ViewId::Remotes;
+                self.ensure_view_loaded();
+            }
+            KeyCode::Char('t') => {
+                self.active_view = ViewId::Tags;
+                self.ensure_view_loaded();
+            }
+            KeyCode::Char('w') => {
+                self.active_view = ViewId::Worktrees;
+                self.ensure_view_loaded();
             }
             _ => {}
         }
     }
 
-    fn handle_mouse_click(&mut self, x: u16, y: u16) {
-        if self.view != View::BranchList {
+    fn handle_remotes_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('d') => self.delete_selected_remote_branches(),
+            KeyCode::Char('f') => self.start_fetch(false),
+            KeyCode::Char('F') => self.start_fetch(true),
+            KeyCode::Char('b') | KeyCode::Char('r') | KeyCode::Esc => {
+                self.active_view = ViewId::Branches;
+            }
+            KeyCode::Char('t') => {
+                self.active_view = ViewId::Tags;
+                self.ensure_view_loaded();
+            }
+            KeyCode::Char('w') => {
+                self.active_view = ViewId::Worktrees;
+                self.ensure_view_loaded();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_tags_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('d') => self.delete_selected_tags(false),
+            KeyCode::Char('D') => self.delete_selected_tags(true),
+            KeyCode::Char('p') => self.push_selected_tags(),
+            KeyCode::Char('f') => self.start_fetch(false),
+            KeyCode::Char('F') => self.start_fetch(true),
+            KeyCode::Char('b') | KeyCode::Char('t') | KeyCode::Esc => {
+                self.active_view = ViewId::Branches;
+            }
+            KeyCode::Char('r') => {
+                self.active_view = ViewId::Remotes;
+                self.ensure_view_loaded();
+            }
+            KeyCode::Char('w') => {
+                self.active_view = ViewId::Worktrees;
+                self.ensure_view_loaded();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_worktrees_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('d') => self.remove_selected_worktrees(false),
+            KeyCode::Char('D') => self.remove_selected_worktrees(true),
+            KeyCode::Char('f') => self.start_fetch(false),
+            KeyCode::Char('F') => self.start_fetch(true),
+            KeyCode::Char('b') | KeyCode::Char('w') | KeyCode::Esc => {
+                self.active_view = ViewId::Branches;
+            }
+            KeyCode::Char('r') => {
+                self.active_view = ViewId::Remotes;
+                self.ensure_view_loaded();
+            }
+            KeyCode::Char('t') => {
+                self.active_view = ViewId::Tags;
+                self.ensure_view_loaded();
+            }
+            _ => {}
+        }
+    }
+
+    // ---- Overlay key handling ----
+
+    fn handle_overlay_key(&mut self, key: KeyEvent) {
+        let overlay = self.overlay.take();
+        match overlay {
+            Some(Overlay::Help) => {
+                // Any key closes help
+            }
+            Some(Overlay::Confirm { action, targets }) => match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    self.execute_confirmed_action(action, targets);
+                }
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    // Cancel -- don't put overlay back
+                }
+                _ => {
+                    self.overlay = Some(Overlay::Confirm { action, targets });
+                }
+            },
+            Some(Overlay::Menu { cursor, items }) => match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    let mut new_cursor = cursor + 1;
+                    while new_cursor < items.len() && !items[new_cursor].enabled {
+                        new_cursor += 1;
+                    }
+                    if new_cursor < items.len() {
+                        self.overlay = Some(Overlay::Menu {
+                            cursor: new_cursor,
+                            items,
+                        });
+                    } else {
+                        self.overlay = Some(Overlay::Menu { cursor, items });
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    let mut new_cursor = cursor;
+                    loop {
+                        if new_cursor == 0 {
+                            break;
+                        }
+                        new_cursor -= 1;
+                        if items[new_cursor].enabled {
+                            break;
+                        }
+                    }
+                    self.overlay = Some(Overlay::Menu {
+                        cursor: new_cursor,
+                        items,
+                    });
+                }
+                KeyCode::Enter => {
+                    if let Some(item) = items.get(cursor) {
+                        if item.enabled {
+                            self.execute_menu_action(item.action);
+                        } else {
+                            self.overlay = Some(Overlay::Menu { cursor, items });
+                        }
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {} // close
+                KeyCode::Char(c) => {
+                    if let Some((_, item)) = items
+                        .iter()
+                        .enumerate()
+                        .find(|(_, mi)| mi.shortcut == Some(c) && mi.enabled)
+                    {
+                        self.execute_menu_action(item.action);
+                    } else {
+                        self.overlay = Some(Overlay::Menu { cursor, items });
+                    }
+                }
+                _ => {
+                    self.overlay = Some(Overlay::Menu { cursor, items });
+                }
+            },
+            Some(Overlay::Results { .. }) => {
+                // Any key returns to the view and refreshes
+                self.refresh_after_operation();
+            }
+            Some(Overlay::Executing { label, progress }) => {
+                if key.code == KeyCode::Esc {
+                    if let Some(flag) = &self.cancel_flag {
+                        flag.store(true, Ordering::Relaxed);
+                    }
+                }
+                self.overlay = Some(Overlay::Executing { label, progress });
+            }
+            Some(Overlay::Settings { cursor }) => {
+                self.handle_settings_key(key, cursor);
+            }
+            Some(Overlay::Filter) => {
+                self.handle_filter_key(key);
+            }
+            None => {}
+        }
+    }
+
+    fn handle_settings_key(&mut self, key: KeyEvent, cursor: usize) {
+        const SORT_CYCLE: [Option<usize>; 7] =
+            [None, Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)];
+        const NUM_ROWS: usize = 6;
+
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.overlay = Some(Overlay::Settings {
+                    cursor: (cursor + 1).min(NUM_ROWS - 1),
+                });
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.overlay = Some(Overlay::Settings {
+                    cursor: cursor.saturating_sub(1),
+                });
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
+                match cursor {
+                    0 => {
+                        self.symbols = self.symbols.next();
+                    }
+                    1 => {
+                        self.theme = self.theme.next();
+                    }
+                    2 => {
+                        let sort_col = self.branches.sort_column();
+                        let pos = SORT_CYCLE.iter().position(|&c| c == sort_col).unwrap_or(0);
+                        let next_pos = (pos + 1) % SORT_CYCLE.len();
+                        self.branches.set_sort(SORT_CYCLE[next_pos], self.branches.sort_ascending());
+                        list_state::apply_sort(&mut self.branches, &self.branch_columns);
+                    }
+                    3 => {
+                        let asc = !self.branches.sort_ascending();
+                        self.branches.set_sort(self.branches.sort_column(), asc);
+                        list_state::apply_sort(&mut self.branches, &self.branch_columns);
+                    }
+                    4 => {
+                        self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
+                    }
+                    5 => {
+                        self.config.load_worktrees_on_launch =
+                            Some(self.config.load_worktrees_on_launch != Some(true));
+                    }
+                    _ => {}
+                }
+                self.save_config();
+                self.overlay = Some(Overlay::Settings { cursor });
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                match cursor {
+                    0 => {
+                        // backward = next() twice (3-cycle)
+                        self.symbols = self.symbols.next();
+                        self.symbols = self.symbols.next();
+                    }
+                    1 => {
+                        // backward = next() 3 times (4-cycle)
+                        self.theme = self.theme.next();
+                        self.theme = self.theme.next();
+                        self.theme = self.theme.next();
+                    }
+                    2 => {
+                        let sort_col = self.branches.sort_column();
+                        let pos = SORT_CYCLE.iter().position(|&c| c == sort_col).unwrap_or(0);
+                        let next_pos = (pos + SORT_CYCLE.len() - 1) % SORT_CYCLE.len();
+                        self.branches.set_sort(SORT_CYCLE[next_pos], self.branches.sort_ascending());
+                        list_state::apply_sort(&mut self.branches, &self.branch_columns);
+                    }
+                    3 => {
+                        let asc = !self.branches.sort_ascending();
+                        self.branches.set_sort(self.branches.sort_column(), asc);
+                        list_state::apply_sort(&mut self.branches, &self.branch_columns);
+                    }
+                    4 => {
+                        self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
+                    }
+                    5 => {
+                        self.config.load_worktrees_on_launch =
+                            Some(self.config.load_worktrees_on_launch != Some(true));
+                    }
+                    _ => {}
+                }
+                self.save_config();
+                self.overlay = Some(Overlay::Settings { cursor });
+            }
+            KeyCode::Esc => {
+                // Close settings (overlay already taken)
+            }
+            _ => {
+                self.overlay = Some(Overlay::Settings { cursor });
+            }
+        }
+    }
+
+    fn handle_filter_key(&mut self, key: KeyEvent) {
+        let active_tokens = match self.active_view {
+            ViewId::Branches => &self.branch_filter_tokens,
+            ViewId::Remotes => &self.remote_filter_tokens,
+            ViewId::Tags => &self.tag_filter_tokens,
+            ViewId::Worktrees => &self.worktree_filter_tokens,
+        };
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('\\') => {
+                // Close filter (overlay already taken)
+            }
+            KeyCode::Char('c') => {
+                // Clear all filters
+                self.set_active_filter(String::new());
+            }
+            KeyCode::Char(ch) => {
+                // Check if this matches a filter token
+                if let Some(token_def) = active_tokens.iter().find(|t| t.key == ch) {
+                    let current = self.active_filter_query();
+                    let new = FilterSet::toggle_token(&current, token_def.token);
+                    self.set_active_filter(new);
+                } else {
+                    self.overlay = Some(Overlay::Filter);
+                }
+            }
+            _ => {
+                self.overlay = Some(Overlay::Filter);
+            }
+        }
+    }
+
+    // ---- Search ----
+
+    fn is_search_active(&self) -> bool {
+        match self.active_view {
+            ViewId::Branches => self.branches.search_active(),
+            ViewId::Remotes => self.remotes.search_active(),
+            ViewId::Tags => self.tags.search_active(),
+            ViewId::Worktrees => self.worktrees.search_active(),
+        }
+    }
+
+    fn toggle_search(&mut self) {
+        match self.active_view {
+            ViewId::Branches => self.branches.set_search_active(true),
+            ViewId::Remotes => self.remotes.set_search_active(true),
+            ViewId::Tags => self.tags.set_search_active(true),
+            ViewId::Worktrees => self.worktrees.set_search_active(true),
+        }
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        macro_rules! with_state {
+            ($state:expr, $code:expr) => {
+                match $code {
+                    KeyCode::Esc => {
+                        $state.set_search_query(String::new());
+                        $state.set_search_active(false);
+                    }
+                    KeyCode::Enter => {
+                        $state.set_search_active(false);
+                    }
+                    KeyCode::Backspace => {
+                        let mut q = $state.search_query().to_string();
+                        q.pop();
+                        $state.set_search_query(q);
+                    }
+                    KeyCode::Char(c) => {
+                        let mut q = $state.search_query().to_string();
+                        q.push(c);
+                        $state.set_search_query(q);
+                    }
+                    _ => {}
+                }
+            };
+        }
+        match self.active_view {
+            ViewId::Branches => with_state!(self.branches, key.code),
+            ViewId::Remotes => with_state!(self.remotes, key.code),
+            ViewId::Tags => with_state!(self.tags, key.code),
+            ViewId::Worktrees => with_state!(self.worktrees, key.code),
+        }
+    }
+
+    // ---- Mouse handling ----
+
+    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        // Don't handle mouse in overlays
+        if self.overlay.is_some() {
             return;
         }
 
-        // Layout:
-        //   y=0 — outer border top
-        //   y=1 — header row (column titles)
-        //   y=2+ — branch data rows (first data row at y=2)
-        if y == 1 && !self.header_columns.is_empty() {
-            // Header row click — determine which sort column was clicked
-            let mut clicked_col: Option<usize> = None;
-            for (i, &(col_x, sort_idx)) in self.header_columns.iter().enumerate() {
-                let next_x = if i + 1 < self.header_columns.len() {
-                    self.header_columns[i + 1].0
-                } else {
-                    u16::MAX
-                };
-                if x >= col_x && x < next_x {
-                    clicked_col = Some(sort_idx);
-                    break;
+        match mouse.kind {
+            MouseEventKind::ScrollDown => {
+                macro_rules! with_state {
+                    ($op:expr) => {
+                        match self.active_view {
+                            ViewId::Branches => $op(&mut self.branches),
+                            ViewId::Remotes => $op(&mut self.remotes),
+                            ViewId::Tags => $op(&mut self.tags),
+                            ViewId::Worktrees => $op(&mut self.worktrees),
+                        }
+                    };
                 }
+                with_state!(list_state::nav_down);
             }
+            MouseEventKind::ScrollUp => {
+                macro_rules! with_state {
+                    ($op:expr) => {
+                        match self.active_view {
+                            ViewId::Branches => $op(&mut self.branches),
+                            ViewId::Remotes => $op(&mut self.remotes),
+                            ViewId::Tags => $op(&mut self.tags),
+                            ViewId::Worktrees => $op(&mut self.worktrees),
+                        }
+                    };
+                }
+                with_state!(list_state::nav_up);
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.handle_left_click(mouse.column, mouse.row);
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.handle_right_click(mouse.column, mouse.row);
+            }
+            _ => {}
+        }
+    }
 
+    fn handle_left_click(&mut self, x: u16, y: u16) {
+        // Header row click (y == 1): sort by column
+        if y == 1 {
+            let clicked_col = self.find_header_click(x);
             if let Some(col) = clicked_col {
-                if self.sort_column == Some(col) {
-                    self.sort_ascending = !self.sort_ascending;
-                } else {
-                    self.sort_column = Some(col);
-                    self.sort_ascending = true;
+                match self.active_view {
+                    ViewId::Branches => {
+                        if self.branches.sort_column() == Some(col) {
+                            list_state::toggle_sort_direction(&mut self.branches);
+                        } else {
+                            self.branches.set_sort(Some(col), true);
+                        }
+                        list_state::apply_sort(&mut self.branches, &self.branch_columns);
+                    }
+                    ViewId::Remotes => {
+                        if self.remotes.sort_column() == Some(col) {
+                            list_state::toggle_sort_direction(&mut self.remotes);
+                        } else {
+                            self.remotes.set_sort(Some(col), true);
+                        }
+                        list_state::apply_sort(&mut self.remotes, &self.remote_columns);
+                    }
+                    ViewId::Tags => {
+                        if self.tags.sort_column() == Some(col) {
+                            list_state::toggle_sort_direction(&mut self.tags);
+                        } else {
+                            self.tags.set_sort(Some(col), true);
+                        }
+                        list_state::apply_sort(&mut self.tags, &self.tag_columns);
+                    }
+                    ViewId::Worktrees => {
+                        if self.worktrees.sort_column() == Some(col) {
+                            list_state::toggle_sort_direction(&mut self.worktrees);
+                        } else {
+                            self.worktrees.set_sort(Some(col), true);
+                        }
+                        list_state::apply_sort(&mut self.worktrees, &self.worktree_columns);
+                    }
                 }
-                self.apply_sort();
-                self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
-                self.config.sort_asc = Some(self.sort_ascending);
-                self.config.save();
             }
-        } else if self.terminal_rows > 0 && y == self.terminal_rows - 1 && !self.status_bar_items.is_empty() {
-            // Status bar row click — look up which item was clicked and simulate its key
-            for &(x_start, x_end, key) in &self.status_bar_items.clone() {
+        } else if self.terminal_rows > 0 && y == self.terminal_rows - 1 {
+            // Status bar click
+            let items = match self.active_view {
+                ViewId::Branches => self.branches.status_bar_items.clone(),
+                ViewId::Remotes => self.remotes.status_bar_items.clone(),
+                ViewId::Tags => self.tags.status_bar_items.clone(),
+                ViewId::Worktrees => self.worktrees.status_bar_items.clone(),
+            };
+            for &(x_start, x_end, key) in &items {
                 if x >= x_start && x < x_end {
-                    self.handle_branch_list_key(key);
+                    self.handle_key(KeyEvent::new(key, crossterm::event::KeyModifiers::NONE));
                     break;
                 }
             }
         } else if y >= 2 {
-            // Data row click — move cursor to clicked row and toggle selection if not pinned
-            let scroll_offset = self.table_state.offset();
-            let clicked_display_row = (y - 2) as usize + scroll_offset;
-
-            // Reconstruct display_indices (same logic as branch_list.rs): pinned first, then non-pinned,
-            // filtered by current search query
-            let filtered_indices: Vec<usize> = self
-                .branches
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| self.matches_search(b))
-                .map(|(i, _)| i)
-                .collect();
-            let pinned_indices: Vec<usize> = filtered_indices
-                .iter()
-                .copied()
-                .filter(|&i| self.branches[i].is_pinned())
-                .collect();
-            let non_pinned_indices: Vec<usize> = filtered_indices
-                .iter()
-                .copied()
-                .filter(|&i| !self.branches[i].is_pinned())
-                .collect();
-            let display_indices: Vec<usize> = pinned_indices
-                .iter()
-                .chain(non_pinned_indices.iter())
-                .copied()
-                .collect();
-
-            if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
-                self.cursor = branch_idx;
-                self.table_state.select(Some(clicked_display_row));
-
-                // Toggle selection only for non-pinned rows
-                if !self.branches[branch_idx].is_pinned() {
-                    self.selected[branch_idx] = !self.selected[branch_idx];
-                }
+            // Click on a data row
+            macro_rules! click_row {
+                ($state:expr) => {{
+                    let scroll_offset = $state.table_state().offset();
+                    let clicked_display_row = (y - 2) as usize + scroll_offset;
+                    if let Some(&raw_idx) = $state.display_indices().get(clicked_display_row) {
+                        $state.set_cursor(raw_idx);
+                        $state.table_state_mut().select(Some(clicked_display_row));
+                    }
+                }};
+            }
+            match self.active_view {
+                ViewId::Branches => click_row!(self.branches),
+                ViewId::Remotes => click_row!(self.remotes),
+                ViewId::Tags => click_row!(self.tags),
+                ViewId::Worktrees => click_row!(self.worktrees),
             }
         }
     }
 
-    fn handle_mouse_right_click(&mut self, _x: u16, y: u16) {
-        if self.view != View::BranchList {
+    fn find_header_click(&self, x: u16) -> Option<usize> {
+        let header_columns = match self.active_view {
+            ViewId::Branches => &self.branches.header_columns,
+            ViewId::Remotes => &self.remotes.header_columns,
+            ViewId::Tags => &self.tags.header_columns,
+            ViewId::Worktrees => &self.worktrees.header_columns,
+        };
+        if header_columns.is_empty() {
+            return None;
+        }
+        for (i, &(col_x, sort_idx)) in header_columns.iter().enumerate() {
+            let next_x = if i + 1 < header_columns.len() {
+                header_columns[i + 1].0
+            } else {
+                u16::MAX
+            };
+            if x >= col_x && x < next_x {
+                return Some(sort_idx);
+            }
+        }
+        None
+    }
+
+    fn handle_right_click(&mut self, _x: u16, y: u16) {
+        if y < 2 {
             return;
         }
 
-        if y >= 2 {
-            let scroll_offset = self.table_state.offset();
-            let clicked_display_row = (y - 2) as usize + scroll_offset;
+        macro_rules! move_cursor {
+            ($state:expr) => {{
+                let scroll_offset = $state.table_state().offset();
+                let clicked_display_row = (y - 2) as usize + scroll_offset;
+                if let Some(&raw_idx) = $state.display_indices().get(clicked_display_row) {
+                    $state.set_cursor(raw_idx);
+                    $state.table_state_mut().select(Some(clicked_display_row));
+                    true
+                } else {
+                    false
+                }
+            }};
+        }
 
-            let filtered_indices: Vec<usize> = self
-                .branches
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| self.matches_search(b))
-                .map(|(i, _)| i)
-                .collect();
-            let pinned_indices: Vec<usize> = filtered_indices
-                .iter()
-                .copied()
-                .filter(|&i| self.branches[i].is_pinned())
-                .collect();
-            let non_pinned_indices: Vec<usize> = filtered_indices
-                .iter()
-                .copied()
-                .filter(|&i| !self.branches[i].is_pinned())
-                .collect();
-            let display_indices: Vec<usize> = pinned_indices
-                .iter()
-                .chain(non_pinned_indices.iter())
-                .copied()
-                .collect();
+        let moved = match self.active_view {
+            ViewId::Branches => move_cursor!(self.branches),
+            ViewId::Remotes => move_cursor!(self.remotes),
+            ViewId::Tags => move_cursor!(self.tags),
+            ViewId::Worktrees => move_cursor!(self.worktrees),
+        };
 
-            if let Some(&branch_idx) = display_indices.get(clicked_display_row) {
-                self.cursor = branch_idx;
-                self.table_state.select(Some(clicked_display_row));
-                self.view = View::Menu { cursor: 0 };
-            }
+        if moved {
+            self.open_context_menu();
         }
     }
 
-    fn handle_branch_list_key(&mut self, code: KeyCode) {
-        let len = self.branches.len();
-        if len == 0 {
-            if matches!(code, KeyCode::Char('q')) {
-                self.should_exit = true;
+    // ---- Context Menu Building ----
+
+    fn open_context_menu(&mut self) {
+        let items = self.build_menu_items();
+        if items.is_empty() {
+            return;
+        }
+        self.return_view = self.active_view;
+        self.overlay = Some(Overlay::Menu { items, cursor: 0 });
+    }
+
+    fn build_menu_items(&self) -> Vec<MenuItem> {
+        match self.active_view {
+            ViewId::Branches => self.build_branch_menu(),
+            ViewId::Remotes => self.build_remote_menu(),
+            ViewId::Tags => self.build_tag_menu(),
+            ViewId::Worktrees => self.build_worktree_menu(),
+        }
+    }
+
+    fn build_branch_menu(&self) -> Vec<MenuItem> {
+        let Some(branch) = self.branches.cursor_item() else {
+            return vec![];
+        };
+        let has_remote = matches!(
+            &branch.tracking,
+            TrackingStatus::Tracked {
+                gone: false,
+                ..
             }
+        );
+        let is_ahead = branch.ahead.is_some_and(|a| a > 0);
+        let is_behind = branch.behind.is_some_and(|b| b > 0);
+        let has_pr = self.pr_map.contains_key(&branch.name);
+
+        vec![
+            MenuItem {
+                label: "Checkout".into(),
+                enabled: !branch.is_current,
+                reason: if branch.is_current { Some("current".into()) } else { None },
+                shortcut: Some('c'),
+                action: BranchAction::Checkout,
+            },
+            MenuItem {
+                label: "Delete local".into(),
+                enabled: !branch.is_base && !branch.is_current,
+                reason: if branch.is_current { Some("current".into()) } else if branch.is_base { Some("base".into()) } else { None },
+                shortcut: Some('d'),
+                action: BranchAction::DeleteLocal,
+            },
+            MenuItem {
+                label: "Delete local + remote".into(),
+                enabled: !branch.is_base && !branch.is_current && has_remote,
+                reason: if branch.is_current { Some("current".into()) } else if branch.is_base { Some("base".into()) } else if !has_remote { Some("no remote".into()) } else { None },
+                shortcut: Some('D'),
+                action: BranchAction::DeleteLocalAndRemote,
+            },
+            MenuItem {
+                label: "Fast-forward".into(),
+                enabled: !branch.is_current && has_remote,
+                reason: if branch.is_current { Some("current".into()) } else if !has_remote { Some("no remote".into()) } else { None },
+                shortcut: Some('f'),
+                action: BranchAction::FastForward,
+            },
+            MenuItem {
+                label: "Push".into(),
+                enabled: is_ahead,
+                reason: if !has_remote { Some("no remote".into()) } else if !is_ahead { Some("not ahead".into()) } else { None },
+                shortcut: Some('p'),
+                action: BranchAction::Push,
+            },
+            MenuItem {
+                label: "Force push".into(),
+                enabled: is_ahead && is_behind,
+                reason: if !has_remote { Some("no remote".into()) } else if !is_ahead { Some("not ahead".into()) } else if !is_behind { Some("not behind".into()) } else { None },
+                shortcut: Some('P'),
+                action: BranchAction::ForcePush,
+            },
+            MenuItem {
+                label: "Pull".into(),
+                enabled: is_behind && has_remote,
+                reason: if !has_remote { Some("no remote".into()) } else if !is_behind { Some("not behind".into()) } else { None },
+                shortcut: Some('l'),
+                action: BranchAction::Pull,
+            },
+            MenuItem {
+                label: "Merge into base".into(),
+                enabled: !branch.is_base && !branch.is_current,
+                reason: if branch.is_current { Some("current".into()) } else if branch.is_base { Some("base".into()) } else { None },
+                shortcut: Some('m'),
+                action: BranchAction::Merge,
+            },
+            MenuItem {
+                label: "Squash merge into base".into(),
+                enabled: !branch.is_base && !branch.is_current,
+                reason: if branch.is_current { Some("current".into()) } else if branch.is_base { Some("base".into()) } else { None },
+                shortcut: Some('s'),
+                action: BranchAction::SquashMerge,
+            },
+            MenuItem {
+                label: "Rebase onto base".into(),
+                enabled: !branch.is_base && !branch.is_current,
+                reason: if branch.is_current { Some("current".into()) } else if branch.is_base { Some("base".into()) } else { None },
+                shortcut: Some('r'),
+                action: BranchAction::Rebase,
+            },
+            MenuItem {
+                label: "Create worktree".into(),
+                enabled: !branch.is_current,
+                reason: if branch.is_current { Some("current".into()) } else { None },
+                shortcut: Some('w'),
+                action: BranchAction::Worktree,
+            },
+            MenuItem {
+                label: "Open PR in browser".into(),
+                enabled: has_pr,
+                reason: if !has_pr { Some("no PR".into()) } else { None },
+                shortcut: Some('o'),
+                action: BranchAction::ViewRemotePR,
+            },
+        ]
+    }
+
+    fn build_remote_menu(&self) -> Vec<MenuItem> {
+        let Some(branch) = self.remotes.cursor_item() else {
+            return vec![];
+        };
+        let pinned = branch.is_pinned();
+        let has_local = branch.has_local;
+        let has_pr = self.pr_map.contains_key(&branch.short_name);
+
+        vec![
+            MenuItem {
+                label: "Checkout".into(),
+                enabled: !pinned && !has_local,
+                reason: if pinned { Some("base".into()) } else if has_local { Some("local exists".into()) } else { None },
+                shortcut: Some('c'),
+                action: BranchAction::CheckoutRemote,
+            },
+            MenuItem {
+                label: "Delete remote branch".into(),
+                enabled: !pinned,
+                reason: if pinned { Some("base".into()) } else { None },
+                shortcut: Some('d'),
+                action: BranchAction::DeleteRemoteBranch,
+            },
+            MenuItem {
+                label: "Delete remote + local".into(),
+                enabled: !pinned && has_local,
+                reason: if pinned { Some("base".into()) } else if !has_local { Some("no local".into()) } else { None },
+                shortcut: Some('D'),
+                action: BranchAction::DeleteRemoteAndLocal,
+            },
+            MenuItem {
+                label: "Fetch remote".into(),
+                enabled: !pinned,
+                reason: if pinned { Some("base".into()) } else { None },
+                shortcut: Some('f'),
+                action: BranchAction::FetchRemote,
+            },
+            MenuItem {
+                label: "Pull remote".into(),
+                enabled: !pinned && has_local,
+                reason: if pinned { Some("base".into()) } else if !has_local { Some("no local".into()) } else { None },
+                shortcut: Some('l'),
+                action: BranchAction::PullRemote,
+            },
+            MenuItem {
+                label: "Merge into current".into(),
+                enabled: !pinned,
+                reason: if pinned { Some("base".into()) } else { None },
+                shortcut: Some('m'),
+                action: BranchAction::MergeRemoteIntoCurrent,
+            },
+            MenuItem {
+                label: "Cherry-pick latest".into(),
+                enabled: !pinned,
+                reason: if pinned { Some("base".into()) } else { None },
+                shortcut: Some('p'),
+                action: BranchAction::CherryPickRemote,
+            },
+            MenuItem {
+                label: "View PR in browser".into(),
+                enabled: has_pr && !pinned,
+                reason: if pinned { Some("base".into()) } else if !has_pr { Some("no PR".into()) } else { None },
+                shortcut: Some('o'),
+                action: BranchAction::ViewRemotePR,
+            },
+        ]
+    }
+
+    fn build_tag_menu(&self) -> Vec<MenuItem> {
+        let Some(_tag) = self.tags.cursor_item() else {
+            return vec![];
+        };
+        vec![
+            MenuItem {
+                label: "Delete tag".into(),
+                enabled: true,
+                reason: None,
+                shortcut: Some('d'),
+                action: BranchAction::DeleteTag,
+            },
+            MenuItem {
+                label: "Delete tag (local + remote)".into(),
+                enabled: true,
+                reason: None,
+                shortcut: Some('D'),
+                action: BranchAction::DeleteTagAndRemote,
+            },
+            MenuItem {
+                label: "Push tag to remote".into(),
+                enabled: true,
+                reason: None,
+                shortcut: Some('p'),
+                action: BranchAction::PushTag,
+            },
+        ]
+    }
+
+    fn build_worktree_menu(&self) -> Vec<MenuItem> {
+        let Some(wt) = self.worktrees.cursor_item() else {
+            return vec![];
+        };
+        let is_main = wt.is_main;
+        let is_dirty = !wt.wt_status.is_clean();
+
+        vec![
+            MenuItem {
+                label: "Remove worktree".into(),
+                enabled: !is_main && !is_dirty,
+                reason: if is_main {
+                    Some("main worktree".into())
+                } else if is_dirty {
+                    Some("dirty".into())
+                } else {
+                    None
+                },
+                shortcut: Some('d'),
+                action: BranchAction::WorktreeRemove,
+            },
+            MenuItem {
+                label: "Force remove worktree".into(),
+                enabled: !is_main,
+                reason: if is_main {
+                    Some("main worktree".into())
+                } else {
+                    None
+                },
+                shortcut: Some('D'),
+                action: BranchAction::WorktreeForceRemove,
+            },
+        ]
+    }
+
+    fn execute_menu_action(&mut self, action: BranchAction) {
+        // View PR -- fire and forget, no confirm
+        if action == BranchAction::ViewRemotePR {
+            let name = match self.active_view {
+                ViewId::Branches => self
+                    .branches
+                    .cursor_item()
+                    .map(|b| b.name.clone())
+                    .unwrap_or_default(),
+                ViewId::Remotes => self
+                    .remotes
+                    .cursor_item()
+                    .map(|b| b.short_name.clone())
+                    .unwrap_or_default(),
+                _ => return,
+            };
+            let repo_path = self.repo_path.clone();
+            std::thread::spawn(move || {
+                let _ = std::process::Command::new("gh")
+                    .args(["pr", "view", "--web", &name])
+                    .current_dir(&repo_path)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            });
             return;
         }
 
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                let query = self.search_query.to_lowercase();
-                let mut next = self.cursor + 1;
-                while next < len && !branch_matches_query(&self.branches[next], &query) {
-                    next += 1;
-                }
-                if next < len {
-                    self.cursor = next;
-                    self.table_state.select(Some(self.cursor));
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                let query = self.search_query.to_lowercase();
-                if self.cursor > 0 {
-                    let mut prev = self.cursor - 1;
-                    while prev > 0 && !branch_matches_query(&self.branches[prev], &query) {
-                        prev -= 1;
-                    }
-                    if branch_matches_query(&self.branches[prev], &query) {
-                        self.cursor = prev;
-                        self.table_state.select(Some(self.cursor));
-                    }
-                }
-            }
-            KeyCode::Char(' ') => {
-                let branch = &self.branches[self.cursor];
-                if !branch.is_base && !branch.is_current {
-                    self.selected[self.cursor] = !self.selected[self.cursor];
-                }
-            }
-            KeyCode::Char('a') => {
-                for (i, branch) in self.branches.iter().enumerate() {
-                    self.selected[i] = !branch.is_base && !branch.is_current;
-                }
-            }
-            KeyCode::Char('n') => {
-                self.selected.fill(false);
-            }
-            KeyCode::Char('m') => {
-                for (i, branch) in self.branches.iter().enumerate() {
-                    self.selected[i] = !branch.is_base
-                        && !branch.is_current
-                        && matches!(
-                            branch.merge_status,
-                            MergeStatus::Merged | MergeStatus::SquashMerged
-                        );
-                }
-            }
-            KeyCode::Char('i') => {
-                for (i, branch) in self.branches.iter().enumerate() {
-                    if !branch.is_base && !branch.is_current {
-                        self.selected[i] = !self.selected[i];
-                    }
-                }
-            }
-            KeyCode::Char('d') => {
-                if self.has_selection() {
-                    self.view = View::Confirm {
-                        action: BranchAction::DeleteLocal,
-                    };
-                }
-            }
-            KeyCode::Char('D') => {
-                if self.has_selection() {
-                    self.view = View::Confirm {
-                        action: BranchAction::DeleteLocalAndRemote,
-                    };
-                }
-            }
-            KeyCode::Char('R') => {
-                let mut branch_cache = cache::BranchCache::load(&self.repo_path);
-                branch_cache.clear();
-                self.refresh_branches();
-            }
-            KeyCode::Char('x') => {
-                let branch = &self.branches[self.cursor];
-                if !branch.is_base && !branch.is_current {
-                    self.view = View::Confirm {
-                        action: BranchAction::DeleteLocal,
-                    };
-                }
-            }
-            KeyCode::Char('c') => {
-                let branch = &self.branches[self.cursor];
-                if !branch.is_current && !branch.is_base {
-                    self.view = View::Confirm {
-                        action: BranchAction::Checkout,
-                    };
-                }
-            }
-            KeyCode::Char('f') => {
-                self.spawn_op("Fetching...".into(), {
-                    let repo_path = self.repo_path.clone();
-                    move || vec![operations::fetch(&repo_path)]
-                });
-            }
-            KeyCode::Char('F') => {
-                self.spawn_op("Fetching with prune...".into(), {
-                    let repo_path = self.repo_path.clone();
-                    move || vec![operations::fetch_prune(&repo_path)]
-                });
-            }
-            KeyCode::Enter => {
-                self.view = View::Menu { cursor: 0 };
-            }
-            KeyCode::Char('s') => {
-                self.sort_column = Some(match self.sort_column {
-                    Some(c) => (c + 1) % 5,
-                    None => 0,
-                });
-                self.sort_ascending = true;
-                self.apply_sort();
-                self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
-                self.config.sort_asc = Some(self.sort_ascending);
-                self.config.save();
-            }
-            KeyCode::Char('S') => {
-                self.sort_ascending = !self.sort_ascending;
-                self.apply_sort();
-                self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
-                self.config.sort_asc = Some(self.sort_ascending);
-                self.config.save();
-            }
-            KeyCode::Char('t') => {
-                let Ok(repo) = git2::Repository::open(&self.repo_path) else {
-                    return;
-                };
-                self.tags = tags::list_tags(&repo);
-                self.tag_selected = vec![false; self.tags.len()];
-                self.tag_cursor = 0;
-                self.tag_search_query.clear();
-                self.tag_search_active = false;
-                self.tag_sort_by_name = false;
-                self.tag_table_state = TableState::default().with_selected(
-                    if self.tags.is_empty() { None } else { Some(0) }
-                );
-                self.view = View::Tags;
-            }
-            KeyCode::Char('/') => {
-                self.search_active = true;
-            }
-            KeyCode::Char('\\') => {
-                self.view = View::Filter;
-            }
-            KeyCode::PageDown => {
-                let page_size = 20;
-                let query = self.search_query.to_lowercase();
-                let mut remaining = page_size;
-                let mut next = self.cursor;
-                while remaining > 0 && next + 1 < len {
-                    let candidate = next + 1;
-                    if branch_matches_query(&self.branches[candidate], &query) {
-                        next = candidate;
-                        remaining -= 1;
-                    } else {
-                        next = candidate;
-                    }
-                }
-                // Ensure we landed on a valid row
-                if branch_matches_query(&self.branches[next], &query) {
-                    self.cursor = next;
-                    self.table_state.select(Some(self.cursor));
-                }
-            }
-            KeyCode::PageUp => {
-                let page_size = 20;
-                let query = self.search_query.to_lowercase();
-                let mut remaining = page_size;
-                let mut prev = self.cursor;
-                while remaining > 0 && prev > 0 {
-                    let candidate = prev - 1;
-                    if branch_matches_query(&self.branches[candidate], &query) {
-                        prev = candidate;
-                        remaining -= 1;
-                    } else if candidate > 0 {
-                        prev = candidate;
-                    } else {
-                        break;
-                    }
-                }
-                if branch_matches_query(&self.branches[prev], &query) {
-                    self.cursor = prev;
-                    self.table_state.select(Some(self.cursor));
-                }
-            }
-            KeyCode::Char('T') => {
-                self.theme = self.theme.next();
-                let mut config = git_branch_manager::config::Config::load();
-                config.theme = Some(self.theme.name.to_string());
-                config.save();
-            }
-            KeyCode::Char('Y') => {
-                self.symbols = crate::ui::symbols::next(self.symbols);
-                let mut config = git_branch_manager::config::Config::load();
-                config.symbols = Some(crate::ui::symbols::name(self.symbols).to_string());
-                config.save();
-            }
-            KeyCode::Char('?') => {
-                self.view = View::Help;
-            }
-            KeyCode::Char(',') => {
-                self.view = View::Settings { cursor: 0 };
-            }
-            KeyCode::Char('q') => {
-                self.should_exit = true;
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_confirm_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('y') => {
-                let is_tag_action = matches!(
-                    &self.view,
-                    View::Confirm { action } if matches!(action, BranchAction::DeleteTag | BranchAction::DeleteTagAndRemote | BranchAction::PushTag)
-                );
-                if is_tag_action {
-                    self.results_return_view = ResultsReturnView::Tags;
-                }
-                self.execute_action_async();
-            }
-            KeyCode::Char('n') | KeyCode::Esc => {
-                // Return to the appropriate view
-                let is_tag_action = matches!(
-                    &self.view,
-                    View::Confirm { action } if matches!(action, BranchAction::DeleteTag | BranchAction::DeleteTagAndRemote | BranchAction::PushTag)
-                );
-                if is_tag_action {
-                    self.view = View::Tags;
-                } else {
-                    self.view = View::BranchList;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_executing_key(&mut self, code: KeyCode) {
-        if let KeyCode::Esc = code
-            && let Some(flag) = &self.cancel_flag
-        {
-            flag.store(true, Ordering::Relaxed);
-        }
-    }
-
-    fn handle_results_key(&mut self, _code: KeyCode) {
-        match self.results_return_view {
-            ResultsReturnView::Tags => {
-                // Refresh the tag list and return to Tags view
-                let Ok(repo) = git2::Repository::open(&self.repo_path) else {
-                    self.view = View::BranchList;
-                    return;
-                };
-                self.tags = tags::list_tags(&repo);
-                if self.tag_sort_by_name {
-                    self.tags.sort_by(|a, b| a.name.cmp(&b.name));
-                }
-                self.tag_selected = vec![false; self.tags.len()];
-                if self.tag_cursor >= self.tags.len() {
-                    self.tag_cursor = self.tags.len().saturating_sub(1);
-                }
-                self.tag_table_state.select(
-                    if self.tags.is_empty() { None } else { Some(self.tag_cursor) }
-                );
-                self.results.clear();
-                self.results_return_view = ResultsReturnView::BranchList;
-                self.view = View::Tags;
-            }
-            ResultsReturnView::BranchList => {
-                self.refresh_branches();
-                self.view = View::BranchList;
-            }
-        }
-    }
-
-    fn handle_help_key(&mut self, _code: KeyCode) {
-        self.view = View::BranchList;
-    }
-
-    fn handle_filter_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Esc | KeyCode::Char('\\') => {
-                self.view = View::BranchList;
-            }
-            // Status toggles
-            KeyCode::Char('m') => {
-                self.search_query =
-                    FilterSet::toggle_token(&self.search_query, "status:merged");
-                self.reset_cursor_to_first_match();
-                self.view = View::BranchList;
-            }
-            KeyCode::Char('s') => {
-                self.search_query =
-                    FilterSet::toggle_token(&self.search_query, "status:squash");
-                self.reset_cursor_to_first_match();
-                self.view = View::BranchList;
-            }
-            KeyCode::Char('u') => {
-                self.search_query =
-                    FilterSet::toggle_token(&self.search_query, "status:unmerged");
-                self.reset_cursor_to_first_match();
-                self.view = View::BranchList;
-            }
-            // PR toggles
-            KeyCode::Char('p') => {
-                self.search_query =
-                    FilterSet::toggle_token(&self.search_query, "pr:yes");
-                self.reset_cursor_to_first_match();
-                self.view = View::BranchList;
-            }
-            KeyCode::Char('P') => {
-                self.search_query =
-                    FilterSet::toggle_token(&self.search_query, "pr:no");
-                self.reset_cursor_to_first_match();
-                self.view = View::BranchList;
-            }
-            // Sync toggles
-            KeyCode::Char('a') => {
-                self.search_query =
-                    FilterSet::toggle_token(&self.search_query, "sync:ahead");
-                self.reset_cursor_to_first_match();
-                self.view = View::BranchList;
-            }
-            KeyCode::Char('b') => {
-                self.search_query =
-                    FilterSet::toggle_token(&self.search_query, "sync:behind");
-                self.reset_cursor_to_first_match();
-                self.view = View::BranchList;
-            }
-            // Age presets
-            KeyCode::Char('1') => {
-                self.search_query =
-                    FilterSet::toggle_token(&self.search_query, "age:<7d");
-                self.reset_cursor_to_first_match();
-                self.view = View::BranchList;
-            }
-            KeyCode::Char('2') => {
-                self.search_query =
-                    FilterSet::toggle_token(&self.search_query, "age:<30d");
-                self.reset_cursor_to_first_match();
-                self.view = View::BranchList;
-            }
-            KeyCode::Char('3') => {
-                self.search_query =
-                    FilterSet::toggle_token(&self.search_query, "age:>30d");
-                self.reset_cursor_to_first_match();
-                self.view = View::BranchList;
-            }
-            KeyCode::Char('4') => {
-                self.search_query =
-                    FilterSet::toggle_token(&self.search_query, "age:>90d");
-                self.reset_cursor_to_first_match();
-                self.view = View::BranchList;
-            }
-            // Custom age — drop into search bar
-            KeyCode::Char('n') => {
-                let trimmed = self.search_query.trim().to_string();
-                self.search_query = if trimmed.is_empty() {
-                    "age:<".into()
-                } else {
-                    format!("{} age:<", trimmed)
-                };
-                self.search_active = true;
-                self.view = View::BranchList;
-            }
-            KeyCode::Char('o') => {
-                let trimmed = self.search_query.trim().to_string();
-                self.search_query = if trimmed.is_empty() {
-                    "age:>".into()
-                } else {
-                    format!("{} age:>", trimmed)
-                };
-                self.search_active = true;
-                self.view = View::BranchList;
-            }
-            // Clear all
-            KeyCode::Char('c') => {
-                self.search_query.clear();
-                self.search_active = false;
-                self.reset_cursor_to_first_match();
-                self.view = View::BranchList;
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_tags_key(&mut self, code: KeyCode) {
-        let filtered: Vec<usize> = self.filtered_tag_indices();
-        let len = filtered.len();
-        if len == 0 {
-            match code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
-                    self.view = View::BranchList;
-                }
-                KeyCode::Char('/') => {
-                    self.tag_search_active = true;
-                }
-                KeyCode::Char('\\') => {
-                    self.view = View::TagFilter;
-                }
-                KeyCode::Char('c') if !self.tag_search_query.is_empty() => {
-                    self.tag_search_query.clear();
-                }
-                _ => {}
-            }
+        // Get target names for confirm dialog
+        let targets = self.get_cursor_targets(action);
+        if targets.is_empty() {
             return;
         }
 
-        // Find current cursor position in filtered list
-        let cursor_pos = filtered.iter().position(|&i| i == self.tag_cursor).unwrap_or(0);
-
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if cursor_pos + 1 < len {
-                    self.tag_cursor = filtered[cursor_pos + 1];
-                    self.tag_table_state.select(Some(cursor_pos + 1));
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if cursor_pos > 0 {
-                    self.tag_cursor = filtered[cursor_pos - 1];
-                    self.tag_table_state.select(Some(cursor_pos - 1));
-                }
-            }
-            KeyCode::PageDown => {
-                let page_size = 20;
-                let new_pos = (cursor_pos + page_size).min(len - 1);
-                self.tag_cursor = filtered[new_pos];
-                self.tag_table_state.select(Some(new_pos));
-            }
-            KeyCode::PageUp => {
-                let page_size = 20;
-                let new_pos = cursor_pos.saturating_sub(page_size);
-                self.tag_cursor = filtered[new_pos];
-                self.tag_table_state.select(Some(new_pos));
-            }
-            KeyCode::Char(' ') => {
-                self.tag_selected[self.tag_cursor] = !self.tag_selected[self.tag_cursor];
-            }
-            KeyCode::Char('a') => {
-                for &i in &filtered {
-                    self.tag_selected[i] = true;
-                }
-            }
-            KeyCode::Char('n') => {
-                self.tag_selected.fill(false);
-            }
-            KeyCode::Char('i') => {
-                for &i in &filtered {
-                    self.tag_selected[i] = !self.tag_selected[i];
-                }
-            }
-            KeyCode::Char('d') => {
-                if self.has_tag_selection() || !self.tags.is_empty() {
-                    self.results_return_view = ResultsReturnView::Tags;
-                    self.view = View::Confirm {
-                        action: BranchAction::DeleteTag,
-                    };
-                }
-            }
-            KeyCode::Char('D') => {
-                if self.has_tag_selection() || !self.tags.is_empty() {
-                    self.results_return_view = ResultsReturnView::Tags;
-                    self.view = View::Confirm {
-                        action: BranchAction::DeleteTagAndRemote,
-                    };
-                }
-            }
-            KeyCode::Char('p') => {
-                if !self.tags.is_empty() {
-                    let tag_name = self.tags[self.tag_cursor].name.clone();
-                    self.results_return_view = ResultsReturnView::Tags;
-                    self.spawn_op(format!("Pushing tag {}...", tag_name), {
-                        let repo_path = self.repo_path.clone();
-                        move || vec![tags::push_tag(&repo_path, &tag_name)]
-                    });
-                }
-            }
-            KeyCode::Char('/') => {
-                self.tag_search_active = true;
-            }
-            KeyCode::Char('\\') => {
-                self.view = View::TagFilter;
-            }
-            KeyCode::Char('s') => {
-                self.tag_sort_by_name = !self.tag_sort_by_name;
-                self.apply_tag_sort();
-            }
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
-                self.view = View::BranchList;
-            }
-            KeyCode::Char('?') => {
-                self.view = View::Help;
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_tag_search_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Esc => {
-                self.tag_search_query.clear();
-                self.tag_search_active = false;
-                self.reset_tag_cursor();
-            }
-            KeyCode::Enter => {
-                self.tag_search_active = false;
-            }
-            KeyCode::Backspace => {
-                self.tag_search_query.pop();
-                self.reset_tag_cursor();
-            }
-            KeyCode::Char(c) => {
-                self.tag_search_query.push(c);
-                self.reset_tag_cursor();
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_tag_filter_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Esc | KeyCode::Char('\\') => {
-                self.view = View::Tags;
-            }
-            KeyCode::Char('1') => {
-                self.tag_search_query =
-                    FilterSet::toggle_token(&self.tag_search_query, "age:<7d");
-                self.reset_tag_cursor();
-                self.view = View::Tags;
-            }
-            KeyCode::Char('2') => {
-                self.tag_search_query =
-                    FilterSet::toggle_token(&self.tag_search_query, "age:<30d");
-                self.reset_tag_cursor();
-                self.view = View::Tags;
-            }
-            KeyCode::Char('3') => {
-                self.tag_search_query =
-                    FilterSet::toggle_token(&self.tag_search_query, "age:>30d");
-                self.reset_tag_cursor();
-                self.view = View::Tags;
-            }
-            KeyCode::Char('4') => {
-                self.tag_search_query =
-                    FilterSet::toggle_token(&self.tag_search_query, "age:>90d");
-                self.reset_tag_cursor();
-                self.view = View::Tags;
-            }
-            KeyCode::Char('n') => {
-                let trimmed = self.tag_search_query.trim().to_string();
-                self.tag_search_query = if trimmed.is_empty() {
-                    "age:<".into()
-                } else {
-                    format!("{} age:<", trimmed)
-                };
-                self.tag_search_active = true;
-                self.view = View::Tags;
-            }
-            KeyCode::Char('o') => {
-                let trimmed = self.tag_search_query.trim().to_string();
-                self.tag_search_query = if trimmed.is_empty() {
-                    "age:>".into()
-                } else {
-                    format!("{} age:>", trimmed)
-                };
-                self.tag_search_active = true;
-                self.view = View::Tags;
-            }
-            KeyCode::Char('c') => {
-                self.tag_search_query.clear();
-                self.tag_search_active = false;
-                self.reset_tag_cursor();
-                self.view = View::Tags;
-            }
-            _ => {}
-        }
-    }
-
-    /// Spawn a closure on a background thread and transition to the Executing view.
-    /// The closure should return a `Vec<OperationResult>`.
-    fn spawn_op<F>(&mut self, label: String, f: F)
-    where
-        F: FnOnce() -> Vec<OperationResult> + Send + 'static,
-    {
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let results = f();
-            let _ = tx.send(results);
+        self.overlay = Some(Overlay::Confirm {
+            action,
+            targets,
         });
-        self.executing_label = label;
-        self.op_rx = Some(rx);
-        self.progress_rx = None;
-        self.progress = None;
-        self.cancel_flag = None;
-        self.view = View::Executing;
     }
 
-    /// Spawn a closure that receives a progress sender and cancellation flag.
-    /// Used for bulk operations that process multiple items.
-    fn spawn_op_with_progress<F>(&mut self, label: String, f: F)
-    where
-        F: FnOnce(Sender<ProgressUpdate>, Arc<AtomicBool>) -> Vec<OperationResult> + Send + 'static,
-    {
+    /// Get target name(s) for a single-item action from the context menu
+    fn get_cursor_targets(&self, _action: BranchAction) -> Vec<String> {
+        match self.active_view {
+            ViewId::Branches => self
+                .branches
+                .cursor_item()
+                .map(|b| vec![b.name.clone()])
+                .unwrap_or_default(),
+            ViewId::Remotes => self
+                .remotes
+                .cursor_item()
+                .map(|b| vec![b.short_name.clone()])
+                .unwrap_or_default(),
+            ViewId::Tags => self
+                .tags
+                .cursor_item()
+                .map(|t| vec![t.name.clone()])
+                .unwrap_or_default(),
+            ViewId::Worktrees => self
+                .worktrees
+                .cursor_item()
+                .map(|w| vec![w.path.to_string_lossy().to_string()])
+                .unwrap_or_default(),
+        }
+    }
+
+    // ---- Action Execution ----
+
+    fn execute_confirmed_action(&mut self, action: BranchAction, item_names: Vec<String>) {
+        let label = format!("{}...", action.label());
+        let repo_path = self.repo_path.clone();
+        let base_branch = self.base_branch.clone();
+        let working_clean = self.working_tree_status.is_clean();
+
         let (op_tx, op_rx) = mpsc::channel();
         let (prog_tx, prog_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_clone = cancel.clone();
-        std::thread::spawn(move || {
-            let results = f(prog_tx, cancel_clone);
-            let _ = op_tx.send(results);
+
+        self.overlay = Some(Overlay::Executing {
+            label,
+            progress: None,
         });
-        self.executing_label = label;
         self.op_rx = Some(op_rx);
         self.progress_rx = Some(prog_rx);
-        self.progress = None;
         self.cancel_flag = Some(cancel);
-        self.view = View::Executing;
+
+        std::thread::spawn(move || {
+            let results = execute_action(
+                action,
+                &item_names,
+                &repo_path,
+                &base_branch,
+                !working_clean,
+                &prog_tx,
+                &cancel_clone,
+            );
+            let _ = op_tx.send(results);
+        });
     }
 
-    fn execute_action_async(&mut self) {
-        let action = match &self.view {
-            View::Confirm { action } => action.clone(),
-            _ => return,
+    // ---- View-level action helpers ----
+
+    fn delete_selected_branches(&mut self, include_remote: bool) {
+        let names = self.get_selected_branch_names();
+        if names.is_empty() {
+            return;
+        }
+        let action = if include_remote {
+            BranchAction::DeleteLocalAndRemote
+        } else {
+            BranchAction::DeleteLocal
         };
+        self.return_view = ViewId::Branches;
+        self.overlay = Some(Overlay::Confirm {
+            action,
+            targets: names,
+        });
+    }
 
-        let label = format!("{}...", action.label());
+    fn push_selected_branches(&mut self) {
+        let names = self.get_selected_branch_names();
+        if names.is_empty() {
+            return;
+        }
+        self.return_view = ViewId::Branches;
+        self.overlay = Some(Overlay::Confirm {
+            action: BranchAction::Push,
+            targets: names,
+        });
+    }
 
-        // Tag operations
-        if action == BranchAction::DeleteTag || action == BranchAction::DeleteTagAndRemote {
-            let target_names = self.target_tag_names();
-            if target_names.is_empty() {
-                return;
-            }
-            let repo_path = self.repo_path.clone();
-            let delete_remote = action == BranchAction::DeleteTagAndRemote;
-            self.spawn_op(label, move || {
-                let repo = match git2::Repository::open(&repo_path) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        return vec![OperationResult {
-                            branch_name: String::new(),
-                            action: BranchAction::DeleteTag,
-                            success: false,
-                            message: format!("Failed to open repo: {}", e),
-                        }];
-                    }
-                };
-                let mut results = tags::delete_tags_batch(&repo, &target_names);
-                if delete_remote {
-                    let successfully_deleted: Vec<String> = results
-                        .iter()
-                        .filter(|r| r.success)
-                        .map(|r| r.branch_name.clone())
-                        .collect();
-                    if !successfully_deleted.is_empty() {
-                        results.extend(tags::delete_remote_tags_batch(&repo_path, &successfully_deleted));
-                    }
+    fn delete_selected_remote_branches(&mut self) {
+        let indices = self.remotes.selected_indices();
+        let names: Vec<String> = indices
+            .iter()
+            .filter_map(|&i| {
+                let b = &self.remotes.items()[i];
+                if !b.is_pinned() {
+                    Some(b.short_name.clone())
+                } else {
+                    None
                 }
-                results
-            });
+            })
+            .collect();
+        if names.is_empty() {
             return;
         }
+        self.return_view = ViewId::Remotes;
+        self.overlay = Some(Overlay::Confirm {
+            action: BranchAction::DeleteRemoteBranch,
+            targets: names,
+        });
+    }
 
-        if action == BranchAction::PushTag {
-            if !self.tags.is_empty() {
-                let tag_name = self.tags[self.tag_cursor].name.clone();
-                let repo_path = self.repo_path.clone();
-                self.spawn_op(label, move || {
-                    vec![tags::push_tag(&repo_path, &tag_name)]
-                });
-            }
+    fn delete_selected_tags(&mut self, include_remote: bool) {
+        let indices = self.tags.selected_indices();
+        let names: Vec<String> = indices
+            .iter()
+            .map(|&i| self.tags.items()[i].name.clone())
+            .collect();
+        if names.is_empty() {
             return;
         }
-
-        // Checkout operates on the cursor branch, not the selection
-        if action == BranchAction::Checkout {
-            let branch_name = self.branches[self.cursor].name.clone();
-            let needs_stash = !self.working_tree_status.is_clean();
-            let repo_path = self.repo_path.clone();
-            self.spawn_op(label, move || {
-                let repo = match git2::Repository::open(&repo_path) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        return vec![OperationResult {
-                            branch_name: branch_name.clone(),
-                            action: BranchAction::Checkout,
-                            success: false,
-                            message: format!("Failed to open repo: {}", e),
-                        }];
-                    }
-                };
-                vec![operations::checkout_branch(&repo, &repo_path, &branch_name, needs_stash)]
-            });
-            return;
-        }
-
-        // Fast-forward operates on the cursor branch
-        if action == BranchAction::FastForward {
-            let branch_name = self.branches[self.cursor].name.clone();
-            let repo_path = self.repo_path.clone();
-            self.spawn_op(label, move || {
-                vec![operations::fast_forward(&repo_path, &branch_name)]
-            });
-            return;
-        }
-
-        // Push operates on the cursor branch
-        if action == BranchAction::Push {
-            let branch_name = self.branches[self.cursor].name.clone();
-            let repo_path = self.repo_path.clone();
-            self.spawn_op(label, move || {
-                vec![operations::push_branch(&repo_path, &branch_name)]
-            });
-            return;
-        }
-
-        // Force push operates on the cursor branch
-        if action == BranchAction::ForcePush {
-            let branch_name = self.branches[self.cursor].name.clone();
-            let repo_path = self.repo_path.clone();
-            self.spawn_op(label, move || {
-                vec![operations::force_push_branch(&repo_path, &branch_name)]
-            });
-            return;
-        }
-
-        // Pull operates on the cursor branch
-        if action == BranchAction::Pull {
-            let branch_name = self.branches[self.cursor].name.clone();
-            let is_current = self.branches[self.cursor].is_current;
-            let repo_path = self.repo_path.clone();
-            self.spawn_op(label, move || {
-                vec![operations::pull_branch(&repo_path, &branch_name, is_current)]
-            });
-            return;
-        }
-
-        // Merge / squash merge operates on the cursor branch into base
-        if action == BranchAction::Merge || action == BranchAction::SquashMerge {
-            let branch_name = self.branches[self.cursor].name.clone();
-            let needs_stash = !self.working_tree_status.is_clean();
-            let squash = action == BranchAction::SquashMerge;
-            let repo_path = self.repo_path.clone();
-            let base_branch = self.base_branch.clone();
-            self.spawn_op(label, move || {
-                operations::merge_branch(&repo_path, &branch_name, &base_branch, squash, needs_stash)
-            });
-            return;
-        }
-
-        // Rebase operates on the cursor branch onto base
-        if action == BranchAction::Rebase {
-            let branch_name = self.branches[self.cursor].name.clone();
-            let needs_stash = !self.working_tree_status.is_clean();
-            let repo_path = self.repo_path.clone();
-            let base_branch = self.base_branch.clone();
-            self.spawn_op(label, move || {
-                operations::rebase_branch(&repo_path, &branch_name, &base_branch, needs_stash)
-            });
-            return;
-        }
-
-        // Create worktree operates on the cursor branch
-        if action == BranchAction::Worktree {
-            let branch_name = self.branches[self.cursor].name.clone();
-            let repo_path = self.repo_path.clone();
-            self.spawn_op(label, move || {
-                vec![operations::create_worktree(&repo_path, &branch_name)]
-            });
-            return;
-        }
-
-        // Bulk branch operations (delete local, delete local+remote)
-        let target_branches: Vec<String> = {
-            let selected: Vec<String> = self
-                .branches
-                .iter()
-                .zip(self.selected.iter())
-                .filter(|&(_, &sel)| sel)
-                .map(|(b, _)| b.name.clone())
-                .collect();
-            if selected.is_empty() {
-                vec![self.branches[self.cursor].name.clone()]
-            } else {
-                selected
-            }
+        let action = if include_remote {
+            BranchAction::DeleteTagAndRemote
+        } else {
+            BranchAction::DeleteTag
         };
+        self.return_view = ViewId::Tags;
+        self.overlay = Some(Overlay::Confirm {
+            action,
+            targets: names,
+        });
+    }
 
+    fn push_selected_tags(&mut self) {
+        let indices = self.tags.selected_indices();
+        let names: Vec<String> = indices
+            .iter()
+            .map(|&i| self.tags.items()[i].name.clone())
+            .collect();
+        if names.is_empty() {
+            return;
+        }
+        self.return_view = ViewId::Tags;
+        self.overlay = Some(Overlay::Confirm {
+            action: BranchAction::PushTag,
+            targets: names,
+        });
+    }
+
+    fn remove_selected_worktrees(&mut self, force: bool) {
+        let indices = self.worktrees.selected_indices();
+        let names: Vec<String> = indices
+            .iter()
+            .filter_map(|&i| {
+                let wt = &self.worktrees.items()[i];
+                if !wt.is_main {
+                    Some(wt.path.to_string_lossy().to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if names.is_empty() {
+            return;
+        }
+        let action = if force {
+            BranchAction::WorktreeForceRemove
+        } else {
+            BranchAction::WorktreeRemove
+        };
+        self.return_view = ViewId::Worktrees;
+        self.overlay = Some(Overlay::Confirm {
+            action,
+            targets: names,
+        });
+    }
+
+    fn get_selected_branch_names(&self) -> Vec<String> {
+        let indices = self.branches.selected_indices();
+        indices
+            .iter()
+            .filter_map(|&i| {
+                let b = &self.branches.items()[i];
+                if !b.is_pinned() {
+                    Some(b.name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    // ---- Sorting ----
+
+    fn cycle_sort(&mut self) {
+        match self.active_view {
+            ViewId::Branches => {
+                list_state::cycle_sort_column(&mut self.branches, &self.branch_columns);
+                list_state::apply_sort(&mut self.branches, &self.branch_columns);
+            }
+            ViewId::Remotes => {
+                list_state::cycle_sort_column(&mut self.remotes, &self.remote_columns);
+                list_state::apply_sort(&mut self.remotes, &self.remote_columns);
+            }
+            ViewId::Tags => {
+                list_state::cycle_sort_column(&mut self.tags, &self.tag_columns);
+                list_state::apply_sort(&mut self.tags, &self.tag_columns);
+            }
+            ViewId::Worktrees => {
+                list_state::cycle_sort_column(&mut self.worktrees, &self.worktree_columns);
+                list_state::apply_sort(&mut self.worktrees, &self.worktree_columns);
+            }
+        }
+        self.save_sort_config();
+    }
+
+    fn toggle_sort_direction(&mut self) {
+        match self.active_view {
+            ViewId::Branches => {
+                list_state::toggle_sort_direction(&mut self.branches);
+                list_state::apply_sort(&mut self.branches, &self.branch_columns);
+            }
+            ViewId::Remotes => {
+                list_state::toggle_sort_direction(&mut self.remotes);
+                list_state::apply_sort(&mut self.remotes, &self.remote_columns);
+            }
+            ViewId::Tags => {
+                list_state::toggle_sort_direction(&mut self.tags);
+                list_state::apply_sort(&mut self.tags, &self.tag_columns);
+            }
+            ViewId::Worktrees => {
+                list_state::toggle_sort_direction(&mut self.worktrees);
+                list_state::apply_sort(&mut self.worktrees, &self.worktree_columns);
+            }
+        }
+        self.save_sort_config();
+    }
+
+    // ---- View Loading ----
+
+    fn ensure_view_loaded(&mut self) {
+        match self.active_view {
+            ViewId::Tags if self.tags.items().is_empty() && !self.tags.loading => {
+                self.spawn_tag_load();
+            }
+            ViewId::Remotes if self.remotes.items().is_empty() && !self.remotes.loading => {
+                self.spawn_remote_load();
+                // Trigger fetch if not yet done this session
+                if !self.remote_fetched && self.config.auto_fetch == Some(true) {
+                    self.start_remote_fetch();
+                }
+            }
+            ViewId::Worktrees
+                if self.worktrees.items().is_empty() && !self.worktrees.loading =>
+            {
+                self.spawn_worktree_load();
+            }
+            _ => {}
+        }
+    }
+
+    fn spawn_tag_load(&mut self) {
+        self.tags.loading = true;
         let repo_path = self.repo_path.clone();
-        self.spawn_op_with_progress(label, move |prog_tx, cancel_flag| {
-            let mut results = Vec::new();
-            let total = target_branches.len();
-            let repo = match git2::Repository::open(&repo_path) {
-                Ok(r) => r,
-                Err(e) => {
-                    results.push(OperationResult {
-                        branch_name: String::new(),
-                        action: action.clone(),
-                        success: false,
-                        message: format!("Failed to open repo: {}", e),
-                    });
-                    return results;
-                }
+        let (tx, rx) = mpsc::channel();
+        self.tag_load_rx = Some(rx);
+        self.toast = Some(Toast::new("Loading tags...".into(), 300));
+        std::thread::spawn(move || {
+            if let Ok(repo) = git2::Repository::open(&repo_path) {
+                let tag_list = tags::list_tags(&repo);
+                let _ = tx.send(tag_list);
+            }
+        });
+    }
+
+    fn spawn_remote_load(&mut self) {
+        self.remotes.loading = true;
+        let repo_path = self.repo_path.clone();
+        let base_branch = self.base_branch.clone();
+        let (tx, rx) = mpsc::channel();
+        self.remote_load_rx = Some(rx);
+        self.toast = Some(Toast::new("Loading remote branches...".into(), 300));
+        std::thread::spawn(move || {
+            let Ok(repo) = git2::Repository::open(&repo_path) else {
+                return;
+            };
+            let Ok(remote_branches) = branch::list_remote_branches_phase1(&repo, &base_branch)
+            else {
+                return;
             };
 
-            // Delete local branches (git2, fast local I/O)
+            let branch_cache = cache::BranchCache::load(&repo_path);
+            let candidates: Vec<(String, String)> = remote_branches
+                .iter()
+                .filter(|b| b.merge_status == MergeStatus::Pending && !b.is_base)
+                .filter_map(|b| {
+                    let refname = format!("refs/remotes/{}", b.full_ref);
+                    repo.find_reference(&refname)
+                        .ok()
+                        .and_then(|r| r.peel_to_commit().ok())
+                        .map(|c| (b.full_ref.clone(), c.id().to_string()))
+                })
+                .collect();
+
+            let _ = tx.send((remote_branches, candidates, branch_cache));
+        });
+    }
+
+    fn spawn_worktree_load(&mut self) {
+        self.worktrees.loading = true;
+        let repo_path = self.repo_path.clone();
+        let (tx, rx) = mpsc::channel();
+        self.worktree_load_rx = Some(rx);
+        self.toast = Some(Toast::new("Loading worktrees...".into(), 300));
+        std::thread::spawn(move || {
+            let wts = worktree::list_worktrees(&repo_path);
+            let _ = tx.send(wts);
+        });
+    }
+
+    fn start_remote_fetch(&mut self) {
+        let repo_path = self.repo_path.clone();
+        let (tx, rx) = mpsc::channel();
+        self.remote_fetch_rx = Some(rx);
+        self.toast = Some(Toast::new("Fetching remote branches...".into(), 300));
+        std::thread::spawn(move || {
+            let ok = operations::fetch_sync(&repo_path);
+            let _ = tx.send(ok);
+        });
+    }
+
+    pub fn refresh_branches(&mut self) {
+        let repo_path = self.repo_path.clone();
+        let base_branch = self.base_branch.clone();
+
+        let Ok(repo) = git2::Repository::open(&repo_path) else {
+            return;
+        };
+        let Ok(branches) = branch::list_branches_phase1(&repo, &base_branch) else {
+            return;
+        };
+
+        let wts = crate::git::status::detect_working_tree_status(&repo);
+        self.working_tree_status = wts;
+
+        let new_cache = cache::BranchCache::load(&repo_path);
+
+        let candidates: Vec<(String, String)> = branches
+            .iter()
+            .filter(|b| b.merge_status == MergeStatus::Pending && !b.is_base && !b.is_current)
+            .filter_map(|b| {
+                branch::get_commit_hash(&repo, &b.name).map(|hash| (b.name.clone(), hash))
+            })
+            .collect();
+
+        self.branches.set_items(branches);
+
+        // Restore sort
+        list_state::apply_sort(&mut self.branches, &self.branch_columns);
+
+        // Spawn squash checker
+        self.squash_total = candidates.len();
+        self.squash_checked = 0;
+        if !candidates.is_empty() {
+            self.squash_rx = Some(squash_loader::spawn_squash_checker(
+                repo_path.clone(),
+                base_branch,
+                candidates,
+                new_cache,
+            ));
+        }
+
+        // Re-spawn PR loader
+        self.pr_rx = Some(pr_loader::spawn_pr_loader(repo_path));
+    }
+
+    fn refresh_after_operation(&mut self) {
+        match self.return_view {
+            ViewId::Branches => {
+                self.refresh_branches();
+                self.active_view = ViewId::Branches;
+            }
+            ViewId::Remotes => {
+                // Reload remote branches
+                self.remotes = ListState::empty();
+                self.spawn_remote_load();
+                self.active_view = ViewId::Remotes;
+            }
+            ViewId::Tags => {
+                self.tags = ListState::empty();
+                self.spawn_tag_load();
+                self.active_view = ViewId::Tags;
+            }
+            ViewId::Worktrees => {
+                self.worktrees = ListState::empty();
+                self.spawn_worktree_load();
+                self.active_view = ViewId::Worktrees;
+            }
+        }
+    }
+
+    fn start_fetch(&mut self, prune: bool) {
+        let repo_path = self.repo_path.clone();
+        let (tx, rx) = mpsc::channel();
+        self.op_rx = Some(rx);
+        self.return_view = self.active_view;
+        let label = if prune {
+            "Fetching with prune..."
+        } else {
+            "Fetching..."
+        };
+        self.overlay = Some(Overlay::Executing {
+            label: label.into(),
+            progress: None,
+        });
+        std::thread::spawn(move || {
+            let result = if prune {
+                operations::fetch_prune(&repo_path)
+            } else {
+                operations::fetch(&repo_path)
+            };
+            let _ = tx.send(vec![result]);
+        });
+    }
+
+    fn clear_cache_and_refresh(&mut self) {
+        let mut bc = cache::BranchCache::load(&self.repo_path);
+        bc.clear();
+        self.refresh_branches();
+        self.toast = Some(Toast::new("Cache cleared".into(), 3));
+    }
+
+    // ---- Config ----
+
+    fn save_config(&mut self) {
+        self.config.theme = Some(self.theme.name.to_string());
+        self.config.symbols = Some(self.symbols.name.to_string());
+        self.save_sort_config_only();
+        self.config.save();
+    }
+
+    fn save_sort_config(&mut self) {
+        self.save_sort_config_only();
+        self.config.save();
+    }
+
+    fn save_sort_config_only(&mut self) {
+        let sort_col = self.branches.sort_column();
+        self.config.sort_column = sort_col.map(|c| {
+            match c {
+                0 => "name",
+                1 => "remote",
+                2 => "ahead",
+                3 => "pr",
+                4 => "age",
+                5 => "status",
+                _ => "name",
+            }
+            .to_string()
+        });
+        self.config.sort_asc = Some(self.branches.sort_ascending());
+    }
+
+    // ---- Filter helpers ----
+
+    fn active_filter_query(&self) -> String {
+        match self.active_view {
+            ViewId::Branches => self.branches.filter_query().to_string(),
+            ViewId::Remotes => self.remotes.filter_query().to_string(),
+            ViewId::Tags => self.tags.filter_query().to_string(),
+            ViewId::Worktrees => self.worktrees.filter_query().to_string(),
+        }
+    }
+
+    fn set_active_filter(&mut self, query: String) {
+        match self.active_view {
+            ViewId::Branches => self.branches.set_filter_query(query),
+            ViewId::Remotes => self.remotes.set_filter_query(query),
+            ViewId::Tags => self.tags.set_filter_query(query),
+            ViewId::Worktrees => self.worktrees.set_filter_query(query),
+        }
+    }
+
+    fn clear_toast(&mut self) {
+        self.toast = None;
+    }
+}
+
+// ---- Action Execution (runs on background thread) ----
+
+fn execute_action(
+    action: BranchAction,
+    item_names: &[String],
+    repo_path: &Path,
+    base_branch: &str,
+    needs_stash: bool,
+    prog_tx: &Sender<ProgressUpdate>,
+    cancel_flag: &Arc<AtomicBool>,
+) -> Vec<OperationResult> {
+    let total = item_names.len();
+    let mut results = Vec::new();
+
+    match action {
+        BranchAction::DeleteLocal | BranchAction::DeleteLocalAndRemote => {
+            let repo = match git2::Repository::open(repo_path) {
+                Ok(r) => r,
+                Err(e) => {
+                    return vec![OperationResult {
+                        branch_name: String::new(),
+                        action,
+                        success: false,
+                        message: format!("Failed to open repo: {e}"),
+                    }];
+                }
+            };
             let mut locally_deleted = Vec::new();
-            for (i, branch_name) in target_branches.iter().enumerate() {
+            for (i, name) in item_names.iter().enumerate() {
                 if cancel_flag.load(Ordering::Relaxed) {
                     results.push(OperationResult {
                         branch_name: String::new(),
-                        action: action.clone(),
+                        action,
                         success: false,
-                        message: "Cancelled by user".to_string(),
+                        message: "Cancelled by user".into(),
                     });
                     break;
                 }
-
                 let _ = prog_tx.send(ProgressUpdate {
                     completed: i,
                     total,
-                    current_item: branch_name.clone(),
+                    current_item: name.clone(),
                 });
-
-                let result = operations::delete_local(&repo, branch_name);
+                let result = operations::delete_local(&repo, name);
                 if result.success {
-                    locally_deleted.push(branch_name.clone());
+                    locally_deleted.push(name.clone());
                 }
                 results.push(result);
             }
-
-            // Batch-delete remote branches in a single git push (one network round-trip)
             if action == BranchAction::DeleteLocalAndRemote && !locally_deleted.is_empty() {
                 let _ = prog_tx.send(ProgressUpdate {
                     completed: locally_deleted.len(),
                     total,
-                    current_item: "Deleting remote branches...".to_string(),
+                    current_item: "Deleting remote branches...".into(),
                 });
-
-                let remote_results =
-                    operations::delete_remotes_batch(&repo_path, &locally_deleted);
-                results.extend(remote_results);
+                results.extend(operations::delete_remotes_batch(repo_path, &locally_deleted));
             }
-
-            // Send final progress
-            let _ = prog_tx.send(ProgressUpdate {
-                completed: results.iter().filter(|r| r.success).count().min(total),
-                total,
-                current_item: "Done".to_string(),
-            });
-
-            results
-        });
-    }
-
-    fn refresh_branches(&mut self) {
-        let Ok(repo) = git2::Repository::open(&self.repo_path) else { return };
-        let Ok(branches) = branch::list_branches_phase1(&repo, &self.base_branch) else {
-            return;
-        };
-
-        self.working_tree_status = status::detect_working_tree_status(&repo);
-
-        let branch_cache = cache::BranchCache::load(&self.repo_path);
-
-        let candidates: Vec<(String, String)> = branches
-            .iter()
-            .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base && !b.is_current)
-            .filter_map(|b| {
-                branch::get_commit_hash(&repo, &b.name)
-                    .map(|hash| (b.name.clone(), hash))
-            })
-            .collect();
-
-        let mut branches = branches;
-        branches.sort_by(|a, b| {
-            let pin_a = if a.is_base { 0 } else if a.is_current { 1 } else { 2 };
-            let pin_b = if b.is_base { 0 } else if b.is_current { 1 } else { 2 };
-            pin_a.cmp(&pin_b).then(b.last_commit_date.cmp(&a.last_commit_date))
-        });
-
-        let len = branches.len();
-
-        self.branches = branches;
-        self.selected = vec![false; len];
-        self.cursor = 0;
-        self.list_scroll_offset = 0;
-        self.table_state.select(Some(0));
-        self.results.clear();
-        self.search_query.clear();
-        self.search_active = false;
-
-        self.squash_checked = 0;
-        self.squash_total = candidates.len();
-
-        self.squash_rx = if candidates.is_empty() {
-            None
-        } else {
-            Some(squash_loader::spawn_squash_checker(
-                self.repo_path.clone(),
-                self.base_branch.clone(),
-                candidates,
-                branch_cache,
-            ))
-        };
-
-        // Refresh PR data from GitHub
-        self.pr_rx = Some(pr_loader::spawn_pr_loader(self.repo_path.clone()));
-
-        // Re-apply current sort so it persists across refreshes
-        self.apply_sort();
-    }
-
-    fn apply_sort(&mut self) {
-        let Some(col) = self.sort_column else { return };
-        let asc = self.sort_ascending;
-
-        // Find where pinned rows end — pinned rows are never sorted
-        let pin_count = self.branches.iter().take_while(|b| b.is_pinned()).count();
-        let sortable = &mut self.branches[pin_count..];
-
-        sortable.sort_by(|a, b| {
-            let ord = match col {
-                0 => a.name.cmp(&b.name),
-                1 => a.last_commit_date.cmp(&b.last_commit_date),
-                2 => a.ahead.unwrap_or(0).cmp(&b.ahead.unwrap_or(0)),
-                3 => a.behind.unwrap_or(0).cmp(&b.behind.unwrap_or(0)),
-                4 => {
-                    let rank = |s: &MergeStatus| match s {
-                        MergeStatus::Merged => 0,
-                        MergeStatus::SquashMerged => 1,
-                        MergeStatus::Unmerged => 2,
-                    };
-                    rank(&a.merge_status).cmp(&rank(&b.merge_status))
+        }
+        BranchAction::Checkout => {
+            if let Some(name) = item_names.first() {
+                let repo = match git2::Repository::open(repo_path) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return vec![OperationResult {
+                            branch_name: name.clone(),
+                            action,
+                            success: false,
+                            message: format!("Failed to open repo: {e}"),
+                        }];
+                    }
+                };
+                results.push(operations::checkout_branch(
+                    &repo, repo_path, name, needs_stash,
+                ));
+            }
+        }
+        BranchAction::FastForward => {
+            if let Some(name) = item_names.first() {
+                results.push(operations::fast_forward(repo_path, name));
+            }
+        }
+        BranchAction::Push => {
+            for (i, name) in item_names.iter().enumerate() {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    break;
                 }
-                _ => std::cmp::Ordering::Equal,
+                let _ = prog_tx.send(ProgressUpdate {
+                    completed: i,
+                    total,
+                    current_item: name.clone(),
+                });
+                results.push(operations::push_branch(repo_path, name));
+            }
+        }
+        BranchAction::ForcePush => {
+            if let Some(name) = item_names.first() {
+                results.push(operations::force_push_branch(repo_path, name));
+            }
+        }
+        BranchAction::Pull => {
+            if let Some(name) = item_names.first() {
+                // Assume not current for context menu; pull_branch handles it
+                results.push(operations::pull_branch(repo_path, name, false));
+            }
+        }
+        BranchAction::Merge | BranchAction::SquashMerge => {
+            if let Some(name) = item_names.first() {
+                let squash = action == BranchAction::SquashMerge;
+                results.extend(operations::merge_branch(
+                    repo_path,
+                    name,
+                    base_branch,
+                    squash,
+                    needs_stash,
+                ));
+            }
+        }
+        BranchAction::Rebase => {
+            if let Some(name) = item_names.first() {
+                results.extend(operations::rebase_branch(
+                    repo_path,
+                    name,
+                    base_branch,
+                    needs_stash,
+                ));
+            }
+        }
+        BranchAction::Worktree => {
+            if let Some(name) = item_names.first() {
+                results.push(operations::create_worktree(repo_path, name));
+            }
+        }
+        BranchAction::DeleteTag | BranchAction::DeleteTagAndRemote => {
+            let repo = match git2::Repository::open(repo_path) {
+                Ok(r) => r,
+                Err(e) => {
+                    return vec![OperationResult {
+                        branch_name: String::new(),
+                        action,
+                        success: false,
+                        message: format!("Failed to open repo: {e}"),
+                    }];
+                }
             };
-            if asc { ord } else { ord.reverse() }
-        });
-
-        // Reset selection and cursor after sort
-        self.selected = vec![false; self.branches.len()];
-        self.cursor = 0;
-        self.table_state.select(Some(0));
-    }
-
-    fn drain_load_rx(&mut self) {
-        use std::sync::mpsc::TryRecvError;
-
-        // Drain progress messages
-        if let Some(rx) = &self.load_progress_rx {
-            loop {
-                match rx.try_recv() {
-                    Ok(p) => self.loading_message = p.message,
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        self.load_progress_rx = None;
-                        break;
-                    }
+            let tag_names: Vec<String> = item_names.to_vec();
+            results.extend(tags::delete_tags_batch(&repo, &tag_names));
+            if action == BranchAction::DeleteTagAndRemote {
+                let successfully_deleted: Vec<String> = results
+                    .iter()
+                    .filter(|r| r.success)
+                    .map(|r| r.branch_name.clone())
+                    .collect();
+                if !successfully_deleted.is_empty() {
+                    results.extend(tags::delete_remote_tags_batch(
+                        repo_path,
+                        &successfully_deleted,
+                    ));
                 }
             }
         }
-
-        let Some(rx) = &self.load_rx else { return };
-
-        match rx.try_recv() {
-            Ok(load) => {
-                self.load_rx = None;
-                self.loading = false;
-
-                let mut branches = load.branches;
-                branches.sort_by(|a, b| {
-                    let pin_a = if a.is_base { 0 } else if a.is_current { 1 } else { 2 };
-                    let pin_b = if b.is_base { 0 } else if b.is_current { 1 } else { 2 };
-                    pin_a.cmp(&pin_b).then(b.last_commit_date.cmp(&a.last_commit_date))
+        BranchAction::PushTag => {
+            for name in item_names {
+                results.push(tags::push_tag(repo_path, name));
+            }
+        }
+        BranchAction::DeleteRemoteBranch => {
+            let short_names: Vec<String> = item_names.to_vec();
+            results.extend(
+                operations::delete_remotes_batch(repo_path, &short_names)
+                    .into_iter()
+                    .map(|mut r| {
+                        r.action = BranchAction::DeleteRemoteBranch;
+                        r
+                    }),
+            );
+        }
+        BranchAction::DeleteRemoteAndLocal => {
+            if let Some(name) = item_names.first() {
+                let remote_results =
+                    operations::delete_remotes_batch(repo_path, std::slice::from_ref(name));
+                results.extend(remote_results.into_iter().map(|mut r| {
+                    r.action = BranchAction::DeleteRemoteAndLocal;
+                    r
+                }));
+                if let Ok(repo) = git2::Repository::open(repo_path) {
+                    let local_result = operations::delete_local(&repo, name);
+                    results.push(OperationResult {
+                        action: BranchAction::DeleteRemoteAndLocal,
+                        ..local_result
+                    });
+                }
+            }
+        }
+        BranchAction::CheckoutRemote => {
+            if let Some(name) = item_names.first() {
+                results.push(operations::checkout_remote_branch(
+                    repo_path, "origin", name,
+                ));
+            }
+        }
+        BranchAction::FetchRemote => {
+            if let Some(name) = item_names.first() {
+                results.extend(operations::fetch_remote(repo_path, name));
+            }
+        }
+        BranchAction::PullRemote => {
+            if let Some(name) = item_names.first() {
+                results.extend(operations::pull_remote(repo_path, "origin", name));
+            }
+        }
+        BranchAction::MergeRemoteIntoCurrent => {
+            if let Some(name) = item_names.first() {
+                let full_ref = format!("origin/{name}");
+                results.extend(operations::merge_remote_into_current(
+                    repo_path, &full_ref, name,
+                ));
+            }
+        }
+        BranchAction::CherryPickRemote => {
+            if let Some(name) = item_names.first() {
+                let full_ref = format!("origin/{name}");
+                results.extend(operations::cherry_pick_remote(
+                    repo_path, &full_ref, name,
+                ));
+            }
+        }
+        BranchAction::WorktreeRemove | BranchAction::WorktreeForceRemove => {
+            let force = action == BranchAction::WorktreeForceRemove;
+            for (i, path_str) in item_names.iter().enumerate() {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+                let _ = prog_tx.send(ProgressUpdate {
+                    completed: i,
+                    total,
+                    current_item: path_str.clone(),
                 });
-
-                let len = branches.len();
-                self.branches = branches;
-                self.selected = vec![false; len];
-                self.cursor = 0;
-                self.table_state.select(Some(0));
-                self.working_tree_status = load.working_tree_status;
-
-                self.squash_total = load.candidates.len();
-                self.squash_checked = 0;
-                self.squash_rx = if load.candidates.is_empty() {
-                    None
+                let wt_path = PathBuf::from(path_str);
+                let result = if force {
+                    operations::force_remove_worktree(repo_path, &wt_path)
                 } else {
-                    Some(squash_loader::spawn_squash_checker(
-                        self.repo_path.clone(),
-                        self.base_branch.clone(),
-                        load.candidates,
-                        load.cache,
-                    ))
+                    operations::remove_worktree(repo_path, &wt_path)
                 };
-
-                // Spawn PR loader now that branches are loaded
-                self.pr_rx = Some(pr_loader::spawn_pr_loader(self.repo_path.clone()));
-
-                self.apply_sort();
+                results.push(result);
             }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                self.load_rx = None;
-                self.loading = false;
-            }
+        }
+        BranchAction::Fetch | BranchAction::FetchPrune => {
+            let result = if action == BranchAction::FetchPrune {
+                operations::fetch_prune(repo_path)
+            } else {
+                operations::fetch(repo_path)
+            };
+            results.push(result);
+        }
+        BranchAction::ViewRemotePR => {
+            // Handled in execute_menu_action, shouldn't reach here
         }
     }
 
-    fn drain_squash_rx(&mut self) {
-        use std::sync::mpsc::TryRecvError;
+    // Send final progress
+    let _ = prog_tx.send(ProgressUpdate {
+        completed: results.iter().filter(|r| r.success).count().min(total),
+        total,
+        current_item: "Done".to_string(),
+    });
 
-        let Some(rx) = &self.squash_rx else { return };
+    results
+}
 
-        let done = loop {
-            match rx.try_recv() {
-                Ok(result) => {
-                    self.squash_checked += 1;
-                    if result.is_squash_merged
-                        && let Some(branch) = self
-                            .branches
-                            .iter_mut()
-                            .find(|b| b.name == result.branch_name)
-                    {
-                        branch.merge_status = MergeStatus::SquashMerged;
+/// Get branch prefix style: extract prefix before first '/' and look up color.
+fn branch_prefix_style(name: &str, theme: &Theme) -> Style {
+    let prefix = name.split('/').next().unwrap_or(name);
+    prefix_style(prefix, theme).unwrap_or_default()
+}
+
+// ---- Row Renderers ----
+
+fn render_branch_row(
+    item: &BranchInfo,
+    _raw_idx: usize,
+    _is_selected: bool,
+    _is_cursor: bool,
+    visible_cols: &[usize],
+    ctx: &CellContext,
+) -> Vec<Cell<'static>> {
+    let mut cells = Vec::new();
+    let theme = ctx.theme;
+    let symbols = ctx.symbols;
+
+    for &col_idx in visible_cols {
+        match col_idx {
+            0 => {
+                // Branch name
+                let style = if item.is_current {
+                    theme.current_branch
+                } else {
+                    branch_prefix_style(&item.name, theme)
+                };
+                let prefix = if item.is_current {
+                    format!("{} ", symbols.current_branch)
+                } else {
+                    String::new()
+                };
+                // For non-base branches, append base info
+                let suffix = if item.is_base {
+                    " [base]".to_string()
+                } else if !item.is_current {
+                    match &item.merge_base_commit {
+                        Some(hash) => format!(" ({} - {})", item.base_branch, hash),
+                        None => String::new(),
                     }
-                }
-                Err(TryRecvError::Empty) => break false,
-                Err(TryRecvError::Disconnected) => break true,
+                } else {
+                    String::new()
+                };
+                let name = format!("{prefix}{}{suffix}", item.name);
+                cells.push(Cell::from(Span::styled(name, style)));
             }
-        };
-
-        if done {
-            self.squash_rx = None;
-        }
-    }
-
-    fn drain_pr_rx(&mut self) {
-        use std::sync::mpsc::TryRecvError;
-
-        let Some(rx) = &self.pr_rx else { return };
-
-        match rx.try_recv() {
-            Ok(pr_map) => {
-                self.pr_map = pr_map;
-                self.pr_rx = None;
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                self.pr_rx = None;
-            }
-        }
-    }
-
-    fn drain_progress_rx(&mut self) {
-        use std::sync::mpsc::TryRecvError;
-
-        let Some(rx) = &self.progress_rx else { return };
-
-        let done = loop {
-            match rx.try_recv() {
-                Ok(update) => {
-                    self.progress = Some(update);
-                }
-                Err(TryRecvError::Empty) => break false,
-                Err(TryRecvError::Disconnected) => break true,
-            }
-        };
-
-        if done {
-            self.progress_rx = None;
-        }
-    }
-
-    fn drain_op_rx(&mut self) {
-        use std::sync::mpsc::TryRecvError;
-
-        let Some(rx) = &self.op_rx else { return };
-
-        match rx.try_recv() {
-            Ok(op_results) => {
-                self.results.extend(op_results);
-                self.op_rx = None;
-                self.progress_rx = None;
-                self.progress = None;
-                self.cancel_flag = None;
-                self.view = View::Results;
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                // Thread finished without sending (shouldn't happen, but handle gracefully)
-                self.op_rx = None;
-                self.progress_rx = None;
-                self.progress = None;
-                self.cancel_flag = None;
-                self.view = View::Results;
-            }
-        }
-    }
-
-    pub fn build_menu_items(&self) -> Vec<ui::menu::MenuItem> {
-        let branch = &self.branches[self.cursor];
-
-        let mut items = Vec::new();
-
-        // Checkout
-        items.push(ui::menu::MenuItem {
-            label: "Checkout".into(),
-            enabled: !branch.is_current,
-            reason: if branch.is_current {
-                Some("current".into())
-            } else {
-                None
-            },
-            shortcut: Some('c'),
-        });
-
-        // Delete local
-        items.push(ui::menu::MenuItem {
-            label: "Delete local".into(),
-            enabled: !branch.is_base && !branch.is_current,
-            reason: if branch.is_current {
-                Some("current".into())
-            } else if branch.is_base {
-                Some("base".into())
-            } else {
-                None
-            },
-            shortcut: Some('d'),
-        });
-
-        // Delete local + remote
-        let has_remote = matches!(&branch.tracking, TrackingStatus::Tracked { gone: false, .. });
-        items.push(ui::menu::MenuItem {
-            label: "Delete local + remote".into(),
-            enabled: !branch.is_base && !branch.is_current && has_remote,
-            reason: if branch.is_current {
-                Some("current".into())
-            } else if branch.is_base {
-                Some("base".into())
-            } else if !has_remote {
-                Some("no remote".into())
-            } else {
-                None
-            },
-            shortcut: Some('D'),
-        });
-
-        // Fast-forward: only for non-current branches with a tracked (non-gone) remote
-        let has_live_remote = matches!(
-            &branch.tracking,
-            TrackingStatus::Tracked { gone: false, .. }
-        );
-        items.push(ui::menu::MenuItem {
-            label: "Fast-forward".into(),
-            enabled: !branch.is_current && has_live_remote,
-            reason: if branch.is_current {
-                Some("current".into())
-            } else if !has_live_remote {
-                Some("no remote".into())
-            } else {
-                None
-            },
-            shortcut: Some('f'),
-        });
-
-        // Push: only for branches that are ahead of their remote
-        let is_ahead = branch.ahead.is_some_and(|a| a > 0);
-        items.push(ui::menu::MenuItem {
-            label: "Push".into(),
-            enabled: is_ahead,
-            reason: if !has_live_remote {
-                Some("no remote".into())
-            } else if !is_ahead {
-                Some("not ahead".into())
-            } else {
-                None
-            },
-            shortcut: Some('p'),
-        });
-
-        // Force Push: only for branches that are both ahead AND behind their remote
-        let is_ahead_and_behind = is_ahead && branch.behind.is_some_and(|b| b > 0);
-        items.push(ui::menu::MenuItem {
-            label: "Force push".into(),
-            enabled: is_ahead_and_behind,
-            reason: if !has_live_remote {
-                Some("no remote".into())
-            } else if !is_ahead {
-                Some("not ahead".into())
-            } else if branch.behind.is_none_or(|b| b == 0) {
-                Some("not behind".into())
-            } else {
-                None
-            },
-            shortcut: Some('P'),
-        });
-
-        // Pull: only for branches that are behind their remote tracking branch
-        let is_behind = branch.behind.is_some_and(|b| b > 0);
-        items.push(ui::menu::MenuItem {
-            label: "Pull".into(),
-            enabled: is_behind && has_live_remote,
-            reason: if !has_live_remote {
-                Some("no remote".into())
-            } else if !is_behind {
-                Some("not behind".into())
-            } else {
-                None
-            },
-            shortcut: Some('l'),
-        });
-
-        // Merge into base
-        items.push(ui::menu::MenuItem {
-            label: "Merge into base".into(),
-            enabled: !branch.is_base && !branch.is_current,
-            reason: if branch.is_current {
-                Some("current".into())
-            } else if branch.is_base {
-                Some("base".into())
-            } else {
-                None
-            },
-            shortcut: Some('m'),
-        });
-
-        // Squash merge into base
-        items.push(ui::menu::MenuItem {
-            label: "Squash merge into base".into(),
-            enabled: !branch.is_base && !branch.is_current,
-            reason: if branch.is_current {
-                Some("current".into())
-            } else if branch.is_base {
-                Some("base".into())
-            } else {
-                None
-            },
-            shortcut: Some('s'),
-        });
-
-        // Rebase onto base
-        items.push(ui::menu::MenuItem {
-            label: "Rebase onto base".into(),
-            enabled: !branch.is_base && !branch.is_current,
-            reason: if branch.is_current {
-                Some("current".into())
-            } else if branch.is_base {
-                Some("base".into())
-            } else {
-                None
-            },
-            shortcut: Some('r'),
-        });
-
-        // Create worktree
-        items.push(ui::menu::MenuItem {
-            label: "Create worktree".into(),
-            enabled: !branch.is_current,
-            reason: if branch.is_current {
-                Some("current".into())
-            } else {
-                None
-            },
-            shortcut: Some('w'),
-        });
-
-        // Open PR in browser
-        let has_pr = self.pr_map.contains_key(&branch.name);
-        items.push(ui::menu::MenuItem {
-            label: "Open PR in browser".into(),
-            enabled: has_pr,
-            reason: if !has_pr { Some("no PR".into()) } else { None },
-            shortcut: Some('o'),
-        });
-
-        items
-    }
-
-    fn handle_menu_key(&mut self, code: KeyCode) {
-        let items = self.build_menu_items();
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let View::Menu { ref mut cursor } = self.view {
-                    let mut next = *cursor + 1;
-                    while next < items.len() && !items[next].enabled {
-                        next += 1;
-                    }
-                    if next < items.len() {
-                        *cursor = next;
-                    }
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let View::Menu { ref mut cursor } = self.view {
-                    let mut prev = *cursor;
-                    loop {
-                        if prev == 0 {
-                            break;
-                        }
-                        prev -= 1;
-                        if items[prev].enabled {
-                            *cursor = prev;
-                            break;
+            1 => {
+                // Remote tracking
+                let text = match &item.tracking {
+                    TrackingStatus::Tracked { remote_ref, gone } => {
+                        if *gone {
+                            "gone".to_string()
+                        } else {
+                            remote_ref.clone()
                         }
                     }
-                }
-            }
-            KeyCode::Enter => {
-                let menu_cursor = if let View::Menu { cursor } = &self.view {
-                    *cursor
-                } else {
-                    return;
+                    TrackingStatus::Local => "local".to_string(),
                 };
-                let item = &items[menu_cursor];
-                if item.enabled {
-                    // Open PR in browser — no confirm needed, fire and forget
-                    if menu_cursor == 11 {
-                        let branch_name = self.branches[self.cursor].name.clone();
-                        let repo_path = self.repo_path.clone();
-                        std::thread::spawn(move || {
-                            let _ = std::process::Command::new("gh")
-                                .args(["pr", "view", "--web", &branch_name])
-                                .current_dir(&repo_path)
-                                .status();
-                        });
-                        self.view = View::BranchList;
-                        return;
+                cells.push(Cell::from(Span::styled(text, theme.secondary_text)));
+            }
+            2 => {
+                // Ahead/Behind
+                let mut parts: Vec<Span<'static>> = Vec::new();
+                if let Some(a) = item.ahead {
+                    if a > 0 {
+                        parts.push(Span::styled(
+                            format!("{}{a}", symbols.arrow_up),
+                            theme.ahead_behind,
+                        ));
                     }
-                    let action = match menu_cursor {
-                        0 => BranchAction::Checkout,
-                        1 => BranchAction::DeleteLocal,
-                        2 => BranchAction::DeleteLocalAndRemote,
-                        3 => BranchAction::FastForward,
-                        4 => BranchAction::Push,
-                        5 => BranchAction::ForcePush,
-                        6 => BranchAction::Pull,
-                        7 => BranchAction::Merge,
-                        8 => BranchAction::SquashMerge,
-                        9 => BranchAction::Rebase,
-                        10 => BranchAction::Worktree,
-                        _ => return,
-                    };
-                    self.view = View::Confirm { action };
                 }
-            }
-            KeyCode::Char(ch) => {
-                if let Some((idx, _)) = items.iter().enumerate().find(|(_, item)| item.shortcut == Some(ch) && item.enabled) {
-                    // Open PR in browser (index 11) — no confirm needed, fire and forget
-                    if idx == 11 {
-                        let branch_name = self.branches[self.cursor].name.clone();
-                        let repo_path = self.repo_path.clone();
-                        std::thread::spawn(move || {
-                            let _ = std::process::Command::new("gh")
-                                .args(["pr", "view", "--web", &branch_name])
-                                .current_dir(&repo_path)
-                                .status();
-                        });
-                        self.view = View::BranchList;
-                        return;
+                if let Some(b) = item.behind {
+                    if b > 0 {
+                        if !parts.is_empty() {
+                            parts.push(Span::raw(" "));
+                        }
+                        parts.push(Span::styled(
+                            format!("{}{b}", symbols.arrow_down),
+                            theme.ahead_behind,
+                        ));
                     }
-                    let action = match idx {
-                        0 => BranchAction::Checkout,
-                        1 => BranchAction::DeleteLocal,
-                        2 => BranchAction::DeleteLocalAndRemote,
-                        3 => BranchAction::FastForward,
-                        4 => BranchAction::Push,
-                        5 => BranchAction::ForcePush,
-                        6 => BranchAction::Pull,
-                        7 => BranchAction::Merge,
-                        8 => BranchAction::SquashMerge,
-                        9 => BranchAction::Rebase,
-                        10 => BranchAction::Worktree,
-                        _ => return,
+                }
+                cells.push(Cell::from(Line::from(parts)));
+            }
+            3 => {
+                // PR number
+                let (text, style) = if let Some(pr) = &item.pr {
+                    let text = format!("#{}", pr.number);
+                    let style = match pr.status {
+                        PrStatus::Draft => theme.pr_draft,
+                        PrStatus::Open => theme.pr_open,
+                        PrStatus::Merged => theme.pr_merged,
+                        PrStatus::Closed => theme.pr_closed,
                     };
-                    self.view = View::Confirm { action };
-                } else if ch == 'q' {
-                    self.view = View::BranchList;
+                    (text, style)
+                } else {
+                    (String::new(), Style::default())
+                };
+                cells.push(Cell::from(Span::styled(text, style)));
+            }
+            4 => {
+                // Age
+                let age = if ctx.compact { item.age_short() } else { item.age_display() };
+                let style = age_style(&item.last_commit_date, theme);
+                cells.push(Cell::from(
+                    Line::from(Span::styled(age, style)).alignment(Alignment::Right),
+                ));
+            }
+            5 => {
+                // Base branch always shows blank status
+                if item.is_base {
+                    cells.push(Cell::from(""));
+                } else {
+                    // Status — full text when terminal >= 70 wide, symbol only when narrow
+                    let short_status = ctx.area_width < 70;
+                    let (text, style) = if short_status {
+                        match item.merge_status {
+                            MergeStatus::Merged => (symbols.status_merged.to_string(), theme.merged),
+                            MergeStatus::SquashMerged => (symbols.status_squash_merged.to_string(), theme.squash_merged),
+                            MergeStatus::Unmerged => (symbols.status_unmerged.to_string(), theme.unmerged),
+                            MergeStatus::Pending => ("\u{2026}".to_string(), theme.dim),
+                        }
+                    } else {
+                        match item.merge_status {
+                            MergeStatus::Merged => (format!("merged {}", symbols.status_merged), theme.merged),
+                            MergeStatus::SquashMerged => (format!("squash-merged {}", symbols.status_squash_merged), theme.squash_merged),
+                            MergeStatus::Unmerged => (format!("unmerged {}", symbols.status_unmerged), theme.unmerged),
+                            MergeStatus::Pending => ("pending \u{2026}".to_string(), theme.dim),
+                        }
+                    };
+                    cells.push(Cell::from(
+                        Line::from(Span::styled(text, style)).alignment(Alignment::Right),
+                    ));
                 }
             }
-            KeyCode::Esc => {
-                self.view = View::BranchList;
-            }
-            _ => {}
+            _ => cells.push(Cell::from("")),
         }
     }
-
-    fn handle_settings_key(&mut self, code: KeyCode) {
-        // Sort column cycle order: None, 0=name, 1=age, 2=ahead, 3=behind, 4=status
-        const SORT_CYCLE: [Option<usize>; 6] = [None, Some(0), Some(1), Some(2), Some(3), Some(4)];
-
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let View::Settings { ref mut cursor } = self.view {
-                    *cursor = (*cursor + 1).min(4); // 5 rows (index 0..=4)
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let View::Settings { ref mut cursor } = self.view {
-                    *cursor = cursor.saturating_sub(1);
-                }
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                let cursor = if let View::Settings { cursor } = self.view { cursor } else { return };
-                if cursor == 0 {
-                    self.symbols = crate::ui::symbols::next(self.symbols);
-                    self.config.symbols = Some(crate::ui::symbols::name(self.symbols).to_string());
-                    self.config.save();
-                } else if cursor == 1 {
-                    self.theme = self.theme.next();
-                    self.config.theme = Some(self.theme.name.to_string());
-                    self.config.save();
-                } else if cursor == 2 {
-                    // Advance sort column forward through cycle
-                    let pos = SORT_CYCLE.iter().position(|&c| c == self.sort_column).unwrap_or(0);
-                    let next_pos = (pos + 1) % SORT_CYCLE.len();
-                    self.sort_column = SORT_CYCLE[next_pos];
-                    self.apply_sort();
-                    self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
-                    self.config.sort_asc = Some(self.sort_ascending);
-                    self.config.save();
-                } else if cursor == 3 {
-                    // Toggle sort direction
-                    self.sort_ascending = !self.sort_ascending;
-                    self.apply_sort();
-                    self.config.sort_asc = Some(self.sort_ascending);
-                    self.config.save();
-                } else if cursor == 4 {
-                    // Toggle auto-fetch
-                    self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
-                    self.config.save();
-                }
-            }
-            KeyCode::Left | KeyCode::Char('h') => {
-                let cursor = if let View::Settings { cursor } = self.view { cursor } else { return };
-                if cursor == 0 {
-                    // backward = next() twice (3-cycle)
-                    self.symbols = crate::ui::symbols::next(self.symbols);
-                    self.symbols = crate::ui::symbols::next(self.symbols);
-                    self.config.symbols = Some(crate::ui::symbols::name(self.symbols).to_string());
-                    self.config.save();
-                } else if cursor == 1 {
-                    // backward = next() 3 times (4-cycle: dark→light→solarized→dracula)
-                    self.theme = self.theme.next();
-                    self.theme = self.theme.next();
-                    self.theme = self.theme.next();
-                    self.config.theme = Some(self.theme.name.to_string());
-                    self.config.save();
-                } else if cursor == 2 {
-                    // Advance sort column backward through cycle
-                    let pos = SORT_CYCLE.iter().position(|&c| c == self.sort_column).unwrap_or(0);
-                    let next_pos = (pos + SORT_CYCLE.len() - 1) % SORT_CYCLE.len();
-                    self.sort_column = SORT_CYCLE[next_pos];
-                    self.apply_sort();
-                    self.config.sort_column = self.sort_column.map(|c| Self::sort_col_name(c).to_string());
-                    self.config.sort_asc = Some(self.sort_ascending);
-                    self.config.save();
-                } else if cursor == 3 {
-                    // Toggle sort direction (same as right)
-                    self.sort_ascending = !self.sort_ascending;
-                    self.apply_sort();
-                    self.config.sort_asc = Some(self.sort_ascending);
-                    self.config.save();
-                } else if cursor == 4 {
-                    // Toggle auto-fetch (same as right)
-                    self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
-                    self.config.save();
-                }
-            }
-            KeyCode::Char(' ') => {
-                // Space toggles on cursor==3 (sort direction) or cursor==4 (auto-fetch)
-                let cursor = if let View::Settings { cursor } = self.view { cursor } else { return };
-                if cursor == 3 {
-                    self.sort_ascending = !self.sort_ascending;
-                    self.apply_sort();
-                    self.config.sort_asc = Some(self.sort_ascending);
-                    self.config.save();
-                } else if cursor == 4 {
-                    self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
-                    self.config.save();
-                }
-            }
-            KeyCode::Esc => {
-                self.view = View::BranchList;
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_search_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Esc => {
-                self.search_query.clear();
-                self.search_active = false;
-                self.reset_cursor_to_first_match();
-            }
-            KeyCode::Enter => {
-                self.search_active = false;
-            }
-            KeyCode::Backspace => {
-                self.search_query.pop();
-                self.reset_cursor_to_first_match();
-            }
-            KeyCode::Char(c) => {
-                self.search_query.push(c);
-                self.reset_cursor_to_first_match();
-            }
-            _ => {}
-        }
-    }
-
-    /// Returns true if the branch matches the current search query and filters.
-    /// Always matches if the query is empty or the branch is pinned.
-    pub fn matches_search(&self, branch: &BranchInfo) -> bool {
-        if self.search_query.is_empty() {
-            return true;
-        }
-        if branch.is_pinned() {
-            return true;
-        }
-
-        let fs = FilterSet::parse(&self.search_query);
-        if fs.is_empty() {
-            return true;
-        }
-
-        // Text filter (AND)
-        if !fs.text.is_empty()
-            && !branch
-                .name
-                .to_lowercase()
-                .contains(&fs.text.to_lowercase())
-        {
-            return false;
-        }
-
-        // Status filter (OR within group)
-        if !fs.statuses.is_empty() && !fs.statuses.contains(&branch.merge_status) {
-            return false;
-        }
-
-        // PR filter — positive and negative
-        let has_pr = self.pr_map.contains_key(&branch.name);
-        if fs.pr_yes && !has_pr {
-            return false;
-        }
-        if fs.pr_no && has_pr {
-            return false;
-        }
-
-        // Sync filter (OR within group)
-        if fs.sync_ahead || fs.sync_behind {
-            let is_ahead = branch.ahead.unwrap_or(0) > 0;
-            let is_behind = branch.behind.unwrap_or(0) > 0;
-            let matches_sync = (fs.sync_ahead && is_ahead) || (fs.sync_behind && is_behind);
-            if !matches_sync {
-                return false;
-            }
-        }
-
-        // Age filters
-        let age_secs = (chrono::Utc::now() - branch.last_commit_date).num_seconds();
-        if let Some(threshold) = fs.age_newer_secs
-            && age_secs > threshold
-        {
-            return false;
-        }
-        if let Some(threshold) = fs.age_older_secs
-            && age_secs < threshold
-        {
-            return false;
-        }
-
-        true
-    }
-
-    /// Reset cursor to the first branch that matches the search filter.
-    fn reset_cursor_to_first_match(&mut self) {
-        let first_match = self
-            .branches
-            .iter()
-            .enumerate()
-            .find(|(_, b)| self.matches_search(b))
-            .map(|(i, _)| i);
-
-        if let Some(idx) = first_match {
-            self.cursor = idx;
-            self.table_state.select(Some(idx));
-        } else {
-            // No match: keep cursor at 0
-            self.cursor = 0;
-            self.table_state.select(Some(0));
-        }
-    }
-
-    pub fn has_selection(&self) -> bool {
-        self.selected.iter().any(|&s| s)
-    }
-
-    pub fn selection_count(&self) -> usize {
-        self.selected.iter().filter(|&&s| s).count()
-    }
-
-    pub fn selected_branch_names(&self) -> Vec<&str> {
-        self.branches
-            .iter()
-            .zip(self.selected.iter())
-            .filter(|&(_, &sel)| sel)
-            .map(|(b, _)| b.name.as_str())
-            .collect()
-    }
-
-    /// Returns the branches that will be targeted by the current action.
-    /// If branches are selected, returns those; otherwise returns the cursor branch.
-    pub fn target_branch_names(&self) -> Vec<&str> {
-        let selected = self.selected_branch_names();
-        if selected.is_empty() {
-            vec![self.branches[self.cursor].name.as_str()]
-        } else {
-            selected
-        }
-    }
-
-    pub fn has_tag_selection(&self) -> bool {
-        self.tag_selected.iter().any(|&s| s)
-    }
-
-    pub fn tag_selection_count(&self) -> usize {
-        self.tag_selected.iter().filter(|&&s| s).count()
-    }
-
-    pub fn selected_tag_names(&self) -> Vec<String> {
-        self.tags
-            .iter()
-            .zip(self.tag_selected.iter())
-            .filter(|&(_, &sel)| sel)
-            .map(|(t, _)| t.name.clone())
-            .collect()
-    }
-
-    /// Returns tag names targeted by the current action.
-    /// If tags are selected, returns those; otherwise returns the cursor tag.
-    pub fn target_tag_names(&self) -> Vec<String> {
-        let selected = self.selected_tag_names();
-        if selected.is_empty() && !self.tags.is_empty() {
-            vec![self.tags[self.tag_cursor].name.clone()]
-        } else {
-            selected
-        }
-    }
-
-    pub fn filtered_tag_indices(&self) -> Vec<usize> {
-        self.tags
-            .iter()
-            .enumerate()
-            .filter(|(_, tag)| self.matches_tag_search(tag))
-            .map(|(i, _)| i)
-            .collect()
-    }
-
-    pub fn matches_tag_search(&self, tag: &TagInfo) -> bool {
-        if self.tag_search_query.is_empty() {
-            return true;
-        }
-
-        let fs = FilterSet::parse(&self.tag_search_query);
-
-        // Text filter: match against tag name and message
-        if !fs.text.is_empty() {
-            let text_lower = fs.text.to_lowercase();
-            let name_lower = tag.name.to_lowercase();
-            let msg_lower = tag.message.as_deref().unwrap_or("").to_lowercase();
-            if !name_lower.contains(&text_lower) && !msg_lower.contains(&text_lower) {
-                return false;
-            }
-        }
-
-        // Age newer filter
-        if let Some(threshold) = fs.age_newer_secs {
-            let age_secs = (chrono::Utc::now() - tag.date).num_seconds();
-            if age_secs > threshold {
-                return false;
-            }
-        }
-
-        // Age older filter
-        if let Some(threshold) = fs.age_older_secs {
-            let age_secs = (chrono::Utc::now() - tag.date).num_seconds();
-            if age_secs < threshold {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    fn reset_tag_cursor(&mut self) {
-        let filtered = self.filtered_tag_indices();
-        if filtered.is_empty() {
-            return;
-        }
-        // If current cursor is in filtered list, keep it
-        if filtered.contains(&self.tag_cursor) {
-            let pos = filtered.iter().position(|&i| i == self.tag_cursor).unwrap();
-            self.tag_table_state.select(Some(pos));
-        } else {
-            self.tag_cursor = filtered[0];
-            self.tag_table_state.select(Some(0));
-        }
-    }
-
-    fn apply_tag_sort(&mut self) {
-        if self.tag_sort_by_name {
-            self.tags.sort_by(|a, b| a.name.cmp(&b.name));
-        } else {
-            self.tags.sort_by(|a, b| b.date.cmp(&a.date));
-        }
-        self.tag_selected = vec![false; self.tags.len()];
-        self.tag_cursor = 0;
-        self.tag_table_state.select(if self.tags.is_empty() { None } else { Some(0) });
-    }
+    cells
 }
 
-/// Parsed filter set from the search query.
-#[derive(Debug, Default)]
-pub struct FilterSet {
-    pub statuses: Vec<MergeStatus>,
-    pub pr_yes: bool,
-    pub pr_no: bool,
-    pub sync_ahead: bool,
-    pub sync_behind: bool,
-    pub age_newer_secs: Option<i64>,
-    pub age_older_secs: Option<i64>,
-    pub text: String,
-}
+fn render_remote_row(
+    item: &RemoteBranchInfo,
+    _raw_idx: usize,
+    _is_selected: bool,
+    _is_cursor: bool,
+    visible_cols: &[usize],
+    ctx: &CellContext,
+) -> Vec<Cell<'static>> {
+    let mut cells = Vec::new();
+    let theme = ctx.theme;
+    let symbols = ctx.symbols;
 
-impl FilterSet {
-    pub fn parse(query: &str) -> Self {
-        let mut fs = FilterSet::default();
-        for token in query.split_whitespace() {
-            if let Some(val) = token.strip_prefix("status:") {
-                match val {
-                    "merged" => fs.statuses.push(MergeStatus::Merged),
-                    "squash" => fs.statuses.push(MergeStatus::SquashMerged),
-                    "unmerged" => fs.statuses.push(MergeStatus::Unmerged),
-                    _ => {}
-                }
-            } else if let Some(val) = token.strip_prefix("pr:") {
-                match val {
-                    "yes" => fs.pr_yes = true,
-                    "no" => fs.pr_no = true,
-                    _ => {}
-                }
-            } else if let Some(val) = token.strip_prefix("sync:") {
-                match val {
-                    "ahead" => fs.sync_ahead = true,
-                    "behind" => fs.sync_behind = true,
-                    _ => {}
-                }
-            } else if let Some(val) = token.strip_prefix("age:<") {
-                if let Some(secs) = parse_age_duration(val) {
-                    fs.age_newer_secs = Some(secs);
-                }
-            } else if let Some(val) = token.strip_prefix("age:>") {
-                if let Some(secs) = parse_age_duration(val) {
-                    fs.age_older_secs = Some(secs);
-                }
-            } else {
-                // Plain text — append to text filter
-                if !fs.text.is_empty() {
-                    fs.text.push(' ');
-                }
-                fs.text.push_str(token);
+    for &col_idx in visible_cols {
+        match col_idx {
+            0 => {
+                // Name: full remote branch name (e.g. "origin/feature/test")
+                let prefix = item.short_name.split('/').next().unwrap_or(&item.short_name);
+                let style = prefix_style(prefix, theme)
+                    .unwrap_or(theme.primary_text);
+                let name = if item.is_base {
+                    format!("{} [base]", item.full_ref)
+                } else {
+                    item.full_ref.clone()
+                };
+                cells.push(Cell::from(Span::styled(name, style)));
             }
-        }
-        fs
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.statuses.is_empty()
-            && !self.pr_yes
-            && !self.pr_no
-            && !self.sync_ahead
-            && !self.sync_behind
-            && self.age_newer_secs.is_none()
-            && self.age_older_secs.is_none()
-            && self.text.is_empty()
-    }
-
-    /// Check if a token string is present in the query.
-    pub fn has_token(query: &str, token: &str) -> bool {
-        query.split_whitespace().any(|t| t == token)
-    }
-
-    /// Toggle a token in the query string. Returns the new query.
-    pub fn toggle_token(query: &str, token: &str) -> String {
-        if Self::has_token(query, token) {
-            // Remove the token
-            query
-                .split_whitespace()
-                .filter(|t| *t != token)
-                .collect::<Vec<_>>()
-                .join(" ")
-        } else {
-            let trimmed = query.trim();
-            if trimmed.is_empty() {
-                token.to_string()
-            } else {
-                format!("{} {}", trimmed, token)
+            1 => {
+                // Local indicator: checkmark symbol when local branch exists
+                let text = if item.has_local {
+                    symbols.status_merged.to_string()
+                } else {
+                    "-".to_string()
+                };
+                let style = if item.has_local {
+                    theme.merged
+                } else {
+                    theme.secondary_text
+                };
+                cells.push(Cell::from(Span::styled(text, style)));
             }
+            2 => {
+                // Ahead/Behind
+                let mut parts: Vec<Span<'static>> = Vec::new();
+                if let Some(a) = item.ahead {
+                    if a > 0 {
+                        parts.push(Span::styled(
+                            format!("{}{a}", symbols.arrow_up),
+                            theme.ahead_behind,
+                        ));
+                    }
+                }
+                if let Some(b) = item.behind {
+                    if b > 0 {
+                        if !parts.is_empty() {
+                            parts.push(Span::raw(" "));
+                        }
+                        parts.push(Span::styled(
+                            format!("{}{b}", symbols.arrow_down),
+                            theme.ahead_behind,
+                        ));
+                    }
+                }
+                cells.push(Cell::from(Line::from(parts)));
+            }
+            3 => {
+                // PR number
+                let (text, style) = if let Some(pr) = &item.pr {
+                    let text = format!("#{}", pr.number);
+                    let style = match pr.status {
+                        PrStatus::Draft => theme.pr_draft,
+                        PrStatus::Open => theme.pr_open,
+                        PrStatus::Merged => theme.pr_merged,
+                        PrStatus::Closed => theme.pr_closed,
+                    };
+                    (text, style)
+                } else {
+                    (String::new(), Style::default())
+                };
+                cells.push(Cell::from(Span::styled(text, style)));
+            }
+            4 => {
+                // Age
+                let age = if ctx.compact { item.age_short() } else { item.age_display() };
+                let style = age_style(&item.last_commit_date, theme);
+                cells.push(Cell::from(
+                    Line::from(Span::styled(age, style)).alignment(Alignment::Right),
+                ));
+            }
+            5 => {
+                // Status — full text when terminal >= 70 wide, symbol only when narrow
+                let short_status = ctx.area_width < 70;
+                let (text, style) = if short_status {
+                    match item.merge_status {
+                        MergeStatus::Merged => (symbols.status_merged.to_string(), theme.merged),
+                        MergeStatus::SquashMerged => (symbols.status_squash_merged.to_string(), theme.squash_merged),
+                        MergeStatus::Unmerged => (symbols.status_unmerged.to_string(), theme.unmerged),
+                        MergeStatus::Pending => ("\u{2026}".to_string(), theme.dim),
+                    }
+                } else {
+                    match item.merge_status {
+                        MergeStatus::Merged => (format!("merged {}", symbols.status_merged), theme.merged),
+                        MergeStatus::SquashMerged => (format!("squash-merged {}", symbols.status_squash_merged), theme.squash_merged),
+                        MergeStatus::Unmerged => (format!("unmerged {}", symbols.status_unmerged), theme.unmerged),
+                        MergeStatus::Pending => ("pending \u{2026}".to_string(), theme.dim),
+                    }
+                };
+                cells.push(Cell::from(
+                    Line::from(Span::styled(text, style)).alignment(Alignment::Right),
+                ));
+            }
+            _ => cells.push(Cell::from("")),
         }
     }
+    cells
 }
 
-/// Parse age duration string like "7d", "30d", "6m", "1y" into seconds.
-fn parse_age_duration(s: &str) -> Option<i64> {
-    if s.is_empty() {
-        return None;
+fn render_tag_row(
+    item: &TagInfo,
+    _raw_idx: usize,
+    _is_selected: bool,
+    _is_cursor: bool,
+    visible_cols: &[usize],
+    ctx: &CellContext,
+) -> Vec<Cell<'static>> {
+    let mut cells = Vec::new();
+    let theme = ctx.theme;
+
+    for &col_idx in visible_cols {
+        match col_idx {
+            0 => {
+                // Tag name
+                let style = branch_prefix_style(&item.name, theme);
+                cells.push(Cell::from(Span::styled(item.name.clone(), style)));
+            }
+            1 => {
+                // Commit hash (short)
+                let hash = if item.commit_hash.len() > 8 {
+                    &item.commit_hash[..8]
+                } else {
+                    &item.commit_hash
+                };
+                cells.push(Cell::from(Span::styled(
+                    hash.to_string(),
+                    theme.secondary_text,
+                )));
+            }
+            2 => {
+                // Age
+                let age = if ctx.compact { item.age_short() } else { item.age_display() };
+                let style = age_style(&item.date, theme);
+                cells.push(Cell::from(
+                    Line::from(Span::styled(age, style)).alignment(Alignment::Right),
+                ));
+            }
+            3 => {
+                // Message
+                let msg = item
+                    .message
+                    .as_deref()
+                    .unwrap_or("")
+                    .lines()
+                    .next()
+                    .unwrap_or("");
+                let max_width = if ctx.area_width > 60 {
+                    (ctx.area_width - 60) as usize
+                } else {
+                    20
+                };
+                let text = truncate(msg, max_width);
+                cells.push(Cell::from(Span::styled(text, theme.secondary_text)));
+            }
+            _ => cells.push(Cell::from("")),
+        }
     }
-    let (num_str, suffix) = s.split_at(s.len() - 1);
-    let num: i64 = num_str.parse().ok()?;
-    match suffix {
-        "d" => Some(num * 86400),
-        "w" => Some(num * 604800),
-        "m" => Some(num * 2_592_000), // 30 days
-        "y" => Some(num * 31_536_000), // 365 days
-        _ => None,
-    }
+    cells
 }
 
-/// Check if a branch matches the lowercased search query (text portion only).
-/// Used for cursor navigation — skips non-matching branches.
-fn branch_matches_query(branch: &BranchInfo, query_lower: &str) -> bool {
-    if query_lower.is_empty() {
-        return true;
+fn render_worktree_row(
+    item: &WorktreeInfo,
+    _raw_idx: usize,
+    _is_selected: bool,
+    _is_cursor: bool,
+    visible_cols: &[usize],
+    ctx: &CellContext,
+) -> Vec<Cell<'static>> {
+    let mut cells = Vec::new();
+    let theme = ctx.theme;
+    let symbols = ctx.symbols;
+
+    for &col_idx in visible_cols {
+        match col_idx {
+            0 => {
+                // Path
+                let path_str = item.path.to_string_lossy().to_string();
+                let style = if item.is_main {
+                    theme.current_branch
+                } else {
+                    Style::default()
+                };
+                cells.push(Cell::from(Span::styled(path_str, style)));
+            }
+            1 => {
+                // Branch name
+                let name = item.branch.as_deref().unwrap_or("[detached]");
+                let style = prefix_style(name, theme)
+                    .unwrap_or(theme.primary_text);
+                cells.push(Cell::from(Span::styled(name.to_string(), style)));
+            }
+            2 => {
+                // Working tree status
+                let text = if item.wt_status.is_clean() {
+                    "clean".to_string()
+                } else {
+                    item.wt_status.summary()
+                };
+                let style = if item.wt_status.is_clean() {
+                    theme.merged
+                } else {
+                    theme.unmerged
+                };
+                cells.push(Cell::from(Span::styled(text, style)));
+            }
+            3 => {
+                // Age
+                let age = if ctx.compact { item.age_short() } else { item.age_display() };
+                let style = age_style(&item.age_date, theme);
+                cells.push(Cell::from(
+                    Line::from(Span::styled(age, style)).alignment(Alignment::Right),
+                ));
+            }
+            4 => {
+                // Merge status — full text when terminal >= 70 wide, symbol only when narrow
+                let short_status = ctx.area_width < 70;
+                let (text, style) = if short_status {
+                    match item.merge_status {
+                        MergeStatus::Merged => (symbols.status_merged.to_string(), theme.merged),
+                        MergeStatus::SquashMerged => (symbols.status_squash_merged.to_string(), theme.squash_merged),
+                        MergeStatus::Unmerged => (symbols.status_unmerged.to_string(), theme.unmerged),
+                        MergeStatus::Pending => ("\u{2026}".to_string(), theme.dim),
+                    }
+                } else {
+                    match item.merge_status {
+                        MergeStatus::Merged => (format!("merged {}", symbols.status_merged), theme.merged),
+                        MergeStatus::SquashMerged => (format!("squash-merged {}", symbols.status_squash_merged), theme.squash_merged),
+                        MergeStatus::Unmerged => (format!("unmerged {}", symbols.status_unmerged), theme.unmerged),
+                        MergeStatus::Pending => ("pending \u{2026}".to_string(), theme.dim),
+                    }
+                };
+                cells.push(Cell::from(
+                    Line::from(Span::styled(text, style)).alignment(Alignment::Right),
+                ));
+            }
+            _ => cells.push(Cell::from("")),
+        }
     }
-    // Parse filters and only use text portion for name matching
-    let fs = FilterSet::parse(query_lower);
-    if fs.text.is_empty() {
-        return true;
-    }
-    branch.name.to_lowercase().contains(&fs.text.to_lowercase())
+    cells
 }

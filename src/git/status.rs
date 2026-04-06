@@ -1,8 +1,6 @@
+use crate::types::WorkingTreeStatus;
 use git2::{Repository, StatusOptions};
 
-use crate::types::WorkingTreeStatus;
-
-/// Detect working tree status using git2's statuses API.
 pub fn detect_working_tree_status(repo: &Repository) -> WorkingTreeStatus {
     let mut opts = StatusOptions::new();
     opts.include_untracked(true);
@@ -18,7 +16,6 @@ pub fn detect_working_tree_status(repo: &Repository) -> WorkingTreeStatus {
 
     for entry in statuses.iter() {
         let s = entry.status();
-
         if s.intersects(
             git2::Status::INDEX_NEW
                 | git2::Status::INDEX_MODIFIED
@@ -28,7 +25,6 @@ pub fn detect_working_tree_status(repo: &Repository) -> WorkingTreeStatus {
         ) {
             has_staged = true;
         }
-
         if s.intersects(
             git2::Status::WT_MODIFIED
                 | git2::Status::WT_DELETED
@@ -37,7 +33,6 @@ pub fn detect_working_tree_status(repo: &Repository) -> WorkingTreeStatus {
         ) {
             has_unstaged = true;
         }
-
         if s.contains(git2::Status::WT_NEW) {
             has_untracked = true;
         }

@@ -1,17 +1,17 @@
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "git-branch-manager", about = "TUI git branch manager with squash-merge detection")]
+#[command(name = "git-branch-manager", about = "TUI for managing git branches")]
 pub struct Cli {
-    /// Override the base branch (default: auto-detect from remote HEAD)
-    #[arg(long, short)]
+    /// Override the auto-detected base branch
+    #[arg(long)]
     pub base: Option<String>,
 
-    /// Print branch list to stdout and exit (no TUI)
+    /// Non-interactive: print branch list to stdout
     #[arg(long)]
     pub list: bool,
 
-    /// Symbol set: ascii, unicode, powerline (default: auto-detect)
+    /// Override symbol set (ascii, unicode, powerline)
     #[arg(long)]
     pub symbols: Option<String>,
 }

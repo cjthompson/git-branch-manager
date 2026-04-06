@@ -1,17 +1,33 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
 
-use super::symbols::SymbolSet;
-use super::theme::Theme;
+use crate::symbols::SymbolSet;
+use crate::theme::Theme;
+use crate::types::BranchAction;
 
+/// A single item in the context menu overlay.
+#[derive(Debug, Clone)]
 pub struct MenuItem {
     pub label: String,
+    pub shortcut: Option<char>,
+    pub action: BranchAction,
     pub enabled: bool,
     pub reason: Option<String>,
-    pub shortcut: Option<char>,
 }
 
-pub fn draw(frame: &mut Frame, items: &[MenuItem], menu_cursor: usize, anchor_row: u16, theme: &Theme, symbols: &SymbolSet) {
+/// Renders a context menu overlay at the given anchor row.
+///
+/// `items` is the list of menu entries (some may be disabled).
+/// `cursor` is the current highlighted menu item index.
+/// `anchor_row` is the y position to anchor the menu near.
+pub fn draw_menu(
+    frame: &mut Frame,
+    items: &[MenuItem],
+    cursor: usize,
+    anchor_row: u16,
+    theme: &Theme,
+    symbols: &SymbolSet,
+) {
     let area = frame.area();
     let menu_width = 35u16.min(area.width);
     let menu_height = (items.len() as u16 + 2).min(area.height); // +2 for borders
@@ -25,28 +41,43 @@ pub fn draw(frame: &mut Frame, items: &[MenuItem], menu_cursor: usize, anchor_ro
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let prefix = if i == menu_cursor { format!("{} ", symbols.cursor_prefix) } else { "  ".to_string() };
+            let prefix = if i == cursor {
+                format!("{} ", symbols.cursor_prefix)
+            } else {
+                "  ".to_string()
+            };
+
             let item_style = if !item.enabled {
                 theme.secondary_text
-            } else if i == menu_cursor {
+            } else if i == cursor {
                 theme.cursor
             } else {
                 Style::default()
             };
+
             let prefix_span = Span::styled(prefix, item_style);
             let mut spans = vec![prefix_span];
+
             if let Some(ch) = item.shortcut {
                 spans.push(Span::styled("[", item_style));
-                spans.push(Span::styled(ch.to_string(), if item.enabled { theme.title } else { item_style }));
+                spans.push(Span::styled(
+                    ch.to_string(),
+                    if item.enabled {
+                        theme.title
+                    } else {
+                        item_style
+                    },
+                ));
                 spans.push(Span::styled(format!("] {}", item.label), item_style));
             } else {
                 spans.push(Span::styled(item.label.clone(), item_style));
             }
+
             if let Some(reason) = &item.reason {
                 spans.push(Span::styled(format!(" ({})", reason), item_style));
             }
-            let line = Line::from(spans);
-            ListItem::new(line)
+
+            ListItem::new(Line::from(spans))
         })
         .collect();
 

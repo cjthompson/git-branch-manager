@@ -1,9 +1,18 @@
 use ratatui::prelude::*;
+use ratatui::style::Modifier;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use crate::app::App;
+use crate::theme::Theme;
+use crate::types::OperationResult;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+/// Renders the full-screen results view after an operation completes.
+///
+/// Shows success/failure per item. The footer instructs the user to press any key to return.
+pub fn draw_results(
+    frame: &mut Frame,
+    results: &[OperationResult],
+    theme: &Theme,
+) {
     let area = frame.area();
 
     let layout = Layout::default()
@@ -16,25 +25,27 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let block = Block::default()
         .title("Results")
-        .title_style(app.theme.title)
+        .title_style(theme.title)
         .borders(Borders::ALL);
 
-    let lines: Vec<Line> = app
-        .results
+    let lines: Vec<Line> = results
         .iter()
         .map(|r| {
             let (status, style) = if r.success {
-                (" OK ", app.theme.merged)
+                (" OK ", theme.merged)
             } else {
-                ("FAIL", app.theme.error)
+                ("FAIL", theme.error)
             };
 
             Line::from(vec![
                 Span::styled(status, style),
                 Span::raw("  "),
-                Span::styled(&r.branch_name, Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    r.branch_name.clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  "),
-                Span::styled(&r.message, app.theme.dim),
+                Span::styled(r.message.clone(), theme.dim),
             ])
         })
         .collect();
@@ -45,6 +56,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     frame.render_widget(paragraph, main_area);
 
-    let footer = Paragraph::new(" Press any key to continue").style(app.theme.status_bar);
+    let footer = Paragraph::new(" Press any key to continue").style(theme.status_bar);
     frame.render_widget(footer, footer_area);
 }
