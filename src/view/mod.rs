@@ -56,6 +56,10 @@ impl ViewId {
 pub trait ViewItem: Clone {
     fn display_name(&self) -> &str;
     fn is_pinned(&self) -> bool;
+    /// Whether this is the base/default branch (always sorts first among pinned items)
+    fn is_base(&self) -> bool {
+        false
+    }
     fn merge_status(&self) -> Option<&MergeStatus> {
         None
     }
@@ -83,6 +87,9 @@ impl ViewItem for BranchInfo {
     fn is_pinned(&self) -> bool {
         self.is_base || self.is_current
     }
+    fn is_base(&self) -> bool {
+        self.is_base
+    }
     fn merge_status(&self) -> Option<&MergeStatus> {
         Some(&self.merge_status)
     }
@@ -98,6 +105,9 @@ impl ViewItem for BranchInfo {
     fn is_current(&self) -> bool {
         self.is_current
     }
+    fn pr_info(&self) -> Option<&PrInfo> {
+        self.pr.as_ref()
+    }
 }
 
 impl ViewItem for RemoteBranchInfo {
@@ -105,6 +115,9 @@ impl ViewItem for RemoteBranchInfo {
         &self.full_ref
     }
     fn is_pinned(&self) -> bool {
+        self.is_base
+    }
+    fn is_base(&self) -> bool {
         self.is_base
     }
     fn merge_status(&self) -> Option<&MergeStatus> {
@@ -118,6 +131,9 @@ impl ViewItem for RemoteBranchInfo {
     }
     fn behind(&self) -> Option<u32> {
         self.behind
+    }
+    fn pr_info(&self) -> Option<&PrInfo> {
+        self.pr.as_ref()
     }
 }
 
@@ -203,6 +219,9 @@ mod tests {
             behind: Some(1),
             last_commit_date: Utc::now(),
             merge_status: MergeStatus::Unmerged,
+            base_branch: "main".into(),
+            merge_base_commit: None,
+            pr: None,
         };
         assert_eq!(b.display_name(), "feature/x");
         assert!(b.is_pinned()); // is_current = true
@@ -224,6 +243,7 @@ mod tests {
             merge_status: MergeStatus::Merged,
             ahead: None,
             behind: Some(2),
+            pr: None,
         };
         assert_eq!(r.display_name(), "origin/main");
         assert!(r.is_pinned());

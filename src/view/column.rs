@@ -6,6 +6,8 @@ use std::cmp::Ordering;
 pub struct ColumnDef<T: ViewItem> {
     pub name: &'static str,
     pub min_width: u16,
+    /// When Some(w), use width w instead of min_width when terminal width >= 70.
+    pub wide_width: Option<u16>,
     /// Hide this column when terminal width is below this threshold
     pub hide_below_width: Option<u16>,
     /// Comparison function for sorting. None = column is not sortable.
@@ -29,6 +31,9 @@ mod tests {
             behind: None,
             last_commit_date: Utc::now() - chrono::Duration::days(days_ago),
             merge_status: MergeStatus::Unmerged,
+            base_branch: "main".into(),
+            merge_base_commit: None,
+            pr: None,
         }
     }
 
@@ -39,6 +44,7 @@ mod tests {
         let col = ColumnDef::<BranchInfo> {
             name: "Name",
             min_width: 10,
+            wide_width: None,
             hide_below_width: None,
             compare: Some(|a, b| a.name.cmp(&b.name)),
         };
@@ -53,6 +59,7 @@ mod tests {
         let col = ColumnDef::<BranchInfo> {
             name: "Age",
             min_width: 5,
+            wide_width: None,
             hide_below_width: Some(60),
             compare: Some(|a, b| a.last_commit_date.cmp(&b.last_commit_date)),
         };
@@ -65,6 +72,7 @@ mod tests {
         let col = ColumnDef::<BranchInfo> {
             name: "Remote",
             min_width: 8,
+            wide_width: None,
             hide_below_width: None,
             compare: None,
         };

@@ -60,8 +60,6 @@ pub struct RenderContext<'a> {
     pub theme: &'a Theme,
     pub symbols: &'a SymbolSet,
     pub config: &'a Config,
-    pub sort_column: Option<usize>,
-    pub sort_ascending: bool,
     // List states
     pub branches: &'a mut ListState<BranchInfo>,
     pub remotes: &'a mut ListState<RemoteBranchInfo>,
@@ -242,8 +240,6 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 let rows = settings_rows(
                     ctx.symbols,
                     ctx.theme,
-                    ctx.sort_column,
-                    ctx.sort_ascending,
                     ctx.config,
                 );
                 draw_settings(frame, *cursor, &rows, ctx.theme);
@@ -278,16 +274,29 @@ fn default_status_text(ctx: &RenderContext) -> String {
         ViewId::Branches => {
             let total = ctx.branches.items().len();
             let selected = ctx.branches.selected().iter().filter(|&&s| s).count();
+            let merged = ctx.branches.items().iter()
+                .filter(|b| b.merge_status == MergeStatus::Merged)
+                .count();
+            let squashed = ctx.branches.items().iter()
+                .filter(|b| b.merge_status == MergeStatus::SquashMerged)
+                .count();
             format!(
-                " {} branches | {} selected \u{2014} [/]search [\\]filter [c]heckout [d]el [D]el+remote [f]etch [?]help [q]uit",
-                total, selected
+                " {} branches | {} selected | {} merged | {} squashed \u{2014} [/]search [\\]filter [c]heckout [d]el [D]el+remote [f]etch [?]help [q]uit",
+                total, selected, merged, squashed
             )
         }
         ViewId::Remotes => {
             let total = ctx.remotes.items().len();
+            let selected = ctx.remotes.selected().iter().filter(|&&s| s).count();
+            let merged = ctx.remotes.items().iter()
+                .filter(|b| b.merge_status == MergeStatus::Merged)
+                .count();
+            let squashed = ctx.remotes.items().iter()
+                .filter(|b| b.merge_status == MergeStatus::SquashMerged)
+                .count();
             format!(
-                " {} remote branches \u{2014} [/]search [\\]filter [d]el [f]etch [?]help [q]uit",
-                total
+                " {} remote branches | {} selected | {} merged | {} squashed \u{2014} [/]search [\\]filter [c]heckout [d]el [f]etch [?]help [q]uit",
+                total, selected, merged, squashed
             )
         }
         ViewId::Tags => {

@@ -150,6 +150,7 @@ pub fn list_remote_branches_phase1(
             },
             ahead: None,
             behind: None,
+            pr: None,
         });
     }
 
@@ -281,6 +282,12 @@ fn collect_branch_metadata(
         .as_ref()
         .and_then(|h| h.shorthand().map(|s| s.to_string()));
 
+    // Resolve the base branch OID once for merge-base computation
+    let base_oid = repo
+        .find_branch(base_branch, BranchType::Local)
+        .ok()
+        .and_then(|b| b.get().target());
+
     let mut branches = Vec::new();
     let branch_iter = repo.branches(Some(BranchType::Local))?;
 
@@ -331,6 +338,20 @@ fn collect_branch_metadata(
             _ => (None, None),
         };
 
+        // Compute merge-base commit for non-base branches
+        let merge_base_commit = if !is_base {
+            if let Some(base_oid) = base_oid {
+                let branch_oid = commit.id();
+                repo.merge_base(base_oid, branch_oid)
+                    .ok()
+                    .map(|oid| oid.to_string()[..8].to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         branches.push(BranchInfo {
             name,
             is_current,
@@ -340,6 +361,9 @@ fn collect_branch_metadata(
             behind,
             last_commit_date: date,
             merge_status: MergeStatus::Unmerged, // detect_merged_branches fills this in
+            base_branch: base_branch.to_string(),
+            merge_base_commit,
+            pr: None,
         });
     }
 

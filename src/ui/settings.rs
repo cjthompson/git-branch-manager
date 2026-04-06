@@ -18,20 +18,19 @@ pub struct SettingsRow {
 pub fn settings_rows(
     symbols: &SymbolSet,
     theme: &Theme,
-    sort_column: Option<usize>,
-    sort_ascending: bool,
     config: &Config,
 ) -> Vec<SettingsRow> {
-    let sort_col_display = match sort_column {
-        None => "none".to_string(),
-        Some(0) => "name".to_string(),
-        Some(1) => "age".to_string(),
-        Some(2) => "ahead".to_string(),
-        Some(3) => "behind".to_string(),
-        Some(4) => "status".to_string(),
-        Some(_) => "none".to_string(),
-    };
-    let sort_dir_display = if sort_ascending {
+    let sort_col_display = match config.sort_column.as_deref() {
+        Some("name") => "name",
+        Some("remote") => "remote",
+        Some("age") => "age",
+        Some("ahead") => "ahead",
+        Some("pr") => "pr",
+        Some("behind") => "behind",
+        Some("status") => "status",
+        _ => "none",
+    }.to_string();
+    let sort_dir_display = if config.sort_asc != Some(false) {
         "ascending".to_string()
     } else {
         "descending".to_string()

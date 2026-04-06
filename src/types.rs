@@ -151,6 +151,11 @@ pub struct BranchInfo {
     pub behind: Option<u32>,
     pub last_commit_date: DateTime<Utc>,
     pub merge_status: MergeStatus,
+    /// Name of the detected base branch (e.g. "main")
+    pub base_branch: String,
+    /// Short (8-char) commit hash of the merge-base with the base branch
+    pub merge_base_commit: Option<String>,
+    pub pr: Option<PrInfo>,
 }
 
 impl BranchInfo {
@@ -178,6 +183,7 @@ pub struct RemoteBranchInfo {
     pub merge_status: MergeStatus,
     pub ahead: Option<u32>,
     pub behind: Option<u32>,
+    pub pr: Option<PrInfo>,
 }
 
 impl RemoteBranchInfo {
@@ -439,6 +445,9 @@ mod tests {
             behind: None,
             last_commit_date: Utc::now(),
             merge_status: MergeStatus::Unmerged,
+            base_branch: "main".into(),
+            merge_base_commit: None,
+            pr: None,
         };
         assert!(b.is_pinned());
     }
@@ -454,6 +463,9 @@ mod tests {
             behind: None,
             last_commit_date: Utc::now(),
             merge_status: MergeStatus::Unmerged,
+            base_branch: "main".into(),
+            merge_base_commit: None,
+            pr: None,
         };
         assert!(!b.is_pinned());
     }

@@ -134,11 +134,12 @@ impl App {
 
         // Init sort from config
         let sort_col: Option<usize> = config.sort_column.as_deref().and_then(|s| match s {
-            "name" => Some(0),
-            "age" => Some(1),
-            "ahead" => Some(2),
-            "behind" => Some(3),
-            "status" => Some(4),
+            "name"   => Some(0),
+            "remote" => Some(1),
+            "ahead"  => Some(2),
+            "pr"     => Some(3),
+            "age"    => Some(4),
+            "status" => Some(5),
             _ => None,
         });
         let sort_asc = config.sort_asc.unwrap_or(true);
@@ -233,13 +234,6 @@ impl App {
     }
 
     fn build_render_context(&mut self) -> RenderContext<'_> {
-        let (sort_column, sort_ascending) = match self.active_view {
-            ViewId::Branches => (self.branches.sort_column(), self.branches.sort_ascending()),
-            ViewId::Remotes => (self.remotes.sort_column(), self.remotes.sort_ascending()),
-            ViewId::Tags => (self.tags.sort_column(), self.tags.sort_ascending()),
-            ViewId::Worktrees => (self.worktrees.sort_column(), self.worktrees.sort_ascending()),
-        };
-
         let active_filter_tokens: &[FilterTokenDef] = match self.active_view {
             ViewId::Branches => &self.branch_filter_tokens,
             ViewId::Remotes => &self.remote_filter_tokens,
@@ -254,8 +248,6 @@ impl App {
             theme: &self.theme,
             symbols: &self.symbols,
             config: &self.config,
-            sort_column,
-            sort_ascending,
             branches: &mut self.branches,
             remotes: &mut self.remotes,
             tags: &mut self.tags,
@@ -333,6 +325,16 @@ impl App {
         // PR map (one-shot)
         for map in drain_channel(&mut self.pr_rx, 1) {
             self.pr_map = map;
+            // Push PR data into branch items
+            for branch in self.branches.items_mut() {
+                branch.pr = self.pr_map.get(&branch.name).cloned();
+            }
+            // Push PR data into remote items (keyed by short_name)
+            for remote in self.remotes.items_mut() {
+                remote.pr = self.pr_map.get(&remote.short_name).cloned();
+            }
+            self.branches.rebuild_display_indices();
+            self.remotes.rebuild_display_indices();
         }
 
         // Tag loading (one-shot)
@@ -475,7 +477,11 @@ impl App {
                 return;
             }
             KeyCode::Tab => {
-                self.active_view = self.active_view.next();
+                if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
+                    self.active_view = self.active_view.prev();
+                } else {
+                    self.active_view = self.active_view.next();
+                }
                 self.ensure_view_loaded();
                 return;
             }
@@ -615,7 +621,7 @@ impl App {
             KeyCode::Char('d') => self.delete_selected_remote_branches(),
             KeyCode::Char('f') => self.start_fetch(false),
             KeyCode::Char('F') => self.start_fetch(true),
-            KeyCode::Char('r') | KeyCode::Esc => {
+            KeyCode::Char('b') | KeyCode::Char('r') | KeyCode::Esc => {
                 self.active_view = ViewId::Branches;
             }
             KeyCode::Char('t') => {
@@ -637,7 +643,7 @@ impl App {
             KeyCode::Char('p') => self.push_selected_tags(),
             KeyCode::Char('f') => self.start_fetch(false),
             KeyCode::Char('F') => self.start_fetch(true),
-            KeyCode::Char('t') | KeyCode::Esc => {
+            KeyCode::Char('b') | KeyCode::Char('t') | KeyCode::Esc => {
                 self.active_view = ViewId::Branches;
             }
             KeyCode::Char('r') => {
@@ -658,7 +664,7 @@ impl App {
             KeyCode::Char('D') => self.remove_selected_worktrees(true),
             KeyCode::Char('f') => self.start_fetch(false),
             KeyCode::Char('F') => self.start_fetch(true),
-            KeyCode::Char('w') | KeyCode::Esc => {
+            KeyCode::Char('b') | KeyCode::Char('w') | KeyCode::Esc => {
                 self.active_view = ViewId::Branches;
             }
             KeyCode::Char('r') => {
@@ -771,8 +777,8 @@ impl App {
     }
 
     fn handle_settings_key(&mut self, key: KeyEvent, cursor: usize) {
-        const SORT_CYCLE: [Option<usize>; 6] =
-            [None, Some(0), Some(1), Some(2), Some(3), Some(4)];
+        const SORT_CYCLE: [Option<usize>; 7] =
+            [None, Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)];
         const NUM_ROWS: usize = 6;
 
         match key.code {
@@ -1619,19 +1625,19 @@ impl App {
     fn cycle_sort(&mut self) {
         match self.active_view {
             ViewId::Branches => {
-                list_state::cycle_sort_column(&mut self.branches, self.branch_columns.len());
+                list_state::cycle_sort_column(&mut self.branches, &self.branch_columns);
                 list_state::apply_sort(&mut self.branches, &self.branch_columns);
             }
             ViewId::Remotes => {
-                list_state::cycle_sort_column(&mut self.remotes, self.remote_columns.len());
+                list_state::cycle_sort_column(&mut self.remotes, &self.remote_columns);
                 list_state::apply_sort(&mut self.remotes, &self.remote_columns);
             }
             ViewId::Tags => {
-                list_state::cycle_sort_column(&mut self.tags, self.tag_columns.len());
+                list_state::cycle_sort_column(&mut self.tags, &self.tag_columns);
                 list_state::apply_sort(&mut self.tags, &self.tag_columns);
             }
             ViewId::Worktrees => {
-                list_state::cycle_sort_column(&mut self.worktrees, self.worktree_columns.len());
+                list_state::cycle_sort_column(&mut self.worktrees, &self.worktree_columns);
                 list_state::apply_sort(&mut self.worktrees, &self.worktree_columns);
             }
         }
@@ -1873,10 +1879,11 @@ impl App {
         self.config.sort_column = sort_col.map(|c| {
             match c {
                 0 => "name",
-                1 => "age",
+                1 => "remote",
                 2 => "ahead",
-                3 => "behind",
-                4 => "status",
+                3 => "pr",
+                4 => "age",
+                5 => "status",
                 _ => "name",
             }
             .to_string()
@@ -2212,7 +2219,18 @@ fn render_branch_row(
                 } else {
                     String::new()
                 };
-                let name = format!("{prefix}{}", item.name);
+                // For non-base branches, append base info
+                let suffix = if item.is_base {
+                    " [base]".to_string()
+                } else if !item.is_current {
+                    match &item.merge_base_commit {
+                        Some(hash) => format!(" ({} - {})", item.base_branch, hash),
+                        None => String::new(),
+                    }
+                } else {
+                    String::new()
+                };
+                let name = format!("{prefix}{}{suffix}", item.name);
                 cells.push(Cell::from(Span::styled(name, style)));
             }
             1 => {
@@ -2222,12 +2240,7 @@ fn render_branch_row(
                         if *gone {
                             "gone".to_string()
                         } else {
-                            // Show just "origin" or remote name
-                            remote_ref
-                                .split('/')
-                                .next()
-                                .unwrap_or(remote_ref)
-                                .to_string()
+                            remote_ref.clone()
                         }
                     }
                     TrackingStatus::Local => "local".to_string(),
@@ -2259,24 +2272,55 @@ fn render_branch_row(
                 cells.push(Cell::from(Line::from(parts)));
             }
             3 => {
+                // PR number
+                let (text, style) = if let Some(pr) = &item.pr {
+                    let text = format!("#{}", pr.number);
+                    let style = match pr.status {
+                        PrStatus::Draft => theme.pr_draft,
+                        PrStatus::Open => theme.pr_open,
+                        PrStatus::Merged => theme.pr_merged,
+                        PrStatus::Closed => theme.pr_closed,
+                    };
+                    (text, style)
+                } else {
+                    (String::new(), Style::default())
+                };
+                cells.push(Cell::from(Span::styled(text, style)));
+            }
+            4 => {
                 // Age
-                let age = item.age_short();
+                let age = if ctx.compact { item.age_short() } else { item.age_display() };
                 let style = age_style(&item.last_commit_date, theme);
                 cells.push(Cell::from(
                     Line::from(Span::styled(age, style)).alignment(Alignment::Right),
                 ));
             }
-            4 => {
-                // Status
-                let (sym, style) = match item.merge_status {
-                    MergeStatus::Merged => (symbols.status_merged, theme.merged),
-                    MergeStatus::SquashMerged => (symbols.status_squash_merged, theme.squash_merged),
-                    MergeStatus::Unmerged => (symbols.status_unmerged, theme.unmerged),
-                    MergeStatus::Pending => ("\u{2026}", theme.dim),
-                };
-                cells.push(Cell::from(
-                    Line::from(Span::styled(sym.to_string(), style)).alignment(Alignment::Right),
-                ));
+            5 => {
+                // Base branch always shows blank status
+                if item.is_base {
+                    cells.push(Cell::from(""));
+                } else {
+                    // Status — full text when terminal >= 70 wide, symbol only when narrow
+                    let short_status = ctx.area_width < 70;
+                    let (text, style) = if short_status {
+                        match item.merge_status {
+                            MergeStatus::Merged => (symbols.status_merged.to_string(), theme.merged),
+                            MergeStatus::SquashMerged => (symbols.status_squash_merged.to_string(), theme.squash_merged),
+                            MergeStatus::Unmerged => (symbols.status_unmerged.to_string(), theme.unmerged),
+                            MergeStatus::Pending => ("\u{2026}".to_string(), theme.dim),
+                        }
+                    } else {
+                        match item.merge_status {
+                            MergeStatus::Merged => (format!("merged {}", symbols.status_merged), theme.merged),
+                            MergeStatus::SquashMerged => (format!("squash-merged {}", symbols.status_squash_merged), theme.squash_merged),
+                            MergeStatus::Unmerged => (format!("unmerged {}", symbols.status_unmerged), theme.unmerged),
+                            MergeStatus::Pending => ("pending \u{2026}".to_string(), theme.dim),
+                        }
+                    };
+                    cells.push(Cell::from(
+                        Line::from(Span::styled(text, style)).alignment(Alignment::Right),
+                    ));
+                }
             }
             _ => cells.push(Cell::from("")),
         }
@@ -2299,20 +2343,30 @@ fn render_remote_row(
     for &col_idx in visible_cols {
         match col_idx {
             0 => {
-                // Name (remote/short_name)
-                let style = prefix_style(&item.short_name, theme)
+                // Name: full remote branch name (e.g. "origin/feature/test")
+                let prefix = item.short_name.split('/').next().unwrap_or(&item.short_name);
+                let style = prefix_style(prefix, theme)
                     .unwrap_or(theme.primary_text);
-                cells.push(Cell::from(Span::styled(item.full_ref.clone(), style)));
+                let name = if item.is_base {
+                    format!("{} [base]", item.full_ref)
+                } else {
+                    item.full_ref.clone()
+                };
+                cells.push(Cell::from(Span::styled(name, style)));
             }
             1 => {
-                // Local indicator
-                let text = if item.has_local { "yes" } else { "-" };
+                // Local indicator: checkmark symbol when local branch exists
+                let text = if item.has_local {
+                    symbols.status_merged.to_string()
+                } else {
+                    "-".to_string()
+                };
                 let style = if item.has_local {
                     theme.merged
                 } else {
                     theme.secondary_text
                 };
-                cells.push(Cell::from(Span::styled(text.to_string(), style)));
+                cells.push(Cell::from(Span::styled(text, style)));
             }
             2 => {
                 // Ahead/Behind
@@ -2339,23 +2393,49 @@ fn render_remote_row(
                 cells.push(Cell::from(Line::from(parts)));
             }
             3 => {
+                // PR number
+                let (text, style) = if let Some(pr) = &item.pr {
+                    let text = format!("#{}", pr.number);
+                    let style = match pr.status {
+                        PrStatus::Draft => theme.pr_draft,
+                        PrStatus::Open => theme.pr_open,
+                        PrStatus::Merged => theme.pr_merged,
+                        PrStatus::Closed => theme.pr_closed,
+                    };
+                    (text, style)
+                } else {
+                    (String::new(), Style::default())
+                };
+                cells.push(Cell::from(Span::styled(text, style)));
+            }
+            4 => {
                 // Age
-                let age = item.age_short();
+                let age = if ctx.compact { item.age_short() } else { item.age_display() };
                 let style = age_style(&item.last_commit_date, theme);
                 cells.push(Cell::from(
                     Line::from(Span::styled(age, style)).alignment(Alignment::Right),
                 ));
             }
-            4 => {
-                // Status
-                let (sym, style) = match item.merge_status {
-                    MergeStatus::Merged => (symbols.status_merged, theme.merged),
-                    MergeStatus::SquashMerged => (symbols.status_squash_merged, theme.squash_merged),
-                    MergeStatus::Unmerged => (symbols.status_unmerged, theme.unmerged),
-                    MergeStatus::Pending => ("\u{2026}", theme.dim),
+            5 => {
+                // Status — full text when terminal >= 70 wide, symbol only when narrow
+                let short_status = ctx.area_width < 70;
+                let (text, style) = if short_status {
+                    match item.merge_status {
+                        MergeStatus::Merged => (symbols.status_merged.to_string(), theme.merged),
+                        MergeStatus::SquashMerged => (symbols.status_squash_merged.to_string(), theme.squash_merged),
+                        MergeStatus::Unmerged => (symbols.status_unmerged.to_string(), theme.unmerged),
+                        MergeStatus::Pending => ("\u{2026}".to_string(), theme.dim),
+                    }
+                } else {
+                    match item.merge_status {
+                        MergeStatus::Merged => (format!("merged {}", symbols.status_merged), theme.merged),
+                        MergeStatus::SquashMerged => (format!("squash-merged {}", symbols.status_squash_merged), theme.squash_merged),
+                        MergeStatus::Unmerged => (format!("unmerged {}", symbols.status_unmerged), theme.unmerged),
+                        MergeStatus::Pending => ("pending \u{2026}".to_string(), theme.dim),
+                    }
                 };
                 cells.push(Cell::from(
-                    Line::from(Span::styled(sym.to_string(), style)).alignment(Alignment::Right),
+                    Line::from(Span::styled(text, style)).alignment(Alignment::Right),
                 ));
             }
             _ => cells.push(Cell::from("")),
@@ -2396,7 +2476,7 @@ fn render_tag_row(
             }
             2 => {
                 // Age
-                let age = item.age_short();
+                let age = if ctx.compact { item.age_short() } else { item.age_display() };
                 let style = age_style(&item.date, theme);
                 cells.push(Cell::from(
                     Line::from(Span::styled(age, style)).alignment(Alignment::Right),
@@ -2472,22 +2552,32 @@ fn render_worktree_row(
             }
             3 => {
                 // Age
-                let age = item.age_short();
+                let age = if ctx.compact { item.age_short() } else { item.age_display() };
                 let style = age_style(&item.age_date, theme);
                 cells.push(Cell::from(
                     Line::from(Span::styled(age, style)).alignment(Alignment::Right),
                 ));
             }
             4 => {
-                // Merge status
-                let (sym, style) = match item.merge_status {
-                    MergeStatus::Merged => (symbols.status_merged, theme.merged),
-                    MergeStatus::SquashMerged => (symbols.status_squash_merged, theme.squash_merged),
-                    MergeStatus::Unmerged => (symbols.status_unmerged, theme.unmerged),
-                    MergeStatus::Pending => ("\u{2026}", theme.dim),
+                // Merge status — full text when terminal >= 70 wide, symbol only when narrow
+                let short_status = ctx.area_width < 70;
+                let (text, style) = if short_status {
+                    match item.merge_status {
+                        MergeStatus::Merged => (symbols.status_merged.to_string(), theme.merged),
+                        MergeStatus::SquashMerged => (symbols.status_squash_merged.to_string(), theme.squash_merged),
+                        MergeStatus::Unmerged => (symbols.status_unmerged.to_string(), theme.unmerged),
+                        MergeStatus::Pending => ("\u{2026}".to_string(), theme.dim),
+                    }
+                } else {
+                    match item.merge_status {
+                        MergeStatus::Merged => (format!("merged {}", symbols.status_merged), theme.merged),
+                        MergeStatus::SquashMerged => (format!("squash-merged {}", symbols.status_squash_merged), theme.squash_merged),
+                        MergeStatus::Unmerged => (format!("unmerged {}", symbols.status_unmerged), theme.unmerged),
+                        MergeStatus::Pending => ("pending \u{2026}".to_string(), theme.dim),
+                    }
                 };
                 cells.push(Cell::from(
-                    Line::from(Span::styled(sym.to_string(), style)).alignment(Alignment::Right),
+                    Line::from(Span::styled(text, style)).alignment(Alignment::Right),
                 ));
             }
             _ => cells.push(Cell::from("")),
