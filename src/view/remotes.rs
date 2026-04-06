@@ -10,30 +10,53 @@ impl RemotesViewDef {
             ColumnDef {
                 name: "Name",
                 min_width: 15,
+                wide_width: None,
                 hide_below_width: None,
                 compare: Some(|a, b| a.short_name.cmp(&b.short_name)),
             },
             ColumnDef {
                 name: "Local",
-                min_width: 5,
+                min_width: 6,
+                wide_width: None,
                 hide_below_width: Some(80),
                 compare: Some(|a, b| a.has_local.cmp(&b.has_local)),
             },
             ColumnDef {
                 name: "A/B",
                 min_width: 8,
+                wide_width: None,
                 hide_below_width: Some(80),
-                compare: Some(|a, b| a.ahead.unwrap_or(0).cmp(&b.ahead.unwrap_or(0))),
+                compare: Some(|a, b| {
+                    a.ahead.unwrap_or(0).cmp(&b.ahead.unwrap_or(0))
+                        .then(a.behind.unwrap_or(0).cmp(&b.behind.unwrap_or(0)))
+                }),
+            },
+            ColumnDef {
+                name: "PR",
+                min_width: 5,
+                wide_width: None,
+                hide_below_width: Some(80),
+                compare: Some(|a, b| {
+                    let pr_key = |item: &RemoteBranchInfo| item.pr.as_ref().map(|p| p.number);
+                    match (pr_key(a), pr_key(b)) {
+                        (Some(x), Some(y)) => x.cmp(&y),
+                        (Some(_), None) => std::cmp::Ordering::Less,
+                        (None, Some(_)) => std::cmp::Ordering::Greater,
+                        (None, None) => std::cmp::Ordering::Equal,
+                    }
+                }),
             },
             ColumnDef {
                 name: "Age",
                 min_width: 5,
+                wide_width: Some(12),
                 hide_below_width: Some(60),
                 compare: Some(|a, b| a.last_commit_date.cmp(&b.last_commit_date)),
             },
             ColumnDef {
                 name: "Status",
-                min_width: 3,
+                min_width: 4,
+                wide_width: Some(15),
                 hide_below_width: None,
                 compare: Some(|a, b| {
                     let rank = |s: &crate::types::MergeStatus| match s {
@@ -116,7 +139,7 @@ mod tests {
     #[test]
     fn has_correct_column_count() {
         let view = RemotesViewDef;
-        assert_eq!(view.columns().len(), 5);
+        assert_eq!(view.columns().len(), 6);
     }
 
     #[test]

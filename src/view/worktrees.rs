@@ -10,30 +10,41 @@ impl WorktreesViewDef {
             ColumnDef {
                 name: "Path",
                 min_width: 15,
+                wide_width: None,
                 hide_below_width: None,
                 compare: Some(|a, b| a.path.cmp(&b.path)),
             },
             ColumnDef {
                 name: "Branch",
                 min_width: 10,
+                wide_width: None,
                 hide_below_width: None,
                 compare: Some(|a, b| a.branch.cmp(&b.branch)),
             },
             ColumnDef {
                 name: "Status",
                 min_width: 8,
+                wide_width: None,
                 hide_below_width: Some(80),
-                compare: None, // WorkingTreeStatus doesn't have a natural ordering
+                compare: Some(|a, b| {
+                    let rank = |w: &WorktreeInfo| {
+                        let s = &w.wt_status;
+                        (s.has_staged as u8) * 4 + (s.has_unstaged as u8) * 2 + (s.has_untracked as u8)
+                    };
+                    rank(a).cmp(&rank(b))
+                }),
             },
             ColumnDef {
                 name: "Age",
                 min_width: 5,
+                wide_width: Some(12),
                 hide_below_width: Some(60),
                 compare: Some(|a, b| a.age_date.cmp(&b.age_date)),
             },
             ColumnDef {
                 name: "Merge",
-                min_width: 3,
+                min_width: 4,
+                wide_width: Some(15),
                 hide_below_width: None,
                 compare: Some(|a, b| {
                     let rank = |s: &crate::types::MergeStatus| match s {
@@ -107,10 +118,10 @@ mod tests {
     }
 
     #[test]
-    fn status_column_is_not_sortable() {
+    fn status_column_is_sortable() {
         let view = WorktreesViewDef;
         let status_col = &view.columns()[2];
-        assert!(status_col.compare.is_none());
+        assert!(status_col.compare.is_some());
     }
 
     #[test]

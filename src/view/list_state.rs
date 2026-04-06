@@ -165,7 +165,11 @@ impl<T: ViewItem> ListState<T> {
             }
 
             if item.is_pinned() {
-                pinned.push(i);
+                if item.is_base() {
+                    pinned.insert(0, i); // base always first
+                } else {
+                    pinned.push(i);
+                }
             } else {
                 non_pinned.push(i);
             }
@@ -390,20 +394,20 @@ pub fn apply_sort<T: ViewItem>(state: &mut ListState<T>, columns: &[ColumnDef<T>
 
     let asc = state.sort_ascending;
 
-    // Find where pinned items end
-    let pin_count = state
-        .items
-        .iter()
-        .take_while(|item| item.is_pinned())
-        .count();
-    let sortable = &mut state.items[pin_count..];
-
-    sortable.sort_by(|a, b| {
-        let ord = compare(a, b);
-        if asc {
-            ord
-        } else {
-            ord.reverse()
+    // Stable-partition: move all pinned items to the front (base first),
+    // then sort only the non-pinned tail.
+    state.items.sort_by(|a, b| {
+        match (a.is_pinned(), b.is_pinned()) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (true, true) => {
+                // Base branch always comes first among pinned items
+                b.is_base().cmp(&a.is_base())
+            }
+            (false, false) => {
+                let ord = compare(a, b);
+                if asc { ord } else { ord.reverse() }
+            }
         }
     });
 
@@ -418,18 +422,41 @@ pub fn apply_sort<T: ViewItem>(state: &mut ListState<T>, columns: &[ColumnDef<T>
     state.rebuild_display_indices();
 }
 
-/// Cycle to next sort column (None -> 0 -> 1 -> ... -> None)
-pub fn cycle_sort_column<T: ViewItem>(state: &mut ListState<T>, num_columns: usize) {
+/// Cycle to next sort column (None -> first sortable -> ... -> None), skipping non-sortable columns
+pub fn cycle_sort_column<T: ViewItem>(state: &mut ListState<T>, columns: &[ColumnDef<T>]) {
+    let sortable: Vec<usize> = columns
+        .iter()
+        .enumerate()
+        .filter(|(_, col)| col.compare.is_some())
+        .map(|(i, _)| i)
+        .collect();
+
+    if sortable.is_empty() {
+        return;
+    }
+
     state.sort_column = match state.sort_column {
-        None => Some(0),
-        Some(c) if c + 1 < num_columns => Some(c + 1),
-        Some(_) => None,
+        None => Some(sortable[0]),
+        Some(current) => {
+            let next_pos = sortable
+                .iter()
+                .position(|&i| i == current)
+                .map(|pos| pos + 1)
+                .unwrap_or(0);
+            if next_pos < sortable.len() {
+                Some(sortable[next_pos])
+            } else {
+                None
+            }
+        }
     };
 }
 
-/// Toggle sort direction
+/// Toggle sort direction (no-op when no sort column is active)
 pub fn toggle_sort_direction<T: ViewItem>(state: &mut ListState<T>) {
-    state.sort_ascending = !state.sort_ascending;
+    if state.sort_column.is_some() {
+        state.sort_ascending = !state.sort_ascending;
+    }
 }
 
 #[cfg(test)]
@@ -449,6 +476,9 @@ mod tests {
                 behind: None,
                 last_commit_date: Utc::now(),
                 merge_status: MergeStatus::Unmerged,
+                base_branch: "main".into(),
+                merge_base_commit: None,
+                pr: None,
             },
             BranchInfo {
                 name: "feature/a".into(),
@@ -459,6 +489,9 @@ mod tests {
                 behind: None,
                 last_commit_date: Utc::now() - chrono::Duration::days(1),
                 merge_status: MergeStatus::Unmerged,
+                base_branch: "main".into(),
+                merge_base_commit: None,
+                pr: None,
             },
             BranchInfo {
                 name: "feature/b".into(),
@@ -469,6 +502,9 @@ mod tests {
                 behind: None,
                 last_commit_date: Utc::now() - chrono::Duration::days(2),
                 merge_status: MergeStatus::Merged,
+                base_branch: "main".into(),
+                merge_base_commit: None,
+                pr: None,
             },
         ]
     }
@@ -677,6 +713,7 @@ mod tests {
         let columns = vec![ColumnDef::<BranchInfo> {
             name: "Name",
             min_width: 10,
+            wide_width: None,
             hide_below_width: None,
             compare: Some(|a, b| a.name.cmp(&b.name)),
         }];
@@ -694,6 +731,7 @@ mod tests {
         let columns = vec![ColumnDef::<BranchInfo> {
             name: "Name",
             min_width: 10,
+            wide_width: None,
             hide_below_width: None,
             compare: Some(|a, b| a.name.cmp(&b.name)),
         }];
@@ -706,23 +744,91 @@ mod tests {
     }
 
     #[test]
-    fn cycle_sort_column_works() {
+    fn sort_keeps_base_first_when_items_not_pre_sorted() {
+        let mut branches = sample_branches();
+        branches.rotate_left(1); // move main to the end
+
+        let columns = vec![ColumnDef::<BranchInfo> {
+            name: "Name",
+            min_width: 10,
+            wide_width: None,
+            hide_below_width: None,
+            compare: Some(|a, b| a.name.cmp(&b.name)),
+        }];
+        let mut state = ListState::new(branches);
+        state.set_sort(Some(0), true);
+        apply_sort(&mut state, &columns);
+        assert_eq!(state.items()[0].name, "main");
+    }
+
+    #[test]
+    fn sort_descending_keeps_base_first() {
+        let columns = vec![ColumnDef::<BranchInfo> {
+            name: "Name",
+            min_width: 10,
+            wide_width: None,
+            hide_below_width: None,
+            compare: Some(|a, b| a.name.cmp(&b.name)),
+        }];
         let mut state = ListState::new(sample_branches());
-        let num_cols = 3;
-        cycle_sort_column(&mut state, num_cols);
+        state.set_sort(Some(0), false);
+        apply_sort(&mut state, &columns);
+        assert_eq!(state.items()[0].name, "main");
+        assert_eq!(state.items()[1].name, "feature/b");
+        assert_eq!(state.items()[2].name, "feature/a");
+    }
+
+    #[test]
+    fn cycle_sort_column_works() {
+        let columns = vec![
+            ColumnDef::<BranchInfo> {
+                name: "Name",
+                min_width: 10,
+                wide_width: None,
+                hide_below_width: None,
+                compare: Some(|a, b| a.name.cmp(&b.name)),
+            },
+            ColumnDef::<BranchInfo> {
+                name: "Unsortable",
+                min_width: 5,
+                wide_width: None,
+                hide_below_width: None,
+                compare: None,
+            },
+            ColumnDef::<BranchInfo> {
+                name: "Age",
+                min_width: 5,
+                wide_width: None,
+                hide_below_width: None,
+                compare: Some(|a, b| a.last_commit_date.cmp(&b.last_commit_date)),
+            },
+        ];
+        let mut state = ListState::new(sample_branches());
+
+        // None → first sortable (0)
+        cycle_sort_column(&mut state, &columns);
         assert_eq!(state.sort_column(), Some(0));
-        cycle_sort_column(&mut state, num_cols);
-        assert_eq!(state.sort_column(), Some(1));
-        cycle_sort_column(&mut state, num_cols);
+
+        // 0 → skip 1 (unsortable) → 2
+        cycle_sort_column(&mut state, &columns);
         assert_eq!(state.sort_column(), Some(2));
-        cycle_sort_column(&mut state, num_cols);
-        assert_eq!(state.sort_column(), None); // wraps to None
+
+        // 2 → None (wrap)
+        cycle_sort_column(&mut state, &columns);
+        assert_eq!(state.sort_column(), None);
     }
 
     #[test]
     fn toggle_sort_direction_works() {
         let mut state = ListState::new(sample_branches());
         assert!(state.sort_ascending());
+
+        // No-op when sort_column is None
+        toggle_sort_direction(&mut state);
+        assert!(state.sort_ascending());
+
+        // Toggles when a sort column is active
+        state.set_sort(Some(0), true);
         toggle_sort_direction(&mut state);
         assert!(!state.sort_ascending());
         toggle_sort_direction(&mut state);

@@ -10,26 +10,34 @@ impl TagsViewDef {
             ColumnDef {
                 name: "Name",
                 min_width: 15,
+                wide_width: None,
                 hide_below_width: None,
                 compare: Some(|a, b| a.name.cmp(&b.name)),
             },
             ColumnDef {
                 name: "Hash",
                 min_width: 8,
+                wide_width: None,
                 hide_below_width: Some(80),
-                compare: None,
+                compare: Some(|a, b| a.commit_hash.cmp(&b.commit_hash)),
             },
             ColumnDef {
                 name: "Age",
                 min_width: 5,
+                wide_width: Some(12),
                 hide_below_width: Some(60),
                 compare: Some(|a, b| a.date.cmp(&b.date)),
             },
             ColumnDef {
                 name: "Message",
                 min_width: 10,
+                wide_width: None,
                 hide_below_width: Some(100),
-                compare: None,
+                compare: Some(|a, b| {
+                    let msg_a = a.message.as_deref().unwrap_or("");
+                    let msg_b = b.message.as_deref().unwrap_or("");
+                    msg_a.cmp(msg_b)
+                }),
             },
         ]
     }
@@ -78,17 +86,17 @@ mod tests {
     }
 
     #[test]
-    fn hash_column_is_not_sortable() {
+    fn hash_column_is_sortable() {
         let view = TagsViewDef;
         let hash_col = &view.columns()[1];
-        assert!(hash_col.compare.is_none());
+        assert!(hash_col.compare.is_some());
     }
 
     #[test]
-    fn message_column_is_not_sortable() {
+    fn message_column_is_sortable() {
         let view = TagsViewDef;
         let msg_col = &view.columns()[3];
-        assert!(msg_col.compare.is_none());
+        assert!(msg_col.compare.is_some());
     }
 
     #[test]

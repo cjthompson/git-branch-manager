@@ -94,12 +94,18 @@ pub fn render_list_view<T: ViewItem>(
     // Build column widths: checkbox + visible columns.
     // First visible column (name) gets Min (stretchy), rest get Length (fixed).
     // This matches the original app's pattern and ensures ratatui fills all cells.
+    let short_status = area.width < 70;
     let mut widths: Vec<Constraint> = vec![Constraint::Length(3)]; // checkbox
     for (i, col) in visible_columns.iter().enumerate() {
         if i == 0 {
             widths.push(Constraint::Min(col.min_width));
         } else {
-            widths.push(Constraint::Length(col.min_width));
+            let col_width = if !short_status {
+                col.wide_width.unwrap_or(col.min_width)
+            } else {
+                col.min_width
+            };
+            widths.push(Constraint::Length(col_width));
         }
     }
 
