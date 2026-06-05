@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::backend::CrosstermBackend;
@@ -11,7 +11,9 @@ use ratatui::widgets::Cell;
 use ratatui::Terminal;
 
 use git_branch_manager::config::Config;
-use git_branch_manager::git::{branch, cache, operations, pr_loader, squash_loader, tags, worktree};
+use git_branch_manager::git::{
+    branch, cache, operations, pr_loader, squash_loader, tags, worktree,
+};
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::theme::Theme;
 use git_branch_manager::types::*;
@@ -76,7 +78,13 @@ pub struct App {
     pub tag_load_rx: Option<Receiver<Vec<TagInfo>>>,
     pub worktree_load_rx: Option<Receiver<Vec<WorktreeInfo>>>,
     #[allow(clippy::type_complexity)]
-    pub remote_load_rx: Option<Receiver<(Vec<RemoteBranchInfo>, Vec<(String, String)>, cache::BranchCache)>>,
+    pub remote_load_rx: Option<
+        Receiver<(
+            Vec<RemoteBranchInfo>,
+            Vec<(String, String)>,
+            cache::BranchCache,
+        )>,
+    >,
 
     // Working tree status (for the main repo)
     pub working_tree_status: WorkingTreeStatus,
@@ -96,6 +104,15 @@ pub struct App {
 
     // Whether remote fetch has been done this session
     pub remote_fetched: bool,
+}
+
+// ---- Watchdog helpers ----
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 // ---- Generic channel drain helper ----
@@ -134,11 +151,11 @@ impl App {
 
         // Init sort from config
         let sort_col: Option<usize> = config.sort_column.as_deref().and_then(|s| match s {
-            "name"   => Some(0),
+            "name" => Some(0),
             "remote" => Some(1),
-            "ahead"  => Some(2),
-            "pr"     => Some(3),
-            "age"    => Some(4),
+            "ahead" => Some(2),
+            "pr" => Some(3),
+            "age" => Some(4),
             "status" => Some(5),
             _ => None,
         });
@@ -213,7 +230,28 @@ impl App {
         // inserting a resize event so ratatui marks the entire buffer dirty.
         terminal.clear()?;
 
+        // Watchdog: logs to /tmp/gbm-watchdog.log if the main loop stalls >2s
+        let tick_ms = Arc::new(AtomicU64::new(now_ms()));
+        {
+            let watchdog_tick = Arc::clone(&tick_ms);
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let stall = now_ms().saturating_sub(watchdog_tick.load(Ordering::Relaxed));
+                if stall > 2000 {
+                    let _ = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/gbm-watchdog.log")
+                        .and_then(|mut f| {
+                            use std::io::Write;
+                            writeln!(f, "UI stall: {stall}ms")
+                        });
+                }
+            });
+        }
+
         loop {
+            tick_ms.store(now_ms(), Ordering::Relaxed);
             self.drain_channels();
 
             terminal.draw(|frame| {
@@ -477,7 +515,10 @@ impl App {
                 return;
             }
             KeyCode::Tab => {
-                if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::SHIFT)
+                {
                     self.active_view = self.active_view.prev();
                 } else {
                     self.active_view = self.active_view.next();
@@ -758,13 +799,21 @@ impl App {
                 // Any key returns to the view and refreshes
                 self.refresh_after_operation();
             }
-            Some(Overlay::Executing { label, progress }) => {
+            Some(Overlay::Executing { .. }) => {
                 if key.code == KeyCode::Esc {
                     if let Some(flag) = &self.cancel_flag {
                         flag.store(true, Ordering::Relaxed);
                     }
+                    // Option 3: drop receivers so UI recovers immediately;
+                    // the background thread will fail on its next send and exit.
+                    self.op_rx = None;
+                    self.progress_rx = None;
+                    self.progress = None;
+                    self.cancel_flag = None;
+                    // overlay stays None (already taken at top of function)
+                    return;
                 }
-                self.overlay = Some(Overlay::Executing { label, progress });
+                // overlay was taken; put it back for any other key
             }
             Some(Overlay::Settings { cursor }) => {
                 self.handle_settings_key(key, cursor);
@@ -804,7 +853,8 @@ impl App {
                         let sort_col = self.branches.sort_column();
                         let pos = SORT_CYCLE.iter().position(|&c| c == sort_col).unwrap_or(0);
                         let next_pos = (pos + 1) % SORT_CYCLE.len();
-                        self.branches.set_sort(SORT_CYCLE[next_pos], self.branches.sort_ascending());
+                        self.branches
+                            .set_sort(SORT_CYCLE[next_pos], self.branches.sort_ascending());
                         list_state::apply_sort(&mut self.branches, &self.branch_columns);
                     }
                     3 => {
@@ -841,7 +891,8 @@ impl App {
                         let sort_col = self.branches.sort_column();
                         let pos = SORT_CYCLE.iter().position(|&c| c == sort_col).unwrap_or(0);
                         let next_pos = (pos + SORT_CYCLE.len() - 1) % SORT_CYCLE.len();
-                        self.branches.set_sort(SORT_CYCLE[next_pos], self.branches.sort_ascending());
+                        self.branches
+                            .set_sort(SORT_CYCLE[next_pos], self.branches.sort_ascending());
                         list_state::apply_sort(&mut self.branches, &self.branch_columns);
                     }
                     3 => {
@@ -1155,10 +1206,7 @@ impl App {
         };
         let has_remote = matches!(
             &branch.tracking,
-            TrackingStatus::Tracked {
-                gone: false,
-                ..
-            }
+            TrackingStatus::Tracked { gone: false, .. }
         );
         let is_ahead = branch.ahead.is_some_and(|a| a > 0);
         let is_behind = branch.behind.is_some_and(|b| b > 0);
@@ -1168,77 +1216,143 @@ impl App {
             MenuItem {
                 label: "Checkout".into(),
                 enabled: !branch.is_current,
-                reason: if branch.is_current { Some("current".into()) } else { None },
+                reason: if branch.is_current {
+                    Some("current".into())
+                } else {
+                    None
+                },
                 shortcut: Some('c'),
                 action: BranchAction::Checkout,
             },
             MenuItem {
                 label: "Delete local".into(),
                 enabled: !branch.is_base && !branch.is_current,
-                reason: if branch.is_current { Some("current".into()) } else if branch.is_base { Some("base".into()) } else { None },
+                reason: if branch.is_current {
+                    Some("current".into())
+                } else if branch.is_base {
+                    Some("base".into())
+                } else {
+                    None
+                },
                 shortcut: Some('d'),
                 action: BranchAction::DeleteLocal,
             },
             MenuItem {
                 label: "Delete local + remote".into(),
                 enabled: !branch.is_base && !branch.is_current && has_remote,
-                reason: if branch.is_current { Some("current".into()) } else if branch.is_base { Some("base".into()) } else if !has_remote { Some("no remote".into()) } else { None },
+                reason: if branch.is_current {
+                    Some("current".into())
+                } else if branch.is_base {
+                    Some("base".into())
+                } else if !has_remote {
+                    Some("no remote".into())
+                } else {
+                    None
+                },
                 shortcut: Some('D'),
                 action: BranchAction::DeleteLocalAndRemote,
             },
             MenuItem {
                 label: "Fast-forward".into(),
                 enabled: !branch.is_current && has_remote,
-                reason: if branch.is_current { Some("current".into()) } else if !has_remote { Some("no remote".into()) } else { None },
+                reason: if branch.is_current {
+                    Some("current".into())
+                } else if !has_remote {
+                    Some("no remote".into())
+                } else {
+                    None
+                },
                 shortcut: Some('f'),
                 action: BranchAction::FastForward,
             },
             MenuItem {
                 label: "Push".into(),
                 enabled: is_ahead,
-                reason: if !has_remote { Some("no remote".into()) } else if !is_ahead { Some("not ahead".into()) } else { None },
+                reason: if !has_remote {
+                    Some("no remote".into())
+                } else if !is_ahead {
+                    Some("not ahead".into())
+                } else {
+                    None
+                },
                 shortcut: Some('p'),
                 action: BranchAction::Push,
             },
             MenuItem {
                 label: "Force push".into(),
                 enabled: is_ahead && is_behind,
-                reason: if !has_remote { Some("no remote".into()) } else if !is_ahead { Some("not ahead".into()) } else if !is_behind { Some("not behind".into()) } else { None },
+                reason: if !has_remote {
+                    Some("no remote".into())
+                } else if !is_ahead {
+                    Some("not ahead".into())
+                } else if !is_behind {
+                    Some("not behind".into())
+                } else {
+                    None
+                },
                 shortcut: Some('P'),
                 action: BranchAction::ForcePush,
             },
             MenuItem {
                 label: "Pull".into(),
                 enabled: is_behind && has_remote,
-                reason: if !has_remote { Some("no remote".into()) } else if !is_behind { Some("not behind".into()) } else { None },
+                reason: if !has_remote {
+                    Some("no remote".into())
+                } else if !is_behind {
+                    Some("not behind".into())
+                } else {
+                    None
+                },
                 shortcut: Some('l'),
                 action: BranchAction::Pull,
             },
             MenuItem {
                 label: "Merge into base".into(),
                 enabled: !branch.is_base && !branch.is_current,
-                reason: if branch.is_current { Some("current".into()) } else if branch.is_base { Some("base".into()) } else { None },
+                reason: if branch.is_current {
+                    Some("current".into())
+                } else if branch.is_base {
+                    Some("base".into())
+                } else {
+                    None
+                },
                 shortcut: Some('m'),
                 action: BranchAction::Merge,
             },
             MenuItem {
                 label: "Squash merge into base".into(),
                 enabled: !branch.is_base && !branch.is_current,
-                reason: if branch.is_current { Some("current".into()) } else if branch.is_base { Some("base".into()) } else { None },
+                reason: if branch.is_current {
+                    Some("current".into())
+                } else if branch.is_base {
+                    Some("base".into())
+                } else {
+                    None
+                },
                 shortcut: Some('s'),
                 action: BranchAction::SquashMerge,
             },
             MenuItem {
                 label: "Rebase onto base".into(),
                 enabled: !branch.is_base && !branch.is_current,
-                reason: if branch.is_current { Some("current".into()) } else if branch.is_base { Some("base".into()) } else { None },
+                reason: if branch.is_current {
+                    Some("current".into())
+                } else if branch.is_base {
+                    Some("base".into())
+                } else {
+                    None
+                },
                 shortcut: Some('r'),
                 action: BranchAction::Rebase,
             },
             MenuItem {
                 label: "Create worktree".into(),
                 enabled: !branch.is_current,
-                reason: if branch.is_current { Some("current".into()) } else { None },
+                reason: if branch.is_current {
+                    Some("current".into())
+                } else {
+                    None
+                },
                 shortcut: Some('w'),
                 action: BranchAction::Worktree,
             },
@@ -1264,7 +1378,13 @@ impl App {
             MenuItem {
                 label: "Checkout".into(),
                 enabled: !pinned && !has_local,
-                reason: if pinned { Some("base".into()) } else if has_local { Some("local exists".into()) } else { None },
+                reason: if pinned {
+                    Some("base".into())
+                } else if has_local {
+                    Some("local exists".into())
+                } else {
+                    None
+                },
                 shortcut: Some('c'),
                 action: BranchAction::CheckoutRemote,
             },
@@ -1278,7 +1398,13 @@ impl App {
             MenuItem {
                 label: "Delete remote + local".into(),
                 enabled: !pinned && has_local,
-                reason: if pinned { Some("base".into()) } else if !has_local { Some("no local".into()) } else { None },
+                reason: if pinned {
+                    Some("base".into())
+                } else if !has_local {
+                    Some("no local".into())
+                } else {
+                    None
+                },
                 shortcut: Some('D'),
                 action: BranchAction::DeleteRemoteAndLocal,
             },
@@ -1292,7 +1418,13 @@ impl App {
             MenuItem {
                 label: "Pull remote".into(),
                 enabled: !pinned && has_local,
-                reason: if pinned { Some("base".into()) } else if !has_local { Some("no local".into()) } else { None },
+                reason: if pinned {
+                    Some("base".into())
+                } else if !has_local {
+                    Some("no local".into())
+                } else {
+                    None
+                },
                 shortcut: Some('l'),
                 action: BranchAction::PullRemote,
             },
@@ -1313,7 +1445,13 @@ impl App {
             MenuItem {
                 label: "View PR in browser".into(),
                 enabled: has_pr && !pinned,
-                reason: if pinned { Some("base".into()) } else if !has_pr { Some("no PR".into()) } else { None },
+                reason: if pinned {
+                    Some("base".into())
+                } else if !has_pr {
+                    Some("no PR".into())
+                } else {
+                    None
+                },
                 shortcut: Some('o'),
                 action: BranchAction::ViewRemotePR,
             },
@@ -1419,10 +1557,7 @@ impl App {
             return;
         }
 
-        self.overlay = Some(Overlay::Confirm {
-            action,
-            targets,
-        });
+        self.overlay = Some(Overlay::Confirm { action, targets });
     }
 
     /// Get target name(s) for a single-item action from the context menu
@@ -1578,6 +1713,7 @@ impl App {
     }
 
     fn remove_selected_worktrees(&mut self, force: bool) {
+        self.worktree_enrich_rx = None;
         let indices = self.worktrees.selected_indices();
         let names: Vec<String> = indices
             .iter()
@@ -1680,9 +1816,7 @@ impl App {
                     self.start_remote_fetch();
                 }
             }
-            ViewId::Worktrees
-                if self.worktrees.items().is_empty() && !self.worktrees.loading =>
-            {
+            ViewId::Worktrees if self.worktrees.items().is_empty() && !self.worktrees.loading => {
                 self.spawn_worktree_load();
             }
             _ => {}
@@ -1832,7 +1966,10 @@ impl App {
     fn start_fetch(&mut self, prune: bool) {
         let repo_path = self.repo_path.clone();
         let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = Arc::clone(&cancel);
         self.op_rx = Some(rx);
+        self.cancel_flag = Some(cancel);
         self.return_view = self.active_view;
         let label = if prune {
             "Fetching with prune..."
@@ -1845,9 +1982,9 @@ impl App {
         });
         std::thread::spawn(move || {
             let result = if prune {
-                operations::fetch_prune(&repo_path)
+                operations::fetch_prune(&repo_path, &cancel_clone)
             } else {
-                operations::fetch(&repo_path)
+                operations::fetch(&repo_path, &cancel_clone)
             };
             let _ = tx.send(vec![result]);
         });
@@ -1971,7 +2108,11 @@ fn execute_action(
                     total,
                     current_item: "Deleting remote branches...".into(),
                 });
-                results.extend(operations::delete_remotes_batch(repo_path, &locally_deleted));
+                results.extend(operations::delete_remotes_batch(
+                    repo_path,
+                    &locally_deleted,
+                    cancel_flag,
+                ));
             }
         }
         BranchAction::Checkout => {
@@ -1988,13 +2129,16 @@ fn execute_action(
                     }
                 };
                 results.push(operations::checkout_branch(
-                    &repo, repo_path, name, needs_stash,
+                    &repo,
+                    repo_path,
+                    name,
+                    needs_stash,
                 ));
             }
         }
         BranchAction::FastForward => {
             if let Some(name) = item_names.first() {
-                results.push(operations::fast_forward(repo_path, name));
+                results.push(operations::fast_forward(repo_path, name, cancel_flag));
             }
         }
         BranchAction::Push => {
@@ -2007,18 +2151,18 @@ fn execute_action(
                     total,
                     current_item: name.clone(),
                 });
-                results.push(operations::push_branch(repo_path, name));
+                results.push(operations::push_branch(repo_path, name, cancel_flag));
             }
         }
         BranchAction::ForcePush => {
             if let Some(name) = item_names.first() {
-                results.push(operations::force_push_branch(repo_path, name));
+                results.push(operations::force_push_branch(repo_path, name, cancel_flag));
             }
         }
         BranchAction::Pull => {
             if let Some(name) = item_names.first() {
                 // Assume not current for context menu; pull_branch handles it
-                results.push(operations::pull_branch(repo_path, name, false));
+                results.push(operations::pull_branch(repo_path, name, false, cancel_flag));
             }
         }
         BranchAction::Merge | BranchAction::SquashMerge => {
@@ -2084,7 +2228,7 @@ fn execute_action(
         BranchAction::DeleteRemoteBranch => {
             let short_names: Vec<String> = item_names.to_vec();
             results.extend(
-                operations::delete_remotes_batch(repo_path, &short_names)
+                operations::delete_remotes_batch(repo_path, &short_names, cancel_flag)
                     .into_iter()
                     .map(|mut r| {
                         r.action = BranchAction::DeleteRemoteBranch;
@@ -2094,8 +2238,11 @@ fn execute_action(
         }
         BranchAction::DeleteRemoteAndLocal => {
             if let Some(name) = item_names.first() {
-                let remote_results =
-                    operations::delete_remotes_batch(repo_path, std::slice::from_ref(name));
+                let remote_results = operations::delete_remotes_batch(
+                    repo_path,
+                    std::slice::from_ref(name),
+                    cancel_flag,
+                );
                 results.extend(remote_results.into_iter().map(|mut r| {
                     r.action = BranchAction::DeleteRemoteAndLocal;
                     r
@@ -2118,12 +2265,17 @@ fn execute_action(
         }
         BranchAction::FetchRemote => {
             if let Some(name) = item_names.first() {
-                results.extend(operations::fetch_remote(repo_path, name));
+                results.extend(operations::fetch_remote(repo_path, name, cancel_flag));
             }
         }
         BranchAction::PullRemote => {
             if let Some(name) = item_names.first() {
-                results.extend(operations::pull_remote(repo_path, "origin", name));
+                results.extend(operations::pull_remote(
+                    repo_path,
+                    "origin",
+                    name,
+                    cancel_flag,
+                ));
             }
         }
         BranchAction::MergeRemoteIntoCurrent => {
@@ -2137,9 +2289,7 @@ fn execute_action(
         BranchAction::CherryPickRemote => {
             if let Some(name) = item_names.first() {
                 let full_ref = format!("origin/{name}");
-                results.extend(operations::cherry_pick_remote(
-                    repo_path, &full_ref, name,
-                ));
+                results.extend(operations::cherry_pick_remote(repo_path, &full_ref, name));
             }
         }
         BranchAction::WorktreeRemove | BranchAction::WorktreeForceRemove => {
@@ -2164,9 +2314,9 @@ fn execute_action(
         }
         BranchAction::Fetch | BranchAction::FetchPrune => {
             let result = if action == BranchAction::FetchPrune {
-                operations::fetch_prune(repo_path)
+                operations::fetch_prune(repo_path, cancel_flag)
             } else {
-                operations::fetch(repo_path)
+                operations::fetch(repo_path, cancel_flag)
             };
             results.push(result);
         }
@@ -2289,7 +2439,11 @@ fn render_branch_row(
             }
             4 => {
                 // Age
-                let age = if ctx.compact { item.age_short() } else { item.age_display() };
+                let age = if ctx.compact {
+                    item.age_short()
+                } else {
+                    item.age_display()
+                };
                 let style = age_style(&item.last_commit_date, theme);
                 cells.push(Cell::from(
                     Line::from(Span::styled(age, style)).alignment(Alignment::Right),
@@ -2304,16 +2458,31 @@ fn render_branch_row(
                     let short_status = ctx.area_width < 70;
                     let (text, style) = if short_status {
                         match item.merge_status {
-                            MergeStatus::Merged => (symbols.status_merged.to_string(), theme.merged),
-                            MergeStatus::SquashMerged => (symbols.status_squash_merged.to_string(), theme.squash_merged),
-                            MergeStatus::Unmerged => (symbols.status_unmerged.to_string(), theme.unmerged),
+                            MergeStatus::Merged => {
+                                (symbols.status_merged.to_string(), theme.merged)
+                            }
+                            MergeStatus::SquashMerged => (
+                                symbols.status_squash_merged.to_string(),
+                                theme.squash_merged,
+                            ),
+                            MergeStatus::Unmerged => {
+                                (symbols.status_unmerged.to_string(), theme.unmerged)
+                            }
                             MergeStatus::Pending => ("\u{2026}".to_string(), theme.dim),
                         }
                     } else {
                         match item.merge_status {
-                            MergeStatus::Merged => (format!("merged {}", symbols.status_merged), theme.merged),
-                            MergeStatus::SquashMerged => (format!("squash-merged {}", symbols.status_squash_merged), theme.squash_merged),
-                            MergeStatus::Unmerged => (format!("unmerged {}", symbols.status_unmerged), theme.unmerged),
+                            MergeStatus::Merged => {
+                                (format!("merged {}", symbols.status_merged), theme.merged)
+                            }
+                            MergeStatus::SquashMerged => (
+                                format!("squash-merged {}", symbols.status_squash_merged),
+                                theme.squash_merged,
+                            ),
+                            MergeStatus::Unmerged => (
+                                format!("unmerged {}", symbols.status_unmerged),
+                                theme.unmerged,
+                            ),
                             MergeStatus::Pending => ("pending \u{2026}".to_string(), theme.dim),
                         }
                     };
@@ -2344,9 +2513,12 @@ fn render_remote_row(
         match col_idx {
             0 => {
                 // Name: full remote branch name (e.g. "origin/feature/test")
-                let prefix = item.short_name.split('/').next().unwrap_or(&item.short_name);
-                let style = prefix_style(prefix, theme)
-                    .unwrap_or(theme.primary_text);
+                let prefix = item
+                    .short_name
+                    .split('/')
+                    .next()
+                    .unwrap_or(&item.short_name);
+                let style = prefix_style(prefix, theme).unwrap_or(theme.primary_text);
                 let name = if item.is_base {
                     format!("{} [base]", item.full_ref)
                 } else {
@@ -2410,7 +2582,11 @@ fn render_remote_row(
             }
             4 => {
                 // Age
-                let age = if ctx.compact { item.age_short() } else { item.age_display() };
+                let age = if ctx.compact {
+                    item.age_short()
+                } else {
+                    item.age_display()
+                };
                 let style = age_style(&item.last_commit_date, theme);
                 cells.push(Cell::from(
                     Line::from(Span::styled(age, style)).alignment(Alignment::Right),
@@ -2422,15 +2598,28 @@ fn render_remote_row(
                 let (text, style) = if short_status {
                     match item.merge_status {
                         MergeStatus::Merged => (symbols.status_merged.to_string(), theme.merged),
-                        MergeStatus::SquashMerged => (symbols.status_squash_merged.to_string(), theme.squash_merged),
-                        MergeStatus::Unmerged => (symbols.status_unmerged.to_string(), theme.unmerged),
+                        MergeStatus::SquashMerged => (
+                            symbols.status_squash_merged.to_string(),
+                            theme.squash_merged,
+                        ),
+                        MergeStatus::Unmerged => {
+                            (symbols.status_unmerged.to_string(), theme.unmerged)
+                        }
                         MergeStatus::Pending => ("\u{2026}".to_string(), theme.dim),
                     }
                 } else {
                     match item.merge_status {
-                        MergeStatus::Merged => (format!("merged {}", symbols.status_merged), theme.merged),
-                        MergeStatus::SquashMerged => (format!("squash-merged {}", symbols.status_squash_merged), theme.squash_merged),
-                        MergeStatus::Unmerged => (format!("unmerged {}", symbols.status_unmerged), theme.unmerged),
+                        MergeStatus::Merged => {
+                            (format!("merged {}", symbols.status_merged), theme.merged)
+                        }
+                        MergeStatus::SquashMerged => (
+                            format!("squash-merged {}", symbols.status_squash_merged),
+                            theme.squash_merged,
+                        ),
+                        MergeStatus::Unmerged => (
+                            format!("unmerged {}", symbols.status_unmerged),
+                            theme.unmerged,
+                        ),
                         MergeStatus::Pending => ("pending \u{2026}".to_string(), theme.dim),
                     }
                 };
@@ -2476,7 +2665,11 @@ fn render_tag_row(
             }
             2 => {
                 // Age
-                let age = if ctx.compact { item.age_short() } else { item.age_display() };
+                let age = if ctx.compact {
+                    item.age_short()
+                } else {
+                    item.age_display()
+                };
                 let style = age_style(&item.date, theme);
                 cells.push(Cell::from(
                     Line::from(Span::styled(age, style)).alignment(Alignment::Right),
@@ -2532,8 +2725,7 @@ fn render_worktree_row(
             1 => {
                 // Branch name
                 let name = item.branch.as_deref().unwrap_or("[detached]");
-                let style = prefix_style(name, theme)
-                    .unwrap_or(theme.primary_text);
+                let style = prefix_style(name, theme).unwrap_or(theme.primary_text);
                 cells.push(Cell::from(Span::styled(name.to_string(), style)));
             }
             2 => {
@@ -2552,7 +2744,11 @@ fn render_worktree_row(
             }
             3 => {
                 // Age
-                let age = if ctx.compact { item.age_short() } else { item.age_display() };
+                let age = if ctx.compact {
+                    item.age_short()
+                } else {
+                    item.age_display()
+                };
                 let style = age_style(&item.age_date, theme);
                 cells.push(Cell::from(
                     Line::from(Span::styled(age, style)).alignment(Alignment::Right),
@@ -2564,15 +2760,28 @@ fn render_worktree_row(
                 let (text, style) = if short_status {
                     match item.merge_status {
                         MergeStatus::Merged => (symbols.status_merged.to_string(), theme.merged),
-                        MergeStatus::SquashMerged => (symbols.status_squash_merged.to_string(), theme.squash_merged),
-                        MergeStatus::Unmerged => (symbols.status_unmerged.to_string(), theme.unmerged),
+                        MergeStatus::SquashMerged => (
+                            symbols.status_squash_merged.to_string(),
+                            theme.squash_merged,
+                        ),
+                        MergeStatus::Unmerged => {
+                            (symbols.status_unmerged.to_string(), theme.unmerged)
+                        }
                         MergeStatus::Pending => ("\u{2026}".to_string(), theme.dim),
                     }
                 } else {
                     match item.merge_status {
-                        MergeStatus::Merged => (format!("merged {}", symbols.status_merged), theme.merged),
-                        MergeStatus::SquashMerged => (format!("squash-merged {}", symbols.status_squash_merged), theme.squash_merged),
-                        MergeStatus::Unmerged => (format!("unmerged {}", symbols.status_unmerged), theme.unmerged),
+                        MergeStatus::Merged => {
+                            (format!("merged {}", symbols.status_merged), theme.merged)
+                        }
+                        MergeStatus::SquashMerged => (
+                            format!("squash-merged {}", symbols.status_squash_merged),
+                            theme.squash_merged,
+                        ),
+                        MergeStatus::Unmerged => (
+                            format!("unmerged {}", symbols.status_unmerged),
+                            theme.unmerged,
+                        ),
                         MergeStatus::Pending => ("pending \u{2026}".to_string(), theme.dim),
                     }
                 };

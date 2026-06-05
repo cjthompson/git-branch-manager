@@ -9,6 +9,7 @@ fn git_out(dir: &Path, args: &[&str]) -> String {
         .args(args)
         .current_dir(dir)
         .stdin(std::process::Stdio::null())
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
         .ok()
         .filter(|o| o.status.success())
