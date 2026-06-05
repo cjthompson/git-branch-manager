@@ -1,6 +1,9 @@
 use std::process::Command;
+use std::sync::atomic::AtomicBool;
 
-use git_branch_manager::git::{branch, merge_detection, operations, squash_loader, status, tags, worktree};
+use git_branch_manager::git::{
+    branch, merge_detection, operations, squash_loader, status, tags, worktree,
+};
 use git_branch_manager::types::MergeStatus;
 
 /// Create a temporary git repository with an initial commit on the "main" branch.
@@ -37,12 +40,7 @@ fn run_git(dir: &std::path::Path, args: &[&str]) {
         .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!(
-            "git {:?} failed in {}: {}",
-            args,
-            dir.display(),
-            stderr
-        );
+        panic!("git {:?} failed in {}: {}", args, dir.display(), stderr);
     }
 }
 
@@ -76,7 +74,10 @@ fn test_detect_base_branch_override_nonexistent() {
     let (_tmpdir, repo) = setup_test_repo();
 
     let result = branch::detect_base_branch(&repo, Some("nonexistent"));
-    assert!(result.is_err(), "expected error for nonexistent branch override");
+    assert!(
+        result.is_err(),
+        "expected error for nonexistent branch override"
+    );
 }
 
 #[test]
@@ -91,8 +92,12 @@ fn test_list_branches() {
     let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
 
     // Should have 3 branches: main, feature-a, feature-b
-    assert_eq!(branches.len(), 3, "expected 3 branches, got: {:?}",
-        branches.iter().map(|b| &b.name).collect::<Vec<_>>());
+    assert_eq!(
+        branches.len(),
+        3,
+        "expected 3 branches, got: {:?}",
+        branches.iter().map(|b| &b.name).collect::<Vec<_>>()
+    );
 
     let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
     assert!(names.contains(&"main"), "missing 'main'");
@@ -122,7 +127,10 @@ fn test_merged_branch_detection() {
     std::fs::write(&main_file, "main branch change\n").expect("failed to write main file");
     run_git(dir, &["add", "main-change.txt"]);
     run_git(dir, &["commit", "-m", "Main branch commit"]);
-    run_git(dir, &["merge", "feature-merged", "-m", "Merge feature-merged"]);
+    run_git(
+        dir,
+        &["merge", "feature-merged", "-m", "Merge feature-merged"],
+    );
 
     // Re-open the repo so git2 sees the merge commit
     let repo = git2::Repository::open(dir).expect("failed to re-open repo");
@@ -155,10 +163,7 @@ fn test_squash_merged_branch_detection() {
     // Switch back to main and squash merge
     run_git(dir, &["checkout", "main"]);
     run_git(dir, &["merge", "--squash", "feature-squashed"]);
-    run_git(
-        dir,
-        &["commit", "-m", "squash merge feature-squashed"],
-    );
+    run_git(dir, &["commit", "-m", "squash merge feature-squashed"]);
 
     // Re-open the repo so git2 sees the latest state
     let repo = git2::Repository::open(dir).expect("failed to re-open repo");
@@ -215,16 +220,22 @@ fn test_delete_local_branch() {
 
     // Verify it exists
     assert!(
-        repo.find_branch("to-delete", git2::BranchType::Local).is_ok(),
+        repo.find_branch("to-delete", git2::BranchType::Local)
+            .is_ok(),
         "branch should exist before deletion"
     );
 
     let result = operations::delete_local(&repo, "to-delete");
-    assert!(result.success, "delete_local should succeed: {}", result.message);
+    assert!(
+        result.success,
+        "delete_local should succeed: {}",
+        result.message
+    );
 
     // Verify it's gone
     assert!(
-        repo.find_branch("to-delete", git2::BranchType::Local).is_err(),
+        repo.find_branch("to-delete", git2::BranchType::Local)
+            .is_err(),
         "branch should not exist after deletion"
     );
 }
@@ -254,10 +265,7 @@ fn test_ahead_behind_indicators() {
 
     // 2. Clone it into a working directory
     let work_dir = base_dir.join("work");
-    run_git(
-        base_dir,
-        &["clone", remote_dir.to_str().unwrap(), "work"],
-    );
+    run_git(base_dir, &["clone", remote_dir.to_str().unwrap(), "work"]);
 
     // 3. Configure user in the clone
     run_git(&work_dir, &["config", "user.name", "Test User"]);
@@ -282,7 +290,10 @@ fn test_ahead_behind_indicators() {
     let feature_file2 = work_dir.join("feature2.txt");
     std::fs::write(&feature_file2, "more feature content\n").unwrap();
     run_git(&work_dir, &["add", "feature2.txt"]);
-    run_git(&work_dir, &["commit", "-m", "Feature commit 2 (local only)"]);
+    run_git(
+        &work_dir,
+        &["commit", "-m", "Feature commit 2 (local only)"],
+    );
 
     // 7. Go back to main for listing
     run_git(&work_dir, &["checkout", "main"]);
@@ -344,7 +355,11 @@ fn test_checkout_branch() {
     run_git(dir, &["branch", "feature-checkout"]);
 
     let result = operations::checkout_branch(&repo, dir, "feature-checkout", false);
-    assert!(result.success, "checkout should succeed: {}", result.message);
+    assert!(
+        result.success,
+        "checkout should succeed: {}",
+        result.message
+    );
 
     let repo = git2::Repository::open(dir).unwrap();
     let head = repo.head().unwrap();
@@ -362,7 +377,11 @@ fn test_checkout_branch_with_stash() {
     std::fs::write(&dirty_file, "# Modified\n").expect("failed to write dirty file");
 
     let result = operations::checkout_branch(&repo, dir, "feature-stash-checkout", true);
-    assert!(result.success, "checkout with stash should succeed: {}", result.message);
+    assert!(
+        result.success,
+        "checkout with stash should succeed: {}",
+        result.message
+    );
 
     let repo = git2::Repository::open(dir).unwrap();
     let head = repo.head().unwrap();
@@ -430,7 +449,10 @@ fn test_list_remote_branches() {
     // Should have origin/main and origin/feature-remote
     let names: Vec<&str> = remotes.iter().map(|r| r.short_name.as_str()).collect();
     assert!(names.contains(&"main"), "should list origin/main");
-    assert!(names.contains(&"feature-remote"), "should list origin/feature-remote");
+    assert!(
+        names.contains(&"feature-remote"),
+        "should list origin/feature-remote"
+    );
 
     // origin/main should be marked as base
     let main_remote = remotes.iter().find(|r| r.short_name == "main").unwrap();
@@ -464,11 +486,23 @@ fn test_remote_branch_has_local() {
     let remotes = branch::list_remote_branches_phase1(&repo, "main")
         .expect("list_remote_branches_phase1 failed");
 
-    let has_local_branch = remotes.iter().find(|r| r.short_name == "has-local").unwrap();
-    assert!(has_local_branch.has_local, "has-local should have has_local=true");
+    let has_local_branch = remotes
+        .iter()
+        .find(|r| r.short_name == "has-local")
+        .unwrap();
+    assert!(
+        has_local_branch.has_local,
+        "has-local should have has_local=true"
+    );
 
-    let remote_only_branch = remotes.iter().find(|r| r.short_name == "remote-only").unwrap();
-    assert!(!remote_only_branch.has_local, "remote-only should have has_local=false");
+    let remote_only_branch = remotes
+        .iter()
+        .find(|r| r.short_name == "remote-only")
+        .unwrap();
+    assert!(
+        !remote_only_branch.has_local,
+        "remote-only should have has_local=false"
+    );
 }
 
 #[test]
@@ -491,7 +525,10 @@ fn test_remote_branch_merged_detection() {
     run_git(&work_dir, &["commit", "-m", "Main branch commit"]);
 
     // Merge and push
-    run_git(&work_dir, &["merge", "feature-to-merge", "-m", "Merge feature"]);
+    run_git(
+        &work_dir,
+        &["merge", "feature-to-merge", "-m", "Merge feature"],
+    );
     run_git(&work_dir, &["push", "origin", "main"]);
 
     // Re-open to see updated refs
@@ -512,7 +549,10 @@ fn test_remote_branch_merged_detection() {
         }
     }
 
-    let merged = remotes.iter().find(|r| r.short_name == "feature-to-merge").unwrap();
+    let merged = remotes
+        .iter()
+        .find(|r| r.short_name == "feature-to-merge")
+        .unwrap();
     assert_eq!(
         merged.merge_status,
         MergeStatus::Merged,
@@ -537,7 +577,10 @@ fn test_remote_branch_unmerged_detection() {
         .expect("list_remote_branches_phase1 failed");
 
     // Phase-1 sets non-base branches to Pending; squash check resolves to Unmerged/SquashMerged.
-    let unmerged = remotes.iter().find(|r| r.short_name == "feature-unmerged").unwrap();
+    let unmerged = remotes
+        .iter()
+        .find(|r| r.short_name == "feature-unmerged")
+        .unwrap();
     assert_eq!(
         unmerged.merge_status,
         MergeStatus::Pending,
@@ -558,7 +601,10 @@ fn test_remote_branch_skips_head() {
 
     // Should not include any entry with short_name "HEAD"
     let head_entries: Vec<_> = remotes.iter().filter(|r| r.short_name == "HEAD").collect();
-    assert!(head_entries.is_empty(), "origin/HEAD pseudo-ref should be filtered out");
+    assert!(
+        head_entries.is_empty(),
+        "origin/HEAD pseudo-ref should be filtered out"
+    );
 }
 
 #[test]
@@ -577,7 +623,11 @@ fn test_checkout_remote_branch() {
 
     // Now checkout from remote
     let result = operations::checkout_remote_branch(&work_dir, "origin", "remote-checkout-test");
-    assert!(result.success, "checkout_remote_branch should succeed: {}", result.message);
+    assert!(
+        result.success,
+        "checkout_remote_branch should succeed: {}",
+        result.message
+    );
 
     // Verify we're on the new local branch
     let repo = git2::Repository::open(&work_dir).unwrap();
@@ -585,7 +635,10 @@ fn test_checkout_remote_branch() {
     assert_eq!(head.shorthand().unwrap(), "remote-checkout-test");
 
     // Verify the file from the remote branch exists
-    assert!(work_dir.join("checkout-test.txt").exists(), "checked-out file should exist");
+    assert!(
+        work_dir.join("checkout-test.txt").exists(),
+        "checked-out file should exist"
+    );
 }
 
 #[test]
@@ -603,7 +656,10 @@ fn test_checkout_remote_branch_already_exists() {
 
     // Trying to checkout remote when local already exists should fail
     let result = operations::checkout_remote_branch(&work_dir, "origin", "already-local");
-    assert!(!result.success, "should fail when local branch already exists");
+    assert!(
+        !result.success,
+        "should fail when local branch already exists"
+    );
 }
 
 #[test]
@@ -641,8 +697,14 @@ fn test_remote_branches_sorted_by_date() {
         .expect("list_remote_branches_phase1 failed");
 
     // Find positions — newer should come before older (sorted newest-first)
-    let newer_pos = remotes.iter().position(|r| r.short_name == "newer-branch").unwrap();
-    let older_pos = remotes.iter().position(|r| r.short_name == "older-branch").unwrap();
+    let newer_pos = remotes
+        .iter()
+        .position(|r| r.short_name == "newer-branch")
+        .unwrap();
+    let older_pos = remotes
+        .iter()
+        .position(|r| r.short_name == "older-branch")
+        .unwrap();
     assert!(
         newer_pos < older_pos,
         "newer-branch (pos {}) should come before older-branch (pos {}) in date-descending sort",
@@ -712,7 +774,10 @@ fn test_remote_branch_squash_merge_detection() {
         }
     }
 
-    let squashed = remotes.iter().find(|r| r.short_name == "squash-feature").unwrap();
+    let squashed = remotes
+        .iter()
+        .find(|r| r.short_name == "squash-feature")
+        .unwrap();
     assert_eq!(
         squashed.merge_status,
         MergeStatus::SquashMerged,
@@ -814,10 +879,17 @@ fn test_merge_branch_success() {
 
     let results = operations::merge_branch(dir, "feature-to-merge", "main", false, false);
     assert_eq!(results.len(), 1);
-    assert!(results[0].success, "merge should succeed: {}", results[0].message);
+    assert!(
+        results[0].success,
+        "merge should succeed: {}",
+        results[0].message
+    );
 
     // Verify the feature file is present on main
-    assert!(dir.join("feature.txt").exists(), "feature.txt should be on main after merge");
+    assert!(
+        dir.join("feature.txt").exists(),
+        "feature.txt should be on main after merge"
+    );
 }
 
 #[test]
@@ -833,10 +905,17 @@ fn test_merge_branch_squash_success() {
 
     let results = operations::merge_branch(dir, "feature-squash", "main", true, false);
     assert_eq!(results.len(), 1);
-    assert!(results[0].success, "squash merge should succeed: {}", results[0].message);
+    assert!(
+        results[0].success,
+        "squash merge should succeed: {}",
+        results[0].message
+    );
 
     // The squash content should exist on main
-    assert!(dir.join("squash.txt").exists(), "squash.txt should be on main after squash merge");
+    assert!(
+        dir.join("squash.txt").exists(),
+        "squash.txt should be on main after squash merge"
+    );
 
     // And main should have a single new commit (not a merge commit)
     let log = std::process::Command::new("git")
@@ -845,7 +924,10 @@ fn test_merge_branch_squash_success() {
         .output()
         .unwrap();
     let log_str = String::from_utf8_lossy(&log.stdout);
-    assert!(log_str.contains("Squash merge feature-squash"), "should have squash merge commit");
+    assert!(
+        log_str.contains("Squash merge feature-squash"),
+        "should have squash merge commit"
+    );
 }
 
 #[test]
@@ -875,7 +957,10 @@ fn test_merge_branch_conflict_aborts() {
         .output()
         .unwrap();
     let status_str = String::from_utf8_lossy(&status.stdout);
-    assert!(!status_str.contains("UU"), "merge should have been aborted, no unresolved conflicts");
+    assert!(
+        !status_str.contains("UU"),
+        "merge should have been aborted, no unresolved conflicts"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -902,16 +987,33 @@ fn test_rebase_branch_success() {
     // Rebase feature onto main (rebase checks out the feature branch internally)
     let results = operations::rebase_branch(dir, "feature-rebase", "main", false);
     assert_eq!(results.len(), 1);
-    assert!(results[0].success, "rebase should succeed: {}", results[0].message);
+    assert!(
+        results[0].success,
+        "rebase should succeed: {}",
+        results[0].message
+    );
 
     // After rebase, feature should be 1 commit ahead of main
     let repo = git2::Repository::open(dir).unwrap();
-    let feature_oid = repo.find_branch("feature-rebase", git2::BranchType::Local)
-        .unwrap().get().peel_to_commit().unwrap().id();
-    let main_oid = repo.find_branch("main", git2::BranchType::Local)
-        .unwrap().get().peel_to_commit().unwrap().id();
+    let feature_oid = repo
+        .find_branch("feature-rebase", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .peel_to_commit()
+        .unwrap()
+        .id();
+    let main_oid = repo
+        .find_branch("main", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .peel_to_commit()
+        .unwrap()
+        .id();
     let (ahead, _behind) = repo.graph_ahead_behind(feature_oid, main_oid).unwrap();
-    assert_eq!(ahead, 1, "feature should be 1 commit ahead of main after rebase");
+    assert_eq!(
+        ahead, 1,
+        "feature should be 1 commit ahead of main after rebase"
+    );
 }
 
 #[test]
@@ -941,12 +1043,16 @@ fn test_rebase_branch_conflict_aborts() {
     assert!(!results[0].success, "conflicting rebase should fail");
     assert!(
         results[0].message.contains("Rebase conflicts") || results[0].message.contains("conflict"),
-        "message should mention conflict: {}", results[0].message
+        "message should mention conflict: {}",
+        results[0].message
     );
 
     // Rebase should be aborted: no ongoing rebase state
     let rebase_head = dir.join(".git").join("REBASE_HEAD");
-    assert!(!rebase_head.exists(), "REBASE_HEAD should not exist after abort");
+    assert!(
+        !rebase_head.exists(),
+        "REBASE_HEAD should not exist after abort"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -964,14 +1070,19 @@ fn test_push_branch() {
     run_git(&work_dir, &["commit", "-m", "Push test commit"]);
     run_git(&work_dir, &["checkout", "main"]);
 
-    let result = operations::push_branch(&work_dir, "push-test");
-    assert!(result.success, "push_branch should succeed: {}", result.message);
+    let result = operations::push_branch(&work_dir, "push-test", &AtomicBool::new(false));
+    assert!(
+        result.success,
+        "push_branch should succeed: {}",
+        result.message
+    );
 
     // Fetch and verify remote has the branch
     run_git(&work_dir, &["fetch", "origin"]);
     let repo = git2::Repository::open(&work_dir).unwrap();
     assert!(
-        repo.find_branch("origin/push-test", git2::BranchType::Remote).is_ok(),
+        repo.find_branch("origin/push-test", git2::BranchType::Remote)
+            .is_ok(),
         "origin/push-test should exist after push"
     );
 }
@@ -984,7 +1095,10 @@ fn test_pull_branch_current() {
     let tmpdir2 = tempfile::tempdir().unwrap();
     let clone2 = tmpdir2.path().join("clone2");
     let remote_dir = work_dir.parent().unwrap().join("remote.git");
-    run_git(tmpdir2.path(), &["clone", remote_dir.to_str().unwrap(), "clone2"]);
+    run_git(
+        tmpdir2.path(),
+        &["clone", remote_dir.to_str().unwrap(), "clone2"],
+    );
     run_git(&clone2, &["config", "user.name", "Other User"]);
     run_git(&clone2, &["config", "user.email", "other@example.com"]);
     std::fs::write(clone2.join("other.txt"), "other commit\n").unwrap();
@@ -993,11 +1107,18 @@ fn test_pull_branch_current() {
     run_git(&clone2, &["push", "origin", "main"]);
 
     // Pull in work_dir (main is current branch)
-    let result = operations::pull_branch(&work_dir, "main", true);
-    assert!(result.success, "pull_branch (current) should succeed: {}", result.message);
+    let result = operations::pull_branch(&work_dir, "main", true, &AtomicBool::new(false));
+    assert!(
+        result.success,
+        "pull_branch (current) should succeed: {}",
+        result.message
+    );
 
     // Verify the new file exists locally
-    assert!(work_dir.join("other.txt").exists(), "pulled file should exist after pull");
+    assert!(
+        work_dir.join("other.txt").exists(),
+        "pulled file should exist after pull"
+    );
 }
 
 #[test]
@@ -1015,7 +1136,10 @@ fn test_pull_branch_non_current() {
     let tmpdir2 = tempfile::tempdir().unwrap();
     let clone2 = tmpdir2.path().join("clone2");
     let remote_dir = work_dir.parent().unwrap().join("remote.git");
-    run_git(tmpdir2.path(), &["clone", remote_dir.to_str().unwrap(), "clone2"]);
+    run_git(
+        tmpdir2.path(),
+        &["clone", remote_dir.to_str().unwrap(), "clone2"],
+    );
     run_git(&clone2, &["config", "user.name", "Other User"]);
     run_git(&clone2, &["config", "user.email", "other@example.com"]);
     run_git(&clone2, &["checkout", "pull-non-current"]);
@@ -1028,13 +1152,27 @@ fn test_pull_branch_non_current() {
     run_git(&work_dir, &["fetch", "origin"]);
     run_git(&work_dir, &["checkout", "main"]);
 
-    let result = operations::pull_branch(&work_dir, "pull-non-current", false);
-    assert!(result.success, "pull_branch (non-current) should succeed: {}", result.message);
+    let result = operations::pull_branch(
+        &work_dir,
+        "pull-non-current",
+        false,
+        &AtomicBool::new(false),
+    );
+    assert!(
+        result.success,
+        "pull_branch (non-current) should succeed: {}",
+        result.message
+    );
 
     // The local branch tip should now be at "Extra commit"
     let repo = git2::Repository::open(&work_dir).unwrap();
-    let branch_oid = repo.find_branch("pull-non-current", git2::BranchType::Local)
-        .unwrap().get().peel_to_commit().unwrap().id();
+    let branch_oid = repo
+        .find_branch("pull-non-current", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .peel_to_commit()
+        .unwrap()
+        .id();
     let commit = repo.find_commit(branch_oid).unwrap();
     assert_eq!(
         commit.summary().unwrap_or(""),
@@ -1058,7 +1196,10 @@ fn test_fast_forward_branch() {
     let tmpdir2 = tempfile::tempdir().unwrap();
     let clone2 = tmpdir2.path().join("clone2");
     let remote_dir = work_dir.parent().unwrap().join("remote.git");
-    run_git(tmpdir2.path(), &["clone", remote_dir.to_str().unwrap(), "clone2"]);
+    run_git(
+        tmpdir2.path(),
+        &["clone", remote_dir.to_str().unwrap(), "clone2"],
+    );
     run_git(&clone2, &["config", "user.name", "Other User"]);
     run_git(&clone2, &["config", "user.email", "other@example.com"]);
     run_git(&clone2, &["checkout", "ff-branch"]);
@@ -1071,13 +1212,21 @@ fn test_fast_forward_branch() {
     run_git(&work_dir, &["checkout", "main"]);
 
     // fast_forward fetches origin/ff-branch:ff-branch
-    let result = operations::fast_forward(&work_dir, "ff-branch");
-    assert!(result.success, "fast_forward should succeed: {}", result.message);
+    let result = operations::fast_forward(&work_dir, "ff-branch", &AtomicBool::new(false));
+    assert!(
+        result.success,
+        "fast_forward should succeed: {}",
+        result.message
+    );
 
     // Verify the local branch was advanced
     let repo = git2::Repository::open(&work_dir).unwrap();
-    let commit = repo.find_branch("ff-branch", git2::BranchType::Local)
-        .unwrap().get().peel_to_commit().unwrap();
+    let commit = repo
+        .find_branch("ff-branch", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .peel_to_commit()
+        .unwrap();
     assert_eq!(
         commit.summary().unwrap_or(""),
         "FF commit 2",
@@ -1105,17 +1254,24 @@ fn test_fetch_prune_removes_stale_remote() {
     // Confirm origin/prune-me is still in local tracking refs before pruning
     let repo = git2::Repository::open(&work_dir).unwrap();
     assert!(
-        repo.find_branch("origin/prune-me", git2::BranchType::Remote).is_ok(),
+        repo.find_branch("origin/prune-me", git2::BranchType::Remote)
+            .is_ok(),
         "origin/prune-me should still exist in local refs before prune"
     );
 
-    let result = operations::fetch_prune(&work_dir);
-    assert!(result.success, "fetch_prune should succeed: {}", result.message);
+    let result = operations::fetch_prune(&work_dir, &AtomicBool::new(false));
+    assert!(
+        result.success,
+        "fetch_prune should succeed: {}",
+        result.message
+    );
 
     // After prune, stale tracking ref should be gone
     let repo2 = git2::Repository::open(&work_dir).unwrap();
     assert!(
-        repo2.find_branch("origin/prune-me", git2::BranchType::Remote).is_err(),
+        repo2
+            .find_branch("origin/prune-me", git2::BranchType::Remote)
+            .is_err(),
         "origin/prune-me should be removed after fetch --prune"
     );
 }
@@ -1133,27 +1289,40 @@ fn test_delete_remotes_batch_success() {
         run_git(&work_dir, &["checkout", "-b", branch_name]);
         std::fs::write(work_dir.join(format!("{}.txt", branch_name)), "content\n").unwrap();
         run_git(&work_dir, &["add", &format!("{}.txt", branch_name)]);
-        run_git(&work_dir, &["commit", "-m", &format!("Add {}", branch_name)]);
+        run_git(
+            &work_dir,
+            &["commit", "-m", &format!("Add {}", branch_name)],
+        );
         run_git(&work_dir, &["push", "-u", "origin", branch_name]);
         run_git(&work_dir, &["checkout", "main"]);
     }
 
     let names: Vec<String> = vec!["batch-del-1".to_string(), "batch-del-2".to_string()];
-    let results = operations::delete_remotes_batch(&work_dir, &names);
+    let results = operations::delete_remotes_batch(&work_dir, &names, &AtomicBool::new(false));
 
     assert_eq!(results.len(), 2);
-    assert!(results[0].success, "first remote delete should succeed: {}", results[0].message);
-    assert!(results[1].success, "second remote delete should succeed: {}", results[1].message);
+    assert!(
+        results[0].success,
+        "first remote delete should succeed: {}",
+        results[0].message
+    );
+    assert!(
+        results[1].success,
+        "second remote delete should succeed: {}",
+        results[1].message
+    );
 
     // Fetch to sync tracking refs, then verify branches are gone
     run_git(&work_dir, &["fetch", "--prune"]);
     let repo = git2::Repository::open(&work_dir).unwrap();
     assert!(
-        repo.find_branch("origin/batch-del-1", git2::BranchType::Remote).is_err(),
+        repo.find_branch("origin/batch-del-1", git2::BranchType::Remote)
+            .is_err(),
         "origin/batch-del-1 should be deleted"
     );
     assert!(
-        repo.find_branch("origin/batch-del-2", git2::BranchType::Remote).is_err(),
+        repo.find_branch("origin/batch-del-2", git2::BranchType::Remote)
+            .is_err(),
         "origin/batch-del-2 should be deleted"
     );
 }
@@ -1163,8 +1332,11 @@ fn test_delete_remotes_batch_empty() {
     let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
 
     // Empty input should return empty results immediately (no git command run)
-    let results = operations::delete_remotes_batch(&work_dir, &[]);
-    assert!(results.is_empty(), "empty input should produce empty results");
+    let results = operations::delete_remotes_batch(&work_dir, &[], &AtomicBool::new(false));
+    assert!(
+        results.is_empty(),
+        "empty input should produce empty results"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1179,12 +1351,19 @@ fn test_create_worktree_simple() {
     run_git(dir, &["branch", "wt-feature"]);
 
     let result = operations::create_worktree(dir, "wt-feature");
-    assert!(result.success, "create_worktree should succeed: {}", result.message);
+    assert!(
+        result.success,
+        "create_worktree should succeed: {}",
+        result.message
+    );
 
     let wt_path = dir.join(".worktrees").join("wt-feature");
     assert!(wt_path.exists(), ".worktrees/wt-feature should be created");
     // A worktree directory contains a .git file (not a directory like the main repo)
-    assert!(wt_path.join(".git").exists(), "worktree directory should be a valid git working tree");
+    assert!(
+        wt_path.join(".git").exists(),
+        "worktree directory should be a valid git working tree"
+    );
 }
 
 #[test]
@@ -1196,10 +1375,17 @@ fn test_create_worktree_sanitizes_slash() {
     run_git(dir, &["branch", "feature/slash-test"]);
 
     let result = operations::create_worktree(dir, "feature/slash-test");
-    assert!(result.success, "create_worktree with slash should succeed: {}", result.message);
+    assert!(
+        result.success,
+        "create_worktree with slash should succeed: {}",
+        result.message
+    );
 
     let wt_path = dir.join(".worktrees").join("feature-slash-test");
-    assert!(wt_path.exists(), ".worktrees/feature-slash-test should be created (slash → dash)");
+    assert!(
+        wt_path.exists(),
+        ".worktrees/feature-slash-test should be created (slash → dash)"
+    );
 }
 
 #[test]
@@ -1208,13 +1394,20 @@ fn test_remove_worktree_clean() {
     let dir = tmpdir.path();
 
     run_git(dir, &["branch", "wt-remove"]);
-    run_git(dir, &["worktree", "add", ".worktrees/wt-remove", "wt-remove"]);
+    run_git(
+        dir,
+        &["worktree", "add", ".worktrees/wt-remove", "wt-remove"],
+    );
 
     let wt_path = dir.join(".worktrees").join("wt-remove");
     assert!(wt_path.exists(), "worktree should exist before removal");
 
     let result = operations::remove_worktree(dir, &wt_path);
-    assert!(result.success, "remove_worktree should succeed on clean worktree: {}", result.message);
+    assert!(
+        result.success,
+        "remove_worktree should succeed on clean worktree: {}",
+        result.message
+    );
     assert!(!wt_path.exists(), "worktree directory should be removed");
 }
 
@@ -1232,12 +1425,22 @@ fn test_force_remove_worktree_dirty() {
     std::fs::write(wt_path.join("dirty.txt"), "uncommitted change\n").unwrap();
 
     let result = operations::remove_worktree(dir, &wt_path);
-    assert!(!result.success, "remove_worktree should fail on dirty worktree");
+    assert!(
+        !result.success,
+        "remove_worktree should fail on dirty worktree"
+    );
 
     // Force remove should succeed regardless
     let result = operations::force_remove_worktree(dir, &wt_path);
-    assert!(result.success, "force_remove_worktree should succeed even when dirty: {}", result.message);
-    assert!(!wt_path.exists(), "worktree directory should be removed after force-remove");
+    assert!(
+        result.success,
+        "force_remove_worktree should succeed even when dirty: {}",
+        result.message
+    );
+    assert!(
+        !wt_path.exists(),
+        "worktree directory should be removed after force-remove"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1253,9 +1456,20 @@ fn test_list_worktrees_main_only() {
     assert_eq!(worktrees.len(), 1, "should have exactly 1 worktree (main)");
 
     let main_wt = &worktrees[0];
-    assert!(main_wt.is_main, "first worktree should be the main worktree");
-    assert_eq!(main_wt.branch.as_deref(), Some("main"), "main worktree should be on 'main'");
-    assert_eq!(main_wt.commit_hash.len(), 7, "commit_hash should be 7 chars");
+    assert!(
+        main_wt.is_main,
+        "first worktree should be the main worktree"
+    );
+    assert_eq!(
+        main_wt.branch.as_deref(),
+        Some("main"),
+        "main worktree should be on 'main'"
+    );
+    assert_eq!(
+        main_wt.commit_hash.len(),
+        7,
+        "commit_hash should be 7 chars"
+    );
 }
 
 #[test]
@@ -1264,15 +1478,24 @@ fn test_list_worktrees_with_additional() {
     let dir = tmpdir.path();
 
     run_git(dir, &["branch", "wt-list-test"]);
-    run_git(dir, &["worktree", "add", ".worktrees/wt-list-test", "wt-list-test"]);
+    run_git(
+        dir,
+        &["worktree", "add", ".worktrees/wt-list-test", "wt-list-test"],
+    );
 
     let worktrees = worktree::list_worktrees(dir);
     assert_eq!(worktrees.len(), 2, "should have 2 worktrees");
 
-    let main_wt = worktrees.iter().find(|w| w.is_main).expect("should have a main worktree");
+    let main_wt = worktrees
+        .iter()
+        .find(|w| w.is_main)
+        .expect("should have a main worktree");
     assert_eq!(main_wt.branch.as_deref(), Some("main"));
 
-    let extra_wt = worktrees.iter().find(|w| !w.is_main).expect("should have a non-main worktree");
+    let extra_wt = worktrees
+        .iter()
+        .find(|w| !w.is_main)
+        .expect("should have a non-main worktree");
     assert_eq!(extra_wt.branch.as_deref(), Some("wt-list-test"));
 
     // Clean up before tmpdir drops
@@ -1292,7 +1515,10 @@ fn test_enrich_worktrees_clean() {
 
     assert_eq!(results.len(), 1, "should receive one enrichment result");
     assert_eq!(results[0].index, 0);
-    assert!(results[0].wt_status.is_clean(), "clean repo worktree should report clean status");
+    assert!(
+        results[0].wt_status.is_clean(),
+        "clean repo worktree should report clean status"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1401,7 +1627,12 @@ fn test_is_squash_merged_direct() {
     run_git(dir, &["merge", "--squash", "feature/squashed"]);
     run_git(dir, &["commit", "-m", "squashed feature"]);
 
-    assert!(merge_detection::is_squash_merged(dir, "main", "feature/squashed", None));
+    assert!(merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/squashed",
+        None
+    ));
 }
 
 #[test]
@@ -1415,5 +1646,10 @@ fn test_is_not_squash_merged_direct() {
     run_git(dir, &["commit", "-m", "unmerged commit"]);
     run_git(dir, &["checkout", "main"]);
 
-    assert!(!merge_detection::is_squash_merged(dir, "main", "feature/unmerged", None));
+    assert!(!merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/unmerged",
+        None
+    ));
 }

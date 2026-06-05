@@ -13,7 +13,7 @@ use std::io;
 
 use git_branch_manager::cli::Cli;
 use git_branch_manager::config::Config;
-use git_branch_manager::git::{self, branch, cache, operations, pr_loader, squash_loader, worktree};
+use git_branch_manager::git::{self, branch, cache, operations, worktree};
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::types::MergeStatus;
 
@@ -69,49 +69,38 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Phase 1: synchronous branch load
-    let branches = branch::list_branches_phase1(&repo, &base_branch)?;
-    let working_tree_status = git::status::detect_working_tree_status(&repo);
-    let cache_for_app = cache::BranchCache::load(&repo_path);
-    let cache_for_squash = cache::BranchCache::load(&repo_path);
+    // Spawn background phase-1 load so the TUI starts immediately
+    let (phase1_tx, phase1_rx) = std::sync::mpsc::channel();
+    {
+        let repo_path_bg = repo_path.clone();
+        let base_branch_bg = base_branch.clone();
+        std::thread::spawn(move || {
+            let Ok(repo) = git2::Repository::open(&repo_path_bg) else {
+                return;
+            };
+            let Ok(branches) = branch::list_branches_phase1(&repo, &base_branch_bg) else {
+                return;
+            };
+            let working_tree_status = git::status::detect_working_tree_status(&repo);
+            let cache_for_app = cache::BranchCache::load(&repo_path_bg);
+            let cache_for_squash = cache::BranchCache::load(&repo_path_bg);
+            let _ = phase1_tx.send((
+                branches,
+                working_tree_status,
+                cache_for_app,
+                cache_for_squash,
+            ));
+        });
+    }
 
-    // Collect squash-merge candidates
-    let candidates: Vec<(String, String)> = branches
-        .iter()
-        .filter(|b| b.merge_status == MergeStatus::Pending && !b.is_base && !b.is_current)
-        .filter_map(|b| {
-            branch::get_commit_hash(&repo, &b.name).map(|hash| (b.name.clone(), hash))
-        })
-        .collect();
-
-    // Create app
-    let mut app = app::App::new(
-        repo_path.clone(),
-        base_branch.clone(),
-        branches,
-        working_tree_status,
-        cache_for_app,
-        config,
-    );
+    // Create app (TUI launches immediately; branches arrive via phase1_rx)
+    let mut app = app::App::new(repo_path.clone(), base_branch.clone(), config);
+    app.phase1_rx = Some(phase1_rx);
 
     // Apply CLI symbol override
     if let Some(ref sym) = cli.symbols {
         app.symbols = SymbolSet::from_name(sym);
     }
-
-    // Spawn background enrichment: squash checker
-    app.squash_total = candidates.len();
-    if !candidates.is_empty() {
-        app.squash_rx = Some(squash_loader::spawn_squash_checker(
-            repo_path.clone(),
-            base_branch.clone(),
-            candidates,
-            cache_for_squash,
-        ));
-    }
-
-    // Spawn PR loader
-    app.pr_rx = Some(pr_loader::spawn_pr_loader(repo_path.clone()));
 
     // Auto-fetch if configured
     if app.config.auto_fetch == Some(true) {

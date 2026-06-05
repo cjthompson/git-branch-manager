@@ -85,6 +85,15 @@ pub struct App {
             cache::BranchCache,
         )>,
     >,
+    #[allow(clippy::type_complexity)]
+    pub phase1_rx: Option<
+        Receiver<(
+            Vec<BranchInfo>,
+            WorkingTreeStatus,
+            cache::BranchCache,
+            cache::BranchCache,
+        )>,
+    >,
 
     // Working tree status (for the main repo)
     pub working_tree_status: WorkingTreeStatus,
@@ -138,14 +147,7 @@ fn drain_channel<T>(rx: &mut Option<Receiver<T>>, max_per_tick: usize) -> Vec<T>
 }
 
 impl App {
-    pub fn new(
-        repo_path: PathBuf,
-        base_branch: String,
-        branches: Vec<BranchInfo>,
-        working_tree_status: WorkingTreeStatus,
-        cache: cache::BranchCache,
-        config: Config,
-    ) -> Self {
+    pub fn new(repo_path: PathBuf, base_branch: String, config: Config) -> Self {
         let theme = Theme::from_name(config.theme.as_deref().unwrap_or("dark"));
         let symbols = SymbolSet::from_name(config.symbols.as_deref().unwrap_or("auto"));
 
@@ -166,10 +168,12 @@ impl App {
         let tag_def = TagsViewDef;
         let worktree_def = WorktreesViewDef;
 
-        let mut branch_state = ListState::new(branches);
+        let mut branch_state = ListState::empty();
+        branch_state.loading = true;
         branch_state.set_sort(sort_col, sort_asc);
 
         let remote_fetched = config.auto_fetch == Some(true);
+        let cache = cache::BranchCache::load(&repo_path);
 
         Self {
             repo_path,
@@ -208,7 +212,8 @@ impl App {
             tag_load_rx: None,
             worktree_load_rx: None,
             remote_load_rx: None,
-            working_tree_status,
+            phase1_rx: None,
+            working_tree_status: WorkingTreeStatus::clean(),
             cache,
             toast: None,
             cancel_flag: None,
@@ -305,6 +310,43 @@ impl App {
     // ---- Channel Draining ----
 
     fn drain_channels(&mut self) {
+        // Phase-1 load (branches + working tree status + cache)
+        for (branches, wts, cache_for_app, cache_for_squash) in
+            drain_channel(&mut self.phase1_rx, 1)
+        {
+            let repo_path = self.repo_path.clone();
+            let base_branch = self.base_branch.clone();
+            let Ok(repo) = git2::Repository::open(&repo_path) else {
+                continue;
+            };
+
+            let candidates: Vec<(String, String)> = branches
+                .iter()
+                .filter(|b| b.merge_status == MergeStatus::Pending && !b.is_base && !b.is_current)
+                .filter_map(|b| {
+                    branch::get_commit_hash(&repo, &b.name).map(|hash| (b.name.clone(), hash))
+                })
+                .collect();
+
+            self.working_tree_status = wts;
+            self.cache = cache_for_app;
+            self.branches.set_items(branches);
+            self.branches.loading = false;
+            list_state::apply_sort(&mut self.branches, &self.branch_columns);
+
+            self.squash_total = candidates.len();
+            self.squash_checked = 0;
+            if !candidates.is_empty() {
+                self.squash_rx = Some(squash_loader::spawn_squash_checker(
+                    repo_path.clone(),
+                    base_branch,
+                    candidates,
+                    cache_for_squash,
+                ));
+            }
+            self.pr_rx = Some(pr_loader::spawn_pr_loader(repo_path));
+        }
+
         // Squash-merge results (cap 32 per tick)
         for result in drain_channel(&mut self.squash_rx, 32) {
             self.squash_checked += 1;
@@ -795,10 +837,14 @@ impl App {
                     self.overlay = Some(Overlay::Menu { cursor, items });
                 }
             },
-            Some(Overlay::Results { .. }) => {
-                // Any key returns to the view and refreshes
-                self.refresh_after_operation();
-            }
+            Some(Overlay::Results { results }) => match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    self.refresh_after_operation();
+                }
+                _ => {
+                    self.overlay = Some(Overlay::Results { results });
+                }
+            },
             Some(Overlay::Executing { .. }) => {
                 if key.code == KeyCode::Esc {
                     if let Some(flag) = &self.cancel_flag {
