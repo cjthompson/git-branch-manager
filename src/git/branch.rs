@@ -69,10 +69,7 @@ pub fn detect_base_branch(repo: &Repository, override_base: Option<&str>) -> Res
 
 /// List local branches with metadata (phase 1: synchronous, git2 only).
 /// Detects regular merges and marks unmerged non-pinned branches as Pending.
-pub fn list_branches_phase1(
-    repo: &Repository,
-    base_branch: &str,
-) -> Result<Vec<BranchInfo>> {
+pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
     let mut branches = collect_branch_metadata(repo, base_branch)?;
     super::merge_detection::detect_merged_branches(repo, base_branch, &mut branches)?;
 
@@ -90,6 +87,24 @@ pub fn list_branches_phase1(
             .then(b.last_commit_date.cmp(&a.last_commit_date))
     });
 
+    Ok(branches)
+}
+
+/// Fast metadata-only pass: collects branch info without merge detection.
+/// All non-pinned branches start as Pending; merge statuses are filled in
+/// asynchronously via a subsequent detect_merged_branches call.
+pub fn list_branches_fast(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
+    let mut branches = collect_branch_metadata(repo, base_branch)?;
+    for b in &mut branches {
+        if !b.is_pinned() {
+            b.merge_status = MergeStatus::Pending;
+        }
+    }
+    branches.sort_by(|a, b| {
+        b.is_pinned()
+            .cmp(&a.is_pinned())
+            .then(b.last_commit_date.cmp(&a.last_commit_date))
+    });
     Ok(branches)
 }
 
@@ -180,9 +195,7 @@ pub fn spawn_remote_enricher(
         // Prefer local base ref, fall back to remote tracking
         let base_oid = repo
             .find_branch(&base_branch, BranchType::Local)
-            .or_else(|_| {
-                repo.find_branch(&format!("origin/{base_branch}"), BranchType::Remote)
-            })
+            .or_else(|_| repo.find_branch(&format!("origin/{base_branch}"), BranchType::Remote))
             .and_then(|b| {
                 b.get()
                     .target()
@@ -203,20 +216,20 @@ pub fn spawn_remote_enricher(
             let branch_ref = format!("refs/remotes/{}", branch.full_ref);
             let branch_oid = match repo
                 .find_reference(&branch_ref)
-                .and_then(|r| {
-                    r.target()
-                        .ok_or_else(|| git2::Error::from_str("no target"))
-                }) {
+                .and_then(|r| r.target().ok_or_else(|| git2::Error::from_str("no target")))
+            {
                 Ok(oid) => oid,
                 Err(_) => continue,
             };
 
-            let merge_status =
-                if repo.graph_descendant_of(base_oid, branch_oid).unwrap_or(false) {
-                    MergeStatus::Merged
-                } else {
-                    MergeStatus::Unmerged
-                };
+            let merge_status = if repo
+                .graph_descendant_of(base_oid, branch_oid)
+                .unwrap_or(false)
+            {
+                MergeStatus::Merged
+            } else {
+                MergeStatus::Unmerged
+            };
 
             let (ahead, behind) = repo
                 .graph_ahead_behind(branch_oid, base_oid)
@@ -273,10 +286,7 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
     Ok(branches)
 }
 
-fn collect_branch_metadata(
-    repo: &Repository,
-    base_branch: &str,
-) -> Result<Vec<BranchInfo>> {
+fn collect_branch_metadata(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
     let head = repo.head().ok();
     let current_branch = head
         .as_ref()

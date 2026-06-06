@@ -31,6 +31,19 @@ use git_branch_manager::view::tags::TagsViewDef;
 use git_branch_manager::view::worktrees::WorktreesViewDef;
 use git_branch_manager::view::ViewId;
 
+/// Messages sent by the background phase-1 thread.
+pub enum Phase1Msg {
+    /// Fast path: branch list + working tree status + caches. Sent before merge detection.
+    Fast(
+        Vec<BranchInfo>,
+        WorkingTreeStatus,
+        cache::BranchCache,
+        cache::BranchCache,
+    ),
+    /// Slow path: per-branch merge status updates, sent after detect_merged_branches.
+    MergeStatuses(Vec<(String, MergeStatus)>),
+}
+
 pub struct App {
     // Core
     pub repo_path: PathBuf,
@@ -85,15 +98,7 @@ pub struct App {
             cache::BranchCache,
         )>,
     >,
-    #[allow(clippy::type_complexity)]
-    pub phase1_rx: Option<
-        Receiver<(
-            Vec<BranchInfo>,
-            WorkingTreeStatus,
-            cache::BranchCache,
-            cache::BranchCache,
-        )>,
-    >,
+    pub phase1_rx: Option<Receiver<Phase1Msg>>,
 
     // Working tree status (for the main repo)
     pub working_tree_status: WorkingTreeStatus,
@@ -310,41 +315,61 @@ impl App {
     // ---- Channel Draining ----
 
     fn drain_channels(&mut self) {
-        // Phase-1 load (branches + working tree status + cache)
-        for (branches, wts, cache_for_app, cache_for_squash) in
-            drain_channel(&mut self.phase1_rx, 1)
-        {
-            let repo_path = self.repo_path.clone();
-            let base_branch = self.base_branch.clone();
-            let Ok(repo) = git2::Repository::open(&repo_path) else {
-                continue;
-            };
+        // Phase-1 messages (fast metadata first, merge statuses second)
+        for msg in drain_channel(&mut self.phase1_rx, 2) {
+            match msg {
+                Phase1Msg::Fast(branches, wts, cache_for_app, _cache_for_squash) => {
+                    self.working_tree_status = wts;
+                    self.cache = cache_for_app;
+                    self.branches.set_items(branches);
+                    self.branches.loading = false;
+                    list_state::apply_sort(&mut self.branches, &self.branch_columns);
+                    // Squash checker and PR loader are spawned after merge statuses arrive.
+                }
+                Phase1Msg::MergeStatuses(updates) => {
+                    let update_map: std::collections::HashMap<String, MergeStatus> =
+                        updates.into_iter().collect();
+                    for b in self.branches.items_mut() {
+                        if let Some(&new_status) = update_map.get(&b.name) {
+                            b.merge_status = new_status;
+                        }
+                    }
+                    self.branches.rebuild_display_indices();
 
-            let candidates: Vec<(String, String)> = branches
-                .iter()
-                .filter(|b| b.merge_status == MergeStatus::Pending && !b.is_base && !b.is_current)
-                .filter_map(|b| {
-                    branch::get_commit_hash(&repo, &b.name).map(|hash| (b.name.clone(), hash))
-                })
-                .collect();
+                    // Now spawn squash checker on the updated (merged-filtered) set.
+                    let repo_path = self.repo_path.clone();
+                    let base_branch = self.base_branch.clone();
+                    let cache_for_squash = cache::BranchCache::load(&repo_path);
+                    if let Ok(repo) = git2::Repository::open(&repo_path) {
+                        let candidates: Vec<(String, String)> = self
+                            .branches
+                            .items()
+                            .iter()
+                            .filter(|b| {
+                                b.merge_status == MergeStatus::Pending
+                                    && !b.is_base
+                                    && !b.is_current
+                            })
+                            .filter_map(|b| {
+                                branch::get_commit_hash(&repo, &b.name)
+                                    .map(|hash| (b.name.clone(), hash))
+                            })
+                            .collect();
 
-            self.working_tree_status = wts;
-            self.cache = cache_for_app;
-            self.branches.set_items(branches);
-            self.branches.loading = false;
-            list_state::apply_sort(&mut self.branches, &self.branch_columns);
-
-            self.squash_total = candidates.len();
-            self.squash_checked = 0;
-            if !candidates.is_empty() {
-                self.squash_rx = Some(squash_loader::spawn_squash_checker(
-                    repo_path.clone(),
-                    base_branch,
-                    candidates,
-                    cache_for_squash,
-                ));
+                        self.squash_total = candidates.len();
+                        self.squash_checked = 0;
+                        if !candidates.is_empty() {
+                            self.squash_rx = Some(squash_loader::spawn_squash_checker(
+                                repo_path.clone(),
+                                base_branch,
+                                candidates,
+                                cache_for_squash,
+                            ));
+                        }
+                    }
+                    self.pr_rx = Some(pr_loader::spawn_pr_loader(repo_path));
+                }
             }
-            self.pr_rx = Some(pr_loader::spawn_pr_loader(repo_path));
         }
 
         // Squash-merge results (cap 32 per tick)

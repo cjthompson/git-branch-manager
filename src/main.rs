@@ -13,7 +13,7 @@ use std::io;
 
 use git_branch_manager::cli::Cli;
 use git_branch_manager::config::Config;
-use git_branch_manager::git::{self, branch, cache, operations, worktree};
+use git_branch_manager::git::{self, branch, cache, merge_detection, operations, worktree};
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::types::MergeStatus;
 
@@ -69,8 +69,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Spawn background phase-1 load so the TUI starts immediately
-    let (phase1_tx, phase1_rx) = std::sync::mpsc::channel();
+    // Spawn background phase-1 load so the TUI starts immediately.
+    // Sends Phase1Msg::Fast first (branch list, no merge detection),
+    // then Phase1Msg::MergeStatuses once detect_merged_branches completes.
+    let (phase1_tx, phase1_rx) = std::sync::mpsc::channel::<app::Phase1Msg>();
     {
         let repo_path_bg = repo_path.clone();
         let base_branch_bg = base_branch.clone();
@@ -78,18 +80,36 @@ fn main() -> Result<()> {
             let Ok(repo) = git2::Repository::open(&repo_path_bg) else {
                 return;
             };
-            let Ok(branches) = branch::list_branches_phase1(&repo, &base_branch_bg) else {
+
+            // Fast: metadata only, no merge detection
+            let Ok(mut branches) = branch::list_branches_fast(&repo, &base_branch_bg) else {
                 return;
             };
             let working_tree_status = git::status::detect_working_tree_status(&repo);
             let cache_for_app = cache::BranchCache::load(&repo_path_bg);
             let cache_for_squash = cache::BranchCache::load(&repo_path_bg);
-            let _ = phase1_tx.send((
-                branches,
-                working_tree_status,
-                cache_for_app,
-                cache_for_squash,
-            ));
+            if phase1_tx
+                .send(app::Phase1Msg::Fast(
+                    branches.clone(),
+                    working_tree_status,
+                    cache_for_app,
+                    cache_for_squash,
+                ))
+                .is_err()
+            {
+                return;
+            }
+
+            // Slow: merge detection — update statuses in-place then send deltas
+            if merge_detection::detect_merged_branches(&repo, &base_branch_bg, &mut branches)
+                .is_ok()
+            {
+                let updates = branches
+                    .into_iter()
+                    .map(|b| (b.name, b.merge_status))
+                    .collect();
+                let _ = phase1_tx.send(app::Phase1Msg::MergeStatuses(updates));
+            }
         });
     }
 
