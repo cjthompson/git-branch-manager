@@ -58,9 +58,7 @@ impl Theme {
             pr_open: Style::new().fg(Color::Green),
             pr_merged: Style::new().fg(Color::Indexed(141)),
             pr_closed: Style::new().fg(Color::Red),
-            remote_title: Style::new()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::BOLD),
+            remote_title: Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD),
             remote_header: Style::new()
                 .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD)
@@ -100,9 +98,7 @@ impl Theme {
                 .fg(Color::Blue)
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
-            search_bar: Style::new()
-                .bg(Color::Indexed(254))
-                .fg(Color::Indexed(130)),
+            search_bar: Style::new().bg(Color::Indexed(254)).fg(Color::Indexed(130)),
             pr_draft: Style::new().fg(Color::DarkGray),
             pr_open: Style::new().fg(Color::Indexed(28)),
             pr_merged: Style::new().fg(Color::Indexed(92)),

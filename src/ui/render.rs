@@ -189,13 +189,10 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
         );
     } else {
         let status_text = default_status_text(ctx);
-        let items =
-            status_bar::render_status_bar(frame, status_area, &status_text, ctx.theme);
+        let items = status_bar::render_status_bar(frame, status_area, &status_text, ctx.theme);
         // Store status bar items for mouse handler
-        let converted: Vec<(u16, u16, crossterm::event::KeyCode)> = items
-            .iter()
-            .map(|i| (i.x_start, i.x_end, i.key))
-            .collect();
+        let converted: Vec<(u16, u16, crossterm::event::KeyCode)> =
+            items.iter().map(|i| (i.x_start, i.x_end, i.key)).collect();
         match ctx.active_view {
             ViewId::Branches => ctx.branches.status_bar_items = converted,
             ViewId::Remotes => ctx.remotes.status_bar_items = converted,
@@ -215,12 +212,8 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                     ViewId::Branches => {
                         ctx.branches.table_state().selected().unwrap_or(0) as u16 + 2
                     }
-                    ViewId::Remotes => {
-                        ctx.remotes.table_state().selected().unwrap_or(0) as u16 + 2
-                    }
-                    ViewId::Tags => {
-                        ctx.tags.table_state().selected().unwrap_or(0) as u16 + 2
-                    }
+                    ViewId::Remotes => ctx.remotes.table_state().selected().unwrap_or(0) as u16 + 2,
+                    ViewId::Tags => ctx.tags.table_state().selected().unwrap_or(0) as u16 + 2,
                     ViewId::Worktrees => {
                         ctx.worktrees.table_state().selected().unwrap_or(0) as u16 + 2
                     }
@@ -237,11 +230,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 draw_results(frame, results, ctx.theme);
             }
             Overlay::Settings { cursor } => {
-                let rows = settings_rows(
-                    ctx.symbols,
-                    ctx.theme,
-                    ctx.config,
-                );
+                let rows = settings_rows(ctx.symbols, ctx.theme, ctx.config);
                 draw_settings(frame, *cursor, &rows, ctx.theme);
             }
             Overlay::Filter => {
@@ -274,10 +263,16 @@ fn default_status_text(ctx: &RenderContext) -> String {
         ViewId::Branches => {
             let total = ctx.branches.items().len();
             let selected = ctx.branches.selected().iter().filter(|&&s| s).count();
-            let merged = ctx.branches.items().iter()
+            let merged = ctx
+                .branches
+                .items()
+                .iter()
                 .filter(|b| b.merge_status == MergeStatus::Merged)
                 .count();
-            let squashed = ctx.branches.items().iter()
+            let squashed = ctx
+                .branches
+                .items()
+                .iter()
                 .filter(|b| b.merge_status == MergeStatus::SquashMerged)
                 .count();
             format!(
@@ -288,10 +283,16 @@ fn default_status_text(ctx: &RenderContext) -> String {
         ViewId::Remotes => {
             let total = ctx.remotes.items().len();
             let selected = ctx.remotes.selected().iter().filter(|&&s| s).count();
-            let merged = ctx.remotes.items().iter()
+            let merged = ctx
+                .remotes
+                .items()
+                .iter()
                 .filter(|b| b.merge_status == MergeStatus::Merged)
                 .count();
-            let squashed = ctx.remotes.items().iter()
+            let squashed = ctx
+                .remotes
+                .items()
+                .iter()
                 .filter(|b| b.merge_status == MergeStatus::SquashMerged)
                 .count();
             format!(

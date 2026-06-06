@@ -15,11 +15,7 @@ pub struct SettingsRow {
 }
 
 /// Build the settings rows from current configuration state.
-pub fn settings_rows(
-    symbols: &SymbolSet,
-    theme: &Theme,
-    config: &Config,
-) -> Vec<SettingsRow> {
+pub fn settings_rows(symbols: &SymbolSet, theme: &Theme, config: &Config) -> Vec<SettingsRow> {
     let sort_col_display = match config.sort_column.as_deref() {
         Some("name") => "name",
         Some("remote") => "remote",
@@ -29,7 +25,8 @@ pub fn settings_rows(
         Some("behind") => "behind",
         Some("status") => "status",
         _ => "none",
-    }.to_string();
+    }
+    .to_string();
     let sort_dir_display = if config.sort_asc != Some(false) {
         "ascending".to_string()
     } else {
@@ -78,12 +75,7 @@ pub fn settings_rows(
 ///
 /// `cursor` is the currently highlighted setting row.
 /// `rows` should be built via `settings_rows()`.
-pub fn draw_settings(
-    frame: &mut Frame,
-    cursor: usize,
-    rows: &[SettingsRow],
-    theme: &Theme,
-) {
+pub fn draw_settings(frame: &mut Frame, cursor: usize, rows: &[SettingsRow], theme: &Theme) {
     let area = frame.area();
     let width = 60u16.min(area.width);
     let height = (rows.len() as u16 + 4).min(area.height); // +4 for borders + instructions

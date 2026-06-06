@@ -189,11 +189,7 @@ fn build_help_entries(
     entries
 }
 
-fn render_help_entry<'a>(
-    entry: &HelpEntry,
-    key_style: Style,
-    theme: &Theme,
-) -> Vec<Span<'a>> {
+fn render_help_entry<'a>(entry: &HelpEntry, key_style: Style, theme: &Theme) -> Vec<Span<'a>> {
     match entry {
         HelpEntry::Section(title) => {
             vec![Span::styled(

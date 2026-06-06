@@ -227,12 +227,18 @@ mod tests {
 
     #[test]
     fn has_token_true() {
-        assert!(FilterSet::has_token("status:merged pr:yes", "status:merged"));
+        assert!(FilterSet::has_token(
+            "status:merged pr:yes",
+            "status:merged"
+        ));
     }
 
     #[test]
     fn has_token_false() {
-        assert!(!FilterSet::has_token("status:merged pr:yes", "status:squash"));
+        assert!(!FilterSet::has_token(
+            "status:merged pr:yes",
+            "status:squash"
+        ));
     }
 
     #[test]

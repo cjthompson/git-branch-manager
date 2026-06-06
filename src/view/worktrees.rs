@@ -29,7 +29,9 @@ impl WorktreesViewDef {
                 compare: Some(|a, b| {
                     let rank = |w: &WorktreeInfo| {
                         let s = &w.wt_status;
-                        (s.has_staged as u8) * 4 + (s.has_unstaged as u8) * 2 + (s.has_untracked as u8)
+                        (s.has_staged as u8) * 4
+                            + (s.has_unstaged as u8) * 2
+                            + (s.has_untracked as u8)
                     };
                     rank(a).cmp(&rank(b))
                 }),

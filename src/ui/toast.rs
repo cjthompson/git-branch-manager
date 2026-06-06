@@ -36,10 +36,7 @@ pub fn draw_toast(frame: &mut Frame, toast: &Toast, theme: &Theme) {
     let toast_height: u16 = 3;
 
     let x = area.width.saturating_sub(toast_width).saturating_sub(1);
-    let y = area
-        .height
-        .saturating_sub(toast_height)
-        .saturating_sub(2); // above status bar
+    let y = area.height.saturating_sub(toast_height).saturating_sub(2); // above status bar
 
     let toast_area = Rect::new(x, y, toast_width.min(area.width), toast_height);
 

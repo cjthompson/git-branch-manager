@@ -27,7 +27,9 @@ impl RemotesViewDef {
                 wide_width: None,
                 hide_below_width: Some(80),
                 compare: Some(|a, b| {
-                    a.ahead.unwrap_or(0).cmp(&b.ahead.unwrap_or(0))
+                    a.ahead
+                        .unwrap_or(0)
+                        .cmp(&b.ahead.unwrap_or(0))
                         .then(a.behind.unwrap_or(0).cmp(&b.behind.unwrap_or(0)))
                 }),
             },

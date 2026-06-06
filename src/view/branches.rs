@@ -23,7 +23,11 @@ impl BranchesViewDef {
                     let key = |item: &BranchInfo| -> String {
                         match &item.tracking {
                             crate::types::TrackingStatus::Tracked { remote_ref, gone } => {
-                                if *gone { "gone".to_string() } else { remote_ref.clone() }
+                                if *gone {
+                                    "gone".to_string()
+                                } else {
+                                    remote_ref.clone()
+                                }
                             }
                             crate::types::TrackingStatus::Local => "local".to_string(),
                         }
@@ -37,7 +41,9 @@ impl BranchesViewDef {
                 wide_width: None,
                 hide_below_width: Some(80),
                 compare: Some(|a, b| {
-                    a.ahead.unwrap_or(0).cmp(&b.ahead.unwrap_or(0))
+                    a.ahead
+                        .unwrap_or(0)
+                        .cmp(&b.ahead.unwrap_or(0))
                         .then(a.behind.unwrap_or(0).cmp(&b.behind.unwrap_or(0)))
                 }),
             },

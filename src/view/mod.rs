@@ -204,7 +204,12 @@ mod tests {
     fn view_id_all_order() {
         assert_eq!(
             ViewId::ALL,
-            [ViewId::Branches, ViewId::Remotes, ViewId::Tags, ViewId::Worktrees]
+            [
+                ViewId::Branches,
+                ViewId::Remotes,
+                ViewId::Tags,
+                ViewId::Worktrees
+            ]
         );
     }
 

@@ -31,12 +31,12 @@ impl SymbolSet {
     pub fn unicode() -> Self {
         Self {
             name: "unicode",
-            checkbox_on: "\u{25c9}",   // filled circle
-            checkbox_off: "\u{25ef}",  // empty circle
-            cursor_prefix: "\u{276f}", // heavy right-pointing angle quotation mark
-            arrow_up: "\u{2191}",      // up arrow
-            arrow_down: "\u{2193}",    // down arrow
-            current_branch: "\u{25cf}", // black circle
+            checkbox_on: "\u{25c9}",          // filled circle
+            checkbox_off: "\u{25ef}",         // empty circle
+            cursor_prefix: "\u{276f}",        // heavy right-pointing angle quotation mark
+            arrow_up: "\u{2191}",             // up arrow
+            arrow_down: "\u{2193}",           // down arrow
+            current_branch: "\u{25cf}",       // black circle
             status_merged: "\u{2714}",        // heavy check mark
             status_squash_merged: "\u{2248}", // almost equal to
             status_unmerged: "\u{2718}",      // heavy ballot X
@@ -46,12 +46,12 @@ impl SymbolSet {
     pub fn powerline() -> Self {
         Self {
             name: "powerline",
-            checkbox_on: "\u{f058}",   // nerd font check-circle
-            checkbox_off: "\u{f111}",  // nerd font circle
-            cursor_prefix: "\u{e0b1}", // powerline right arrow thin
-            arrow_up: "\u{f062}",      // nerd font arrow-up
-            arrow_down: "\u{f063}",    // nerd font arrow-down
-            current_branch: "\u{e0a0}", // powerline branch
+            checkbox_on: "\u{f058}",          // nerd font check-circle
+            checkbox_off: "\u{f111}",         // nerd font circle
+            cursor_prefix: "\u{e0b1}",        // powerline right arrow thin
+            arrow_up: "\u{f062}",             // nerd font arrow-up
+            arrow_down: "\u{f063}",           // nerd font arrow-down
+            current_branch: "\u{e0a0}",       // powerline branch
             status_merged: "\u{f126}",        // nerd font code-fork (merged)
             status_squash_merged: "\u{25cf}", // solid circle (squash-merged)
             status_unmerged: "\u{f00d}",      // nerd font x-mark

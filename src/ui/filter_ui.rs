@@ -110,11 +110,7 @@ fn filter_line<'a>(
     label_style: Style,
 ) -> Line<'a> {
     let is_active = FilterSet::has_token(query, token);
-    let marker = if is_active {
-        "\u{25c9} "
-    } else {
-        "\u{25ef} "
-    }; // filled vs empty circle
+    let marker = if is_active { "\u{25c9} " } else { "\u{25ef} " }; // filled vs empty circle
     let (marker_style, text_style) = if is_active {
         (active_style, active_style)
     } else {

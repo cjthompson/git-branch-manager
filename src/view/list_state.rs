@@ -406,7 +406,11 @@ pub fn apply_sort<T: ViewItem>(state: &mut ListState<T>, columns: &[ColumnDef<T>
             }
             (false, false) => {
                 let ord = compare(a, b);
-                if asc { ord } else { ord.reverse() }
+                if asc {
+                    ord
+                } else {
+                    ord.reverse()
+                }
             }
         }
     });
