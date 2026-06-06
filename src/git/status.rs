@@ -1,6 +1,8 @@
 use crate::types::WorkingTreeStatus;
 use git2::{Repository, StatusOptions};
+use tracing::instrument;
 
+#[instrument(skip(repo))]
 pub fn detect_working_tree_status(repo: &Repository) -> WorkingTreeStatus {
     let mut opts = StatusOptions::new();
     opts.include_untracked(true);

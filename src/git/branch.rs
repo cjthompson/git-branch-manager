@@ -3,6 +3,7 @@ use chrono::{TimeZone, Utc};
 use git2::{BranchType, Repository};
 use std::sync::mpsc;
 use thiserror::Error;
+use tracing::instrument;
 
 #[derive(Error, Debug)]
 pub enum GitError {
@@ -93,14 +94,9 @@ pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<
 /// Fast metadata-only pass: collects branch info without merge detection.
 /// All non-pinned branches start as Pending; merge statuses are filled in
 /// asynchronously via a subsequent detect_merged_branches call.
+#[instrument(skip(repo), fields(base_branch))]
 pub fn list_branches_fast(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
-    let t0 = std::time::Instant::now();
     let mut branches = collect_branch_metadata(repo, base_branch)?;
-    super::log_timing("collect_branch_metadata", t0.elapsed());
-    super::log_timing(
-        &format!("branch_count_raw:{}", branches.len()),
-        std::time::Duration::ZERO,
-    );
     for b in &mut branches {
         if !b.is_pinned() {
             b.merge_status = MergeStatus::Pending;
@@ -292,6 +288,7 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
     Ok(branches)
 }
 
+#[instrument(skip(repo), fields(base_branch))]
 fn collect_branch_metadata(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
     let head = repo.head().ok();
     let current_branch = head

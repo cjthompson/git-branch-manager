@@ -2,22 +2,22 @@ use crate::types::{BranchInfo, MergeStatus};
 use git2::Repository;
 use std::path::Path;
 use std::process::Command;
+use tracing::instrument;
 
 /// Detect which branches have been regular-merged into the base branch using git2.
 /// Modifies branch merge_status in place from Unmerged to Merged where applicable.
+#[instrument(skip(repo, branches), fields(base_branch))]
 pub fn detect_merged_branches(
     repo: &Repository,
     base_branch: &str,
     branches: &mut [BranchInfo],
 ) -> anyhow::Result<()> {
-    let fn_start = std::time::Instant::now();
     let base_ref = repo
         .find_branch(base_branch, git2::BranchType::Local)?
         .get()
         .target()
         .ok_or_else(|| anyhow::anyhow!("base branch has no target"))?;
 
-    let mut checked = 0usize;
     for branch in branches.iter_mut() {
         if branch.is_base || branch.is_current {
             continue;
@@ -39,19 +39,7 @@ pub fn detect_merged_branches(
         {
             branch.merge_status = MergeStatus::Merged;
         }
-        checked += 1;
     }
-    let total = fn_start.elapsed();
-    super::log_timing("detect_merged_branches_total", total);
-    let avg_us = if checked > 0 {
-        total.as_micros() / checked as u128
-    } else {
-        0
-    };
-    super::log_timing(
-        &format!("detect_merged_per_branch_avg_us:{avg_us}_over_{checked}_branches"),
-        std::time::Duration::ZERO,
-    );
     Ok(())
 }
 

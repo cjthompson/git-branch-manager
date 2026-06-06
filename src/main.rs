@@ -21,6 +21,22 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::load();
 
+    #[cfg(debug_assertions)]
+    {
+        use std::fs::OpenOptions;
+        use tracing_subscriber::fmt::format::FmtSpan;
+        let log_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/gbm-timing.log")
+            .expect("failed to open timing log");
+        tracing_subscriber::fmt()
+            .with_writer(move || log_file.try_clone().expect("clone log file"))
+            .with_ansi(false)
+            .with_span_events(FmtSpan::CLOSE)
+            .init();
+    }
+
     // Open repo
     let repo = git2::Repository::discover(".")?;
     let repo_path = repo
@@ -81,15 +97,11 @@ fn main() -> Result<()> {
                 return;
             };
 
-            let thread_start = std::time::Instant::now();
-
             // Fast: metadata only, no merge detection
             let Ok(mut branches) = branch::list_branches_fast(&repo, &base_branch_bg) else {
                 return;
             };
-            git_branch_manager::git::log_timing("list_branches_fast_total", thread_start.elapsed());
             let working_tree_status = git::status::detect_working_tree_status(&repo);
-            git_branch_manager::git::log_timing("thread_to_Fast_send", thread_start.elapsed());
             let cache_for_app = cache::BranchCache::load(&repo_path_bg);
             let cache_for_squash = cache::BranchCache::load(&repo_path_bg);
             if phase1_tx
@@ -103,7 +115,6 @@ fn main() -> Result<()> {
             {
                 return;
             }
-            git_branch_manager::git::log_timing("fast_msg_sent", thread_start.elapsed());
 
             // Slow: merge detection — update statuses in-place then send deltas
             if merge_detection::detect_merged_branches(&repo, &base_branch_bg, &mut branches)
@@ -115,7 +126,6 @@ fn main() -> Result<()> {
                     .collect();
                 let _ = phase1_tx.send(app::Phase1Msg::MergeStatuses(updates));
             }
-            git_branch_manager::git::log_timing("thread_complete", thread_start.elapsed());
         });
     }
 
