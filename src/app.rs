@@ -12,7 +12,7 @@ use ratatui::Terminal;
 
 use git_branch_manager::config::Config;
 use git_branch_manager::git::{
-    branch, cache, operations, pr_loader, squash_loader, tags, worktree,
+    self, branch, cache, operations, pr_loader, squash_loader, tags, worktree,
 };
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::theme::Theme;
@@ -319,6 +319,10 @@ impl App {
         for msg in drain_channel(&mut self.phase1_rx, 2) {
             match msg {
                 Phase1Msg::Fast(branches, wts, cache_for_app, _cache_for_squash) => {
+                    git::log_timing(
+                        &format!("Phase1Msg::Fast_received_branch_count:{}", branches.len()),
+                        std::time::Duration::ZERO,
+                    );
                     self.working_tree_status = wts;
                     self.cache = cache_for_app;
                     self.branches.set_items(branches);
@@ -327,6 +331,10 @@ impl App {
                     // Squash checker and PR loader are spawned after merge statuses arrive.
                 }
                 Phase1Msg::MergeStatuses(updates) => {
+                    git::log_timing(
+                        &format!("Phase1Msg::MergeStatuses_received_count:{}", updates.len()),
+                        std::time::Duration::ZERO,
+                    );
                     let update_map: std::collections::HashMap<String, MergeStatus> =
                         updates.into_iter().collect();
                     for b in self.branches.items_mut() {

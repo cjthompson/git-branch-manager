@@ -94,7 +94,13 @@ pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<
 /// All non-pinned branches start as Pending; merge statuses are filled in
 /// asynchronously via a subsequent detect_merged_branches call.
 pub fn list_branches_fast(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
+    let t0 = std::time::Instant::now();
     let mut branches = collect_branch_metadata(repo, base_branch)?;
+    super::log_timing("collect_branch_metadata", t0.elapsed());
+    super::log_timing(
+        &format!("branch_count_raw:{}", branches.len()),
+        std::time::Duration::ZERO,
+    );
     for b in &mut branches {
         if !b.is_pinned() {
             b.merge_status = MergeStatus::Pending;
