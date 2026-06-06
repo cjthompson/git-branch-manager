@@ -99,7 +99,11 @@ pub(crate) fn ahead_behind_spans(
 // ── Public Cell builders ────────────────────────────────────────────────────
 
 /// Ahead/behind cell (branch and remote rows).
-pub fn ahead_behind_cell(ahead: Option<u32>, behind: Option<u32>, ctx: &CellContext) -> Cell<'static> {
+pub fn ahead_behind_cell(
+    ahead: Option<u32>,
+    behind: Option<u32>,
+    ctx: &CellContext,
+) -> Cell<'static> {
     Cell::from(Line::from(ahead_behind_spans(ahead, behind, ctx)))
 }
 
@@ -161,7 +165,10 @@ mod tests {
         assert_eq!(merge_status_parts(&MergeStatus::Merged, &ctx).0, "+");
         assert_eq!(merge_status_parts(&MergeStatus::SquashMerged, &ctx).0, "~");
         assert_eq!(merge_status_parts(&MergeStatus::Unmerged, &ctx).0, "-");
-        assert_eq!(merge_status_parts(&MergeStatus::Pending, &ctx).0, "\u{2026}");
+        assert_eq!(
+            merge_status_parts(&MergeStatus::Pending, &ctx).0,
+            "\u{2026}"
+        );
     }
 
     #[test]
@@ -178,8 +185,14 @@ mod tests {
             merge_status_parts(&MergeStatus::SquashMerged, &ctx).0,
             "squash-merged ~"
         );
-        assert_eq!(merge_status_parts(&MergeStatus::Unmerged, &ctx).0, "unmerged -");
-        assert_eq!(merge_status_parts(&MergeStatus::Pending, &ctx).0, "pending \u{2026}");
+        assert_eq!(
+            merge_status_parts(&MergeStatus::Unmerged, &ctx).0,
+            "unmerged -"
+        );
+        assert_eq!(
+            merge_status_parts(&MergeStatus::Pending, &ctx).0,
+            "pending \u{2026}"
+        );
     }
 
     #[test]
@@ -197,7 +210,10 @@ mod tests {
             area_width: 69,
             compact: false,
         };
-        assert_eq!(merge_status_parts(&MergeStatus::Merged, &wide).0, "merged +");
+        assert_eq!(
+            merge_status_parts(&MergeStatus::Merged, &wide).0,
+            "merged +"
+        );
         assert_eq!(merge_status_parts(&MergeStatus::Merged, &narrow).0, "+");
     }
 
