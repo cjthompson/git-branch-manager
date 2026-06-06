@@ -1,3 +1,4 @@
+*.local*
 /target
-.worktrees
+.claude/worktrees
 verify/results.txt
