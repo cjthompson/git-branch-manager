@@ -21,55 +21,10 @@ impl RemotesViewDef {
                 hide_below_width: Some(80),
                 compare: Some(|a, b| a.has_local.cmp(&b.has_local)),
             },
-            ColumnDef {
-                name: "A/B",
-                min_width: 8,
-                wide_width: None,
-                hide_below_width: Some(80),
-                compare: Some(|a, b| {
-                    a.ahead
-                        .unwrap_or(0)
-                        .cmp(&b.ahead.unwrap_or(0))
-                        .then(a.behind.unwrap_or(0).cmp(&b.behind.unwrap_or(0)))
-                }),
-            },
-            ColumnDef {
-                name: "PR",
-                min_width: 5,
-                wide_width: None,
-                hide_below_width: Some(80),
-                compare: Some(|a, b| {
-                    let pr_key = |item: &RemoteBranchInfo| item.pr.as_ref().map(|p| p.number);
-                    match (pr_key(a), pr_key(b)) {
-                        (Some(x), Some(y)) => x.cmp(&y),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => std::cmp::Ordering::Equal,
-                    }
-                }),
-            },
-            ColumnDef {
-                name: "Age",
-                min_width: 5,
-                wide_width: Some(12),
-                hide_below_width: Some(60),
-                compare: Some(|a, b| a.last_commit_date.cmp(&b.last_commit_date)),
-            },
-            ColumnDef {
-                name: "Status",
-                min_width: 4,
-                wide_width: Some(15),
-                hide_below_width: None,
-                compare: Some(|a, b| {
-                    let rank = |s: &crate::types::MergeStatus| match s {
-                        crate::types::MergeStatus::Merged => 0,
-                        crate::types::MergeStatus::SquashMerged => 1,
-                        crate::types::MergeStatus::Unmerged => 2,
-                        crate::types::MergeStatus::Pending => 3,
-                    };
-                    rank(&a.merge_status).cmp(&rank(&b.merge_status))
-                }),
-            },
+            super::column::ahead_behind_column(),
+            super::column::pr_column(),
+            super::column::age_column(),
+            super::column::merge_status_column("Status"),
         ]
     }
 

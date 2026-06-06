@@ -1,4 +1,5 @@
 use super::ViewItem;
+use crate::types::MergeStatus;
 use std::cmp::Ordering;
 
 /// Defines a single column in a view's table layout.
@@ -12,6 +13,91 @@ pub struct ColumnDef<T: ViewItem> {
     pub hide_below_width: Option<u16>,
     /// Comparison function for sorting. None = column is not sortable.
     pub compare: Option<fn(&T, &T) -> Ordering>,
+}
+
+/// Comparator: sort by last commit date (ascending = oldest first).
+pub fn age_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
+    a.last_commit_date().cmp(b.last_commit_date())
+}
+
+/// Build a standard "Age" column definition for any view.
+pub fn age_column<T: ViewItem>() -> ColumnDef<T> {
+    ColumnDef {
+        name: "Age",
+        min_width: 5,
+        wide_width: Some(12),
+        hide_below_width: Some(60),
+        compare: Some(age_cmp),
+    }
+}
+
+/// Comparator: sort by ahead count, then behind count (ascending).
+pub fn ahead_behind_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
+    a.ahead()
+        .unwrap_or(0)
+        .cmp(&b.ahead().unwrap_or(0))
+        .then(a.behind().unwrap_or(0).cmp(&b.behind().unwrap_or(0)))
+}
+
+/// Build a standard "A/B" column definition.
+pub fn ahead_behind_column<T: ViewItem>() -> ColumnDef<T> {
+    ColumnDef {
+        name: "A/B",
+        min_width: 8,
+        wide_width: None,
+        hide_below_width: Some(80),
+        compare: Some(ahead_behind_cmp),
+    }
+}
+
+/// Comparator: sort by PR number. Items with a PR sort before items without.
+pub fn pr_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
+    match (a.pr_info().map(|p| p.number), b.pr_info().map(|p| p.number)) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+/// Build a standard "PR" column definition.
+pub fn pr_column<T: ViewItem>() -> ColumnDef<T> {
+    ColumnDef {
+        name: "PR",
+        min_width: 5,
+        wide_width: None,
+        hide_below_width: Some(80),
+        compare: Some(pr_cmp),
+    }
+}
+
+/// Rank a MergeStatus for sorting: Merged=0, SquashMerged=1, Unmerged=2, Pending=3.
+pub fn merge_status_rank(status: &MergeStatus) -> u8 {
+    match status {
+        MergeStatus::Merged => 0,
+        MergeStatus::SquashMerged => 1,
+        MergeStatus::Unmerged => 2,
+        MergeStatus::Pending => 3,
+    }
+}
+
+/// Comparator: sort by merge status rank. Items without a merge status sort last.
+pub fn merge_status_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
+    let rank_a = a.merge_status().map_or(u8::MAX, merge_status_rank);
+    let rank_b = b.merge_status().map_or(u8::MAX, merge_status_rank);
+    rank_a.cmp(&rank_b)
+}
+
+/// Build a standard "Status" / "Merge" column definition. Pass the column name
+/// ("Status" for branches/remotes, "Merge" for worktrees).
+pub fn merge_status_column<T: ViewItem>(name: &'static str) -> ColumnDef<T> {
+    ColumnDef {
+        name,
+        min_width: 4,
+        wide_width: Some(15),
+        hide_below_width: None,
+        compare: Some(merge_status_cmp),
+    }
 }
 
 #[cfg(test)]
@@ -33,6 +119,21 @@ mod tests {
             merge_status: MergeStatus::Unmerged,
             base_branch: "main".into(),
             merge_base_commit: None,
+            pr: None,
+        }
+    }
+
+    fn sample_remote(name: &str, days_ago: i64) -> RemoteBranchInfo {
+        RemoteBranchInfo {
+            full_ref: format!("origin/{}", name),
+            remote: "origin".to_string(),
+            short_name: name.to_string(),
+            has_local: false,
+            is_base: false,
+            last_commit_date: Utc::now() - chrono::Duration::days(days_ago),
+            merge_status: MergeStatus::Unmerged,
+            ahead: None,
+            behind: None,
             pr: None,
         }
     }
@@ -77,5 +178,149 @@ mod tests {
             compare: None,
         };
         assert!(col.compare.is_none());
+    }
+
+    #[test]
+    fn age_cmp_sorts_older_first() {
+        let older = sample_branch("old", 10);
+        let newer = sample_branch("new", 1);
+        assert_eq!(age_cmp(&older, &newer), Ordering::Less);
+        assert_eq!(age_cmp(&newer, &older), Ordering::Greater);
+    }
+
+    #[test]
+    fn age_cmp_remote_sorts_older_first() {
+        let older = sample_remote("old", 10);
+        let newer = sample_remote("new", 1);
+        assert_eq!(age_cmp(&older, &newer), Ordering::Less);
+        assert_eq!(age_cmp(&newer, &older), Ordering::Greater);
+    }
+
+    #[test]
+    fn age_column_has_correct_properties() {
+        let col = age_column::<BranchInfo>();
+        assert_eq!(col.name, "Age");
+        assert_eq!(col.min_width, 5);
+        assert_eq!(col.wide_width, Some(12));
+        assert_eq!(col.hide_below_width, Some(60));
+        assert!(col.compare.is_some());
+    }
+
+    #[test]
+    fn ahead_behind_cmp_sorts_by_ahead_then_behind() {
+        let mut a = sample_branch("a", 1);
+        let mut b = sample_branch("b", 1);
+
+        a.ahead = Some(5);
+        a.behind = Some(0);
+        b.ahead = Some(3);
+        b.behind = Some(0);
+        assert_eq!(ahead_behind_cmp(&a, &b), Ordering::Greater);
+
+        a.ahead = Some(5);
+        a.behind = Some(2);
+        b.ahead = Some(5);
+        b.behind = Some(3);
+        assert_eq!(ahead_behind_cmp(&a, &b), Ordering::Less);
+
+        a.ahead = None;
+        a.behind = None;
+        b.ahead = None;
+        b.behind = None;
+        assert_eq!(ahead_behind_cmp(&a, &b), Ordering::Equal);
+    }
+
+    #[test]
+    fn ahead_behind_cmp_treats_none_as_zero() {
+        let mut a = sample_branch("a", 1);
+        let mut b = sample_branch("b", 1);
+
+        a.ahead = Some(5);
+        a.behind = None;
+        b.ahead = None;
+        b.behind = None;
+        assert_eq!(ahead_behind_cmp(&a, &b), Ordering::Greater);
+    }
+
+    #[test]
+    fn pr_cmp_both_some_compares_numbers() {
+        let mut a = sample_branch("a", 1);
+        let mut b = sample_branch("b", 1);
+
+        a.pr = Some(PrInfo {
+            number: 100,
+            status: PrStatus::Open,
+        });
+        b.pr = Some(PrInfo {
+            number: 200,
+            status: PrStatus::Open,
+        });
+        assert_eq!(pr_cmp(&a, &b), Ordering::Less);
+        assert_eq!(pr_cmp(&b, &a), Ordering::Greater);
+    }
+
+    #[test]
+    fn pr_cmp_some_sorts_before_none() {
+        let mut a = sample_branch("a", 1);
+        let mut b = sample_branch("b", 1);
+
+        a.pr = Some(PrInfo {
+            number: 100,
+            status: PrStatus::Open,
+        });
+        b.pr = None;
+        assert_eq!(pr_cmp(&a, &b), Ordering::Less);
+        assert_eq!(pr_cmp(&b, &a), Ordering::Greater);
+    }
+
+    #[test]
+    fn pr_cmp_both_none_equal() {
+        let a = sample_branch("a", 1);
+        let b = sample_branch("b", 1);
+        assert_eq!(pr_cmp(&a, &b), Ordering::Equal);
+    }
+
+    #[test]
+    fn merge_status_rank_correct_values() {
+        assert_eq!(merge_status_rank(&MergeStatus::Merged), 0);
+        assert_eq!(merge_status_rank(&MergeStatus::SquashMerged), 1);
+        assert_eq!(merge_status_rank(&MergeStatus::Unmerged), 2);
+        assert_eq!(merge_status_rank(&MergeStatus::Pending), 3);
+    }
+
+    #[test]
+    fn merge_status_cmp_sorts_by_rank() {
+        let mut a = sample_branch("a", 1);
+        let mut b = sample_branch("b", 1);
+
+        a.merge_status = MergeStatus::Merged;
+        b.merge_status = MergeStatus::Unmerged;
+        assert_eq!(merge_status_cmp(&a, &b), Ordering::Less);
+
+        a.merge_status = MergeStatus::SquashMerged;
+        b.merge_status = MergeStatus::Unmerged;
+        assert_eq!(merge_status_cmp(&a, &b), Ordering::Less);
+
+        a.merge_status = MergeStatus::Unmerged;
+        b.merge_status = MergeStatus::Pending;
+        assert_eq!(merge_status_cmp(&a, &b), Ordering::Less);
+    }
+
+    #[test]
+    fn merge_status_column_has_correct_properties() {
+        let col = merge_status_column::<BranchInfo>("Status");
+        assert_eq!(col.name, "Status");
+        assert_eq!(col.min_width, 4);
+        assert_eq!(col.wide_width, Some(15));
+        assert_eq!(col.hide_below_width, None);
+        assert!(col.compare.is_some());
+    }
+
+    #[test]
+    fn merge_status_column_with_different_name() {
+        let col = merge_status_column::<BranchInfo>("Merge");
+        assert_eq!(col.name, "Merge");
+        assert_eq!(col.min_width, 4);
+        assert_eq!(col.wide_width, Some(15));
     }
 }

@@ -36,28 +36,8 @@ impl WorktreesViewDef {
                     rank(a).cmp(&rank(b))
                 }),
             },
-            ColumnDef {
-                name: "Age",
-                min_width: 5,
-                wide_width: Some(12),
-                hide_below_width: Some(60),
-                compare: Some(|a, b| a.age_date.cmp(&b.age_date)),
-            },
-            ColumnDef {
-                name: "Merge",
-                min_width: 4,
-                wide_width: Some(15),
-                hide_below_width: None,
-                compare: Some(|a, b| {
-                    let rank = |s: &crate::types::MergeStatus| match s {
-                        crate::types::MergeStatus::Merged => 0,
-                        crate::types::MergeStatus::SquashMerged => 1,
-                        crate::types::MergeStatus::Unmerged => 2,
-                        crate::types::MergeStatus::Pending => 3,
-                    };
-                    rank(&a.merge_status).cmp(&rank(&b.merge_status))
-                }),
-            },
+            super::column::age_column(),
+            super::column::merge_status_column("Merge"),
         ]
     }
 

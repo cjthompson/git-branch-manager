@@ -21,13 +21,7 @@ impl TagsViewDef {
                 hide_below_width: Some(80),
                 compare: Some(|a, b| a.commit_hash.cmp(&b.commit_hash)),
             },
-            ColumnDef {
-                name: "Age",
-                min_width: 5,
-                wide_width: Some(12),
-                hide_below_width: Some(60),
-                compare: Some(|a, b| a.date.cmp(&b.date)),
-            },
+            super::column::age_column(),
             ColumnDef {
                 name: "Message",
                 min_width: 10,
