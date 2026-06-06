@@ -1,5 +1,5 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Cell, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::symbols::SymbolSet;
 use crate::theme::Theme;
@@ -55,14 +55,15 @@ pub fn render_list_view<T: ViewItem>(
     let visible_col_indices: Vec<usize> = columns
         .iter()
         .enumerate()
-        .filter(|(_, col)| col.hide_below_width.is_none_or(|threshold| area.width >= threshold))
+        .filter(|(_, col)| {
+            col.hide_below_width
+                .is_none_or(|threshold| area.width >= threshold)
+        })
         .map(|(i, _)| i)
         .collect();
 
-    let visible_columns: Vec<&ColumnDef<T>> = visible_col_indices
-        .iter()
-        .map(|&i| &columns[i])
-        .collect();
+    let visible_columns: Vec<&ColumnDef<T>> =
+        visible_col_indices.iter().map(|&i| &columns[i]).collect();
 
     // Build header row
     let sort_arrow = if state.sort_ascending() {
@@ -118,6 +119,18 @@ pub fn render_list_view<T: ViewItem>(
 
     // Build rows from display indices
     let display_indices: Vec<usize> = state.display_indices().to_vec();
+
+    if display_indices.is_empty() && state.loading {
+        let tab_title = tab_bar_line(params.active_view, theme);
+        let block = Block::default().title(tab_title).borders(Borders::ALL);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let loading =
+            Paragraph::new(Span::styled("Loading...", theme.dim)).alignment(Alignment::Left);
+        frame.render_widget(loading, inner);
+        return;
+    }
+
     let rows: Vec<Row> = display_indices
         .iter()
         .enumerate()
@@ -158,9 +171,7 @@ pub fn render_list_view<T: ViewItem>(
 
     // Build block with tab bar title
     let tab_title = tab_bar_line(params.active_view, theme);
-    let block = Block::default()
-        .title(tab_title)
-        .borders(Borders::ALL);
+    let block = Block::default().title(tab_title).borders(Borders::ALL);
 
     // Store header column positions for mouse click sorting
     {
