@@ -57,7 +57,7 @@ pub fn list_tags(repo: &Repository) -> Vec<TagInfo> {
         })
         .collect();
 
-    tags.sort_by(|a, b| b.date.cmp(&a.date));
+    tags.sort_by_key(|b| std::cmp::Reverse(b.date));
     tags
 }
 

@@ -290,7 +290,7 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
     }
 
     cache.save();
-    branches.sort_by(|a, b| b.last_commit_date.cmp(&a.last_commit_date));
+    branches.sort_by_key(|b| std::cmp::Reverse(b.last_commit_date));
     Ok(branches)
 }
 
