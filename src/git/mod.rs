@@ -9,6 +9,7 @@ pub mod status;
 pub mod tags;
 pub mod worktree;
 
+#[cfg(debug_assertions)]
 pub fn log_timing(label: &str, elapsed: std::time::Duration) {
     use std::io::Write;
     let now = std::time::SystemTime::now()
@@ -31,3 +32,6 @@ pub fn log_timing(label: &str, elapsed: std::time::Duration) {
         let _ = f.write_all(line.as_bytes());
     }
 }
+
+#[cfg(not(debug_assertions))]
+pub fn log_timing(_label: &str, _elapsed: std::time::Duration) {}
