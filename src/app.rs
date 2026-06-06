@@ -17,10 +17,13 @@ use git_branch_manager::git::{
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::theme::Theme;
 use git_branch_manager::types::*;
+use git_branch_manager::ui::cells::{
+    age_cell, ahead_behind_cell, merge_status_cell, merge_status_cell_for_branch, pr_cell,
+};
 use git_branch_manager::ui::list_render::CellContext;
 use git_branch_manager::ui::menu::MenuItem;
 use git_branch_manager::ui::render::{Overlay, RenderContext};
-use git_branch_manager::ui::shared::{age_style, prefix_style, truncate};
+use git_branch_manager::ui::shared::{prefix_style, truncate};
 use git_branch_manager::ui::toast::Toast;
 use git_branch_manager::view::branches::BranchesViewDef;
 use git_branch_manager::view::column::ColumnDef;
@@ -2490,98 +2493,25 @@ fn render_branch_row(
                 cells.push(Cell::from(Span::styled(text, theme.secondary_text)));
             }
             2 => {
-                // Ahead/Behind
-                let mut parts: Vec<Span<'static>> = Vec::new();
-                if let Some(a) = item.ahead {
-                    if a > 0 {
-                        parts.push(Span::styled(
-                            format!("{}{a}", symbols.arrow_up),
-                            theme.ahead_behind,
-                        ));
-                    }
-                }
-                if let Some(b) = item.behind {
-                    if b > 0 {
-                        if !parts.is_empty() {
-                            parts.push(Span::raw(" "));
-                        }
-                        parts.push(Span::styled(
-                            format!("{}{b}", symbols.arrow_down),
-                            theme.ahead_behind,
-                        ));
-                    }
-                }
-                cells.push(Cell::from(Line::from(parts)));
+                cells.push(ahead_behind_cell(item.ahead, item.behind, ctx));
             }
             3 => {
-                // PR number
-                let (text, style) = if let Some(pr) = &item.pr {
-                    let text = format!("#{}", pr.number);
-                    let style = match pr.status {
-                        PrStatus::Draft => theme.pr_draft,
-                        PrStatus::Open => theme.pr_open,
-                        PrStatus::Merged => theme.pr_merged,
-                        PrStatus::Closed => theme.pr_closed,
-                    };
-                    (text, style)
-                } else {
-                    (String::new(), Style::default())
-                };
-                cells.push(Cell::from(Span::styled(text, style)));
+                cells.push(pr_cell(item.pr.as_ref(), ctx));
             }
             4 => {
-                // Age
                 let age = if ctx.compact {
                     item.age_short()
                 } else {
                     item.age_display()
                 };
-                let style = age_style(&item.last_commit_date, theme);
-                cells.push(Cell::from(
-                    Line::from(Span::styled(age, style)).alignment(Alignment::Right),
-                ));
+                cells.push(age_cell(age, &item.last_commit_date, ctx));
             }
             5 => {
-                // Base branch always shows blank status
-                if item.is_base {
-                    cells.push(Cell::from(""));
-                } else {
-                    // Status — full text when terminal >= 70 wide, symbol only when narrow
-                    let short_status = ctx.area_width < 70;
-                    let (text, style) = if short_status {
-                        match item.merge_status {
-                            MergeStatus::Merged => {
-                                (symbols.status_merged.to_string(), theme.merged)
-                            }
-                            MergeStatus::SquashMerged => (
-                                symbols.status_squash_merged.to_string(),
-                                theme.squash_merged,
-                            ),
-                            MergeStatus::Unmerged => {
-                                (symbols.status_unmerged.to_string(), theme.unmerged)
-                            }
-                            MergeStatus::Pending => ("\u{2026}".to_string(), theme.dim),
-                        }
-                    } else {
-                        match item.merge_status {
-                            MergeStatus::Merged => {
-                                (format!("merged {}", symbols.status_merged), theme.merged)
-                            }
-                            MergeStatus::SquashMerged => (
-                                format!("squash-merged {}", symbols.status_squash_merged),
-                                theme.squash_merged,
-                            ),
-                            MergeStatus::Unmerged => (
-                                format!("unmerged {}", symbols.status_unmerged),
-                                theme.unmerged,
-                            ),
-                            MergeStatus::Pending => ("pending \u{2026}".to_string(), theme.dim),
-                        }
-                    };
-                    cells.push(Cell::from(
-                        Line::from(Span::styled(text, style)).alignment(Alignment::Right),
-                    ));
-                }
+                cells.push(merge_status_cell_for_branch(
+                    &item.merge_status,
+                    item.is_base,
+                    ctx,
+                ));
             }
             _ => cells.push(Cell::from("")),
         }
@@ -2633,91 +2563,21 @@ fn render_remote_row(
                 cells.push(Cell::from(Span::styled(text, style)));
             }
             2 => {
-                // Ahead/Behind
-                let mut parts: Vec<Span<'static>> = Vec::new();
-                if let Some(a) = item.ahead {
-                    if a > 0 {
-                        parts.push(Span::styled(
-                            format!("{}{a}", symbols.arrow_up),
-                            theme.ahead_behind,
-                        ));
-                    }
-                }
-                if let Some(b) = item.behind {
-                    if b > 0 {
-                        if !parts.is_empty() {
-                            parts.push(Span::raw(" "));
-                        }
-                        parts.push(Span::styled(
-                            format!("{}{b}", symbols.arrow_down),
-                            theme.ahead_behind,
-                        ));
-                    }
-                }
-                cells.push(Cell::from(Line::from(parts)));
+                cells.push(ahead_behind_cell(item.ahead, item.behind, ctx));
             }
             3 => {
-                // PR number
-                let (text, style) = if let Some(pr) = &item.pr {
-                    let text = format!("#{}", pr.number);
-                    let style = match pr.status {
-                        PrStatus::Draft => theme.pr_draft,
-                        PrStatus::Open => theme.pr_open,
-                        PrStatus::Merged => theme.pr_merged,
-                        PrStatus::Closed => theme.pr_closed,
-                    };
-                    (text, style)
-                } else {
-                    (String::new(), Style::default())
-                };
-                cells.push(Cell::from(Span::styled(text, style)));
+                cells.push(pr_cell(item.pr.as_ref(), ctx));
             }
             4 => {
-                // Age
                 let age = if ctx.compact {
                     item.age_short()
                 } else {
                     item.age_display()
                 };
-                let style = age_style(&item.last_commit_date, theme);
-                cells.push(Cell::from(
-                    Line::from(Span::styled(age, style)).alignment(Alignment::Right),
-                ));
+                cells.push(age_cell(age, &item.last_commit_date, ctx));
             }
             5 => {
-                // Status — full text when terminal >= 70 wide, symbol only when narrow
-                let short_status = ctx.area_width < 70;
-                let (text, style) = if short_status {
-                    match item.merge_status {
-                        MergeStatus::Merged => (symbols.status_merged.to_string(), theme.merged),
-                        MergeStatus::SquashMerged => (
-                            symbols.status_squash_merged.to_string(),
-                            theme.squash_merged,
-                        ),
-                        MergeStatus::Unmerged => {
-                            (symbols.status_unmerged.to_string(), theme.unmerged)
-                        }
-                        MergeStatus::Pending => ("\u{2026}".to_string(), theme.dim),
-                    }
-                } else {
-                    match item.merge_status {
-                        MergeStatus::Merged => {
-                            (format!("merged {}", symbols.status_merged), theme.merged)
-                        }
-                        MergeStatus::SquashMerged => (
-                            format!("squash-merged {}", symbols.status_squash_merged),
-                            theme.squash_merged,
-                        ),
-                        MergeStatus::Unmerged => (
-                            format!("unmerged {}", symbols.status_unmerged),
-                            theme.unmerged,
-                        ),
-                        MergeStatus::Pending => ("pending \u{2026}".to_string(), theme.dim),
-                    }
-                };
-                cells.push(Cell::from(
-                    Line::from(Span::styled(text, style)).alignment(Alignment::Right),
-                ));
+                cells.push(merge_status_cell(&item.merge_status, ctx));
             }
             _ => cells.push(Cell::from("")),
         }
@@ -2756,16 +2616,12 @@ fn render_tag_row(
                 )));
             }
             2 => {
-                // Age
                 let age = if ctx.compact {
                     item.age_short()
                 } else {
                     item.age_display()
                 };
-                let style = age_style(&item.date, theme);
-                cells.push(Cell::from(
-                    Line::from(Span::styled(age, style)).alignment(Alignment::Right),
-                ));
+                cells.push(age_cell(age, &item.date, ctx));
             }
             3 => {
                 // Message
@@ -2800,7 +2656,6 @@ fn render_worktree_row(
 ) -> Vec<Cell<'static>> {
     let mut cells = Vec::new();
     let theme = ctx.theme;
-    let symbols = ctx.symbols;
 
     for &col_idx in visible_cols {
         match col_idx {
@@ -2835,51 +2690,15 @@ fn render_worktree_row(
                 cells.push(Cell::from(Span::styled(text, style)));
             }
             3 => {
-                // Age
                 let age = if ctx.compact {
                     item.age_short()
                 } else {
                     item.age_display()
                 };
-                let style = age_style(&item.age_date, theme);
-                cells.push(Cell::from(
-                    Line::from(Span::styled(age, style)).alignment(Alignment::Right),
-                ));
+                cells.push(age_cell(age, &item.age_date, ctx));
             }
             4 => {
-                // Merge status — full text when terminal >= 70 wide, symbol only when narrow
-                let short_status = ctx.area_width < 70;
-                let (text, style) = if short_status {
-                    match item.merge_status {
-                        MergeStatus::Merged => (symbols.status_merged.to_string(), theme.merged),
-                        MergeStatus::SquashMerged => (
-                            symbols.status_squash_merged.to_string(),
-                            theme.squash_merged,
-                        ),
-                        MergeStatus::Unmerged => {
-                            (symbols.status_unmerged.to_string(), theme.unmerged)
-                        }
-                        MergeStatus::Pending => ("\u{2026}".to_string(), theme.dim),
-                    }
-                } else {
-                    match item.merge_status {
-                        MergeStatus::Merged => {
-                            (format!("merged {}", symbols.status_merged), theme.merged)
-                        }
-                        MergeStatus::SquashMerged => (
-                            format!("squash-merged {}", symbols.status_squash_merged),
-                            theme.squash_merged,
-                        ),
-                        MergeStatus::Unmerged => (
-                            format!("unmerged {}", symbols.status_unmerged),
-                            theme.unmerged,
-                        ),
-                        MergeStatus::Pending => ("pending \u{2026}".to_string(), theme.dim),
-                    }
-                };
-                cells.push(Cell::from(
-                    Line::from(Span::styled(text, style)).alignment(Alignment::Right),
-                ));
+                cells.push(merge_status_cell(&item.merge_status, ctx));
             }
             _ => cells.push(Cell::from("")),
         }

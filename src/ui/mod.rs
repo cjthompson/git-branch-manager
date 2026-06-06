@@ -1,3 +1,4 @@
+pub mod cells;
 pub mod confirm;
 pub mod executing;
 pub mod filter_ui;
