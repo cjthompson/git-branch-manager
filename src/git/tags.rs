@@ -3,9 +3,11 @@ use chrono::{TimeZone, Utc};
 use git2::{ObjectType, Repository};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use tracing::instrument;
 
 /// List all tags in the repository sorted by date descending.
 /// Annotated tags include the tag message; lightweight tags have message = None.
+#[instrument(skip(repo))]
 pub fn list_tags(repo: &Repository) -> Vec<TagInfo> {
     let tag_names = match repo.tag_names(None) {
         Ok(names) => names,
@@ -60,6 +62,7 @@ pub fn list_tags(repo: &Repository) -> Vec<TagInfo> {
 }
 
 /// Delete a local tag.
+#[instrument(skip(repo))]
 pub fn delete_tag(repo: &Repository, tag_name: &str) -> OperationResult {
     match repo.tag_delete(tag_name) {
         Ok(()) => OperationResult {
@@ -78,11 +81,16 @@ pub fn delete_tag(repo: &Repository, tag_name: &str) -> OperationResult {
 }
 
 /// Batch delete local tags.
+#[instrument(skip(repo, tag_names), fields(count = tag_names.len()))]
 pub fn delete_tags_batch(repo: &Repository, tag_names: &[String]) -> Vec<OperationResult> {
-    tag_names.iter().map(|name| delete_tag(repo, name)).collect()
+    tag_names
+        .iter()
+        .map(|name| delete_tag(repo, name))
+        .collect()
 }
 
 /// Batch delete remote tags with fallback to individual deletes.
+#[instrument(skip(repo_path, tag_names), fields(count = tag_names.len()))]
 pub fn delete_remote_tags_batch(repo_path: &Path, tag_names: &[String]) -> Vec<OperationResult> {
     if tag_names.is_empty() {
         return vec![];
@@ -141,6 +149,7 @@ pub fn delete_remote_tags_batch(repo_path: &Path, tag_names: &[String]) -> Vec<O
 }
 
 /// Push a tag to the remote.
+#[instrument(skip(repo_path))]
 pub fn push_tag(repo_path: &Path, tag_name: &str) -> OperationResult {
     let out = Command::new("git")
         .args(["push", "origin", tag_name])

@@ -30,6 +30,7 @@ type Result<T> = std::result::Result<T, GitError>;
 /// Detect the base branch for the repository.
 /// If override_base is provided and exists, use it.
 /// Otherwise try remote HEAD symref, common names, then first branch.
+#[instrument(skip(repo))]
 pub fn detect_base_branch(repo: &Repository, override_base: Option<&str>) -> Result<String> {
     if let Some(base) = override_base {
         // Validate that the branch exists
@@ -112,6 +113,7 @@ pub fn list_branches_fast(repo: &Repository, base_branch: &str) -> Result<Vec<Br
 }
 
 /// Get the commit hash for a local branch.
+#[instrument(skip(repo))]
 pub fn get_commit_hash(repo: &Repository, branch_name: &str) -> Option<String> {
     repo.find_branch(branch_name, BranchType::Local)
         .ok()
@@ -363,16 +365,14 @@ fn collect_branch_metadata(
             }
         };
 
-        // Compute merge-base commit for non-base branches
-        let merge_base_commit = if !is_base {
-            if let Some(base_oid) = base_oid {
-                let branch_oid = commit.id();
-                repo.merge_base(base_oid, branch_oid)
-                    .ok()
-                    .map(|oid| oid.to_string()[..8].to_string())
-            } else {
-                None
-            }
+        // Compute merge-base commit for non-base branches (skipped in fast path)
+        let merge_base_commit = if skip_ahead_behind || is_base {
+            None
+        } else if let Some(base_oid) = base_oid {
+            let branch_oid = commit.id();
+            repo.merge_base(base_oid, branch_oid)
+                .ok()
+                .map(|oid| oid.to_string()[..8].to_string())
         } else {
             None
         };

@@ -45,6 +45,7 @@ pub fn detect_merged_branches(
 
 /// Detect if a branch was squash-merged into the base branch using git CLI.
 /// Uses commit-tree + cherry to check if the branch's tree content already exists in base.
+#[instrument(skip(repo_path))]
 pub fn is_squash_merged(
     repo_path: &Path,
     base_branch: &str,

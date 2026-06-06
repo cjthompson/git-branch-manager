@@ -2,6 +2,7 @@ use crate::types::{PrInfo, PrMap, PrStatus};
 use serde::Deserialize;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use tracing::instrument;
 
 #[derive(Deserialize)]
 struct PrEntry {
@@ -16,6 +17,7 @@ struct PrEntry {
 /// Fetch open PRs from GitHub using the `gh` CLI.
 /// Returns a map from branch name to PR info.
 /// Silently returns empty map if `gh` is not available or not authenticated.
+#[instrument(skip(repo_path))]
 pub fn fetch_open_prs(repo_path: &Path) -> PrMap {
     let out = Command::new("gh")
         .args([
@@ -54,10 +56,13 @@ pub fn fetch_open_prs(repo_path: &Path) -> PrMap {
             } else {
                 PrStatus::Open
             };
-            (e.head_ref_name, PrInfo {
-                number: e.number,
-                status,
-            })
+            (
+                e.head_ref_name,
+                PrInfo {
+                    number: e.number,
+                    status,
+                },
+            )
         })
         .collect()
 }

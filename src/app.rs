@@ -33,17 +33,14 @@ use git_branch_manager::view::ViewId;
 
 /// Messages sent by the background phase-1 thread.
 pub enum Phase1Msg {
-    /// Fast path: branch list + working tree status + caches. Sent before merge detection.
-    Fast(
-        Vec<BranchInfo>,
-        WorkingTreeStatus,
-        cache::BranchCache,
-        cache::BranchCache,
-    ),
+    /// Fast path: branch list + caches. Sent before merge detection.
+    Fast(Vec<BranchInfo>, cache::BranchCache, cache::BranchCache),
     /// Slow path: per-branch merge status updates, sent after detect_merged_branches.
     MergeStatuses(Vec<(String, MergeStatus)>),
     /// Ahead/behind counts for tracked non-gone branches, sent after Fast.
     AheadBehind(Vec<(String, Option<u32>, Option<u32>)>),
+    /// Merge-base commit hashes (short), sent after Fast.
+    MergeBaseCommits(Vec<(String, String)>),
 }
 
 pub struct App {
@@ -101,9 +98,6 @@ pub struct App {
         )>,
     >,
     pub phase1_rx: Option<Receiver<Phase1Msg>>,
-
-    // Working tree status (for the main repo)
-    pub working_tree_status: WorkingTreeStatus,
 
     // Cache (used for R-key cache clearing)
     #[allow(dead_code)]
@@ -220,7 +214,6 @@ impl App {
             worktree_load_rx: None,
             remote_load_rx: None,
             phase1_rx: None,
-            working_tree_status: WorkingTreeStatus::clean(),
             cache,
             toast: None,
             cancel_flag: None,
@@ -320,8 +313,7 @@ impl App {
         // Phase-1 messages (fast metadata first, merge statuses second)
         for msg in drain_channel(&mut self.phase1_rx, 2) {
             match msg {
-                Phase1Msg::Fast(branches, wts, cache_for_app, _cache_for_squash) => {
-                    self.working_tree_status = wts;
+                Phase1Msg::Fast(branches, cache_for_app, _cache_for_squash) => {
                     self.cache = cache_for_app;
                     self.branches.set_items(branches);
                     self.branches.loading = false;
@@ -381,6 +373,19 @@ impl App {
                         {
                             b.ahead = ahead;
                             b.behind = behind;
+                        }
+                    }
+                    self.branches.rebuild_display_indices();
+                }
+                Phase1Msg::MergeBaseCommits(updates) => {
+                    for (name, hash) in updates {
+                        if let Some(b) = self
+                            .branches
+                            .items_mut()
+                            .iter_mut()
+                            .find(|b| b.name == name)
+                        {
+                            b.merge_base_commit = Some(hash);
                         }
                     }
                     self.branches.rebuild_display_indices();
@@ -1680,7 +1685,6 @@ impl App {
         let label = format!("{}...", action.label());
         let repo_path = self.repo_path.clone();
         let base_branch = self.base_branch.clone();
-        let working_clean = self.working_tree_status.is_clean();
 
         let (op_tx, op_rx) = mpsc::channel();
         let (prog_tx, prog_rx) = mpsc::channel();
@@ -1696,12 +1700,15 @@ impl App {
         self.cancel_flag = Some(cancel);
 
         std::thread::spawn(move || {
+            let needs_stash = git2::Repository::open(&repo_path)
+                .map(|r| !crate::git::status::detect_working_tree_status(&r).is_clean())
+                .unwrap_or(false);
             let results = execute_action(
                 action,
                 &item_names,
                 &repo_path,
                 &base_branch,
-                !working_clean,
+                needs_stash,
                 &prog_tx,
                 &cancel_clone,
             );
@@ -1991,9 +1998,6 @@ impl App {
         let Ok(branches) = branch::list_branches_phase1(&repo, &base_branch) else {
             return;
         };
-
-        let wts = crate::git::status::detect_working_tree_status(&repo);
-        self.working_tree_status = wts;
 
         let new_cache = cache::BranchCache::load(&repo_path);
 

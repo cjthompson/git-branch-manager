@@ -3,6 +3,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
+use tracing::instrument;
 
 fn git_out(dir: &Path, args: &[&str]) -> String {
     Command::new("git")
@@ -18,6 +19,7 @@ fn git_out(dir: &Path, args: &[&str]) -> String {
 }
 
 /// List all worktrees for the repository using `git worktree list --porcelain`.
+#[instrument(skip(repo_path))]
 pub fn list_worktrees(repo_path: &Path) -> Vec<WorktreeInfo> {
     let output = git_out(repo_path, &["worktree", "list", "--porcelain"]);
     if output.is_empty() {
@@ -67,6 +69,7 @@ pub fn list_worktrees(repo_path: &Path) -> Vec<WorktreeInfo> {
 }
 
 /// Spawn a background thread that enriches worktrees with working tree status and age.
+#[instrument(skip(worktrees), fields(count = worktrees.len()))]
 pub fn enrich_worktrees(worktrees: Vec<WorktreeInfo>) -> Receiver<WorktreeEnrichResult> {
     let (tx, rx) = mpsc::channel();
 

@@ -5,6 +5,7 @@ use crate::types::{BranchAction, OperationResult};
 use git2::Repository;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use tracing::instrument;
 
 fn git_cmd(repo_path: &Path) -> Command {
     let mut cmd = Command::new("git");
@@ -45,6 +46,7 @@ fn run_git_cancellable(
     }
 }
 
+#[instrument(skip(repo))]
 pub fn delete_local(repo: &Repository, branch_name: &str) -> OperationResult {
     match repo.find_branch(branch_name, git2::BranchType::Local) {
         Ok(mut branch) => match branch.delete() {
@@ -70,6 +72,7 @@ pub fn delete_local(repo: &Repository, branch_name: &str) -> OperationResult {
     }
 }
 
+#[instrument(skip(repo, repo_path))]
 pub fn checkout_branch(
     repo: &Repository,
     repo_path: &Path,
@@ -113,14 +116,17 @@ pub fn checkout_branch(
     }
 }
 
+#[instrument(skip(repo_path, cancel))]
 pub fn fetch(repo_path: &Path, cancel: &AtomicBool) -> OperationResult {
     run_fetch_cmd(repo_path, false, cancel)
 }
 
+#[instrument(skip(repo_path, cancel))]
 pub fn fetch_prune(repo_path: &Path, cancel: &AtomicBool) -> OperationResult {
     run_fetch_cmd(repo_path, true, cancel)
 }
 
+#[instrument(skip(repo_path))]
 pub fn fetch_sync(repo_path: &Path) -> bool {
     let out = git_cmd(repo_path).args(["fetch", "--all"]).output();
     matches!(out, Ok(o) if o.status.success())
@@ -160,6 +166,7 @@ fn run_fetch_cmd(repo_path: &Path, prune: bool, cancel: &AtomicBool) -> Operatio
     }
 }
 
+#[instrument(skip(repo_path, cancel))]
 pub fn fast_forward(repo_path: &Path, branch_name: &str, cancel: &AtomicBool) -> OperationResult {
     let refspec = format!("{branch_name}:{branch_name}");
     match run_git_cancellable(
@@ -188,6 +195,7 @@ pub fn fast_forward(repo_path: &Path, branch_name: &str, cancel: &AtomicBool) ->
     }
 }
 
+#[instrument(skip(repo_path, cancel))]
 pub fn pull_branch(
     repo_path: &Path,
     branch_name: &str,
@@ -221,6 +229,7 @@ pub fn pull_branch(
     }
 }
 
+#[instrument(skip(repo_path, cancel))]
 pub fn push_branch(repo_path: &Path, branch_name: &str, cancel: &AtomicBool) -> OperationResult {
     match run_git_cancellable(
         git_cmd(repo_path).args(["push", "origin", branch_name]),
@@ -248,6 +257,7 @@ pub fn push_branch(repo_path: &Path, branch_name: &str, cancel: &AtomicBool) -> 
     }
 }
 
+#[instrument(skip(repo_path, cancel))]
 pub fn force_push_branch(
     repo_path: &Path,
     branch_name: &str,
@@ -279,6 +289,7 @@ pub fn force_push_branch(
     }
 }
 
+#[instrument(skip(repo_path))]
 pub fn merge_branch(
     repo_path: &Path,
     branch_name: &str,
@@ -351,6 +362,7 @@ pub fn merge_branch(
     vec![result]
 }
 
+#[instrument(skip(repo_path))]
 pub fn rebase_branch(
     repo_path: &Path,
     branch_name: &str,
@@ -401,6 +413,7 @@ pub fn rebase_branch(
     vec![result]
 }
 
+#[instrument(skip(repo_path))]
 pub fn checkout_remote_branch(repo_path: &Path, remote: &str, short_name: &str) -> OperationResult {
     let out = git_cmd(repo_path)
         .args([
@@ -434,6 +447,7 @@ pub fn checkout_remote_branch(repo_path: &Path, remote: &str, short_name: &str) 
     }
 }
 
+#[instrument(skip(repo_path, branch_names, cancel), fields(count = branch_names.len()))]
 pub fn delete_remotes_batch(
     repo_path: &Path,
     branch_names: &[String],
@@ -503,6 +517,7 @@ fn delete_remote(repo_path: &Path, branch_name: &str, cancel: &AtomicBool) -> Op
     }
 }
 
+#[instrument(skip(repo_path, cancel))]
 pub fn fetch_remote(repo_path: &Path, remote: &str, cancel: &AtomicBool) -> Vec<OperationResult> {
     vec![
         match run_git_cancellable(git_cmd(repo_path).args(["fetch", remote]), cancel) {
@@ -529,6 +544,7 @@ pub fn fetch_remote(repo_path: &Path, remote: &str, cancel: &AtomicBool) -> Vec<
     ]
 }
 
+#[instrument(skip(repo_path, cancel))]
 pub fn pull_remote(
     repo_path: &Path,
     remote: &str,
@@ -561,6 +577,7 @@ pub fn pull_remote(
     ]
 }
 
+#[instrument(skip(repo_path))]
 pub fn merge_remote_into_current(
     repo_path: &Path,
     full_ref: &str,
@@ -586,6 +603,7 @@ pub fn merge_remote_into_current(
     }]
 }
 
+#[instrument(skip(repo_path))]
 pub fn cherry_pick_remote(
     repo_path: &Path,
     full_ref: &str,
@@ -611,6 +629,7 @@ pub fn cherry_pick_remote(
     }]
 }
 
+#[instrument(skip(repo_path))]
 pub fn create_worktree(repo_path: &Path, branch_name: &str) -> OperationResult {
     let sanitized = branch_name.replace('/', "-");
     let wt_path = repo_path.join(".worktrees").join(&sanitized);
@@ -642,6 +661,7 @@ pub fn create_worktree(repo_path: &Path, branch_name: &str) -> OperationResult {
     }
 }
 
+#[instrument(skip(repo_path, worktree_path))]
 pub fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> OperationResult {
     let wt_str = worktree_path.to_string_lossy();
     let out = git_cmd(repo_path)
@@ -678,6 +698,7 @@ pub fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> OperationResul
     }
 }
 
+#[instrument(skip(repo_path, worktree_path))]
 pub fn force_remove_worktree(repo_path: &Path, worktree_path: &Path) -> OperationResult {
     let wt_str = worktree_path.to_string_lossy();
     let out = git_cmd(repo_path)

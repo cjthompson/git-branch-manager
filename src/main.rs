@@ -23,7 +23,7 @@ fn main() -> Result<()> {
     let config = Config::load();
 
     #[cfg(debug_assertions)]
-    {
+    let _log_guard = {
         use std::fs::OpenOptions;
         use tracing_subscriber::fmt::format::FmtSpan;
         let log_file = OpenOptions::new()
@@ -31,12 +31,15 @@ fn main() -> Result<()> {
             .append(true)
             .open("/tmp/gbm-timing.log")
             .expect("failed to open timing log");
+        let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
         tracing_subscriber::fmt()
-            .with_writer(move || log_file.try_clone().expect("clone log file"))
+            .pretty()
+            .with_writer(non_blocking)
             .with_ansi(false)
             .with_span_events(FmtSpan::CLOSE)
             .init();
-    }
+        guard
+    };
 
     // Open repo
     let repo = git2::Repository::discover(".")?;
@@ -102,13 +105,11 @@ fn main() -> Result<()> {
             let Ok(mut branches) = branch::list_branches_fast(&repo, &base_branch_bg) else {
                 return;
             };
-            let working_tree_status = git::status::detect_working_tree_status(&repo);
             let cache_for_app = cache::BranchCache::load(&repo_path_bg);
             let cache_for_squash = cache::BranchCache::load(&repo_path_bg);
             if phase1_tx
                 .send(app::Phase1Msg::Fast(
                     branches.clone(),
-                    working_tree_status,
                     cache_for_app,
                     cache_for_squash,
                 ))
@@ -117,9 +118,12 @@ fn main() -> Result<()> {
                 return;
             }
 
-            // Ahead/behind: compute for tracked non-gone branches and send update
+            // Ahead/behind + merge-base: both are graph traversals deferred from fast path
             let ahead_behind_updates = compute_ahead_behind(&repo, &branches);
             let _ = phase1_tx.send(app::Phase1Msg::AheadBehind(ahead_behind_updates));
+
+            let merge_base_updates = compute_merge_bases(&repo, &base_branch_bg, &branches);
+            let _ = phase1_tx.send(app::Phase1Msg::MergeBaseCommits(merge_base_updates));
 
             // Slow: merge detection — update statuses in-place then send deltas
             if merge_detection::detect_merged_branches(&repo, &base_branch_bg, &mut branches)
@@ -186,6 +190,38 @@ fn main() -> Result<()> {
     terminal.show_cursor()?;
 
     result.map_err(Into::into)
+}
+
+#[instrument(skip(repo, branches), fields(branch_count = branches.len()))]
+fn compute_merge_bases(
+    repo: &git2::Repository,
+    base_branch: &str,
+    branches: &[git_branch_manager::types::BranchInfo],
+) -> Vec<(String, String)> {
+    let base_oid = match repo
+        .find_branch(base_branch, git2::BranchType::Local)
+        .ok()
+        .and_then(|b| b.get().target())
+    {
+        Some(oid) => oid,
+        None => return Vec::new(),
+    };
+
+    let mut updates = Vec::new();
+    for b in branches {
+        if b.is_base {
+            continue;
+        }
+        if let Ok(branch) = repo.find_branch(&b.name, git2::BranchType::Local) {
+            if let Ok(commit) = branch.get().peel_to_commit() {
+                if let Ok(mb_oid) = repo.merge_base(base_oid, commit.id()) {
+                    let hash = mb_oid.to_string()[..8].to_string();
+                    updates.push((b.name.clone(), hash));
+                }
+            }
+        }
+    }
+    updates
 }
 
 #[instrument(skip(repo, branches), fields(branch_count = branches.len()))]
