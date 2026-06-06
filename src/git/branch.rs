@@ -71,7 +71,7 @@ pub fn detect_base_branch(repo: &Repository, override_base: Option<&str>) -> Res
 /// List local branches with metadata (phase 1: synchronous, git2 only).
 /// Detects regular merges and marks unmerged non-pinned branches as Pending.
 pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
-    let mut branches = collect_branch_metadata(repo, base_branch)?;
+    let mut branches = collect_branch_metadata(repo, base_branch, false)?;
     super::merge_detection::detect_merged_branches(repo, base_branch, &mut branches)?;
 
     // Mark unmerged non-pinned branches as Pending (for squash check)
@@ -96,7 +96,7 @@ pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<
 /// asynchronously via a subsequent detect_merged_branches call.
 #[instrument(skip(repo), fields(base_branch))]
 pub fn list_branches_fast(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
-    let mut branches = collect_branch_metadata(repo, base_branch)?;
+    let mut branches = collect_branch_metadata(repo, base_branch, true)?;
     for b in &mut branches {
         if !b.is_pinned() {
             b.merge_status = MergeStatus::Pending;
@@ -258,7 +258,7 @@ pub fn spawn_remote_enricher(
 pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
     let repo_path = repo.workdir().unwrap_or_else(|| repo.path());
     let mut cache = super::cache::BranchCache::load(repo_path);
-    let mut branches = collect_branch_metadata(repo, base_branch)?;
+    let mut branches = collect_branch_metadata(repo, base_branch, false)?;
     super::merge_detection::detect_merged_branches(repo, base_branch, &mut branches)?;
 
     for branch in branches.iter_mut() {
@@ -289,7 +289,11 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
 }
 
 #[instrument(skip(repo), fields(base_branch))]
-fn collect_branch_metadata(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
+fn collect_branch_metadata(
+    repo: &Repository,
+    base_branch: &str,
+    skip_ahead_behind: bool,
+) -> Result<Vec<BranchInfo>> {
     let head = repo.head().ok();
     let current_branch = head
         .as_ref()
@@ -335,20 +339,24 @@ fn collect_branch_metadata(repo: &Repository, base_branch: &str) -> Result<Vec<B
             .single()
             .unwrap_or_else(Utc::now);
 
-        // Ahead/behind (only for tracked, non-gone branches)
-        let (ahead, behind) = match &tracking {
-            TrackingStatus::Tracked { gone: false, .. } => {
-                let branch_oid = commit.id();
-                match branch.upstream() {
-                    Ok(upstream) => {
-                        let upstream_oid = upstream.get().peel_to_commit()?.id();
-                        let (a, b) = repo.graph_ahead_behind(branch_oid, upstream_oid)?;
-                        (Some(a as u32), Some(b as u32))
+        // Ahead/behind (only for tracked, non-gone branches; skipped in fast path)
+        let (ahead, behind) = if skip_ahead_behind {
+            (None, None)
+        } else {
+            match &tracking {
+                TrackingStatus::Tracked { gone: false, .. } => {
+                    let branch_oid = commit.id();
+                    match branch.upstream() {
+                        Ok(upstream) => {
+                            let upstream_oid = upstream.get().peel_to_commit()?.id();
+                            let (a, b) = repo.graph_ahead_behind(branch_oid, upstream_oid)?;
+                            (Some(a as u32), Some(b as u32))
+                        }
+                        Err(_) => (None, None),
                     }
-                    Err(_) => (None, None),
                 }
+                _ => (None, None),
             }
-            _ => (None, None),
         };
 
         // Compute merge-base commit for non-base branches

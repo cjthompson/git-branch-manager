@@ -42,6 +42,8 @@ pub enum Phase1Msg {
     ),
     /// Slow path: per-branch merge status updates, sent after detect_merged_branches.
     MergeStatuses(Vec<(String, MergeStatus)>),
+    /// Ahead/behind counts for tracked non-gone branches, sent after Fast.
+    AheadBehind(Vec<(String, Option<u32>, Option<u32>)>),
 }
 
 pub struct App {
@@ -368,6 +370,20 @@ impl App {
                         }
                     }
                     self.pr_rx = Some(pr_loader::spawn_pr_loader(repo_path));
+                }
+                Phase1Msg::AheadBehind(updates) => {
+                    for (name, ahead, behind) in updates {
+                        if let Some(b) = self
+                            .branches
+                            .items_mut()
+                            .iter_mut()
+                            .find(|b| b.name == name)
+                        {
+                            b.ahead = ahead;
+                            b.behind = behind;
+                        }
+                    }
+                    self.branches.rebuild_display_indices();
                 }
             }
         }
