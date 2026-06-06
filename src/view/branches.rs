@@ -43,63 +43,11 @@ impl BranchesViewDef {
     }
 
     pub fn filter_tokens(&self) -> Vec<FilterTokenDef> {
-        vec![
-            FilterTokenDef {
-                key: 'm',
-                label: "Merged",
-                token: "status:merged",
-            },
-            FilterTokenDef {
-                key: 's',
-                label: "Squash-merged",
-                token: "status:squash",
-            },
-            FilterTokenDef {
-                key: 'u',
-                label: "Unmerged",
-                token: "status:unmerged",
-            },
-            FilterTokenDef {
-                key: 'p',
-                label: "Has PR",
-                token: "pr:yes",
-            },
-            FilterTokenDef {
-                key: 'P',
-                label: "No PR",
-                token: "pr:no",
-            },
-            FilterTokenDef {
-                key: 'a',
-                label: "Ahead",
-                token: "sync:ahead",
-            },
-            FilterTokenDef {
-                key: 'b',
-                label: "Behind",
-                token: "sync:behind",
-            },
-            FilterTokenDef {
-                key: '1',
-                label: "<7 days",
-                token: "age:<7d",
-            },
-            FilterTokenDef {
-                key: '2',
-                label: "<30 days",
-                token: "age:<30d",
-            },
-            FilterTokenDef {
-                key: '3',
-                label: ">30 days",
-                token: "age:>30d",
-            },
-            FilterTokenDef {
-                key: '4',
-                label: ">90 days",
-                token: "age:>90d",
-            },
-        ]
+        let mut t = super::filter::status_tokens();
+        t.extend(super::filter::pr_tokens());
+        t.extend(super::filter::sync_tokens());
+        t.extend(super::filter::age_tokens());
+        t
     }
 }
 

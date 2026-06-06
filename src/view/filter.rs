@@ -90,6 +90,86 @@ impl FilterSet {
     }
 }
 
+/// Returns the three merge-status filter tokens (merged / squash / unmerged).
+/// Used by the Branches, Remotes, and Worktrees views.
+pub fn status_tokens() -> Vec<FilterTokenDef> {
+    vec![
+        FilterTokenDef {
+            key: 'm',
+            label: "Merged",
+            token: "status:merged",
+        },
+        FilterTokenDef {
+            key: 's',
+            label: "Squash-merged",
+            token: "status:squash",
+        },
+        FilterTokenDef {
+            key: 'u',
+            label: "Unmerged",
+            token: "status:unmerged",
+        },
+    ]
+}
+
+/// Returns the two PR filter tokens (has-PR / no-PR). Used by Branches and Remotes.
+pub fn pr_tokens() -> Vec<FilterTokenDef> {
+    vec![
+        FilterTokenDef {
+            key: 'p',
+            label: "Has PR",
+            token: "pr:yes",
+        },
+        FilterTokenDef {
+            key: 'P',
+            label: "No PR",
+            token: "pr:no",
+        },
+    ]
+}
+
+/// Returns the two sync filter tokens (ahead / behind). Used by Branches and Remotes.
+pub fn sync_tokens() -> Vec<FilterTokenDef> {
+    vec![
+        FilterTokenDef {
+            key: 'a',
+            label: "Ahead",
+            token: "sync:ahead",
+        },
+        FilterTokenDef {
+            key: 'b',
+            label: "Behind",
+            token: "sync:behind",
+        },
+    ]
+}
+
+/// Returns the four age filter tokens (<7d / <30d / >30d / >90d). Used by all four views.
+pub fn age_tokens() -> Vec<FilterTokenDef> {
+    vec![
+        FilterTokenDef {
+            key: '1',
+            label: "<7 days",
+            token: "age:<7d",
+        },
+        FilterTokenDef {
+            key: '2',
+            label: "<30 days",
+            token: "age:<30d",
+        },
+        FilterTokenDef {
+            key: '3',
+            label: ">30 days",
+            token: "age:>30d",
+        },
+        FilterTokenDef {
+            key: '4',
+            label: ">90 days",
+            token: "age:>90d",
+        },
+    ]
+}
+
 fn parse_age_secs(s: &str) -> Option<i64> {
     let (num_str, multiplier) = if let Some(n) = s.strip_suffix('d') {
         (n, 86400i64)
@@ -252,5 +332,102 @@ mod tests {
         assert!(fs.age_newer_secs.is_none());
         // "age:<30x" doesn't match any prefix, goes to text
         assert!(fs.text.contains("age:<30x"));
+    }
+
+    // --- token group helpers: exact key/label/token tuples ---
+
+    fn tuples(tokens: &[FilterTokenDef]) -> Vec<(char, &'static str, &'static str)> {
+        tokens.iter().map(|t| (t.key, t.label, t.token)).collect()
+    }
+
+    #[test]
+    fn status_tokens_exact() {
+        assert_eq!(
+            tuples(&super::status_tokens()),
+            vec![
+                ('m', "Merged", "status:merged"),
+                ('s', "Squash-merged", "status:squash"),
+                ('u', "Unmerged", "status:unmerged"),
+            ]
+        );
+    }
+
+    #[test]
+    fn pr_tokens_exact() {
+        assert_eq!(
+            tuples(&super::pr_tokens()),
+            vec![('p', "Has PR", "pr:yes"), ('P', "No PR", "pr:no")]
+        );
+    }
+
+    #[test]
+    fn sync_tokens_exact() {
+        assert_eq!(
+            tuples(&super::sync_tokens()),
+            vec![('a', "Ahead", "sync:ahead"), ('b', "Behind", "sync:behind")]
+        );
+    }
+
+    #[test]
+    fn age_tokens_exact() {
+        assert_eq!(
+            tuples(&super::age_tokens()),
+            vec![
+                ('1', "<7 days", "age:<7d"),
+                ('2', "<30 days", "age:<30d"),
+                ('3', ">30 days", "age:>30d"),
+                ('4', ">90 days", "age:>90d"),
+            ]
+        );
+    }
+
+    // --- cross-view consistency: instantiate the real view defs and compare ---
+
+    fn subset<'a>(tokens: &'a [FilterTokenDef], prefixes: &[&str]) -> Vec<&'a str> {
+        tokens
+            .iter()
+            .map(|t| t.token)
+            .filter(|tok| prefixes.iter().any(|p| tok.starts_with(p)))
+            .collect()
+    }
+
+    #[test]
+    fn branches_and_remotes_share_pr_and_sync_tokens() {
+        let b = super::super::branches::BranchesViewDef.filter_tokens();
+        let r = super::super::remotes::RemotesViewDef.filter_tokens();
+        let kinds = ["pr:", "sync:"];
+        assert_eq!(subset(&b, &kinds), subset(&r, &kinds));
+        assert_eq!(
+            subset(&b, &kinds),
+            vec!["pr:yes", "pr:no", "sync:ahead", "sync:behind"]
+        );
+    }
+
+    #[test]
+    fn branches_remotes_worktrees_share_status_tokens() {
+        let b = super::super::branches::BranchesViewDef.filter_tokens();
+        let r = super::super::remotes::RemotesViewDef.filter_tokens();
+        let w = super::super::worktrees::WorktreesViewDef.filter_tokens();
+        let kinds = ["status:"];
+        assert_eq!(subset(&b, &kinds), subset(&r, &kinds));
+        assert_eq!(subset(&b, &kinds), subset(&w, &kinds));
+        assert_eq!(
+            subset(&b, &kinds),
+            vec!["status:merged", "status:squash", "status:unmerged"]
+        );
+    }
+
+    #[test]
+    fn all_views_share_age_tokens() {
+        let b = super::super::branches::BranchesViewDef.filter_tokens();
+        let r = super::super::remotes::RemotesViewDef.filter_tokens();
+        let w = super::super::worktrees::WorktreesViewDef.filter_tokens();
+        let t = super::super::tags::TagsViewDef.filter_tokens();
+        let kinds = ["age:"];
+        let expected = vec!["age:<7d", "age:<30d", "age:>30d", "age:>90d"];
+        assert_eq!(subset(&b, &kinds), expected);
+        assert_eq!(subset(&r, &kinds), expected);
+        assert_eq!(subset(&w, &kinds), expected);
+        assert_eq!(subset(&t, &kinds), expected);
     }
 }

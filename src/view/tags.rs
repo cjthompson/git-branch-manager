@@ -37,28 +37,7 @@ impl TagsViewDef {
     }
 
     pub fn filter_tokens(&self) -> Vec<FilterTokenDef> {
-        vec![
-            FilterTokenDef {
-                key: '1',
-                label: "<7 days",
-                token: "age:<7d",
-            },
-            FilterTokenDef {
-                key: '2',
-                label: "<30 days",
-                token: "age:<30d",
-            },
-            FilterTokenDef {
-                key: '3',
-                label: ">30 days",
-                token: "age:>30d",
-            },
-            FilterTokenDef {
-                key: '4',
-                label: ">90 days",
-                token: "age:>90d",
-            },
-        ]
+        super::filter::age_tokens()
     }
 }
 
