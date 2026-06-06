@@ -5,7 +5,7 @@ use tracing::instrument;
 #[instrument(skip(repo))]
 pub fn detect_working_tree_status(repo: &Repository) -> WorkingTreeStatus {
     let mut opts = StatusOptions::new();
-    opts.include_untracked(true);
+    opts.include_untracked(true).recurse_untracked_dirs(false);
 
     let statuses = match repo.statuses(Some(&mut opts)) {
         Ok(s) => s,
