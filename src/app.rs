@@ -878,7 +878,7 @@ impl App {
                     self.overlay = Some(Overlay::Results { results });
                 }
             },
-            Some(Overlay::Executing { .. }) => {
+            Some(Overlay::Executing { label, progress }) => {
                 if key.code == KeyCode::Esc {
                     if let Some(flag) = &self.cancel_flag {
                         flag.store(true, Ordering::Relaxed);
@@ -893,6 +893,7 @@ impl App {
                     return;
                 }
                 // overlay was taken; put it back for any other key
+                self.overlay = Some(Overlay::Executing { label, progress });
             }
             Some(Overlay::Settings { cursor }) => {
                 self.handle_settings_key(key, cursor);
