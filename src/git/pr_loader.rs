@@ -1,8 +1,10 @@
 use crate::types::PrMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
+use tracing::instrument;
 
 /// Spawn a background thread that fetches PR info from GitHub.
+#[instrument]
 pub fn spawn_pr_loader(repo_path: PathBuf) -> Receiver<PrMap> {
     let (tx, rx) = mpsc::channel();
 

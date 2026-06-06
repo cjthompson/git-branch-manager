@@ -3,9 +3,11 @@ use crate::git::merge_detection::is_squash_merged;
 use crate::types::{MergeStatus, SquashResult};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
+use tracing::instrument;
 
 /// Spawn a background thread that checks each candidate branch for squash-merge status.
 /// Uses the cache for previously computed results and updates it as new results arrive.
+#[instrument(skip(candidates, cache), fields(base_branch, candidate_count = candidates.len()))]
 pub fn spawn_squash_checker(
     repo_path: PathBuf,
     base_branch: String,

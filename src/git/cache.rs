@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use tracing::instrument;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CacheEntry {
@@ -18,6 +19,7 @@ pub struct BranchCache {
 }
 
 impl BranchCache {
+    #[instrument(skip(repo_path), fields(path = ?repo_path))]
     pub fn load(repo_path: &Path) -> Self {
         let path = cache_path(repo_path);
         let entries = fs::read_to_string(&path)

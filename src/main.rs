@@ -16,6 +16,7 @@ use git_branch_manager::config::Config;
 use git_branch_manager::git::{self, branch, cache, merge_detection, operations, worktree};
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::types::MergeStatus;
+use tracing::instrument;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -117,34 +118,8 @@ fn main() -> Result<()> {
             }
 
             // Ahead/behind: compute for tracked non-gone branches and send update
-            {
-                use git_branch_manager::types::TrackingStatus;
-                let mut ahead_behind_updates: Vec<(String, Option<u32>, Option<u32>)> = Vec::new();
-                for b in &branches {
-                    if let TrackingStatus::Tracked { gone: false, .. } = &b.tracking {
-                        if let Ok(local_branch) = repo.find_branch(&b.name, git2::BranchType::Local)
-                        {
-                            if let Ok(upstream) = local_branch.upstream() {
-                                let branch_oid = match local_branch.get().peel_to_commit() {
-                                    Ok(c) => c.id(),
-                                    Err(_) => continue,
-                                };
-                                let upstream_oid = match upstream.get().peel_to_commit() {
-                                    Ok(c) => c.id(),
-                                    Err(_) => continue,
-                                };
-                                let (ahead, behind) =
-                                    match repo.graph_ahead_behind(branch_oid, upstream_oid) {
-                                        Ok((a, bh)) => (Some(a as u32), Some(bh as u32)),
-                                        Err(_) => (None, None),
-                                    };
-                                ahead_behind_updates.push((b.name.clone(), ahead, behind));
-                            }
-                        }
-                    }
-                }
-                let _ = phase1_tx.send(app::Phase1Msg::AheadBehind(ahead_behind_updates));
-            }
+            let ahead_behind_updates = compute_ahead_behind(&repo, &branches);
+            let _ = phase1_tx.send(app::Phase1Msg::AheadBehind(ahead_behind_updates));
 
             // Slow: merge detection — update statuses in-place then send deltas
             if merge_detection::detect_merged_branches(&repo, &base_branch_bg, &mut branches)
@@ -211,4 +186,35 @@ fn main() -> Result<()> {
     terminal.show_cursor()?;
 
     result.map_err(Into::into)
+}
+
+#[instrument(skip(repo, branches), fields(branch_count = branches.len()))]
+fn compute_ahead_behind(
+    repo: &git2::Repository,
+    branches: &[git_branch_manager::types::BranchInfo],
+) -> Vec<(String, Option<u32>, Option<u32>)> {
+    use git_branch_manager::types::TrackingStatus;
+    let mut updates: Vec<(String, Option<u32>, Option<u32>)> = Vec::new();
+    for b in branches {
+        if let TrackingStatus::Tracked { gone: false, .. } = &b.tracking {
+            if let Ok(local_branch) = repo.find_branch(&b.name, git2::BranchType::Local) {
+                if let Ok(upstream) = local_branch.upstream() {
+                    let branch_oid = match local_branch.get().peel_to_commit() {
+                        Ok(c) => c.id(),
+                        Err(_) => continue,
+                    };
+                    let upstream_oid = match upstream.get().peel_to_commit() {
+                        Ok(c) => c.id(),
+                        Err(_) => continue,
+                    };
+                    let (ahead, behind) = match repo.graph_ahead_behind(branch_oid, upstream_oid) {
+                        Ok((a, bh)) => (Some(a as u32), Some(bh as u32)),
+                        Err(_) => (None, None),
+                    };
+                    updates.push((b.name.clone(), ahead, behind));
+                }
+            }
+        }
+    }
+    updates
 }

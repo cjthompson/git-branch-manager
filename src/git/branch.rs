@@ -70,6 +70,7 @@ pub fn detect_base_branch(repo: &Repository, override_base: Option<&str>) -> Res
 
 /// List local branches with metadata (phase 1: synchronous, git2 only).
 /// Detects regular merges and marks unmerged non-pinned branches as Pending.
+#[instrument(skip(repo), fields(base_branch))]
 pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
     let mut branches = collect_branch_metadata(repo, base_branch, false)?;
     super::merge_detection::detect_merged_branches(repo, base_branch, &mut branches)?;
@@ -119,6 +120,7 @@ pub fn get_commit_hash(repo: &Repository, branch_name: &str) -> Option<String> {
 }
 
 /// List remote branches with basic metadata (phase 1).
+#[instrument(skip(repo), fields(base_branch))]
 pub fn list_remote_branches_phase1(
     repo: &Repository,
     base_branch: &str,
@@ -181,6 +183,7 @@ pub fn list_remote_branches_phase1(
 }
 
 /// Spawn a background thread that enriches remote branches with ahead/behind and merge status.
+#[instrument(skip(branches), fields(base_branch, branch_count = branches.len()))]
 pub fn spawn_remote_enricher(
     repo_path: std::path::PathBuf,
     base_branch: String,
@@ -255,6 +258,7 @@ pub fn spawn_remote_enricher(
 
 /// List all local branches with full metadata including squash-merge detection.
 /// Synchronous — runs squash checks inline. Used by `--list` mode and tests.
+#[instrument(skip(repo), fields(base_branch))]
 pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
     let repo_path = repo.workdir().unwrap_or_else(|| repo.path());
     let mut cache = super::cache::BranchCache::load(repo_path);
