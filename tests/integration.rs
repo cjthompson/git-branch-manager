@@ -1692,3 +1692,23 @@ fn dump_list_is_branches_alias() {
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(err.contains("deprecated"), "expected --list deprecation note on stderr, got: {err:?}");
 }
+
+#[test]
+fn dump_remotes_basic() {
+    let (tmp, _repo) = setup_test_repo();
+    // A bare "remote" with one branch, fetched into the test repo.
+    let remote = tempfile::tempdir().unwrap();
+    run_git(remote.path(), &["init", "--bare", "-b", "main"]);
+    run_git(tmp.path(), &["remote", "add", "origin", remote.path().to_str().unwrap()]);
+    run_git(tmp.path(), &["push", "origin", "main"]);
+    run_git(tmp.path(), &["fetch", "origin"]);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args(["--repo", tmp.path().to_str().unwrap(), "--remotes", "--color=never"])
+        .output()
+        .expect("failed to run binary");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("Name"), "header missing: {s:?}");
+    assert!(s.contains("origin/main"), "remote row missing: {s:?}");
+}

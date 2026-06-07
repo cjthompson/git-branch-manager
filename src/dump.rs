@@ -15,9 +15,11 @@ use git_branch_manager::theme::Theme;
 use git_branch_manager::ui::dump_render::{render_table, DUMP_AREA_WIDTH};
 use git_branch_manager::ui::list_render::CellContext;
 use git_branch_manager::view::branches::BranchesViewDef;
+use git_branch_manager::view::remotes::RemotesViewDef;
 use git_branch_manager::view::ViewItem;
 
 use crate::app::render_branch_row;
+use crate::app::render_remote_row;
 
 #[derive(Clone, Copy, Debug)]
 pub enum DumpView {
@@ -69,7 +71,30 @@ pub fn run(
             let cols = BranchesViewDef.columns();
             Ok(render_table(Some(base), &rows, &cols, render_branch_row, &ctx, color))
         }
-        DumpView::Remotes | DumpView::Tags | DumpView::Worktrees => {
+        DumpView::Remotes => {
+            let mut rows = branch::list_remote_branches_phase1(repo, base)?;
+            // Drain the enricher to completion (runs on a worker thread; we block).
+            let rx = branch::spawn_remote_enricher(
+                repo_path.to_path_buf(),
+                base.to_string(),
+                rows.clone(),
+            );
+            for res in rx.iter() {
+                if let Some(r) = rows.iter_mut().find(|r| r.full_ref == res.full_ref) {
+                    r.merge_status = res.merge_status;
+                    r.ahead = res.ahead;
+                    r.behind = res.behind;
+                }
+            }
+            let pr_map = github::fetch_open_prs(repo_path);
+            for r in &mut rows {
+                r.pr = pr_map.get(&r.short_name).cloned();
+            }
+            pin_first(&mut rows);
+            let cols = RemotesViewDef.columns();
+            Ok(render_table(None, &rows, &cols, render_remote_row, &ctx, color))
+        }
+        DumpView::Tags | DumpView::Worktrees => {
             // Implemented in Task 6.
             Ok(String::new())
         }
