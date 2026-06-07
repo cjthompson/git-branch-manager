@@ -1,7 +1,7 @@
 # View Dump Flags — Design
 
 **Date:** 2026-06-07
-**Status:** approved design, pre-implementation
+**Status:** implemented on branch `view-dump-flags`
 **Branch / worktree:** `view-dump-flags` (`.claude/worktrees/view-dump-flags`, based on `071378e`)
 
 ## Goal
@@ -106,6 +106,14 @@ Rendering is a separate consumer of `ViewDump`, selected by an internal
 below); v2 adds a JSON renderer over the **same** `ViewDump`. This seam is what
 keeps JSON additive — the enrichment path and `ViewDump` never change when a new
 format is added.
+
+> **As-built note:** the `ViewDump` struct and `OutputFormat` enum were not
+> materialized as named types in the implementation. Instead, the seam was
+> realized via `render_table`'s parameters (`base`, `rows`, `columns`,
+> `render_row`) in `src/ui/dump_render.rs`, and each per-view arm in `src/dump.rs`
+> passes those values directly. The data/presentation separation holds and JSON
+> remains an additive renderer — a v2 `render_json` function would accept the same
+> parameters without touching the enrichment path.
 
 ### Table renderer (v1) (`src/ui/dump_render.rs`, new)
 

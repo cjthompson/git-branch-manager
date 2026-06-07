@@ -184,8 +184,9 @@ fn pad_plain(text: &str, width: usize, right: bool) -> String {
 
 /// Render one `Line`'s spans to a fixed-width field, optionally ANSI-colored.
 /// Padding is computed from the visible (un-escaped) text width.
-/// On overflow (visible width >= `width`) the cell is truncated to `width`
-/// visible characters and ANSI color is dropped regardless of `colorize`.
+/// On overflow (visible width strictly greater than `width`) the cell is
+/// truncated to `width` visible characters and ANSI color is dropped regardless
+/// of `colorize`. An exact fit keeps color.
 fn lay_out_cell(line: &Line<'static>, width: usize, right: bool, colorize: bool) -> String {
     let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
     let visible = plain.chars().count();

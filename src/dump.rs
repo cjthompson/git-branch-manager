@@ -63,7 +63,10 @@ pub fn run(
     match view {
         DumpView::Branches => {
             let mut rows = branch::list_branches(repo, base)?;
-            let pr_map = github::fetch_open_prs(repo_path);
+            let pr_map = github::fetch_open_prs_checked(repo_path).unwrap_or_else(|e| {
+                eprintln!("note: PR data unavailable ({e}); PR column left blank");
+                Default::default()
+            });
             for b in &mut rows {
                 b.pr = pr_map.get(&b.name).cloned();
             }
@@ -130,7 +133,10 @@ pub fn run(
                 }
             }
 
-            let pr_map = github::fetch_open_prs(repo_path);
+            let pr_map = github::fetch_open_prs_checked(repo_path).unwrap_or_else(|e| {
+                eprintln!("note: PR data unavailable ({e}); PR column left blank");
+                Default::default()
+            });
             for r in &mut rows {
                 r.pr = pr_map.get(&r.short_name).cloned();
             }
