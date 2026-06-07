@@ -1,4 +1,5 @@
 pub mod cells;
+pub mod dump_render;
 pub mod confirm;
 pub mod executing;
 pub mod filter_ui;

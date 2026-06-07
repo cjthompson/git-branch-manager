@@ -1,5 +1,13 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum ColorChoice {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "git-branch-manager", about = "TUI for managing git branches")]
