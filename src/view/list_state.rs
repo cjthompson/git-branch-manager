@@ -493,6 +493,21 @@ pub fn toggle_sort_direction_and_apply<T: ViewItem>(
     apply_sort(state, columns);
 }
 
+/// Collect confirm-overlay targets from a list state. Applies `mapper` to each
+/// item at the selected indices (or the cursor item when nothing is checked),
+/// keeping only the `Some` values in order. The returned `Vec` is owned, so the
+/// borrow of `state` ends when this returns.
+pub fn collect_targets<T: ViewItem>(
+    state: &ListState<T>,
+    mapper: impl Fn(&T) -> Option<String>,
+) -> Vec<String> {
+    state
+        .selected_indices()
+        .iter()
+        .filter_map(|&i| mapper(&state.items()[i]))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,6 +556,39 @@ mod tests {
                 pr: None,
             },
         ]
+    }
+
+    #[test]
+    fn collect_targets_all_selected_no_filter() {
+        let mut state = ListState::new(sample_branches());
+        state.selected_mut().iter_mut().for_each(|s| *s = true);
+        let targets = collect_targets(&state, |b| Some(b.name.clone()));
+        assert_eq!(targets, vec!["main", "feature/a", "feature/b"]);
+    }
+
+    #[test]
+    fn collect_targets_filters_pinned() {
+        let mut state = ListState::new(sample_branches());
+        state.selected_mut().iter_mut().for_each(|s| *s = true);
+        let targets = collect_targets(&state, |b| (!b.is_pinned()).then(|| b.name.clone()));
+        assert_eq!(targets, vec!["feature/a", "feature/b"]);
+    }
+
+    #[test]
+    fn collect_targets_cursor_fallback_when_none_selected() {
+        let state = ListState::new(sample_branches());
+        // Nothing checked: selected_indices falls back to the cursor item (index 0).
+        let targets = collect_targets(&state, |b| Some(b.name.clone()));
+        assert_eq!(targets, vec!["main"]);
+    }
+
+    #[test]
+    fn collect_targets_empty_when_all_selected_are_filtered() {
+        let mut state = ListState::new(sample_branches());
+        // Select only the pinned base branch; the mapper filters pinned items.
+        state.selected_mut()[0] = true;
+        let targets = collect_targets(&state, |b| (!b.is_pinned()).then(|| b.name.clone()));
+        assert!(targets.is_empty());
     }
 
     fn name_column() -> ColumnDef<BranchInfo> {

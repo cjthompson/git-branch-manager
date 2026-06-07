@@ -1708,136 +1708,67 @@ impl App {
     // ---- View-level action helpers ----
 
     fn delete_selected_branches(&mut self, include_remote: bool) {
-        let names = self.get_selected_branch_names();
-        if names.is_empty() {
-            return;
-        }
+        let targets = self.get_selected_branch_names();
         let action = if include_remote {
             BranchAction::DeleteLocalAndRemote
         } else {
             BranchAction::DeleteLocal
         };
-        self.return_view = ViewId::Branches;
-        self.overlay = Some(Overlay::Confirm {
-            action,
-            targets: names,
-        });
+        self.open_confirm(action, ViewId::Branches, targets);
     }
 
     fn push_selected_branches(&mut self) {
-        let names = self.get_selected_branch_names();
-        if names.is_empty() {
-            return;
-        }
-        self.return_view = ViewId::Branches;
-        self.overlay = Some(Overlay::Confirm {
-            action: BranchAction::Push,
-            targets: names,
-        });
+        let targets = self.get_selected_branch_names();
+        self.open_confirm(BranchAction::Push, ViewId::Branches, targets);
     }
 
     fn delete_selected_remote_branches(&mut self) {
-        let indices = self.remotes.selected_indices();
-        let names: Vec<String> = indices
-            .iter()
-            .filter_map(|&i| {
-                let b = &self.remotes.items()[i];
-                if !b.is_pinned() {
-                    Some(b.short_name.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if names.is_empty() {
-            return;
-        }
-        self.return_view = ViewId::Remotes;
-        self.overlay = Some(Overlay::Confirm {
-            action: BranchAction::DeleteRemoteBranch,
-            targets: names,
+        let targets = list_state::collect_targets(&self.remotes, |b| {
+            (!b.is_pinned()).then(|| b.short_name.clone())
         });
+        self.open_confirm(BranchAction::DeleteRemoteBranch, ViewId::Remotes, targets);
     }
 
     fn delete_selected_tags(&mut self, include_remote: bool) {
-        let indices = self.tags.selected_indices();
-        let names: Vec<String> = indices
-            .iter()
-            .map(|&i| self.tags.items()[i].name.clone())
-            .collect();
-        if names.is_empty() {
-            return;
-        }
+        let targets = list_state::collect_targets(&self.tags, |t| Some(t.name.clone()));
         let action = if include_remote {
             BranchAction::DeleteTagAndRemote
         } else {
             BranchAction::DeleteTag
         };
-        self.return_view = ViewId::Tags;
-        self.overlay = Some(Overlay::Confirm {
-            action,
-            targets: names,
-        });
+        self.open_confirm(action, ViewId::Tags, targets);
     }
 
     fn push_selected_tags(&mut self) {
-        let indices = self.tags.selected_indices();
-        let names: Vec<String> = indices
-            .iter()
-            .map(|&i| self.tags.items()[i].name.clone())
-            .collect();
-        if names.is_empty() {
-            return;
-        }
-        self.return_view = ViewId::Tags;
-        self.overlay = Some(Overlay::Confirm {
-            action: BranchAction::PushTag,
-            targets: names,
-        });
+        let targets = list_state::collect_targets(&self.tags, |t| Some(t.name.clone()));
+        self.open_confirm(BranchAction::PushTag, ViewId::Tags, targets);
     }
 
     fn remove_selected_worktrees(&mut self, force: bool) {
         self.worktree_enrich_rx = None;
-        let indices = self.worktrees.selected_indices();
-        let names: Vec<String> = indices
-            .iter()
-            .filter_map(|&i| {
-                let wt = &self.worktrees.items()[i];
-                if !wt.is_main {
-                    Some(wt.path.to_string_lossy().to_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if names.is_empty() {
-            return;
-        }
+        let targets = list_state::collect_targets(&self.worktrees, |wt| {
+            (!wt.is_main).then(|| wt.path.to_string_lossy().to_string())
+        });
         let action = if force {
             BranchAction::WorktreeForceRemove
         } else {
             BranchAction::WorktreeRemove
         };
-        self.return_view = ViewId::Worktrees;
-        self.overlay = Some(Overlay::Confirm {
-            action,
-            targets: names,
-        });
+        self.open_confirm(action, ViewId::Worktrees, targets);
     }
 
     fn get_selected_branch_names(&self) -> Vec<String> {
-        let indices = self.branches.selected_indices();
-        indices
-            .iter()
-            .filter_map(|&i| {
-                let b = &self.branches.items()[i];
-                if !b.is_pinned() {
-                    Some(b.name.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
+        list_state::collect_targets(&self.branches, |b| (!b.is_pinned()).then(|| b.name.clone()))
+    }
+
+    /// Open a confirm overlay for `action` over `targets`, returning to
+    /// `return_view` when it closes. No-op when `targets` is empty.
+    fn open_confirm(&mut self, action: BranchAction, return_view: ViewId, targets: Vec<String>) {
+        if targets.is_empty() {
+            return;
+        }
+        self.return_view = return_view;
+        self.overlay = Some(Overlay::Confirm { action, targets });
     }
 
     // ---- Sorting ----
