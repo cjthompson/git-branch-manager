@@ -463,6 +463,36 @@ pub fn toggle_sort_direction<T: ViewItem>(state: &mut ListState<T>) {
     }
 }
 
+/// Handle a header-column click: if `col` is already the active sort column,
+/// toggle direction; otherwise sort ascending by `col`. Always re-applies.
+pub fn sort_by_column_click<T: ViewItem>(
+    state: &mut ListState<T>,
+    columns: &[ColumnDef<T>],
+    col: usize,
+) {
+    if state.sort_column() == Some(col) {
+        toggle_sort_direction(state);
+    } else {
+        state.set_sort(Some(col), true);
+    }
+    apply_sort(state, columns);
+}
+
+/// Advance to the next sort column and re-apply the sort.
+pub fn cycle_sort_and_apply<T: ViewItem>(state: &mut ListState<T>, columns: &[ColumnDef<T>]) {
+    cycle_sort_column(state, columns);
+    apply_sort(state, columns);
+}
+
+/// Toggle sort direction and re-apply the sort.
+pub fn toggle_sort_direction_and_apply<T: ViewItem>(
+    state: &mut ListState<T>,
+    columns: &[ColumnDef<T>],
+) {
+    toggle_sort_direction(state);
+    apply_sort(state, columns);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,6 +541,73 @@ mod tests {
                 pr: None,
             },
         ]
+    }
+
+    fn name_column() -> ColumnDef<BranchInfo> {
+        ColumnDef::<BranchInfo> {
+            name: "Name",
+            min_width: 10,
+            wide_width: None,
+            hide_below_width: None,
+            compare: Some(|a, b| a.name.cmp(&b.name)),
+        }
+    }
+
+    #[test]
+    fn sort_by_column_click_sets_column_and_applies() {
+        let columns = vec![name_column()];
+        let mut state = ListState::new(sample_branches());
+        assert_eq!(state.sort_column(), None);
+
+        sort_by_column_click(&mut state, &columns, 0);
+
+        assert_eq!(state.sort_column(), Some(0));
+        assert!(state.sort_ascending());
+        // main is the base branch (pinned first), then ascending by name.
+        assert_eq!(state.items()[0].name, "main");
+        assert_eq!(state.items()[1].name, "feature/a");
+        assert_eq!(state.items()[2].name, "feature/b");
+    }
+
+    #[test]
+    fn sort_by_column_click_same_column_toggles_direction() {
+        let columns = vec![name_column()];
+        let mut state = ListState::new(sample_branches());
+
+        sort_by_column_click(&mut state, &columns, 0);
+        assert!(state.sort_ascending());
+
+        sort_by_column_click(&mut state, &columns, 0);
+        assert!(!state.sort_ascending());
+        assert_eq!(state.sort_column(), Some(0));
+        // Descending: base still pinned first, then feature/b, feature/a.
+        assert_eq!(state.items()[0].name, "main");
+        assert_eq!(state.items()[1].name, "feature/b");
+        assert_eq!(state.items()[2].name, "feature/a");
+
+        sort_by_column_click(&mut state, &columns, 0);
+        assert!(state.sort_ascending());
+    }
+
+    #[test]
+    fn sort_by_column_click_different_column_resets_to_ascending() {
+        let age_col = ColumnDef::<BranchInfo> {
+            name: "Age",
+            min_width: 5,
+            wide_width: None,
+            hide_below_width: None,
+            compare: Some(|a, b| a.last_commit_date.cmp(&b.last_commit_date)),
+        };
+        let columns = vec![name_column(), age_col];
+        let mut state = ListState::new(sample_branches());
+
+        sort_by_column_click(&mut state, &columns, 0);
+        sort_by_column_click(&mut state, &columns, 0); // now descending
+        assert!(!state.sort_ascending());
+
+        sort_by_column_click(&mut state, &columns, 1);
+        assert_eq!(state.sort_column(), Some(1));
+        assert!(state.sort_ascending());
     }
 
     // --- ListState basic tests ---

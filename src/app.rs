@@ -1153,38 +1153,24 @@ impl App {
             let clicked_col = self.find_header_click(x);
             if let Some(col) = clicked_col {
                 match self.active_view {
-                    ViewId::Branches => {
-                        if self.branches.sort_column() == Some(col) {
-                            list_state::toggle_sort_direction(&mut self.branches);
-                        } else {
-                            self.branches.set_sort(Some(col), true);
-                        }
-                        list_state::apply_sort(&mut self.branches, &self.branch_columns);
-                    }
-                    ViewId::Remotes => {
-                        if self.remotes.sort_column() == Some(col) {
-                            list_state::toggle_sort_direction(&mut self.remotes);
-                        } else {
-                            self.remotes.set_sort(Some(col), true);
-                        }
-                        list_state::apply_sort(&mut self.remotes, &self.remote_columns);
-                    }
+                    ViewId::Branches => list_state::sort_by_column_click(
+                        &mut self.branches,
+                        &self.branch_columns,
+                        col,
+                    ),
+                    ViewId::Remotes => list_state::sort_by_column_click(
+                        &mut self.remotes,
+                        &self.remote_columns,
+                        col,
+                    ),
                     ViewId::Tags => {
-                        if self.tags.sort_column() == Some(col) {
-                            list_state::toggle_sort_direction(&mut self.tags);
-                        } else {
-                            self.tags.set_sort(Some(col), true);
-                        }
-                        list_state::apply_sort(&mut self.tags, &self.tag_columns);
+                        list_state::sort_by_column_click(&mut self.tags, &self.tag_columns, col)
                     }
-                    ViewId::Worktrees => {
-                        if self.worktrees.sort_column() == Some(col) {
-                            list_state::toggle_sort_direction(&mut self.worktrees);
-                        } else {
-                            self.worktrees.set_sort(Some(col), true);
-                        }
-                        list_state::apply_sort(&mut self.worktrees, &self.worktree_columns);
-                    }
+                    ViewId::Worktrees => list_state::sort_by_column_click(
+                        &mut self.worktrees,
+                        &self.worktree_columns,
+                        col,
+                    ),
                 }
             }
         } else if self.terminal_rows > 0 && y == self.terminal_rows - 1 {
@@ -1859,20 +1845,14 @@ impl App {
     fn cycle_sort(&mut self) {
         match self.active_view {
             ViewId::Branches => {
-                list_state::cycle_sort_column(&mut self.branches, &self.branch_columns);
-                list_state::apply_sort(&mut self.branches, &self.branch_columns);
+                list_state::cycle_sort_and_apply(&mut self.branches, &self.branch_columns)
             }
             ViewId::Remotes => {
-                list_state::cycle_sort_column(&mut self.remotes, &self.remote_columns);
-                list_state::apply_sort(&mut self.remotes, &self.remote_columns);
+                list_state::cycle_sort_and_apply(&mut self.remotes, &self.remote_columns)
             }
-            ViewId::Tags => {
-                list_state::cycle_sort_column(&mut self.tags, &self.tag_columns);
-                list_state::apply_sort(&mut self.tags, &self.tag_columns);
-            }
+            ViewId::Tags => list_state::cycle_sort_and_apply(&mut self.tags, &self.tag_columns),
             ViewId::Worktrees => {
-                list_state::cycle_sort_column(&mut self.worktrees, &self.worktree_columns);
-                list_state::apply_sort(&mut self.worktrees, &self.worktree_columns);
+                list_state::cycle_sort_and_apply(&mut self.worktrees, &self.worktree_columns)
             }
         }
         self.save_sort_config();
@@ -1880,22 +1860,20 @@ impl App {
 
     fn toggle_sort_direction(&mut self) {
         match self.active_view {
-            ViewId::Branches => {
-                list_state::toggle_sort_direction(&mut self.branches);
-                list_state::apply_sort(&mut self.branches, &self.branch_columns);
-            }
+            ViewId::Branches => list_state::toggle_sort_direction_and_apply(
+                &mut self.branches,
+                &self.branch_columns,
+            ),
             ViewId::Remotes => {
-                list_state::toggle_sort_direction(&mut self.remotes);
-                list_state::apply_sort(&mut self.remotes, &self.remote_columns);
+                list_state::toggle_sort_direction_and_apply(&mut self.remotes, &self.remote_columns)
             }
             ViewId::Tags => {
-                list_state::toggle_sort_direction(&mut self.tags);
-                list_state::apply_sort(&mut self.tags, &self.tag_columns);
+                list_state::toggle_sort_direction_and_apply(&mut self.tags, &self.tag_columns)
             }
-            ViewId::Worktrees => {
-                list_state::toggle_sort_direction(&mut self.worktrees);
-                list_state::apply_sort(&mut self.worktrees, &self.worktree_columns);
-            }
+            ViewId::Worktrees => list_state::toggle_sort_direction_and_apply(
+                &mut self.worktrees,
+                &self.worktree_columns,
+            ),
         }
         self.save_sort_config();
     }
