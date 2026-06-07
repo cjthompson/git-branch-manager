@@ -1737,12 +1737,9 @@ fn dump_worktrees_basic() {
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.contains("Path"), "header missing: {s:?}");
-    // On macOS /var is a symlink to /private/var; git worktree list resolves to
-    // the canonical form. We canonicalize the expected path and match the first
-    // 14 characters (the column is 15 wide and the last char may be truncated),
-    // which is stable regardless of symlink resolution.
+    // The main working tree is always listed. The dump auto-sizes the first
+    // (Path) column to its content, so the full canonicalized path appears.
     let canonical = tmp.path().canonicalize().unwrap();
     let canonical_str = canonical.to_str().unwrap();
-    let prefix = &canonical_str[..14.min(canonical_str.len())];
-    assert!(s.contains(prefix), "main worktree row missing: {s:?}");
+    assert!(s.contains(canonical_str), "main worktree full path missing: {s:?}\nexpected: {canonical_str}");
 }

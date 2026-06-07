@@ -179,7 +179,7 @@ fn lay_out_cell(line: &Line<'static>, width: usize, right: bool, colorize: bool)
     let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
     let visible = plain.chars().count();
 
-    if visible >= width {
+    if visible > width {
         return plain.chars().take(width).collect();
     }
 
@@ -361,5 +361,18 @@ mod tests {
         let cols = dummy_cols();
         let out = render_table(None, &rows, &cols, dummy_row, &ctx, ColorChoice::Never);
         assert!(out.contains(long), "first column must not be truncated: {out:?}");
+    }
+
+    #[test]
+    fn render_table_exact_fit_keeps_color() {
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let ctx = CellContext { theme: &theme, symbols: &symbols, area_width: DUMP_AREA_WIDTH, compact: false };
+        // Single row → first column auto-sizes to exactly this name's width.
+        let rows = vec![Dummy { name: "exactly-this-wide".into(), pinned: false }];
+        let cols = dummy_cols();
+        let out = render_table(None, &rows, &cols, dummy_row, &ctx, ColorChoice::Always);
+        assert!(out.contains("\x1b[32m"), "exact-fit first column must keep color: {out:?}");
+        assert!(out.contains("exactly-this-wide"), "name must appear in full: {out:?}");
     }
 }
