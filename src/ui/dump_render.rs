@@ -4,6 +4,7 @@
 
 use std::io::IsTerminal;
 
+use ratatui::layout::Alignment;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 
@@ -132,7 +133,10 @@ pub fn render_table<T: ViewItem>(
         widths[0] = w0;
     }
 
-    let right_align = |idx: usize| columns[idx].name == "Age" || idx == columns.len() - 1;
+    // Header alignment uses the TUI's positional header rule (mirrors
+    // `list_render::render_list_view`, which right-aligns the "Age" and last
+    // columns' header labels regardless of the data's alignment).
+    let header_right_align = |idx: usize| columns[idx].name == "Age" || idx == columns.len() - 1;
 
     let mut out = String::new();
     if let Some(b) = base {
@@ -141,7 +145,7 @@ pub fn render_table<T: ViewItem>(
 
     let header_fields: Vec<String> = all_cols
         .iter()
-        .map(|&i| pad_plain(columns[i].name, widths[i], right_align(i)))
+        .map(|&i| pad_plain(columns[i].name, widths[i], header_right_align(i)))
         .collect();
     out.push_str(header_fields.join("  ").trim_end());
     out.push('\n');
@@ -150,7 +154,14 @@ pub fn render_table<T: ViewItem>(
         let fields: Vec<String> = lines
             .iter()
             .enumerate()
-            .map(|(i, line)| lay_out_cell(line, widths[i], right_align(i), colorize))
+            .map(|(i, line)| {
+                // Data cells derive alignment from each rendered Line's own
+                // alignment (set by the render fns, e.g. age/merge-status use
+                // Alignment::Right), not from the column's position. This keeps
+                // left-aligned data (e.g. the Tags "Message" last column) left.
+                let right = matches!(line.alignment, Some(Alignment::Right));
+                lay_out_cell(line, widths[i], right, colorize)
+            })
             .collect();
         out.push_str(fields.join("  ").trim_end());
         out.push('\n');

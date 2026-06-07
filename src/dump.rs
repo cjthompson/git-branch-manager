@@ -9,9 +9,10 @@ use std::path::Path;
 
 use git_branch_manager::cli::ColorChoice;
 use git_branch_manager::config::Config;
-use git_branch_manager::git::{branch, github, tags, worktree};
+use git_branch_manager::git::{branch, cache, github, squash_loader, tags, worktree};
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::theme::Theme;
+use git_branch_manager::types::MergeStatus;
 use git_branch_manager::ui::dump_render::{render_table, DUMP_AREA_WIDTH};
 use git_branch_manager::ui::list_render::CellContext;
 use git_branch_manager::view::branches::BranchesViewDef;
@@ -90,6 +91,45 @@ pub fn run(
                     r.behind = res.behind;
                 }
             }
+
+            // Remote squash-merge pass, mirroring the TUI (app.rs::spawn_remote_load
+            // builds the candidates; the drain in App::tick folds results back).
+            // Candidate key is the remote `full_ref`; the commit hash is the peeled
+            // commit of `refs/remotes/<full_ref>`; results map back by `full_ref`.
+            // The TUI builds candidates from the phase-1 Pending state; here the
+            // enricher has already run synchronously, so the equivalent set is the
+            // non-base remotes that came back Unmerged (squash detection only ever
+            // flips Unmerged -> SquashMerged). Uses the same per-repo BranchCache.
+            let candidates: Vec<(String, String)> = rows
+                .iter()
+                .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base)
+                .filter_map(|b| {
+                    let refname = format!("refs/remotes/{}", b.full_ref);
+                    repo.find_reference(&refname)
+                        .ok()
+                        .and_then(|r| r.peel_to_commit().ok())
+                        .map(|c| (b.full_ref.clone(), c.id().to_string()))
+                })
+                .collect();
+            if !candidates.is_empty() {
+                let remote_cache = cache::BranchCache::load(repo_path);
+                let squash_rx = squash_loader::spawn_squash_checker(
+                    repo_path.to_path_buf(),
+                    base.to_string(),
+                    candidates,
+                    remote_cache,
+                );
+                for res in squash_rx.iter() {
+                    if res.is_squash_merged {
+                        if let Some(r) =
+                            rows.iter_mut().find(|r| r.full_ref == res.branch_name)
+                        {
+                            r.merge_status = MergeStatus::SquashMerged;
+                        }
+                    }
+                }
+            }
+
             let pr_map = github::fetch_open_prs(repo_path);
             for r in &mut rows {
                 r.pr = pr_map.get(&r.short_name).cloned();
