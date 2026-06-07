@@ -1653,3 +1653,40 @@ fn test_is_not_squash_merged_direct() {
         None
     ));
 }
+
+#[test]
+fn dump_branches_basic() {
+    let (tmp, _repo) = setup_test_repo();
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args(["--repo", tmp.path().to_str().unwrap(), "--branches", "--color=never"])
+        .output()
+        .expect("failed to run binary");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.starts_with("base: main"), "got: {s:?}");
+    assert!(s.contains("Branch"), "header missing: {s:?}");
+    assert!(s.contains("main"), "base branch row missing: {s:?}");
+    assert!(!s.contains('\x1b'), "--color=never must be plain: {s:?}");
+}
+
+#[test]
+fn dump_rejects_two_view_flags() {
+    let (tmp, _repo) = setup_test_repo();
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args(["--repo", tmp.path().to_str().unwrap(), "--branches", "--tags"])
+        .output()
+        .expect("failed to run binary");
+    assert!(!out.status.success(), "two view flags must be a usage error");
+}
+
+#[test]
+fn dump_list_is_branches_alias() {
+    let (tmp, _repo) = setup_test_repo();
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args(["--repo", tmp.path().to_str().unwrap(), "--list", "--color=never"])
+        .output()
+        .expect("failed to run binary");
+    assert!(out.status.success());
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.starts_with("base: main"), "got: {s:?}");
+}

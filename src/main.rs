@@ -1,7 +1,9 @@
 mod app;
+mod dump;
 
 use anyhow::Result;
 use clap::Parser;
+use crate::dump::DumpView;
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
@@ -15,7 +17,6 @@ use git_branch_manager::cli::Cli;
 use git_branch_manager::config::Config;
 use git_branch_manager::git::{self, branch, cache, merge_detection, operations, worktree};
 use git_branch_manager::symbols::SymbolSet;
-use git_branch_manager::types::MergeStatus;
 use tracing::instrument;
 
 fn main() -> Result<()> {
@@ -52,41 +53,32 @@ fn main() -> Result<()> {
     // Detect base branch
     let base_branch = branch::detect_base_branch(&repo, cli.base.as_deref())?;
 
-    // Non-interactive list mode
-    if cli.list {
-        use git_branch_manager::types::TrackingStatus;
-        let branches = branch::list_branches_phase1(&repo, &base_branch)?;
-        if branches.is_empty() {
-            eprintln!("No branches found.");
-            return Ok(());
+    // Non-interactive view dumps (also covers the deprecated `--list`).
+    let dump_view = if cli.branches || cli.list {
+        Some(DumpView::Branches)
+    } else if cli.remotes {
+        Some(DumpView::Remotes)
+    } else if cli.tags {
+        Some(DumpView::Tags)
+    } else if cli.worktrees {
+        Some(DumpView::Worktrees)
+    } else {
+        None
+    };
+    if let Some(view) = dump_view {
+        if cli.list {
+            eprintln!("note: --list is deprecated; use --branches");
         }
-        println!("base: {}\n", base_branch);
-        for b in &branches {
-            let status = match b.merge_status {
-                MergeStatus::Merged => "merged",
-                MergeStatus::SquashMerged => "squash-merged",
-                MergeStatus::Unmerged | MergeStatus::Pending => "unmerged",
-            };
-            let tracking = match &b.tracking {
-                TrackingStatus::Tracked { remote_ref, gone } => {
-                    if *gone {
-                        "gone".into()
-                    } else {
-                        remote_ref.clone()
-                    }
-                }
-                TrackingStatus::Local => "(local)".into(),
-            };
-            let current = if b.is_current { "* " } else { "  " };
-            println!(
-                "{}{:<25} {:<20} {:<15} {}",
-                current,
-                b.name,
-                tracking,
-                b.age_display(),
-                status
-            );
-        }
+        let out = dump::run(
+            &repo,
+            &repo_path,
+            &base_branch,
+            &config,
+            cli.symbols.as_deref(),
+            view,
+            cli.color,
+        )?;
+        print!("{out}");
         return Ok(());
     }
 
