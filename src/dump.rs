@@ -9,17 +9,21 @@ use std::path::Path;
 
 use git_branch_manager::cli::ColorChoice;
 use git_branch_manager::config::Config;
-use git_branch_manager::git::{branch, github};
+use git_branch_manager::git::{branch, github, tags, worktree};
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::theme::Theme;
 use git_branch_manager::ui::dump_render::{render_table, DUMP_AREA_WIDTH};
 use git_branch_manager::ui::list_render::CellContext;
 use git_branch_manager::view::branches::BranchesViewDef;
 use git_branch_manager::view::remotes::RemotesViewDef;
+use git_branch_manager::view::tags::TagsViewDef;
+use git_branch_manager::view::worktrees::WorktreesViewDef;
 use git_branch_manager::view::ViewItem;
 
 use crate::app::render_branch_row;
 use crate::app::render_remote_row;
+use crate::app::render_tag_row;
+use crate::app::render_worktree_row;
 
 #[derive(Clone, Copy, Debug)]
 pub enum DumpView {
@@ -94,9 +98,25 @@ pub fn run(
             let cols = RemotesViewDef.columns();
             Ok(render_table(None, &rows, &cols, render_remote_row, &ctx, color))
         }
-        DumpView::Tags | DumpView::Worktrees => {
-            // Implemented in Task 6.
-            Ok(String::new())
+        DumpView::Tags => {
+            let mut rows = tags::list_tags(repo);
+            pin_first(&mut rows);
+            let cols = TagsViewDef.columns();
+            Ok(render_table(None, &rows, &cols, render_tag_row, &ctx, color))
+        }
+        DumpView::Worktrees => {
+            let mut rows = worktree::list_worktrees(repo_path);
+            // Drain the enricher to completion (runs on a worker thread; we block).
+            let rx = worktree::enrich_worktrees(rows.clone());
+            for res in rx.iter() {
+                if let Some(w) = rows.get_mut(res.index) {
+                    w.wt_status = res.wt_status;
+                    w.age_date = res.age_date;
+                }
+            }
+            pin_first(&mut rows);
+            let cols = WorktreesViewDef.columns();
+            Ok(render_table(None, &rows, &cols, render_worktree_row, &ctx, color))
         }
     }
 }

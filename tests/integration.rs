@@ -1712,3 +1712,37 @@ fn dump_remotes_basic() {
     assert!(s.contains("Name"), "header missing: {s:?}");
     assert!(s.contains("origin/main"), "remote row missing: {s:?}");
 }
+
+#[test]
+fn dump_tags_basic() {
+    let (tmp, _repo) = setup_test_repo();
+    run_git(tmp.path(), &["tag", "-a", "v1.0", "-m", "release one"]);
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args(["--repo", tmp.path().to_str().unwrap(), "--tags", "--color=never"])
+        .output()
+        .expect("failed to run binary");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("Name"), "header missing: {s:?}");
+    assert!(s.contains("v1.0"), "tag row missing: {s:?}");
+}
+
+#[test]
+fn dump_worktrees_basic() {
+    let (tmp, _repo) = setup_test_repo();
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args(["--repo", tmp.path().to_str().unwrap(), "--worktrees", "--color=never"])
+        .output()
+        .expect("failed to run binary");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("Path"), "header missing: {s:?}");
+    // On macOS /var is a symlink to /private/var; git worktree list resolves to
+    // the canonical form. We canonicalize the expected path and match the first
+    // 14 characters (the column is 15 wide and the last char may be truncated),
+    // which is stable regardless of symlink resolution.
+    let canonical = tmp.path().canonicalize().unwrap();
+    let canonical_str = canonical.to_str().unwrap();
+    let prefix = &canonical_str[..14.min(canonical_str.len())];
+    assert!(s.contains(prefix), "main worktree row missing: {s:?}");
+}
