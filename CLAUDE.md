@@ -20,40 +20,56 @@ If `cargo` is not on PATH, prefix with: `export PATH="$HOME/.rustup/toolchains/s
 
 ## Architecture
 
-```
-main.rs          CLI parsing → repo open → phase 1 → spawn squash checker → TUI loop
-├── cli.rs       clap derive struct (--base, --list flags)
-├── app.rs       App struct (all state), event loop, key dispatch per View
-├── types.rs     Shared types used across all layers (in lib.rs for test access)
-├── git/
-│   ├── branch.rs           Branch listing (git2), base branch detection
-│   ├── merge_detection.rs  Regular merge (git2) + squash-merge (git CLI)
-│   ├── squash_loader.rs    Background thread for progressive squash-merge detection
-│   └── operations.rs       Delete local (git2), delete remote (git CLI)
-└── ui/
-    ├── render.rs       Top-level draw dispatcher (matches on View enum)
-    ├── branch_list.rs  Main screen: scrollable multi-select list
-    ├── confirm.rs      Centered overlay for confirming destructive actions
-    ├── results.rs      Post-operation results display
-    ├── help.rs         Keybinding reference overlay
-    └── theme.rs        Style constants (colors, modifiers)
-```
+A rendered, auto-generated layered dependency diagram lives at
+[`docs/architecture/architecture.svg`](docs/architecture/architecture.svg)
+(regenerate with `./scripts/gen-arch-diagram.sh`). The layers, top → bottom,
+with arrows meaning "depends on":
 
-**lib.rs** re-exports `git` and `types` modules so integration tests can import them. Binary-only modules (`app`, `cli`, `ui`, `git::squash_loader`) stay private.
+- **Entrypoint** (`main.rs`) — CLI parse, terminal setup, spawns the background
+  loaders, runs the event loop.
+- **App state machine** (`app.rs`) — the `App` struct holds all state; drives the
+  event loop, per-view key dispatch, and draining of the background channels.
+- **UI widgets** (`ui/`) — ratatui rendering: `render.rs` (frame dispatcher +
+  `Overlay` enum), `list_render.rs` (generic table for every view), overlays
+  (`confirm`, `executing`, `results`, `menu`, `help`, `settings`, `filter_ui`),
+  bars (`status_bar`, `tab_bar`, `toast`), and `shared` helpers.
+- **View models** (`view/`) — per-view column/sort/filter definitions: `ViewId`
+  (Branches/Remotes/Tags/Worktrees), generic `ListState<T>`, `ColumnDef<T>`,
+  `FilterSet`, and one def module per view.
+- **Git backend** (`git/`) — `branch`, `merge_detection`, `squash_loader`,
+  `operations`, `cache`, `pr_loader`, `github`, `worktree`, `tags`, `status`.
+- **Config & presentation** — `config.rs` (TOML load/save), `theme.rs`,
+  `symbols.rs`, `cli.rs` (clap derive: `--base`, `--list`, `--symbols`).
+- **Domain types** (`types.rs`) — shared models (`BranchInfo`, `MergeStatus`,
+  `BranchAction`, `OperationResult`, …); the dependency sink.
+
+**lib.rs** re-exports `cli, config, git, symbols, theme, types, ui, view` so
+integration tests can import them. `app` is the only binary-only module
+(declared `mod app;` in `main.rs`).
 
 ### Data Flow
 
-1. `main.rs` runs phase 1 (branch listing + regular merge detection via git2) synchronously, then spawns a background thread for squash-merge detection
-2. The TUI starts immediately after phase 1 — squash-merge results arrive progressively via `mpsc::Receiver` and are applied on each event loop tick
-3. `App` owns all state in a flat struct; `squash_rx: Option<Receiver<SquashResult>>` drains the background channel
-4. Key events mutate `App` directly; rendering reads `&App` immutably
-5. After operations execute, `refresh_branches()` re-runs phase 1 and spawns a new squash checker
-6. The app loops back to the branch list after showing results (does not exit)
+The TUI launches immediately; all heavy git work is backgrounded and streamed
+into `App` via `mpsc` channels drained each event-loop tick.
+
+1. `main.rs` spawns a phase-1 thread that sends staged `app::Phase1Msg`s in
+   order: `Fast` (branch list + tracking, no merge detection) → `AheadBehind` →
+   `MergeBaseCommits` → `MergeStatuses` (regular-merge detection). Squash-merge
+   detection then streams in separately via `git::squash_loader` (`SquashResult`s).
+2. Separate threads load remote branches and (optionally, per config) worktrees.
+3. `App` owns all state in a flat struct, holding an `Option<Receiver<_>>` per
+   stream; `git::cache` persists merge-base/squash results to speed reloads.
+4. Key/mouse events mutate `App` directly; rendering reads it immutably each frame.
+5. A confirmed action runs on a background thread via `execute_confirmed_action`,
+   surfaced through the `Overlay::Executing` progress overlay, then
+   `Overlay::Results`; the relevant view's data is refreshed afterward.
+6. The app loops (does not exit after an operation).
 
 ### git2 vs git CLI
 
 - **git2**: branch listing, commit traversal, `graph_descendant_of` for merge detection, local branch deletion
-- **git CLI** (via `std::process::Command`): squash-merge detection (`commit-tree` + `cherry` have no git2 equivalent), remote branch deletion (`git push --delete`)
+- **git CLI** (via `std::process::Command`): squash-merge detection (`commit-tree` + `cherry` have no git2 equivalent), remote operations (`push --delete`, fetch/pull), merge/rebase, worktree management
+- **`gh` CLI**: PR status (`git::github` / `git::pr_loader`)
 
 ### Squash-Merge Detection
 
@@ -67,38 +83,46 @@ result       = git cherry <base> <temp_commit>
 
 A `-` prefix from `cherry` means the squashed content already exists in base. A `+` means it does not. This shells out because git2 doesn't expose `commit-tree` or `cherry`.
 
-### View System
+### View / Overlay System
 
-`app::View` enum drives which screen is rendered and which keys are active:
-- `BranchList` → main interaction screen
-- `Confirm { action }` → overlay on top of branch list
-- `Results` → full-screen operation results, any key → refresh + back to BranchList
-- `Help` → overlay on top of branch list
+Two enums drive the screen:
 
-Overlays (`Confirm`, `Help`) render the branch list underneath, then draw a centered rect on top using `ratatui::widgets::Clear` + `Block`.
+- **`view::ViewId`** — the active primary view: `Branches`, `Remotes`, `Tags`,
+  `Worktrees`, cycled with `next()`/`prev()` (the tab bar). `App.active_view`
+  selects which `ListState<T>` and per-view key handler are live.
+- **`ui::render::Overlay`** — an optional overlay drawn on top: `Help`, `Menu`,
+  `Confirm`, `Executing`, `Results`, `Settings`, `Filter`.
+
+When `App.overlay` is `Some`, `handle_overlay_key` consumes keys; otherwise the
+per-view handler (`handle_branches_key`, `handle_remotes_key`, …) runs after
+`handle_common_list_key`. Overlays render the active list underneath, then draw
+a centered rect on top using `ratatui::widgets::Clear` + `Block`.
 
 ## Adding New Features
 
-### Adding a new branch operation (e.g., archive, checkout)
+### Adding a new branch operation (e.g., archive)
 
-1. Add variant to `BranchAction` in `types.rs`, implement `label()`
-2. Add the git operation function in `git/operations.rs`
-3. Add keybinding in `app.rs::handle_branch_list_key` that transitions to `View::Confirm { action: BranchAction::NewAction }`
-4. Handle the new action in `app.rs::execute_action`
-5. Update `ui/help.rs` keybinding list and `ui/branch_list.rs` status bar text
+1. Add a variant to `BranchAction` in `types.rs`, implement `label()`
+2. Add the git operation function in `git/operations.rs` (return `OperationResult`)
+3. In the relevant per-view key handler in `app.rs` (e.g. `handle_branches_key`),
+   open `Overlay::Confirm { action: BranchAction::NewAction, targets }`
+4. Map the new `BranchAction` to your operation in `app.rs::execute_confirmed_action`
+5. Update `ui/help.rs` and the status-bar text in `ui/status_bar.rs`
 
-### Adding a new view/screen
+### Adding a new view/tab
 
-1. Add variant to `View` enum in `app.rs`
-2. Create `ui/new_view.rs`, add `pub fn draw(frame: &mut Frame, app: &App)`
-3. Register in `ui/mod.rs` and add match arm in `ui/render.rs::draw`
-4. Add `handle_new_view_key` method in `app.rs` and wire into `handle_event`
+1. Add a variant to `ViewId` in `view/mod.rs` and wire it into `next()`/`prev()`
+2. Add a `view/<name>.rs` def (columns via `ColumnDef`, a `RowRenderer`) and a
+   `ListState<T>` field on `App`
+3. Render it through `ui/list_render.rs`; add the tab label in `ui/tab_bar.rs`
+4. Add a `handle_<name>_key` method in `app.rs` and dispatch on `active_view`
 
-### Adding new branch metadata columns
+### Adding a new metadata column
 
-1. Add field to `BranchInfo` in `types.rs`
-2. Populate it in `git/branch.rs::list_branches`
-3. Render it in `ui/branch_list.rs` by adding a `Span` to the line
+1. Add the field to the row type in `types.rs` (e.g. `BranchInfo`) and populate
+   it in the corresponding `git/` loader
+2. Add a `ColumnDef` (name, widths, compare fn) in that view's `view/*.rs`
+3. Emit its cell in the view's `RowRenderer` (rendered by `ui/list_render.rs`)
 
 ### Adding CLI flags
 
@@ -111,7 +135,11 @@ Integration tests in `tests/integration.rs` create temporary git repos with know
 
 To test a new git feature: use the `setup_test_repo()` helper to get a `(TempDir, Repository)`, then create the branch scenario with `std::process::Command` git calls.
 
-## Phase 2 Planned
+## Not Yet Implemented
 
-- **Switch/checkout**: operates on cursor position (not selection), single branch only
-- **Archive**: `git tag <prefix>/<branch> <branch>` then delete; prompt for prefix, default `archive/`
+Checkout, worktree management, and remote/tag operations have all landed. Still
+outstanding:
+
+- **Archive**: `git tag <prefix>/<branch> <branch>` then delete; prompt for
+  prefix, default `archive/`. (Tag listing/deletion already exists in
+  `git/tags.rs` + the Tags view; this is the branch→archive-tag operation.)
