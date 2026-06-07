@@ -24,7 +24,7 @@ pub struct Cli {
     #[arg(long)]
     pub base: Option<String>,
 
-    /// Non-interactive: print branch list to stdout
+    /// (Deprecated) alias for --branches
     #[arg(long)]
     pub list: bool,
 

@@ -1689,4 +1689,6 @@ fn dump_list_is_branches_alias() {
     assert!(out.status.success());
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.starts_with("base: main"), "got: {s:?}");
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("deprecated"), "expected --list deprecation note on stderr, got: {err:?}");
 }

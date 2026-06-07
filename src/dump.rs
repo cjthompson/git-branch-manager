@@ -27,8 +27,9 @@ pub enum DumpView {
     Worktrees,
 }
 
-/// Stable pinned-first reorder, preserving each loader's within-group order
-/// (which matches the TUI's `ListState` default display ordering).
+/// Stable pinned-first reorder, preserving the loader's within-group (date)
+/// order. Callers that must distinguish among pinned rows (e.g. branches put the
+/// base first) apply an additional stable sort after calling this.
 fn pin_first<T: ViewItem>(rows: &mut [T]) {
     rows.sort_by_key(|b| Reverse(b.is_pinned()));
 }
@@ -60,6 +61,11 @@ pub fn run(
                 b.pr = pr_map.get(&b.name).cloned();
             }
             pin_first(&mut rows);
+            // Base branch first among the pinned rows, matching the TUI's
+            // ListState ordering (it pins the base to index 0). A stable sort
+            // by is_base keeps the rest (current branch, then date-ordered
+            // non-pinned) in pin_first's order.
+            rows.sort_by_key(|b| Reverse(b.is_base));
             let cols = BranchesViewDef.columns();
             Ok(render_table(Some(base), &rows, &cols, render_branch_row, &ctx, color))
         }
