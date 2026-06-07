@@ -110,6 +110,9 @@ pub fn render_table<T: ViewItem>(
         .iter()
         .map(|c| c.wide_width.unwrap_or(c.min_width) as usize)
         .collect();
+    // Mirror the TUI's alignment rule in `list_render::render_list_view` exactly
+    // (right-align the "Age" column and the final column) so dump output matches
+    // the on-screen table. If that rule changes there, change it here too.
     let right_align = |idx: usize| columns[idx].name == "Age" || idx == columns.len() - 1;
 
     let mut out = String::new();
@@ -152,6 +155,8 @@ fn pad_plain(text: &str, width: usize, right: bool) -> String {
 
 /// Render one `Line`'s spans to a fixed-width field, optionally ANSI-colored.
 /// Padding is computed from the visible (un-escaped) text width.
+/// On overflow (visible width >= `width`) the cell is truncated to `width`
+/// visible characters and ANSI color is dropped regardless of `colorize`.
 fn lay_out_cell(line: &Line<'static>, width: usize, right: bool, colorize: bool) -> String {
     let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
     let visible = plain.chars().count();
