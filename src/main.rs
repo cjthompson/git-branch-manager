@@ -42,7 +42,8 @@ fn main() -> Result<()> {
     };
 
     // Open repo
-    let repo = git2::Repository::discover(".")?;
+    let search_path = cli.repo.as_deref().unwrap_or(std::path::Path::new("."));
+    let repo = git2::Repository::discover(search_path)?;
     let repo_path = repo
         .workdir()
         .ok_or_else(|| anyhow::anyhow!("Not a git working directory"))?
