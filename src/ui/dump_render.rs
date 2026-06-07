@@ -106,13 +106,32 @@ pub fn render_table<T: ViewItem>(
     };
 
     let all_cols: Vec<usize> = (0..columns.len()).collect();
-    let widths: Vec<usize> = columns
+
+    // Render every row to its styled Lines exactly once.
+    let rendered: Vec<Vec<Line<'static>>> = rows
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| render_row(item, idx, false, false, &all_cols, ctx))
+        .collect();
+
+    // Column widths: fixed (wide_width or min_width) for every column, except the
+    // first — the TUI's stretchy Min-constrained column — which grows to fit its
+    // content so names/paths are never truncated.
+    let mut widths: Vec<usize> = columns
         .iter()
         .map(|c| c.wide_width.unwrap_or(c.min_width) as usize)
         .collect();
-    // Mirror the TUI's alignment rule in `list_render::render_list_view` exactly
-    // (right-align the "Age" column and the final column) so dump output matches
-    // the on-screen table. If that rule changes there, change it here too.
+    if !columns.is_empty() {
+        let mut w0 = columns[0].name.chars().count().max(widths[0]);
+        for lines in &rendered {
+            if let Some(first) = lines.first() {
+                let vis: usize = first.spans.iter().map(|s| s.content.chars().count()).sum();
+                w0 = w0.max(vis);
+            }
+        }
+        widths[0] = w0;
+    }
+
     let right_align = |idx: usize| columns[idx].name == "Age" || idx == columns.len() - 1;
 
     let mut out = String::new();
@@ -127,8 +146,7 @@ pub fn render_table<T: ViewItem>(
     out.push_str(header_fields.join("  ").trim_end());
     out.push('\n');
 
-    for (idx, item) in rows.iter().enumerate() {
-        let lines = render_row(item, idx, false, false, &all_cols, ctx);
+    for lines in &rendered {
         let fields: Vec<String> = lines
             .iter()
             .enumerate()
@@ -331,5 +349,17 @@ mod tests {
             out.contains("\x1b[32m"),
             "Always must color the green name: {out:?}"
         );
+    }
+
+    #[test]
+    fn render_table_first_column_not_truncated() {
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let ctx = CellContext { theme: &theme, symbols: &symbols, area_width: DUMP_AREA_WIDTH, compact: false };
+        let long = "a-very-long-branch-name-exceeding-min-width";
+        let rows = vec![Dummy { name: long.into(), pinned: false }];
+        let cols = dummy_cols();
+        let out = render_table(None, &rows, &cols, dummy_row, &ctx, ColorChoice::Never);
+        assert!(out.contains(long), "first column must not be truncated: {out:?}");
     }
 }
