@@ -18,9 +18,19 @@ pub fn spawn_squash_checker(
 
     std::thread::spawn(move || {
         for (branch_name, commit_hash) in &candidates {
+            let span = tracing::info_span!(
+                "squash_candidate",
+                branch_name = %branch_name,
+                cache_hit = tracing::field::Empty,
+                squash = tracing::field::Empty,
+            );
+            let _entered = span.enter();
+
             // Check cache first
             if let Some(status) = cache.lookup(branch_name, commit_hash) {
+                span.record("cache_hit", true);
                 let is_squash = matches!(status, MergeStatus::SquashMerged);
+                span.record("squash", is_squash);
                 if tx
                     .send(SquashResult {
                         branch_name: branch_name.clone(),
@@ -32,8 +42,10 @@ pub fn spawn_squash_checker(
                 }
                 continue;
             }
+            span.record("cache_hit", false);
 
             let is_squash = is_squash_merged(&repo_path, &base_branch, branch_name, None);
+            span.record("squash", is_squash);
 
             let status = if is_squash {
                 MergeStatus::SquashMerged
@@ -53,6 +65,7 @@ pub fn spawn_squash_checker(
             }
         }
 
+        cache.log_stats("squash_checker");
         cache.save();
     });
 
