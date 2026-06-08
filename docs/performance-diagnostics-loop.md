@@ -197,3 +197,65 @@ Remote enrichment is no longer the limiting remote phase. The next candidate is
 on remote branches: after bulk enrichment, the dump built 16,056 squash
 candidates, all cache misses in the observed tail, with each squash check around
 55-90ms.
+
+## Iteration 4: bounded parallel squash checking
+
+Date: 2026-06-07 local / 2026-06-08 UTC
+
+Commit before attempted change: `2a46945`
+
+### Baseline
+
+The baseline is the bounded remote run after Iteration 3:
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-bulk-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Result:
+
+| Repo / view | Wall time | Key span | Span time | Note |
+| --- | ---: | --- | ---: | --- |
+| `gbm-zenpayroll --remotes` | 60.01s cap | `git::squash_loader::squash_candidate` | 39.85s total busy | After remote enrichment closed in 19.0s, the serial squash checker completed 648 real squash checks before the cap; mean 61.5ms, p95 80.5ms |
+
+### Attempt
+
+Changed one function: `git::squash_loader::spawn_squash_checker`.
+
+The attempted change kept cache mutation on the coordinator thread, split
+cache misses into a queue, and used an eight-worker pool to run
+`is_squash_merged` for uncached candidates. It preserved the existing output
+channel contract by sending `SquashResult` values back from the coordinator.
+
+### After
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-parallel-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Result:
+
+| Repo / view | Before | After | Delta | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| `gbm-zenpayroll --remotes` full dump | 60.01s cap | 60.02s cap | no improvement | Output remained empty before the cap |
+| Real squash checks completed before cap | 648 | 293 | -54.8% | The new log separated 16,056 cheap cache-probe spans from 293 real worker spans at `src/git/squash_loader.rs:116` |
+| Real squash-check mean | 61.5ms | 1052.8ms | +1612% | Summed worker busy time was 308.5s because the eight workers overlapped; elapsed throughput still regressed |
+| Real squash-check p95 | 80.5ms | 1260ms | +1465% | `is_squash_merged` per-call cost rose sharply under the worker pool |
+
+### Outcome
+
+Rejected. The attempted change did not improve the bounded full dump, completed
+fewer squash checks before the same cap, and increased CPU cost. The code change
+was reverted.
+
+### Validation
+
+- `cargo test squash` passed for the attempted change.
+- `cargo test remote` passed for the attempted change.
+- `cargo build --release` passed for the attempted change.
