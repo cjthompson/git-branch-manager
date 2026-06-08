@@ -74,8 +74,10 @@ pub fn detect_base_branch(repo: &Repository, override_base: Option<&str>) -> Res
 #[instrument(skip(repo), fields(base_branch, result_count = field::Empty))]
 pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
     let span = Span::current();
-    let mut branches = collect_branch_metadata(repo, base_branch, false)?;
-    super::merge_detection::detect_merged_branches(repo, base_branch, &mut branches)?;
+    let mut branches = collect_branch_metadata(repo, base_branch, false, true)?;
+    let reachable =
+        super::merge_detection::detect_merged_branches(repo, base_branch, &mut branches)?;
+    fill_merge_base_commits(repo, &mut branches, &reachable);
 
     // Mark unmerged non-pinned branches as Pending (for squash check)
     info_span!(
@@ -117,7 +119,7 @@ pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<
 )]
 pub fn list_branches_fast(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
     let span = Span::current();
-    let mut branches = collect_branch_metadata(repo, base_branch, true)?;
+    let mut branches = collect_branch_metadata(repo, base_branch, true, true)?;
     let mut pending_count = 0usize;
     info_span!(
         "list_branches_fast_mark_pending",
@@ -296,8 +298,9 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
     let span = Span::current();
     let repo_path = repo.workdir().unwrap_or_else(|| repo.path());
     let mut cache = super::cache::BranchCache::load(repo_path);
-    let mut branches = collect_branch_metadata(repo, base_branch, false)?;
-    super::merge_detection::detect_merged_branches(repo, base_branch, &mut branches)?;
+    let mut branches = collect_branch_metadata(repo, base_branch, false, true)?;
+    let reachable =
+        super::merge_detection::detect_merged_branches(repo, base_branch, &mut branches)?;
 
     for branch in branches.iter_mut() {
         if branch.merge_status != MergeStatus::Unmerged || branch.is_base || branch.is_current {
@@ -321,6 +324,7 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
         }
     }
 
+    fill_merge_base_commits(repo, &mut branches, &reachable);
     cache.log_stats("list_branches");
     cache.save();
     info_span!("list_branches_sort", branch_count = branches.len())
@@ -329,11 +333,98 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
     Ok(branches)
 }
 
+/// For each branch, find its merge base using a bounded revwalk against the reachable set.
+/// Connected branches find their divergence point in O(divergence_depth) iterations.
+/// Disconnected branches bail out after LIMIT iterations and return None — avoiding the
+/// full-history traversal that would happen with an unbounded walk or repo.merge_base().
+const MERGE_BASE_WALK_LIMIT: usize = 1_000;
+
+#[instrument(
+    skip(repo, branches, reachable),
+    fields(branch_count = branches.len(), filled_count = field::Empty, miss_count = field::Empty, limited_count = field::Empty)
+)]
+fn fill_merge_base_commits(
+    repo: &Repository,
+    branches: &mut [BranchInfo],
+    reachable: &std::collections::HashSet<git2::Oid>,
+) {
+    if reachable.is_empty() {
+        return;
+    }
+    let span = tracing::Span::current();
+    let mut filled_count = 0usize;
+    let mut miss_count = 0usize;
+    let mut limited_count = 0usize;
+    for branch in branches.iter_mut() {
+        if branch.is_base || branch.merge_base_commit.is_some() {
+            continue;
+        }
+        let tip_oid = match repo
+            .find_branch(&branch.name, git2::BranchType::Local)
+            .and_then(|b| {
+                b.get()
+                    .target()
+                    .ok_or_else(|| git2::Error::from_str("no target"))
+            }) {
+            Ok(oid) => oid,
+            Err(_) => {
+                miss_count += 1;
+                continue;
+            }
+        };
+        // Fast path: tip itself is in reachable (branch was fast-forwarded into base).
+        if reachable.contains(&tip_oid) {
+            let s = tip_oid.to_string();
+            branch.merge_base_commit = Some(s[..8].to_string());
+            filled_count += 1;
+            continue;
+        }
+        // Bounded walk: iterate ancestors until we hit a reachable commit (= merge base).
+        // Cap at MERGE_BASE_WALK_LIMIT to avoid full traversal of disconnected histories.
+        let mut found_oid: Option<git2::Oid> = None;
+        let mut hit_limit = false;
+        if let Ok(mut revwalk) = repo.revwalk() {
+            let _ = revwalk.set_sorting(git2::Sort::NONE);
+            let _ = revwalk.push(tip_oid);
+            for (n, oid_result) in (&mut revwalk).enumerate() {
+                if n >= MERGE_BASE_WALK_LIMIT {
+                    hit_limit = true;
+                    break;
+                }
+                if let Ok(oid) = oid_result {
+                    if reachable.contains(&oid) {
+                        found_oid = Some(oid);
+                        break;
+                    }
+                }
+            }
+        }
+        match found_oid {
+            Some(oid) => {
+                let s = oid.to_string();
+                branch.merge_base_commit = Some(s[..8].to_string());
+                filled_count += 1;
+            }
+            None => {
+                if hit_limit {
+                    limited_count += 1;
+                } else {
+                    miss_count += 1;
+                }
+            }
+        }
+    }
+    span.record("filled_count", filled_count as u64);
+    span.record("miss_count", miss_count as u64);
+    span.record("limited_count", limited_count as u64);
+}
+
 #[instrument(
     skip(repo),
     fields(
         base_branch,
         skip_ahead_behind,
+        skip_merge_base,
         current_branch = field::Empty,
         base_oid = field::Empty,
         result_count = field::Empty,
@@ -356,6 +447,7 @@ fn collect_branch_metadata(
     repo: &Repository,
     base_branch: &str,
     skip_ahead_behind: bool,
+    skip_merge_base: bool,
 ) -> Result<Vec<BranchInfo>> {
     let span = Span::current();
     let head = repo.head().ok();
@@ -553,8 +645,9 @@ fn collect_branch_metadata(
             }
         };
 
-        // Compute merge-base commit for non-base branches (skipped in fast path)
-        let merge_base_commit = if skip_ahead_behind || is_base {
+        // Compute merge-base commit for non-base branches.
+        // skip_merge_base=true defers this to fill_merge_base_commits (reachable-set walk).
+        let merge_base_commit = if skip_ahead_behind || skip_merge_base || is_base {
             merge_base_skip_count += 1;
             None
         } else if let Some(base_oid) = base_oid {

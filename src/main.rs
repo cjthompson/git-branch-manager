@@ -134,7 +134,7 @@ fn main() -> Result<()> {
 
             // Slow: merge detection — update statuses in-place then send deltas
             match merge_detection::detect_merged_branches(&repo, &base_branch_bg, &mut branches) {
-                Ok(()) => {
+                Ok(_reachable) => {
                     let updates = branches
                         .into_iter()
                         .map(|b| (b.name, b.merge_status))

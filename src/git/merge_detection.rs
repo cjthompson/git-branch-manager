@@ -24,11 +24,13 @@ use tracing::{field, info_span, instrument, Span};
         unmerged_count = field::Empty,
     )
 )]
+/// Returns the set of all commit OIDs reachable from base, so callers can reuse it
+/// for merge-base computation without a second traversal.
 pub fn detect_merged_branches(
     repo: &Repository,
     base_branch: &str,
     branches: &mut [BranchInfo],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<HashSet<git2::Oid>> {
     let span = Span::current();
     let base_branch_ref = match info_span!("detect_merged_branches_base_lookup", base_branch)
         .in_scope(|| repo.find_branch(base_branch, git2::BranchType::Local))
@@ -87,7 +89,7 @@ pub fn detect_merged_branches(
         span.record("checked_count", 0u64);
         span.record("merged_count", 0u64);
         span.record("unmerged_count", 0u64);
-        return Ok(());
+        return Ok(HashSet::new());
     }
 
     // Build a set of all commits reachable from base in one revwalk pass.
@@ -126,7 +128,7 @@ pub fn detect_merged_branches(
     span.record("checked_count", candidates.len() as u64);
     span.record("merged_count", merged_count);
     span.record("unmerged_count", unmerged_count);
-    Ok(())
+    Ok(reachable)
 }
 
 /// Detect if a branch was squash-merged into the base branch using git CLI.
