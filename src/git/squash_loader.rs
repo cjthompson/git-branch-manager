@@ -17,7 +17,7 @@ pub fn spawn_squash_checker(
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || {
-        const CACHE_SAVE_INTERVAL: usize = 200;
+        const CACHE_SAVE_INTERVAL: usize = 100;
         let mut unsaved_inserts = 0usize;
 
         for (branch_name, commit_hash) in &candidates {

@@ -835,3 +835,89 @@ The fixed remote-enrichment cost is lower, so the remaining capped time is again
 remote squash checking. The latest run loaded 400 cached squash results but did
 not save the next 197 misses before the cap, so the cache-save interval may now
 be too coarse for the faster remote-enrichment phase.
+
+## Iteration 12: lower squash-cache save interval
+
+Date: 2026-06-07 local / 2026-06-08 UTC
+
+Commit before change: `016a289`
+
+### Baseline
+
+The baseline is the accepted after-run from Iteration 11:
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-merged-from-ahead-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Result:
+
+| Repo / view | Wall time | Cache load | Key span | Note |
+| --- | ---: | ---: | --- | --- |
+| `gbm-zenpayroll --remotes` | 60.02s cap | 400 entries | 597 `squash_candidate` spans | 400 cache hits, 197 misses; no cache save occurred because the 200-insert interval was not reached |
+
+### Decision
+
+Changed one function: `git::squash_loader::spawn_squash_checker`.
+
+Iteration 11 made remote enrichment faster, which left enough time for 197 new
+squash misses before the cap. With the previous 200-entry save interval, those
+197 checks were lost when the process was killed. This iteration lowers the
+periodic cache-save interval from 200 to 100 inserts so capped runs persist
+progress sooner. The normal final save and receiver-drop save behavior are
+unchanged.
+
+### After
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-save-100-zenpayroll-branches.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --branches --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-save-100-zenpayroll-worktrees.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --worktrees --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-save-100-gbm-zenpayroll-remotes-60s-run1.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-save-100-gbm-zenpayroll-remotes-60s-run2.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Results:
+
+| Repo / view | Before | After | Delta | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| First capped run cache saves | none | 500 and 600 entries | improved | Run 1 loaded 400 entries and saved twice before the cap |
+| First capped run progress | 597 candidates | 605 candidates | +1.3% | Run 1 had 400 hits and 205 misses |
+| Repeated capped run cache load | 400 entries | 600 entries | +200 entries | Run 2 loaded the entries saved by run 1 |
+| Repeated capped run progress | 597 candidates | 784 candidates | +31.3% | Run 2 had 600 hits and 184 misses |
+| Repeated remote full dump | 60.02s cap | 60.02s cap | unchanged | Still capped during squash checking |
+| `zenpayroll --branches` guardrail | 2.95s | 2.88s | within variance | Changed path is not used |
+| `zenpayroll --worktrees` guardrail | 13.62s | 14.29s | within variance | Changed path is not used |
+
+### Outcome
+
+Accepted. Lowering the interval preserves progress that was previously lost
+under the 60s cap, and the next run starts 200 cache entries farther ahead. The
+full remote dump is still capped, but repeated runs now advance more reliably.
+
+### Validation
+
+- `cargo test squash` passed.
+- `rustfmt src/git/squash_loader.rs --check` passed.
+- `cargo build --release` passed.
+
+### Next bottleneck
+
+The remaining remote time is still uncached squash detection. With the cache now
+advancing in 100-entry chunks, subsequent diagnostics can continue warming the
+cache or target the per-miss `is_squash_merged` command sequence.
