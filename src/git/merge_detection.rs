@@ -1,5 +1,6 @@
 use crate::types::{BranchInfo, MergeStatus};
 use git2::Repository;
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 use tracing::{field, info_span, instrument, Span};
@@ -53,15 +54,12 @@ pub fn detect_merged_branches(
     };
 
     let mut candidate_count = 0usize;
-    let mut checked_count = 0usize;
+    let mut candidates = Vec::new();
     let mut skipped_base_count = 0usize;
     let mut skipped_current_count = 0usize;
     let mut find_branch_error_count = 0usize;
     let mut missing_target_count = 0usize;
-    let mut merged_count = 0usize;
-    let mut unmerged_count = 0usize;
-    let mut graph_error_count = 0usize;
-    for branch in branches.iter_mut() {
+    for (index, branch) in branches.iter().enumerate() {
         let branch_span = info_span!(
             "detect_merged_branch_candidate",
             branch_name = %branch.name,
@@ -113,43 +111,64 @@ pub fn detect_merged_branches(
         };
         let branch_oid_string = branch_oid.to_string();
         branch_span.record("branch_tip", branch_oid_string.as_str());
-        checked_count += 1;
-
-        match info_span!(
-            "detect_merged_graph_descendant_of",
-            branch_name = %branch.name,
-            base_oid = %base_ref,
-            branch_tip = %branch_oid,
-        )
-        .in_scope(|| repo.graph_descendant_of(base_ref, branch_oid))
-        {
-            Ok(true) => {
-                merged_count += 1;
-                branch.merge_status = MergeStatus::Merged;
-                branch_span.record("merge_status", "merged");
-                branch_span.record("result_state", "success");
-            }
-            Ok(false) => {
-                unmerged_count += 1;
-                branch_span.record("merge_status", "unmerged");
-                branch_span.record("result_state", "success");
-            }
-            Err(_) => {
-                graph_error_count += 1;
-                branch_span.record("merge_status", "unmerged");
-                branch_span.record("result_state", "graph_error");
-            }
-        }
+        branch_span.record("result_state", "queued");
+        candidates.push((index, branch_oid));
     }
+
+    let reachable = if candidates.is_empty() {
+        HashSet::new()
+    } else {
+        info_span!(
+            "detect_merged_revwalk",
+            base_oid = %base_ref,
+            reachable_count = field::Empty,
+        )
+        .in_scope(|| -> anyhow::Result<HashSet<git2::Oid>> {
+            let revwalk_span = Span::current();
+            let mut revwalk = repo.revwalk()?;
+            revwalk.set_sorting(git2::Sort::NONE)?;
+            revwalk.push(base_ref)?;
+            let mut reachable = HashSet::new();
+            for oid in revwalk.flatten() {
+                reachable.insert(oid);
+            }
+            revwalk_span.record("reachable_count", reachable.len() as u64);
+            Ok(reachable)
+        })?
+    };
+
+    let mut merged_count = 0usize;
+    let mut unmerged_count = 0usize;
+    for (index, branch_oid) in candidates.iter().copied() {
+        let branch = &mut branches[index];
+        let branch_span = info_span!(
+            "detect_merged_branch_lookup",
+            branch_name = %branch.name,
+            branch_tip = %branch_oid,
+            merge_status = field::Empty,
+            result_state = field::Empty,
+        );
+        let _branch_enter = branch_span.enter();
+        if reachable.contains(&branch_oid) {
+            merged_count += 1;
+            branch.merge_status = MergeStatus::Merged;
+            branch_span.record("merge_status", "merged");
+        } else {
+            unmerged_count += 1;
+            branch_span.record("merge_status", "unmerged");
+        }
+        branch_span.record("result_state", "success");
+    }
+
     span.record("candidate_count", candidate_count);
-    span.record("checked_count", checked_count);
+    span.record("checked_count", candidates.len());
     span.record("skipped_base_count", skipped_base_count);
     span.record("skipped_current_count", skipped_current_count);
     span.record("find_branch_error_count", find_branch_error_count);
     span.record("missing_target_count", missing_target_count);
     span.record("merged_count", merged_count);
     span.record("unmerged_count", unmerged_count);
-    span.record("graph_error_count", graph_error_count);
+    span.record("graph_error_count", 0usize);
     Ok(())
 }
 

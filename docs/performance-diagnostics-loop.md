@@ -338,3 +338,77 @@ For `zenpayroll --branches`, the data points to
 27 `collect_branch_metadata_merge_base` spans consumed 13.85s before the
 attempt and 11.62s after the attempt. The next local iteration should target
 that merge-base path, not ahead/behind.
+
+## Iteration 6: single-revwalk merged-branch detection
+
+Date: 2026-06-07 local / 2026-06-08 UTC
+
+Commit before change: `621a4cf`
+
+### Baseline
+
+The baseline is still the latest accepted-code `zenpayroll --branches`
+guardrail from Iteration 3:
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-bulk-zenpayroll-branches.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --branches --color=never
+```
+
+Result:
+
+| Repo / view | Wall time | Key span | Span time | Note |
+| --- | ---: | --- | ---: | --- |
+| `zenpayroll --branches` | 24.23s | `git::merge_detection::detect_merged_branches` | 9.99s | 27 `detect_merged_graph_descendant_of` calls consumed 9.98s |
+| `zenpayroll --branches` | 24.23s | `git::branch::collect_branch_metadata_merge_base` | 13.85s | This is separate from merged-branch detection and remains a hotspot |
+
+### Decision
+
+Changed one function: `git::merge_detection::detect_merged_branches`.
+
+The function previously called `repo.graph_descendant_of(base, branch_tip)` once
+per candidate branch. This iteration builds a `HashSet` of commits reachable
+from the base branch with one revwalk, then classifies each candidate branch tip
+with an O(1) membership check. The function signature and callers are unchanged.
+
+### After
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-detect-merged-revwalk-zenpayroll-branches.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --branches --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-detect-merged-revwalk-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Results:
+
+| Repo / view | Before | After | Delta | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| `detect_merged_branches` | 9.99s | 15.4ms | -99.8% | New `detect_merged_revwalk` span closed in 15.0ms |
+| `zenpayroll --branches` full dump | 24.23s | 14.90s | -38.5% | `list_branches` span moved from 24.0s to 13.7s |
+| `collect_branch_metadata_merge_base` | 13.85s | 13.59s | unchanged | This is now the dominant local branch cost |
+| `gbm-zenpayroll --remotes` full dump | 60s cap | 60s cap | unchanged | Guardrail remained capped during remote squash checking |
+
+### Outcome
+
+Accepted. The changed function produced a clear function-level and user-visible
+improvement on `zenpayroll --branches`, with no new remote guardrail regression.
+
+### Validation
+
+- `cargo test merged_branch_detection` passed.
+- `cargo test branch` passed.
+- `rustfmt --check src/git/merge_detection.rs` passed.
+- `cargo build --release` passed.
+- `git diff --check` passed.
+
+### Next bottleneck
+
+For `zenpayroll --branches`, `git::branch::collect_branch_metadata` is now almost
+entirely merge-base work: 27 `collect_branch_metadata_merge_base` spans consumed
+13.59s in the accepted after-run.
