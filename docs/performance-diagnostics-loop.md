@@ -86,3 +86,56 @@ Results:
   dump/render integration files, so this iteration did not apply global
   formatting churn.
 
+## Iteration 2: bounded parallel remote enrichment
+
+Date: 2026-06-07 local / 2026-06-08 UTC
+
+Commit before attempted change: `4972351`
+
+### Baseline
+
+The relevant baseline/guardrail was the large remote repo:
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-worktree-parallel-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Result:
+
+| Repo / view | Wall time | Key span | Span time | Note |
+| --- | ---: | --- | ---: | --- |
+| `gbm-zenpayroll --remotes` | 60.01s cap | `git::branch::spawn_remote_enricher` | open | `list_remote_branches_phase1` closed in 1.48s; no output rows were produced before the cap |
+
+### Attempt
+
+Changed one function: `git::branch::spawn_remote_enricher`.
+
+The attempted change replaced the serial remote enrichment loop with a bounded
+worker pool. Each worker opened its own `Repository`, resolved the base OID once,
+then popped remote branches from a shared queue and sent results by `full_ref`.
+This preserved the existing out-of-order-safe channel contract.
+
+### After
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-parallel-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Result:
+
+| Repo / view | Before | After | Delta | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| `gbm-zenpayroll --remotes` | 60.01s cap | 60.02s cap | no improvement | No output rows; no closed aggregate worker span; `time` reported much higher CPU/system time (`user 117.39`, `sys 193.80`) |
+
+### Outcome
+
+Rejected. The attempted change did not produce a measurable improvement under
+the same 60s bounded run and increased resource usage. The code change was
+reverted. The next remote iteration should use finer-grained diagnostics or a
+different algorithmic approach instead of naive parallel libgit2 graph walks.
