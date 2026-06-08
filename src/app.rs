@@ -117,6 +117,29 @@ pub struct App {
 
     // Whether remote fetch has been done this session
     pub remote_fetched: bool,
+
+    // Fingerprint of the previous branch refresh inputs. Diagnostic spans use
+    // this to show whether a full refresh recomputed identical branch tips.
+    last_branch_fingerprint: Option<u64>,
+}
+
+fn branch_input_fingerprint(repo: &git2::Repository, base_branch: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut tips: Vec<(String, String)> = Vec::new();
+    if let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) {
+        for (branch, _) in branches.flatten() {
+            if let (Ok(Some(name)), Some(oid)) = (branch.name(), branch.get().target()) {
+                tips.push((name.to_string(), oid.to_string()));
+            }
+        }
+    }
+
+    tips.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    base_branch.hash(&mut hasher);
+    tips.hash(&mut hasher);
+    hasher.finish()
 }
 
 // ---- Watchdog helpers ----
@@ -222,6 +245,7 @@ impl App {
             cancel_flag: None,
             terminal_rows: 0,
             remote_fetched,
+            last_branch_fingerprint: None,
         }
     }
 
@@ -1900,13 +1924,25 @@ impl App {
         });
     }
 
-    pub fn refresh_branches(&mut self) {
+    pub fn refresh_branches(&mut self, trigger: &str) {
         let repo_path = self.repo_path.clone();
         let base_branch = self.base_branch.clone();
 
         let Ok(repo) = git2::Repository::open(&repo_path) else {
             return;
         };
+
+        let fingerprint = branch_input_fingerprint(&repo, &base_branch);
+        let inputs_changed = self.last_branch_fingerprint != Some(fingerprint);
+        self.last_branch_fingerprint = Some(fingerprint);
+        let _span = tracing::info_span!(
+            "branch_load",
+            trigger = %trigger,
+            path = "sync_full",
+            inputs_changed = inputs_changed,
+        )
+        .entered();
+
         let Ok(branches) = branch::list_branches_phase1(&repo, &base_branch) else {
             return;
         };
@@ -1945,7 +1981,7 @@ impl App {
     fn refresh_after_operation(&mut self) {
         match self.return_view {
             ViewId::Branches => {
-                self.refresh_branches();
+                self.refresh_branches("post_operation");
                 self.active_view = ViewId::Branches;
             }
             ViewId::Remotes => {
@@ -1997,7 +2033,7 @@ impl App {
     fn clear_cache_and_refresh(&mut self) {
         let mut bc = cache::BranchCache::load(&self.repo_path);
         bc.clear();
-        self.refresh_branches();
+        self.refresh_branches("manual_refresh_R");
         self.toast = Some(Toast::new("Cache cleared".into(), 3));
     }
 
