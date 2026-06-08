@@ -259,3 +259,82 @@ was reverted.
 - `cargo test squash` passed for the attempted change.
 - `cargo test remote` passed for the attempted change.
 - `cargo build --release` passed for the attempted change.
+
+## Iteration 5: bulk local upstream tracking counts
+
+Date: 2026-06-07 local / 2026-06-08 UTC
+
+Commit before attempted change: `3f95dba`
+
+### Baseline
+
+The local branch baseline was the latest `zenpayroll --branches` guardrail after
+Iteration 3:
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-bulk-zenpayroll-branches.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --branches --color=never
+```
+
+Result:
+
+| Repo / view | Wall time | Key span | Span time | Note |
+| --- | ---: | --- | ---: | --- |
+| `zenpayroll --branches` | 24.23s | `git::branch::collect_branch_metadata` | 14.0s | `collect_branch_metadata_merge_base` was 13.85s; `collect_branch_metadata_ahead_behind_graph` was only 98.2ms |
+
+### Attempt
+
+Changed one function: `git::branch::collect_branch_metadata`.
+
+The attempted change precomputed local upstream tracking counts with:
+
+```sh
+git for-each-ref refs/heads --format='%(refname:short)%09%(upstream:short)%09%(upstream:track)'
+```
+
+It then used the parsed ahead/behind counts for tracked, non-gone local branches
+and kept the existing `repo.graph_ahead_behind` path as a fallback.
+
+### After
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-local-tracking-bulk-zenpayroll-branches.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --branches --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-local-tracking-bulk-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Results:
+
+| Repo / view | Before | After | Delta | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| `zenpayroll --branches` full dump | 24.23s | 22.83s | not accepted | The apparent wall-time drop was dominated by merge-base variance, not the changed ahead/behind path |
+| `collect_branch_metadata_ahead_behind_graph` / replacement | 98.2ms | 77.9ms | -20.3ms | The changed path was too small to matter for total startup time |
+| `collect_branch_metadata_merge_base` | 13.85s | 11.62s | unrelated variance | This remained the dominant local metadata cost |
+| `gbm-zenpayroll --remotes` full dump | 60s cap | 60s cap | no improvement | Guardrail remained capped; output stayed empty |
+
+### Outcome
+
+Rejected. The attempted change replaced a small cost center and did not address
+the current local branch bottleneck. The code change was reverted.
+
+### Validation
+
+- `cargo test parse_local_tracking_ahead_behind` passed for the attempted change.
+- `cargo test branch` passed for the attempted change.
+- `cargo test remote` passed for the attempted change.
+- `rustfmt --check src/git/branch.rs` passed for the attempted change.
+- `cargo build --release` passed for the attempted change.
+
+### Next bottleneck
+
+For `zenpayroll --branches`, the data points to
+`git::branch::collect_branch_metadata`'s per-branch merge-base computation:
+27 `collect_branch_metadata_merge_base` spans consumed 13.85s before the
+attempt and 11.62s after the attempt. The next local iteration should target
+that merge-base path, not ahead/behind.
