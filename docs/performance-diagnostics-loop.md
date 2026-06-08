@@ -139,3 +139,61 @@ Rejected. The attempted change did not produce a measurable improvement under
 the same 60s bounded run and increased resource usage. The code change was
 reverted. The next remote iteration should use finer-grained diagnostics or a
 different algorithmic approach instead of naive parallel libgit2 graph walks.
+
+## Iteration 3: bulk remote ahead/behind and merged status
+
+Date: 2026-06-07 local / 2026-06-08 UTC
+
+Commit before change: `644dacd`
+
+### Baseline
+
+The baseline is the same bounded remote run from Iteration 2: the serial
+`spawn_remote_enricher` did not close inside the 60s cap, and no rows were
+rendered.
+
+### Decision
+
+Changed one function: `git::branch::spawn_remote_enricher`.
+
+The failed worker-pool attempt showed that parallel libgit2 graph walks do not
+solve the 16k-remote case. Local Git 2.50.1 can compute the same data in bulk:
+
+- `git for-each-ref refs/remotes --format='%(refname:short)%09%(ahead-behind:<base-oid>)'`
+- `git branch -r --merged <base-oid>`
+
+Manual probes against `/Users/chris.thompson/workspace/gbm-zenpayroll` completed
+in 11.39s and 7.58s respectively, so this iteration replaced the per-branch
+libgit2 graph loop with those two bulk commands and parsed their output back into
+the existing `RemoteEnrichResult` channel.
+
+### After
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-bulk-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Results:
+
+| Repo / view | Before | After | Delta | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| `gbm-zenpayroll remote_enricher_worker` | >60s | 19.0s | accepted | `result_count=16602`, `ahead_behind_count=16604`, `merged_count=546`, `missing_ahead_behind_count=0` |
+| `gbm-zenpayroll --remotes` full dump | 60s cap | 60s cap | still capped | The bottleneck moved to `squash_candidate` / `is_squash_merged`: 648 candidates consumed 39.8s before the cap; `spawn_squash_checker` had `candidate_count=16056` |
+| `zenpayroll --branches` guardrail | 23.90s baseline | 24.23s | within variance | Guardrail only; branch path is not touched by this change |
+
+### Validation
+
+- `cargo test remote` passed.
+- `rustfmt --check src/git/branch.rs` passed.
+- `git diff --check` passed.
+
+### Next bottleneck
+
+Remote enrichment is no longer the limiting remote phase. The next candidate is
+`git::squash_loader::spawn_squash_checker` / `git::merge_detection::is_squash_merged`
+on remote branches: after bulk enrichment, the dump built 16,056 squash
+candidates, all cache misses in the observed tail, with each squash check around
+55-90ms.
