@@ -1,6 +1,8 @@
 use crate::types::*;
 use chrono::{TimeZone, Utc};
 use git2::{BranchType, Repository};
+use std::collections::{HashMap, HashSet};
+use std::process::Command;
 use std::sync::mpsc;
 use thiserror::Error;
 use tracing::{field, info_span, instrument, Span};
@@ -227,12 +229,27 @@ pub fn spawn_remote_enricher(
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || {
+        let worker_span = info_span!(
+            "remote_enricher_worker",
+            branch_count = branches.len(),
+            result_count = field::Empty,
+            ahead_behind_count = field::Empty,
+            merged_count = field::Empty,
+            skipped_base_count = field::Empty,
+            missing_ahead_behind_count = field::Empty,
+            result_state = field::Empty,
+        );
+        let _worker_entered = worker_span.enter();
+
         let repo = match Repository::open(&repo_path) {
             Ok(r) => r,
-            Err(_) => return,
+            Err(_) => {
+                worker_span.record("result_state", "open_repo_error");
+                return;
+            }
         };
 
-        // Prefer local base ref, fall back to remote tracking
+        // Prefer local base ref, fall back to remote tracking.
         let base_oid = repo
             .find_branch(&base_branch, BranchType::Local)
             .or_else(|_| repo.find_branch(&format!("origin/{base_branch}"), BranchType::Remote))
@@ -245,50 +262,162 @@ pub fn spawn_remote_enricher(
 
         let base_oid = match base_oid {
             Some(oid) => oid,
-            None => return,
+            None => {
+                worker_span.record("result_state", "base_oid_missing");
+                return;
+            }
         };
+        let base_oid = base_oid.to_string();
 
-        for branch in &branches {
+        let ahead_behind_format = format!("%(refname:short)%09%(ahead-behind:{base_oid})");
+        let ahead_behind_output = match remote_enricher_git_stdout(
+            &repo_path,
+            &[
+                "for-each-ref",
+                "refs/remotes",
+                "--format",
+                &ahead_behind_format,
+            ],
+        ) {
+            Some(output) => output,
+            None => {
+                worker_span.record("result_state", "ahead_behind_command_error");
+                return;
+            }
+        };
+        let ahead_behind = parse_remote_ahead_behind(&ahead_behind_output);
+        worker_span.record("ahead_behind_count", ahead_behind.len());
+
+        let merged_output = match remote_enricher_git_stdout(
+            &repo_path,
+            &["branch", "-r", "--merged", base_oid.as_str()],
+        ) {
+            Some(output) => output,
+            None => {
+                worker_span.record("result_state", "merged_command_error");
+                return;
+            }
+        };
+        let merged_refs = parse_merged_remote_refs(&merged_output);
+        worker_span.record("merged_count", merged_refs.len());
+
+        let mut result_count = 0usize;
+        let mut skipped_base_count = 0usize;
+        let mut missing_ahead_behind_count = 0usize;
+        for branch in branches {
             if branch.is_base {
+                skipped_base_count += 1;
                 continue;
             }
 
-            let branch_ref = format!("refs/remotes/{}", branch.full_ref);
-            let branch_oid = match repo
-                .find_reference(&branch_ref)
-                .and_then(|r| r.target().ok_or_else(|| git2::Error::from_str("no target")))
-            {
-                Ok(oid) => oid,
-                Err(_) => continue,
+            let Some((ahead, behind)) = ahead_behind.get(&branch.full_ref).copied() else {
+                missing_ahead_behind_count += 1;
+                continue;
             };
-
-            let merge_status = if repo
-                .graph_descendant_of(base_oid, branch_oid)
-                .unwrap_or(false)
-            {
+            let merge_status = if merged_refs.contains(&branch.full_ref) {
                 MergeStatus::Merged
             } else {
                 MergeStatus::Unmerged
             };
 
-            let (ahead, behind) = repo
-                .graph_ahead_behind(branch_oid, base_oid)
-                .map(|(a, b)| (Some(a as u32), Some(b as u32)))
-                .unwrap_or((None, None));
-
             let result = RemoteEnrichResult {
-                full_ref: branch.full_ref.clone(),
+                full_ref: branch.full_ref,
                 merge_status,
                 ahead,
                 behind,
             };
             if tx.send(result).is_err() {
+                worker_span.record("result_state", "receiver_dropped");
                 return;
             }
+            result_count += 1;
         }
+
+        worker_span.record("result_count", result_count);
+        worker_span.record("skipped_base_count", skipped_base_count);
+        worker_span.record("missing_ahead_behind_count", missing_ahead_behind_count);
+        worker_span.record("result_state", "success");
     });
 
     rx
+}
+
+fn remote_enricher_git_stdout(repo_path: &std::path::Path, args: &[&str]) -> Option<String> {
+    let span = info_span!(
+        "remote_enricher_git_command",
+        command = "git",
+        args = ?args,
+        exit_code = field::Empty,
+        stdout_bytes = field::Empty,
+        stderr_bytes = field::Empty,
+        success = field::Empty,
+        result_state = field::Empty,
+    );
+    let output = {
+        let _entered = span.enter();
+        Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .stdin(std::process::Stdio::null())
+            .output()
+    };
+
+    match output {
+        Ok(output) if output.status.success() => {
+            span.record(
+                "exit_code",
+                output.status.code().map(i64::from).unwrap_or(-1),
+            );
+            span.record("stdout_bytes", output.stdout.len() as u64);
+            span.record("stderr_bytes", output.stderr.len() as u64);
+            span.record("success", true);
+            span.record("result_state", "success");
+            Some(String::from_utf8_lossy(&output.stdout).to_string())
+        }
+        Ok(output) => {
+            span.record(
+                "exit_code",
+                output.status.code().map(i64::from).unwrap_or(-1),
+            );
+            span.record("stdout_bytes", output.stdout.len() as u64);
+            span.record("stderr_bytes", output.stderr.len() as u64);
+            span.record("success", false);
+            span.record("result_state", "nonzero_exit");
+            None
+        }
+        Err(_) => {
+            span.record("success", false);
+            span.record("result_state", "spawn_error");
+            None
+        }
+    }
+}
+
+fn parse_remote_ahead_behind(output: &str) -> HashMap<String, (Option<u32>, Option<u32>)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (name, counts) = line.split_once('\t')?;
+            let mut counts = counts.split_whitespace();
+            let ahead = counts.next()?.parse::<u32>().ok();
+            let behind = counts.next()?.parse::<u32>().ok();
+            Some((name.to_string(), (ahead, behind)))
+        })
+        .collect()
+}
+
+fn parse_merged_remote_refs(output: &str) -> HashSet<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let name = line.trim().trim_start_matches('*').trim();
+            if name.is_empty() || name.contains(" -> ") {
+                None
+            } else {
+                Some(name.to_string())
+            }
+        })
+        .collect()
 }
 
 /// List all local branches with full metadata including squash-merge detection.
