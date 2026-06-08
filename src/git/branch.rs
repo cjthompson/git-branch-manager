@@ -343,7 +343,7 @@ const MERGE_BASE_WALK_LIMIT: usize = 1_000;
     skip(repo, branches, reachable),
     fields(branch_count = branches.len(), filled_count = field::Empty, miss_count = field::Empty, limited_count = field::Empty)
 )]
-fn fill_merge_base_commits(
+pub fn fill_merge_base_commits(
     repo: &Repository,
     branches: &mut [BranchInfo],
     reachable: &std::collections::HashSet<git2::Oid>,

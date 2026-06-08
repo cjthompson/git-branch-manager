@@ -120,7 +120,7 @@ fn main() -> Result<()> {
                 return;
             }
 
-            // Ahead/behind + merge-base: both are graph traversals deferred from fast path
+            // Ahead/behind: graph traversals deferred from fast path
             let ahead_behind_updates = compute_ahead_behind(&repo, &branches);
             phase1_span.record(
                 "ahead_behind_update_count",
@@ -128,20 +128,25 @@ fn main() -> Result<()> {
             );
             let _ = phase1_tx.send(app::Phase1Msg::AheadBehind(ahead_behind_updates));
 
-            let merge_base_updates = compute_merge_bases(&repo, &base_branch_bg, &branches);
-            phase1_span.record("merge_base_update_count", merge_base_updates.len() as u64);
-            let _ = phase1_tx.send(app::Phase1Msg::MergeBaseCommits(merge_base_updates));
-
-            // Slow: merge detection — update statuses in-place then send deltas
+            // Merge detection: builds reachable set, then reuse it for merge-base computation.
+            // This replaces compute_merge_bases (which called repo.merge_base per branch = O(history))
+            // with fill_merge_base_commits (bounded revwalk using the already-built reachable set).
             match merge_detection::detect_merged_branches(&repo, &base_branch_bg, &mut branches) {
-                Ok(_reachable) => {
-                    let updates = branches
-                        .into_iter()
-                        .map(|b| (b.name, b.merge_status))
+                Ok(reachable) => {
+                    let updates: Vec<(String, MergeStatus)> = branches
+                        .iter()
+                        .map(|b| (b.name.clone(), b.merge_status))
                         .collect();
-                    let updates: Vec<(String, MergeStatus)> = updates;
                     phase1_span.record("merge_status_update_count", updates.len() as u64);
                     let _ = phase1_tx.send(app::Phase1Msg::MergeStatuses(updates));
+
+                    branch::fill_merge_base_commits(&repo, &mut branches, &reachable);
+                    let merge_base_updates: Vec<(String, String)> = branches
+                        .into_iter()
+                        .filter_map(|b| b.merge_base_commit.map(|h| (b.name, h)))
+                        .collect();
+                    phase1_span.record("merge_base_update_count", merge_base_updates.len() as u64);
+                    let _ = phase1_tx.send(app::Phase1Msg::MergeBaseCommits(merge_base_updates));
                     phase1_span.record("result_state", "success");
                 }
                 Err(_) => {
@@ -238,130 +243,6 @@ fn init_timing_log() -> Option<tracing_appender::non_blocking::WorkerGuard> {
         .init();
 
     Some(guard)
-}
-
-#[instrument(
-    skip(repo, branches),
-    fields(
-        branch_count = branches.len(),
-        base_oid = field::Empty,
-        base_lookup_result = field::Empty,
-        result_count = field::Empty,
-        skipped_base_count = field::Empty,
-        find_branch_error_count = field::Empty,
-        peel_error_count = field::Empty,
-        merge_base_success_count = field::Empty,
-        merge_base_error_count = field::Empty,
-    )
-)]
-fn compute_merge_bases(
-    repo: &git2::Repository,
-    base_branch: &str,
-    branches: &[git_branch_manager::types::BranchInfo],
-) -> Vec<(String, String)> {
-    let span = Span::current();
-    let base_lookup_span = info_span!("compute_merge_bases_base_lookup", base_branch);
-    let base_oid = match base_lookup_span.in_scope(|| {
-        repo.find_branch(base_branch, git2::BranchType::Local)
-            .ok()
-            .and_then(|b| b.get().target())
-    }) {
-        Some(oid) => {
-            let base_oid = oid.to_string();
-            span.record("base_oid", base_oid.as_str());
-            span.record("base_lookup_result", "success");
-            oid
-        }
-        None => {
-            span.record("base_lookup_result", "missing_target");
-            span.record("result_count", 0);
-            span.record("skipped_base_count", 0);
-            span.record("find_branch_error_count", 0);
-            span.record("peel_error_count", 0);
-            span.record("merge_base_success_count", 0);
-            span.record("merge_base_error_count", 0);
-            return Vec::new();
-        }
-    };
-
-    let mut updates = Vec::new();
-    let mut skipped_base_count = 0usize;
-    let mut find_branch_error_count = 0usize;
-    let mut peel_error_count = 0usize;
-    let mut merge_base_success_count = 0usize;
-    let mut merge_base_error_count = 0usize;
-    for b in branches {
-        let branch_span = info_span!(
-            "compute_merge_base_branch",
-            branch_name = %b.name,
-            is_base = b.is_base,
-            is_current = b.is_current,
-            branch_tip = field::Empty,
-            merge_base_oid = field::Empty,
-            result_state = field::Empty,
-        );
-        let _branch_enter = branch_span.enter();
-
-        if b.is_base {
-            skipped_base_count += 1;
-            branch_span.record("result_state", "skipped_base");
-            continue;
-        }
-
-        let branch = match info_span!("compute_merge_base_find_branch", branch_name = %b.name)
-            .in_scope(|| repo.find_branch(&b.name, git2::BranchType::Local))
-        {
-            Ok(branch) => branch,
-            Err(_) => {
-                find_branch_error_count += 1;
-                branch_span.record("result_state", "find_branch_error");
-                continue;
-            }
-        };
-
-        let commit = match info_span!("compute_merge_base_peel_commit", branch_name = %b.name)
-            .in_scope(|| branch.get().peel_to_commit())
-        {
-            Ok(commit) => commit,
-            Err(_) => {
-                peel_error_count += 1;
-                branch_span.record("result_state", "peel_error");
-                continue;
-            }
-        };
-
-        let branch_tip = commit.id().to_string();
-        branch_span.record("branch_tip", branch_tip.as_str());
-
-        match info_span!(
-            "compute_merge_base_graph",
-            branch_name = %b.name,
-            base_oid = %base_oid,
-            branch_tip = %commit.id(),
-        )
-        .in_scope(|| repo.merge_base(base_oid, commit.id()))
-        {
-            Ok(mb_oid) => {
-                merge_base_success_count += 1;
-                let merge_base_oid = mb_oid.to_string();
-                branch_span.record("merge_base_oid", merge_base_oid.as_str());
-                branch_span.record("result_state", "success");
-                let hash = merge_base_oid[..8].to_string();
-                updates.push((b.name.clone(), hash));
-            }
-            Err(_) => {
-                merge_base_error_count += 1;
-                branch_span.record("result_state", "merge_base_error");
-            }
-        }
-    }
-    span.record("result_count", updates.len());
-    span.record("skipped_base_count", skipped_base_count);
-    span.record("find_branch_error_count", find_branch_error_count);
-    span.record("peel_error_count", peel_error_count);
-    span.record("merge_base_success_count", merge_base_success_count);
-    span.record("merge_base_error_count", merge_base_error_count);
-    updates
 }
 
 #[instrument(
