@@ -113,7 +113,9 @@ pub fn run(
             // enricher has already run synchronously, so the equivalent set is the
             // non-base remotes that came back Unmerged (squash detection only ever
             // flips Unmerged -> SquashMerged). Uses the same per-repo BranchCache.
-            let candidates: Vec<(String, String)> = rows
+            // Remote branches don't precompute a merge base, so the slot is None and
+            // is_squash_merged falls back to `git merge-base`.
+            let candidates: Vec<(String, String, Option<String>)> = rows
                 .iter()
                 .filter(|b| b.merge_status == MergeStatus::Unmerged && !b.is_base)
                 .filter_map(|b| {
@@ -121,7 +123,7 @@ pub fn run(
                     repo.find_reference(&refname)
                         .ok()
                         .and_then(|r| r.peel_to_commit().ok())
-                        .map(|c| (b.full_ref.clone(), c.id().to_string()))
+                        .map(|c| (b.full_ref.clone(), c.id().to_string(), None))
                 })
                 .collect();
             if !candidates.is_empty() {

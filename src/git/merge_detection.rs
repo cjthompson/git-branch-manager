@@ -198,12 +198,22 @@ pub fn apply_merge_statuses(
 
 /// Detect if a branch was squash-merged into the base branch using git CLI.
 /// Uses commit-tree + cherry to check if the branch's tree content already exists in base.
+///
+/// `merge_base` is the branch's already-known merge base with `base_branch` (the
+/// value computed once from the in-memory reachable set in `fill_merge_base_commits`).
+/// When `Some`, it is used directly and the per-call `git merge-base` subprocess is
+/// skipped entirely — this avoids re-walking history for every candidate, which is
+/// catastrophic on branches whose merge base is far back or absent (disjoint
+/// histories force `git merge-base` to walk the full graph). When `None`, we fall
+/// back to computing it via `git merge-base` (used by the remote path, which does
+/// not precompute merge bases).
 #[instrument(skip(repo_path))]
 pub fn is_squash_merged(
     repo_path: &Path,
     base_branch: &str,
     branch_name: &str,
     commit_hash: Option<&str>,
+    merge_base: Option<&str>,
 ) -> bool {
     let git = |args: &[&str]| -> Option<String> {
         let out = Command::new("git")
@@ -221,10 +231,13 @@ pub fn is_squash_merged(
 
     let branchish = commit_hash.unwrap_or(branch_name);
 
-    // Step 1: find merge-base
-    let ancestor = match git(&["merge-base", base_branch, branchish]) {
-        Some(a) if !a.is_empty() => a,
-        _ => return false,
+    // Step 1: find merge-base. Prefer the precomputed value; only shell out when absent.
+    let ancestor = match merge_base {
+        Some(mb) if !mb.is_empty() => mb.to_string(),
+        _ => match git(&["merge-base", base_branch, branchish]) {
+            Some(a) if !a.is_empty() => a,
+            _ => return false,
+        },
     };
 
     // Step 2: create temp commit-tree

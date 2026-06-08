@@ -88,7 +88,13 @@ pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<
     )
     .in_scope(|| {
         for b in &mut branches {
-            if !b.is_pinned() && b.merge_status == MergeStatus::Unmerged {
+            // Only connected branches are squash-check candidates. A branch with no
+            // merge base is disjoint from base and can't have been squash-merged, so
+            // leave it Unmerged rather than Pending (nothing will resolve it otherwise).
+            if !b.is_pinned()
+                && b.merge_status == MergeStatus::Unmerged
+                && b.merge_base_commit.is_some()
+            {
                 b.merge_status = MergeStatus::Pending;
             }
         }
@@ -411,10 +417,19 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
     let reachable =
         super::merge_detection::detect_merged_branches(repo, base_branch, &mut branches)?;
 
+    // Compute merge bases first so squash detection can reuse them (and skip
+    // disjoint branches) instead of re-deriving the merge base per branch.
+    fill_merge_base_commits(repo, &mut branches, &reachable);
+
     for branch in branches.iter_mut() {
         if branch.merge_status != MergeStatus::Unmerged || branch.is_base || branch.is_current {
             continue;
         }
+        // No merge base ⇒ no shared history ⇒ it can't have been squash-merged into
+        // base. Skip it rather than letting `git merge-base` walk the whole graph.
+        let Some(merge_base) = branch.merge_base_commit.clone() else {
+            continue;
+        };
         let Some(commit_hash) = get_commit_hash(repo, &branch.name) else {
             continue;
         };
@@ -424,7 +439,8 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
             repo_path,
             base_branch,
             &branch.name,
-            None,
+            Some(&commit_hash),
+            Some(&merge_base),
         ) {
             branch.merge_status = MergeStatus::SquashMerged;
             cache.insert(&branch.name, &MergeStatus::SquashMerged, &commit_hash);
@@ -433,7 +449,6 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
         }
     }
 
-    fill_merge_base_commits(repo, &mut branches, &reachable);
     cache.log_stats("list_branches");
     cache.save();
     info_span!("list_branches_sort", branch_count = branches.len())

@@ -737,7 +737,7 @@ fn test_remote_branch_squash_merge_detection() {
         .expect("list_remote_branches_phase1 failed");
 
     // Build candidates for squash checker: (full_ref, commit_hash) for pending non-base branches
-    let candidates: Vec<(String, String)> = remotes
+    let candidates: Vec<(String, String, Option<String>)> = remotes
         .iter()
         .filter(|b| b.merge_status == MergeStatus::Pending && !b.is_base)
         .filter_map(|b| {
@@ -745,7 +745,7 @@ fn test_remote_branch_squash_merge_detection() {
             repo.find_reference(&refname)
                 .ok()
                 .and_then(|r| r.peel_to_commit().ok())
-                .map(|c| (b.full_ref.clone(), c.id().to_string()))
+                .map(|c| (b.full_ref.clone(), c.id().to_string(), None))
         })
         .collect();
 
@@ -1631,7 +1631,42 @@ fn test_is_squash_merged_direct() {
         dir,
         "main",
         "feature/squashed",
+        None,
         None
+    ));
+}
+
+#[test]
+fn test_is_squash_merged_with_precomputed_merge_base() {
+    // The fast path: a precomputed merge base is supplied, so is_squash_merged must
+    // not need to derive it via `git merge-base` and still detect the squash.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    let merge_base = {
+        let out = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    run_git(dir, &["checkout", "-b", "feature/squashed"]);
+    std::fs::write(dir.join("squash.txt"), "squash content").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "squash commit"]);
+    run_git(dir, &["checkout", "main"]);
+
+    run_git(dir, &["merge", "--squash", "feature/squashed"]);
+    run_git(dir, &["commit", "-m", "squashed feature"]);
+
+    assert!(merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/squashed",
+        None,
+        Some(&merge_base),
     ));
 }
 
@@ -1650,6 +1685,7 @@ fn test_is_not_squash_merged_direct() {
         dir,
         "main",
         "feature/unmerged",
+        None,
         None
     ));
 }
@@ -1658,10 +1694,19 @@ fn test_is_not_squash_merged_direct() {
 fn dump_branches_basic() {
     let (tmp, _repo) = setup_test_repo();
     let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
-        .args(["--repo", tmp.path().to_str().unwrap(), "--branches", "--color=never"])
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--branches",
+            "--color=never",
+        ])
         .output()
         .expect("failed to run binary");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.starts_with("base: main"), "got: {s:?}");
     assert!(s.contains("Branch"), "header missing: {s:?}");
@@ -1673,24 +1718,40 @@ fn dump_branches_basic() {
 fn dump_rejects_two_view_flags() {
     let (tmp, _repo) = setup_test_repo();
     let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
-        .args(["--repo", tmp.path().to_str().unwrap(), "--branches", "--tags"])
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--branches",
+            "--tags",
+        ])
         .output()
         .expect("failed to run binary");
-    assert!(!out.status.success(), "two view flags must be a usage error");
+    assert!(
+        !out.status.success(),
+        "two view flags must be a usage error"
+    );
 }
 
 #[test]
 fn dump_list_is_branches_alias() {
     let (tmp, _repo) = setup_test_repo();
     let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
-        .args(["--repo", tmp.path().to_str().unwrap(), "--list", "--color=never"])
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--list",
+            "--color=never",
+        ])
         .output()
         .expect("failed to run binary");
     assert!(out.status.success());
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.starts_with("base: main"), "got: {s:?}");
     let err = String::from_utf8(out.stderr).unwrap();
-    assert!(err.contains("deprecated"), "expected --list deprecation note on stderr, got: {err:?}");
+    assert!(
+        err.contains("deprecated"),
+        "expected --list deprecation note on stderr, got: {err:?}"
+    );
 }
 
 #[test]
@@ -1699,15 +1760,27 @@ fn dump_remotes_basic() {
     // A bare "remote" with one branch, fetched into the test repo.
     let remote = tempfile::tempdir().unwrap();
     run_git(remote.path(), &["init", "--bare", "-b", "main"]);
-    run_git(tmp.path(), &["remote", "add", "origin", remote.path().to_str().unwrap()]);
+    run_git(
+        tmp.path(),
+        &["remote", "add", "origin", remote.path().to_str().unwrap()],
+    );
     run_git(tmp.path(), &["push", "origin", "main"]);
     run_git(tmp.path(), &["fetch", "origin"]);
 
     let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
-        .args(["--repo", tmp.path().to_str().unwrap(), "--remotes", "--color=never"])
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--remotes",
+            "--color=never",
+        ])
         .output()
         .expect("failed to run binary");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.contains("Name"), "header missing: {s:?}");
     assert!(s.contains("origin/main"), "remote row missing: {s:?}");
@@ -1718,10 +1791,19 @@ fn dump_tags_basic() {
     let (tmp, _repo) = setup_test_repo();
     run_git(tmp.path(), &["tag", "-a", "v1.0", "-m", "release one"]);
     let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
-        .args(["--repo", tmp.path().to_str().unwrap(), "--tags", "--color=never"])
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--tags",
+            "--color=never",
+        ])
         .output()
         .expect("failed to run binary");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.contains("Name"), "header missing: {s:?}");
     assert!(s.contains("v1.0"), "tag row missing: {s:?}");
@@ -1740,10 +1822,19 @@ fn dump_tags_message_is_left_aligned() {
     // so alignment padding is observable (vs. truncated for longer messages).
     run_git(tmp.path(), &["tag", "-a", "v1.0", "-m", "rel one"]);
     let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
-        .args(["--repo", tmp.path().to_str().unwrap(), "--tags", "--color=never"])
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--tags",
+            "--color=never",
+        ])
         .output()
         .expect("failed to run binary");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.contains("rel one"), "tag message missing: {s:?}");
     // Left-aligned: message follows the 2-space inter-column gap directly.
@@ -1768,7 +1859,11 @@ fn dump_remotes_detects_squash_merged() {
 
     // Feature branch with unique content, pushed to the remote.
     run_git(&work_dir, &["checkout", "-b", "squash-feature"]);
-    std::fs::write(work_dir.join("squash-feature.txt"), "squash feature content\n").unwrap();
+    std::fs::write(
+        work_dir.join("squash-feature.txt"),
+        "squash feature content\n",
+    )
+    .unwrap();
     run_git(&work_dir, &["add", "squash-feature.txt"]);
     run_git(&work_dir, &["commit", "-m", "Squash feature commit"]);
     run_git(&work_dir, &["push", "-u", "origin", "squash-feature"]);
@@ -1792,9 +1887,16 @@ fn dump_remotes_detects_squash_merged() {
         ])
         .output()
         .expect("failed to run binary");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8(out.stdout).unwrap();
-    assert!(s.contains("origin/squash-feature"), "remote row missing: {s:?}");
+    assert!(
+        s.contains("origin/squash-feature"),
+        "remote row missing: {s:?}"
+    );
     // The squash-feature row must carry the SquashMerged indicator, not Unmerged.
     let row = s
         .lines()
@@ -1814,15 +1916,27 @@ fn dump_remotes_detects_squash_merged() {
 fn dump_worktrees_basic() {
     let (tmp, _repo) = setup_test_repo();
     let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
-        .args(["--repo", tmp.path().to_str().unwrap(), "--worktrees", "--color=never"])
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--worktrees",
+            "--color=never",
+        ])
         .output()
         .expect("failed to run binary");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.contains("Path"), "header missing: {s:?}");
     // The main working tree is always listed. The dump auto-sizes the first
     // (Path) column to its content, so the full canonicalized path appears.
     let canonical = tmp.path().canonicalize().unwrap();
     let canonical_str = canonical.to_str().unwrap();
-    assert!(s.contains(canonical_str), "main worktree full path missing: {s:?}\nexpected: {canonical_str}");
+    assert!(
+        s.contains(canonical_str),
+        "main worktree full path missing: {s:?}\nexpected: {canonical_str}"
+    );
 }

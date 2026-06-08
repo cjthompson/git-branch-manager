@@ -11,7 +11,7 @@ use tracing::instrument;
 pub fn spawn_squash_checker(
     repo_path: PathBuf,
     base_branch: String,
-    candidates: Vec<(String, String)>, // (branch_name, commit_hash)
+    candidates: Vec<(String, String, Option<String>)>, // (branch_name, commit_hash, merge_base)
     mut cache: BranchCache,
 ) -> Receiver<SquashResult> {
     let (tx, rx) = mpsc::channel();
@@ -20,7 +20,7 @@ pub fn spawn_squash_checker(
         const CACHE_SAVE_INTERVAL: usize = 100;
         let mut unsaved_inserts = 0usize;
 
-        for (branch_name, commit_hash) in &candidates {
+        for (branch_name, commit_hash, merge_base) in &candidates {
             let span = tracing::info_span!(
                 "squash_candidate",
                 branch_name = %branch_name,
@@ -50,8 +50,13 @@ pub fn spawn_squash_checker(
             }
             span.record("cache_hit", false);
 
-            let is_squash =
-                is_squash_merged(&repo_path, &base_branch, branch_name, Some(commit_hash));
+            let is_squash = is_squash_merged(
+                &repo_path,
+                &base_branch,
+                branch_name,
+                Some(commit_hash),
+                merge_base.as_deref(),
+            );
             span.record("squash", is_squash);
 
             let status = if is_squash {

@@ -96,7 +96,7 @@ pub struct App {
     pub remote_load_rx: Option<
         Receiver<(
             Vec<RemoteBranchInfo>,
-            Vec<(String, String)>,
+            Vec<(String, String, Option<String>)>,
             cache::BranchCache,
         )>,
     >,
@@ -362,7 +362,26 @@ impl App {
                     let base_branch = self.base_branch.clone();
                     let cache_for_squash = cache::BranchCache::load(&repo_path);
                     if let Ok(repo) = git2::Repository::open(&repo_path) {
-                        let candidates: Vec<(String, String)> = self
+                        // MergeBaseCommits is sent before MergeStatuses, so merge_base_commit
+                        // is populated here. A Pending branch with no merge base is disjoint
+                        // from base and can't be squash-merged. list_branches_fast marked every
+                        // non-pinned branch Pending without knowing merge bases, so resolve the
+                        // disjoint ones to Unmerged now — otherwise they'd sit at Pending forever
+                        // (they're excluded from the squash candidate set below).
+                        for b in self.branches.items_mut() {
+                            if b.merge_status == MergeStatus::Pending
+                                && !b.is_base
+                                && !b.is_current
+                                && b.merge_base_commit.is_none()
+                            {
+                                b.merge_status = MergeStatus::Unmerged;
+                            }
+                        }
+                        self.branches.rebuild_display_indices();
+
+                        // Connected branches carry their precomputed merge base into the squash
+                        // check so it never re-derives it via the unbounded `git merge-base` walk.
+                        let candidates: Vec<(String, String, Option<String>)> = self
                             .branches
                             .items()
                             .iter()
@@ -370,10 +389,11 @@ impl App {
                                 b.merge_status == MergeStatus::Pending
                                     && !b.is_base
                                     && !b.is_current
+                                    && b.merge_base_commit.is_some()
                             })
                             .filter_map(|b| {
                                 branch::get_commit_hash(&repo, &b.name)
-                                    .map(|hash| (b.name.clone(), hash))
+                                    .map(|hash| (b.name.clone(), hash, b.merge_base_commit.clone()))
                             })
                             .collect();
 
@@ -1885,7 +1905,9 @@ impl App {
             };
 
             let branch_cache = cache::BranchCache::load(&repo_path);
-            let candidates: Vec<(String, String)> = remote_branches
+            // Remote branches don't precompute a merge base, so the merge-base slot is
+            // None and is_squash_merged falls back to `git merge-base` for them.
+            let candidates: Vec<(String, String, Option<String>)> = remote_branches
                 .iter()
                 .filter(|b| b.merge_status == MergeStatus::Pending && !b.is_base)
                 .filter_map(|b| {
@@ -1893,7 +1915,7 @@ impl App {
                     repo.find_reference(&refname)
                         .ok()
                         .and_then(|r| r.peel_to_commit().ok())
-                        .map(|c| (b.full_ref.clone(), c.id().to_string()))
+                        .map(|c| (b.full_ref.clone(), c.id().to_string(), None))
                 })
                 .collect();
 
@@ -1949,11 +1971,19 @@ impl App {
 
         let new_cache = cache::BranchCache::load(&repo_path);
 
-        let candidates: Vec<(String, String)> = branches
+        // list_branches_phase1 already filled merge bases; skip disjoint branches
+        // (no merge base) and carry the precomputed merge base into the squash check.
+        let candidates: Vec<(String, String, Option<String>)> = branches
             .iter()
-            .filter(|b| b.merge_status == MergeStatus::Pending && !b.is_base && !b.is_current)
+            .filter(|b| {
+                b.merge_status == MergeStatus::Pending
+                    && !b.is_base
+                    && !b.is_current
+                    && b.merge_base_commit.is_some()
+            })
             .filter_map(|b| {
-                branch::get_commit_hash(&repo, &b.name).map(|hash| (b.name.clone(), hash))
+                branch::get_commit_hash(&repo, &b.name)
+                    .map(|hash| (b.name.clone(), hash, b.merge_base_commit.clone()))
             })
             .collect();
 

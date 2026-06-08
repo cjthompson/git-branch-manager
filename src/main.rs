@@ -218,18 +218,21 @@ fn main() -> Result<()> {
                         mb_cache.save();
                     }
 
-                    let merge_status_updates: Vec<(String, MergeStatus)> = branches2
-                        .iter()
-                        .map(|b| (b.name.clone(), b.merge_status))
-                        .collect();
-                    let _ =
-                        phase1_tx_clone.send(app::Phase1Msg::MergeStatuses(merge_status_updates));
+                    // Send merge bases BEFORE merge statuses: the squash checker is
+                    // spawned in the MergeStatuses handler and filters candidates on
+                    // merge_base_commit, so that field must already be populated.
                     let merge_base_updates: Vec<(String, String)> = branches2
-                        .into_iter()
-                        .filter_map(|b| b.merge_base_commit.map(|h| (b.name, h)))
+                        .iter()
+                        .filter_map(|b| b.merge_base_commit.clone().map(|h| (b.name.clone(), h)))
                         .collect();
                     let _ =
                         phase1_tx_clone.send(app::Phase1Msg::MergeBaseCommits(merge_base_updates));
+                    let merge_status_updates: Vec<(String, MergeStatus)> = branches2
+                        .into_iter()
+                        .map(|b| (b.name, b.merge_status))
+                        .collect();
+                    let _ =
+                        phase1_tx_clone.send(app::Phase1Msg::MergeStatuses(merge_status_updates));
                 });
             }
 
