@@ -51,8 +51,11 @@ pub fn run(
     color: ColorChoice,
 ) -> Result<String> {
     let theme = Theme::from_name(config.theme.as_deref().unwrap_or("dark"));
-    let symbols =
-        SymbolSet::from_name(symbols_override.or(config.symbols.as_deref()).unwrap_or("auto"));
+    let symbols = SymbolSet::from_name(
+        symbols_override
+            .or(config.symbols.as_deref())
+            .unwrap_or("auto"),
+    );
     let ctx = CellContext {
         theme: &theme,
         symbols: &symbols,
@@ -77,7 +80,14 @@ pub fn run(
             // non-pinned) in pin_first's order.
             rows.sort_by_key(|b| Reverse(b.is_base));
             let cols = BranchesViewDef.columns();
-            Ok(render_table(Some(base), &rows, &cols, render_branch_row, &ctx, color))
+            Ok(render_table(
+                Some(base),
+                &rows,
+                &cols,
+                render_branch_row,
+                &ctx,
+                color,
+            ))
         }
         DumpView::Remotes => {
             let mut rows = branch::list_remote_branches_phase1(repo, base)?;
@@ -124,9 +134,7 @@ pub fn run(
                 );
                 for res in squash_rx.iter() {
                     if res.is_squash_merged {
-                        if let Some(r) =
-                            rows.iter_mut().find(|r| r.full_ref == res.branch_name)
-                        {
+                        if let Some(r) = rows.iter_mut().find(|r| r.full_ref == res.branch_name) {
                             r.merge_status = MergeStatus::SquashMerged;
                         }
                     }
@@ -142,13 +150,27 @@ pub fn run(
             }
             pin_first(&mut rows);
             let cols = RemotesViewDef.columns();
-            Ok(render_table(None, &rows, &cols, render_remote_row, &ctx, color))
+            Ok(render_table(
+                None,
+                &rows,
+                &cols,
+                render_remote_row,
+                &ctx,
+                color,
+            ))
         }
         DumpView::Tags => {
             let mut rows = tags::list_tags(repo);
             pin_first(&mut rows);
             let cols = TagsViewDef.columns();
-            Ok(render_table(None, &rows, &cols, render_tag_row, &ctx, color))
+            Ok(render_table(
+                None,
+                &rows,
+                &cols,
+                render_tag_row,
+                &ctx,
+                color,
+            ))
         }
         DumpView::Worktrees => {
             let mut rows = worktree::list_worktrees(repo_path);
@@ -162,7 +184,14 @@ pub fn run(
             }
             pin_first(&mut rows);
             let cols = WorktreesViewDef.columns();
-            Ok(render_table(None, &rows, &cols, render_worktree_row, &ctx, color))
+            Ok(render_table(
+                None,
+                &rows,
+                &cols,
+                render_worktree_row,
+                &ctx,
+                color,
+            ))
         }
     }
 }

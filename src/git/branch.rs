@@ -294,7 +294,7 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
     Ok(branches)
 }
 
-#[instrument(skip(repo), fields(base_branch))]
+#[instrument(skip(repo), fields(base_branch, skip_ahead_behind))]
 fn collect_branch_metadata(
     repo: &Repository,
     base_branch: &str,

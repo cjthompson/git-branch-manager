@@ -1,9 +1,9 @@
 mod app;
 mod dump;
 
+use crate::dump::DumpView;
 use anyhow::Result;
 use clap::Parser;
-use crate::dump::DumpView;
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
@@ -23,23 +23,31 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::load();
 
-    #[cfg(debug_assertions)]
     let _log_guard = {
         use std::fs::OpenOptions;
         use tracing_subscriber::fmt::format::FmtSpan;
-        let log_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/gbm-timing.log")
-            .expect("failed to open timing log");
-        let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
-        tracing_subscriber::fmt()
-            .pretty()
-            .with_writer(non_blocking)
-            .with_ansi(false)
-            .with_span_events(FmtSpan::CLOSE)
-            .init();
-        guard
+        let log_path = std::env::var("GBM_TIMING_LOG").ok().or_else(|| {
+            if cfg!(debug_assertions) {
+                Some("/tmp/gbm-timing.log".into())
+            } else {
+                None
+            }
+        });
+        log_path.map(|p| {
+            let log_file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&p)
+                .expect("failed to open timing log");
+            let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
+            tracing_subscriber::fmt()
+                .pretty()
+                .with_writer(non_blocking)
+                .with_ansi(false)
+                .with_span_events(FmtSpan::CLOSE)
+                .init();
+            guard
+        })
     };
 
     // Open repo
@@ -202,6 +210,7 @@ fn compute_merge_bases(
 
     let mut updates = Vec::new();
     for b in branches {
+        let _span = tracing::debug_span!("merge_base_branch", branch = %b.name).entered();
         if b.is_base {
             continue;
         }
@@ -225,6 +234,7 @@ fn compute_ahead_behind(
     use git_branch_manager::types::TrackingStatus;
     let mut updates: Vec<(String, Option<u32>, Option<u32>)> = Vec::new();
     for b in branches {
+        let _span = tracing::debug_span!("ahead_behind_branch", branch = %b.name).entered();
         if let TrackingStatus::Tracked { gone: false, .. } = &b.tracking {
             if let Ok(local_branch) = repo.find_branch(&b.name, git2::BranchType::Local) {
                 if let Ok(upstream) = local_branch.upstream() {
