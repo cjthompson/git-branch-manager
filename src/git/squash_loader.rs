@@ -44,7 +44,8 @@ pub fn spawn_squash_checker(
             }
             span.record("cache_hit", false);
 
-            let is_squash = is_squash_merged(&repo_path, &base_branch, branch_name, None);
+            let is_squash =
+                is_squash_merged(&repo_path, &base_branch, branch_name, Some(commit_hash));
             span.record("squash", is_squash);
 
             let status = if is_squash {
