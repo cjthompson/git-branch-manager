@@ -1,7 +1,7 @@
 use crate::types::*;
 use chrono::{TimeZone, Utc};
 use git2::{BranchType, Repository};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::process::Command;
 use std::sync::mpsc;
 use thiserror::Error;
@@ -288,18 +288,11 @@ pub fn spawn_remote_enricher(
         let ahead_behind = parse_remote_ahead_behind(&ahead_behind_output);
         worker_span.record("ahead_behind_count", ahead_behind.len());
 
-        let merged_output = match remote_enricher_git_stdout(
-            &repo_path,
-            &["branch", "-r", "--merged", base_oid.as_str()],
-        ) {
-            Some(output) => output,
-            None => {
-                worker_span.record("result_state", "merged_command_error");
-                return;
-            }
-        };
-        let merged_refs = parse_merged_remote_refs(&merged_output);
-        worker_span.record("merged_count", merged_refs.len());
+        let merged_count = ahead_behind
+            .values()
+            .filter(|(ahead, _)| *ahead == Some(0))
+            .count();
+        worker_span.record("merged_count", merged_count);
 
         let mut result_count = 0usize;
         let mut skipped_base_count = 0usize;
@@ -314,7 +307,7 @@ pub fn spawn_remote_enricher(
                 missing_ahead_behind_count += 1;
                 continue;
             };
-            let merge_status = if merged_refs.contains(&branch.full_ref) {
+            let merge_status = if ahead == Some(0) {
                 MergeStatus::Merged
             } else {
                 MergeStatus::Unmerged
@@ -402,20 +395,6 @@ fn parse_remote_ahead_behind(output: &str) -> HashMap<String, (Option<u32>, Opti
             let ahead = counts.next()?.parse::<u32>().ok();
             let behind = counts.next()?.parse::<u32>().ok();
             Some((name.to_string(), (ahead, behind)))
-        })
-        .collect()
-}
-
-fn parse_merged_remote_refs(output: &str) -> HashSet<String> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let name = line.trim().trim_start_matches('*').trim();
-            if name.is_empty() || name.contains(" -> ") {
-                None
-            } else {
-                Some(name.to_string())
-            }
         })
         .collect()
 }
