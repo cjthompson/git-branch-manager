@@ -159,7 +159,10 @@ fn main() -> Result<()> {
 
             // Ahead/behind on this thread (needs the !Send repo from the fast load).
             // Runs fully in parallel with the secondary thread above.
-            let ahead_behind_updates = compute_ahead_behind(&repo, &branches);
+            // Cache avoids re-traversing O(N) commit graph when tips haven't changed.
+            let mut ab_cache = cache::BranchCache::load(&repo_path_bg);
+            let ahead_behind_updates = compute_ahead_behind(&repo, &branches, &mut ab_cache);
+            ab_cache.save();
             phase1_span.record(
                 "ahead_behind_update_count",
                 ahead_behind_updates.len() as u64,
@@ -259,7 +262,7 @@ fn init_timing_log() -> Option<tracing_appender::non_blocking::WorkerGuard> {
 }
 
 #[instrument(
-    skip(repo, branches),
+    skip(repo, branches, cache),
     fields(
         branch_count = branches.len(),
         tracked_branch_count = field::Empty,
@@ -267,6 +270,7 @@ fn init_timing_log() -> Option<tracing_appender::non_blocking::WorkerGuard> {
         gone_branch_count = field::Empty,
         result_count = field::Empty,
         skipped_count = field::Empty,
+        cache_hit_count = field::Empty,
         find_branch_error_count = field::Empty,
         upstream_error_count = field::Empty,
         peel_error_count = field::Empty,
@@ -277,6 +281,7 @@ fn init_timing_log() -> Option<tracing_appender::non_blocking::WorkerGuard> {
 fn compute_ahead_behind(
     repo: &git2::Repository,
     branches: &[git_branch_manager::types::BranchInfo],
+    cache: &mut git_branch_manager::git::cache::BranchCache,
 ) -> Vec<(String, Option<u32>, Option<u32>)> {
     use git_branch_manager::types::TrackingStatus;
     let span = Span::current();
@@ -290,6 +295,7 @@ fn compute_ahead_behind(
     let mut peel_error_count = 0usize;
     let mut graph_success_count = 0usize;
     let mut graph_error_count = 0usize;
+    let mut cache_hit_count = 0usize;
 
     for b in branches {
         let branch_span = info_span!(
@@ -392,27 +398,38 @@ fn compute_ahead_behind(
         let upstream_oid_string = upstream_oid.to_string();
         branch_span.record("upstream_oid", upstream_oid_string.as_str());
 
-        let (ahead, behind) = match info_span!(
-            "compute_ahead_behind_graph",
-            branch_name = %b.name,
-            branch_tip = %branch_oid,
-            upstream_oid = %upstream_oid,
-        )
-        .in_scope(|| repo.graph_ahead_behind(branch_oid, upstream_oid))
-        {
-            Ok((a, bh)) => {
-                graph_success_count += 1;
+        let (ahead, behind) =
+            if let Some((a, bh)) = cache.lookup_ahead_behind(branch_oid, upstream_oid) {
+                cache_hit_count += 1;
                 branch_span.record("ahead", a);
                 branch_span.record("behind", bh);
-                branch_span.record("result_state", "success");
-                (Some(a as u32), Some(bh as u32))
-            }
-            Err(_) => {
-                graph_error_count += 1;
-                branch_span.record("result_state", "graph_error");
-                (None, None)
-            }
-        };
+                branch_span.record("result_state", "cache_hit");
+                (Some(a), Some(bh))
+            } else {
+                match info_span!(
+                    "compute_ahead_behind_graph",
+                    branch_name = %b.name,
+                    branch_tip = %branch_oid,
+                    upstream_oid = %upstream_oid,
+                )
+                .in_scope(|| repo.graph_ahead_behind(branch_oid, upstream_oid))
+                {
+                    Ok((a, bh)) => {
+                        graph_success_count += 1;
+                        let (a, bh) = (a as u32, bh as u32);
+                        cache.insert_ahead_behind(branch_oid, upstream_oid, a, bh);
+                        branch_span.record("ahead", a);
+                        branch_span.record("behind", bh);
+                        branch_span.record("result_state", "success");
+                        (Some(a), Some(bh))
+                    }
+                    Err(_) => {
+                        graph_error_count += 1;
+                        branch_span.record("result_state", "graph_error");
+                        (None, None)
+                    }
+                }
+            };
         updates.push((b.name.clone(), ahead, behind));
     }
 
@@ -421,6 +438,7 @@ fn compute_ahead_behind(
     span.record("gone_branch_count", gone_branch_count);
     span.record("result_count", updates.len());
     span.record("skipped_count", skipped_count);
+    span.record("cache_hit_count", cache_hit_count);
     span.record("find_branch_error_count", find_branch_error_count);
     span.record("upstream_error_count", upstream_error_count);
     span.record("peel_error_count", peel_error_count);

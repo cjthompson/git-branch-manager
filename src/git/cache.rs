@@ -17,6 +17,10 @@ struct CacheEntry {
 pub struct BranchCache {
     path: PathBuf,
     entries: HashMap<String, CacheEntry>,
+    ab_path: PathBuf,
+    /// Ahead/behind counts keyed by "{branch_oid}:{upstream_oid}".
+    /// Same OID pair always yields the same count — valid until either tip changes.
+    ab_entries: HashMap<String, [u32; 2]>,
     hits: Cell<u32>,
     misses: Cell<u32>,
 }
@@ -26,15 +30,21 @@ impl BranchCache {
     pub fn load(repo_path: &Path) -> Self {
         let span = Span::current();
         let path = cache_path(repo_path);
-        let entries = fs::read_to_string(&path)
+        let entries: HashMap<String, CacheEntry> = fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
-        let entries: HashMap<String, CacheEntry> = entries;
         span.record("entry_count", entries.len() as u64);
+        let ab_path = ab_cache_path(repo_path);
+        let ab_entries: HashMap<String, [u32; 2]> = fs::read_to_string(&ab_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
         Self {
             path,
             entries,
+            ab_path,
+            ab_entries,
             hits: Cell::new(0),
             misses: Cell::new(0),
         }
@@ -45,6 +55,29 @@ impl BranchCache {
         if let Ok(json) = serde_json::to_string(&self.entries) {
             let _ = fs::write(&self.path, json);
         }
+        if let Ok(json) = serde_json::to_string(&self.ab_entries) {
+            let _ = fs::write(&self.ab_path, json);
+        }
+    }
+
+    pub fn lookup_ahead_behind(
+        &self,
+        branch_oid: git2::Oid,
+        upstream_oid: git2::Oid,
+    ) -> Option<(u32, u32)> {
+        let key = format!("{branch_oid}:{upstream_oid}");
+        self.ab_entries.get(&key).map(|[a, b]| (*a, *b))
+    }
+
+    pub fn insert_ahead_behind(
+        &mut self,
+        branch_oid: git2::Oid,
+        upstream_oid: git2::Oid,
+        ahead: u32,
+        behind: u32,
+    ) {
+        let key = format!("{branch_oid}:{upstream_oid}");
+        self.ab_entries.insert(key, [ahead, behind]);
     }
 
     #[instrument(
@@ -186,6 +219,13 @@ fn cache_path(repo_path: &Path) -> PathBuf {
     PathBuf::from(format!("/tmp/git-bm-cache-{hash:x}.json"))
 }
 
+fn ab_cache_path(repo_path: &Path) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    repo_path.hash(&mut hasher);
+    let hash = hasher.finish();
+    PathBuf::from(format!("/tmp/git-bm-ab-{hash:x}.json"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +305,35 @@ mod tests {
             reloaded.lookup("feature/x", "abc123"),
             Some(MergeStatus::SquashMerged)
         );
+    }
+
+    #[test]
+    fn ahead_behind_cache_hit_and_miss() {
+        let dir = TempDir::new().unwrap();
+        let mut cache = BranchCache::load(dir.path());
+        let oid_a = git2::Oid::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        let oid_b = git2::Oid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+        let oid_c = git2::Oid::from_str("cccccccccccccccccccccccccccccccccccccccc").unwrap();
+
+        assert_eq!(cache.lookup_ahead_behind(oid_a, oid_b), None);
+
+        cache.insert_ahead_behind(oid_a, oid_b, 42, 3);
+        assert_eq!(cache.lookup_ahead_behind(oid_a, oid_b), Some((42, 3)));
+        assert_eq!(cache.lookup_ahead_behind(oid_a, oid_c), None);
+        assert_eq!(cache.lookup_ahead_behind(oid_b, oid_a), None);
+    }
+
+    #[test]
+    fn ahead_behind_cache_save_and_reload() {
+        let dir = TempDir::new().unwrap();
+        let mut cache = BranchCache::load(dir.path());
+        let oid_a = git2::Oid::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        let oid_b = git2::Oid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+
+        cache.insert_ahead_behind(oid_a, oid_b, 100, 5);
+        cache.save();
+
+        let reloaded = BranchCache::load(dir.path());
+        assert_eq!(reloaded.lookup_ahead_behind(oid_a, oid_b), Some((100, 5)));
     }
 }
