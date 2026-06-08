@@ -489,3 +489,95 @@ For `zenpayroll --branches`, the remaining user-visible time is now mostly PR
 lookup failure handling (`fetch_open_prs_checked` around 710ms in the accepted
 after-run). For `gbm-zenpayroll --remotes`, the bottleneck remains remote squash
 checking after remote enrichment.
+
+## Iteration 8: pass candidate commits to squash checks
+
+Date: 2026-06-07 local / 2026-06-08 UTC
+
+Commit before change: `234e656`
+
+### Baseline
+
+Fresh current-state diagnostics before the attempted change:
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-current-zenpayroll-branches.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --branches --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-current-zenpayroll-worktrees.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --worktrees --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-current-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Results:
+
+| Repo / view | Wall time | Key span | Span time | Note |
+| --- | ---: | --- | ---: | --- |
+| `zenpayroll --branches` | 2.92s | `git::branch::list_branches` | 1.85s | `fetch_open_prs_checked` failed in 691ms; branch graph work stayed fast |
+| `zenpayroll --worktrees` | 14.28s | `git::worktree::enrich_worktrees_worker` | 14.2s | Guardrail; still dominated by concurrent `git status --porcelain` calls |
+| `gbm-zenpayroll --remotes` | 60.03s cap | `git::squash_loader::squash_candidate` | 38.44s total busy | 221 real squash checks completed before the cap; mean 173.9ms, p95 372ms |
+
+### Decision
+
+Changed one function: `git::squash_loader::spawn_squash_checker`.
+
+The function receives candidates as `(branch_name, commit_hash)` pairs, but the
+cache-miss path passed `None` into `is_squash_merged`, forcing Git to resolve the
+branch ref again while constructing the temporary squash-check commit. This
+iteration passes the existing candidate commit hash into `is_squash_merged`.
+Cache keys, channel results, and status semantics are unchanged.
+
+### After
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-commit-hash-zenpayroll-branches.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --branches --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-commit-hash-zenpayroll-worktrees.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --worktrees --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-commit-hash-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Results:
+
+| Repo / view | Before | After | Delta | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| `gbm-zenpayroll squash_candidate` completed checks | 221 | 254 | +14.9% | Same 60s cap; candidate count remained 16,056 |
+| `gbm-zenpayroll squash_candidate` mean | 173.9ms | 155.0ms | -10.9% | Total busy time stayed around 39s because the capped run completed more checks |
+| `gbm-zenpayroll squash_candidate` p95 | 372ms | 226ms | -39.2% | Same log parser and same candidate order |
+| Common first 221 checks | 173.9ms mean | 149.6ms mean | -24.3ms/check | 117 checks improved, 100 worsened |
+| `gbm-zenpayroll --remotes` full dump | 60.03s cap | 60.03s cap | unchanged | Still capped; this is a throughput improvement, not completion yet |
+| `zenpayroll --branches` guardrail | 2.92s | 3.45s | within variance | Changed path is not used; PR lookup failure remained ~688ms |
+| `zenpayroll --worktrees` guardrail | 14.28s | 12.52s | within variance | Changed path is not used |
+
+### Outcome
+
+Accepted. The full remote dump still does not complete inside 60 seconds, but
+the targeted bottleneck completed more squash checks under the same cap and the
+same overlapping branch set was faster on average. The change is small and keeps
+all external behavior unchanged.
+
+### Validation
+
+- `cargo test squash` passed.
+- `rustfmt src/git/squash_loader.rs --check` passed.
+- `cargo build --release` passed.
+
+### Next bottleneck
+
+For `gbm-zenpayroll --remotes`, the next meaningful target is still
+`git::merge_detection::is_squash_merged`: each cache-miss candidate still runs
+multiple Git commands, and the full dump remains capped before all 16,056
+candidates are checked.
