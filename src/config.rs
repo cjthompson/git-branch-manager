@@ -67,9 +67,11 @@ mod tests {
 
     #[test]
     fn config_roundtrip_toml() {
-        let mut c = Config::default();
-        c.theme = Some("dracula".into());
-        c.auto_fetch = Some(true);
+        let c = Config {
+            theme: Some("dracula".into()),
+            auto_fetch: Some(true),
+            ..Default::default()
+        };
         let toml_str = toml::to_string(&c).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.theme, Some("dracula".into()));
