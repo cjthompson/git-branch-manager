@@ -581,3 +581,85 @@ For `gbm-zenpayroll --remotes`, the next meaningful target is still
 `git::merge_detection::is_squash_merged`: each cache-miss candidate still runs
 multiple Git commands, and the full dump remains capped before all 16,056
 candidates are checked.
+
+## Iteration 9: use candidate commit for squash merge-base
+
+Date: 2026-06-07 local / 2026-06-08 UTC
+
+Commit before change: `62a0f2a`
+
+### Baseline
+
+The baseline is the accepted after-run from Iteration 8:
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-commit-hash-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Result:
+
+| Repo / view | Wall time | Key span | Span time | Note |
+| --- | ---: | --- | ---: | --- |
+| `gbm-zenpayroll --remotes` | 60.03s cap | `git::squash_loader::squash_candidate` | 39.37s total busy | 254 real squash checks completed before the cap; mean 155.0ms, p95 226ms |
+
+### Decision
+
+Changed one function: `git::merge_detection::is_squash_merged`.
+
+After Iteration 8, `spawn_squash_checker` passes the candidate commit hash into
+`is_squash_merged`, but `is_squash_merged` still used the branch ref for
+`git merge-base`. This iteration uses the provided commit hash for merge-base
+and tree lookup when present. For a candidate snapshot, `git merge-base main
+<commit>` is equivalent to resolving the branch ref first, and callers that do
+not have a commit hash keep the old branch-name path.
+
+### After
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-mergebase-commit-zenpayroll-branches.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --branches --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-mergebase-commit-zenpayroll-worktrees.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --worktrees --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-mergebase-commit-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Results:
+
+| Repo / view | Before | After | Delta | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| `gbm-zenpayroll squash_candidate` completed checks | 254 | 260 | +2.4% | Same 60s cap; candidate count remained 16,056 |
+| `gbm-zenpayroll squash_candidate` mean | 155.0ms | 151.9ms | -2.0% | Small improvement on the completed checks |
+| `gbm-zenpayroll squash_candidate` p95 | 226ms | 217ms | -4.0% | Same parser and same candidate order |
+| Common first 254 checks | 155.0ms mean | 151.3ms mean | -3.7ms/check | 157 checks improved, 89 worsened |
+| `gbm-zenpayroll --remotes` full dump | 60.03s cap | 60.04s cap | unchanged | Still capped; throughput improved slightly |
+| `zenpayroll --branches` guardrail | 3.45s | 2.86s | within variance | Changed path is not used; PR lookup failure remained ~737ms |
+| `zenpayroll --worktrees` guardrail | 12.52s | 12.92s | within variance | Changed path is not used |
+
+### Outcome
+
+Accepted. The improvement is small, but the same overlapping branch set was
+faster on average and the capped run completed six additional squash checks.
+The full remote dump still does not complete inside 60 seconds.
+
+### Validation
+
+- `cargo test squash` passed.
+- `rustfmt src/git/merge_detection.rs --check` passed.
+- `cargo build --release` passed.
+
+### Next bottleneck
+
+For `gbm-zenpayroll --remotes`, the remaining issue is not branch ref resolution
+alone. The function still shells out multiple times per cache miss
+(`merge-base`, `commit-tree`, `cherry`), so the next useful iteration should
+target command count or a bulk squash-detection approach.
