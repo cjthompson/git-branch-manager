@@ -663,3 +663,89 @@ For `gbm-zenpayroll --remotes`, the remaining issue is not branch ref resolution
 alone. The function still shells out multiple times per cache miss
 (`merge-base`, `commit-tree`, `cherry`), so the next useful iteration should
 target command count or a bulk squash-detection approach.
+
+## Iteration 10: periodically save squash-cache progress
+
+Date: 2026-06-07 local / 2026-06-08 UTC
+
+Commit before change: `8f3d1a5`
+
+### Baseline
+
+The baseline is the accepted after-run from Iteration 9:
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-mergebase-commit-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Result:
+
+| Repo / view | Wall time | Cache load | Key span | Note |
+| --- | ---: | ---: | --- | --- |
+| `gbm-zenpayroll --remotes` | 60.04s cap | 0 entries | 260 `squash_candidate` spans | All 260 were cache misses; mean 151.9ms, p95 217ms; no cache save occurred before the cap killed the process |
+
+### Decision
+
+Changed one function: `git::squash_loader::spawn_squash_checker`.
+
+The remote squash checker only saved its `BranchCache` after processing all
+candidates. In the large remote repo, the process is killed by the 60s
+diagnostic cap before the final save, so repeated runs redo the same cache
+misses. This iteration saves after every 200 new cache inserts, and saves any
+dirty progress before returning if the receiver is dropped. The normal final
+save remains unchanged.
+
+### After
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-periodic-save-zenpayroll-branches.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --branches --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-periodic-save-zenpayroll-worktrees.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --worktrees --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-periodic-save-gbm-zenpayroll-remotes-60s-run1.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-periodic-save-gbm-zenpayroll-remotes-60s-run2.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Results:
+
+| Repo / view | Before | After | Delta | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| Cold remote capped run | 260 candidates | 257 candidates | -1.2% | Run 1 started with 0 cache entries; periodic save wrote 200 entries in 0.36ms |
+| Repeated remote capped run | 260 candidates | 411 candidates | +58.1% | Run 2 loaded 200 cache entries; 200 hits averaged 0.0029ms |
+| Repeated remote cache misses | 260 misses | 211 misses | -18.8% | Run 2 skipped the first 200 previously checked candidates |
+| Repeated remote full dump | 60.04s cap | 60.01s cap | unchanged | Still capped, but progresses farther and saves 400 entries by the next cap |
+| `zenpayroll --branches` guardrail | 2.86s | 2.89s | within variance | Changed path is not used |
+| `zenpayroll --worktrees` guardrail | 12.92s | 12.73s | within variance | Changed path is not used |
+
+### Outcome
+
+Accepted. The cold capped run is roughly neutral, but repeated capped runs now
+reuse completed squash checks instead of starting over from an empty cache. This
+directly improves the diagnostic loop and any interrupted long remote run.
+
+### Validation
+
+- `cargo test squash` passed.
+- `rustfmt src/git/squash_loader.rs --check` passed.
+- `cargo build --release` passed.
+
+### Next bottleneck
+
+The remote dump still does not finish inside 60 seconds. With cache progress now
+persisted, the next iteration can either keep running until cache warmup exposes
+the next phase, or reduce the per-miss command count in
+`git::merge_detection::is_squash_merged`.

@@ -17,6 +17,9 @@ pub fn spawn_squash_checker(
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || {
+        const CACHE_SAVE_INTERVAL: usize = 200;
+        let mut unsaved_inserts = 0usize;
+
         for (branch_name, commit_hash) in &candidates {
             let span = tracing::info_span!(
                 "squash_candidate",
@@ -38,6 +41,9 @@ pub fn spawn_squash_checker(
                     })
                     .is_err()
                 {
+                    if unsaved_inserts > 0 {
+                        cache.save();
+                    }
                     return; // Receiver dropped
                 }
                 continue;
@@ -54,6 +60,11 @@ pub fn spawn_squash_checker(
                 MergeStatus::Unmerged
             };
             cache.insert(branch_name, &status, commit_hash);
+            unsaved_inserts += 1;
+            if unsaved_inserts >= CACHE_SAVE_INTERVAL {
+                cache.save();
+                unsaved_inserts = 0;
+            }
 
             if tx
                 .send(SquashResult {
@@ -62,6 +73,9 @@ pub fn spawn_squash_checker(
                 })
                 .is_err()
             {
+                if unsaved_inserts > 0 {
+                    cache.save();
+                }
                 return;
             }
         }
