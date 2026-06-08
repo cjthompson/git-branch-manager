@@ -101,7 +101,7 @@ fn main() -> Result<()> {
             };
 
             // Fast: metadata only, no merge detection
-            let Ok(mut branches) = branch::list_branches_fast(&repo, &base_branch_bg) else {
+            let Ok(branches) = branch::list_branches_fast(&repo, &base_branch_bg) else {
                 phase1_span.record("result_state", "list_branches_fast_error");
                 return;
             };
@@ -120,39 +120,52 @@ fn main() -> Result<()> {
                 return;
             }
 
-            // Ahead/behind: graph traversals deferred from fast path
+            // Spawn a secondary thread for the entire merge-detection pipeline
+            // (build reachable set → apply merge statuses → fill merge bases) using
+            // its own Repository handle. This runs fully in parallel with compute_ahead_behind
+            // below, so the wall time becomes max(ahead_behind, detection) instead of their sum.
+            //
+            // Only spawn when there are non-base local branches to check — avoids a full
+            // revwalk on repos used purely for remote tracking (no local branches).
+            let has_candidates = branches.iter().any(|b| !b.is_base && !b.is_current);
+            if has_candidates {
+                let branches_clone = branches.clone();
+                let phase1_tx_clone = phase1_tx.clone();
+                let secondary_path = repo_path_bg.clone();
+                let secondary_base = base_branch_bg.clone();
+                std::thread::spawn(move || {
+                    let Ok(repo2) = git2::Repository::open(&secondary_path) else {
+                        return;
+                    };
+                    let reachable =
+                        merge_detection::build_reachable_set_from_repo(&repo2, &secondary_base);
+                    let mut branches2 = branches_clone;
+                    merge_detection::apply_merge_statuses(&repo2, &mut branches2, &reachable);
+                    let merge_status_updates: Vec<(String, MergeStatus)> = branches2
+                        .iter()
+                        .map(|b| (b.name.clone(), b.merge_status))
+                        .collect();
+                    let _ =
+                        phase1_tx_clone.send(app::Phase1Msg::MergeStatuses(merge_status_updates));
+                    branch::fill_merge_base_commits(&repo2, &mut branches2, &reachable);
+                    let merge_base_updates: Vec<(String, String)> = branches2
+                        .into_iter()
+                        .filter_map(|b| b.merge_base_commit.map(|h| (b.name, h)))
+                        .collect();
+                    let _ =
+                        phase1_tx_clone.send(app::Phase1Msg::MergeBaseCommits(merge_base_updates));
+                });
+            }
+
+            // Ahead/behind on this thread (needs the !Send repo from the fast load).
+            // Runs fully in parallel with the secondary thread above.
             let ahead_behind_updates = compute_ahead_behind(&repo, &branches);
             phase1_span.record(
                 "ahead_behind_update_count",
                 ahead_behind_updates.len() as u64,
             );
             let _ = phase1_tx.send(app::Phase1Msg::AheadBehind(ahead_behind_updates));
-
-            // Merge detection: builds reachable set, then reuse it for merge-base computation.
-            // This replaces compute_merge_bases (which called repo.merge_base per branch = O(history))
-            // with fill_merge_base_commits (bounded revwalk using the already-built reachable set).
-            match merge_detection::detect_merged_branches(&repo, &base_branch_bg, &mut branches) {
-                Ok(reachable) => {
-                    let updates: Vec<(String, MergeStatus)> = branches
-                        .iter()
-                        .map(|b| (b.name.clone(), b.merge_status))
-                        .collect();
-                    phase1_span.record("merge_status_update_count", updates.len() as u64);
-                    let _ = phase1_tx.send(app::Phase1Msg::MergeStatuses(updates));
-
-                    branch::fill_merge_base_commits(&repo, &mut branches, &reachable);
-                    let merge_base_updates: Vec<(String, String)> = branches
-                        .into_iter()
-                        .filter_map(|b| b.merge_base_commit.map(|h| (b.name, h)))
-                        .collect();
-                    phase1_span.record("merge_base_update_count", merge_base_updates.len() as u64);
-                    let _ = phase1_tx.send(app::Phase1Msg::MergeBaseCommits(merge_base_updates));
-                    phase1_span.record("result_state", "success");
-                }
-                Err(_) => {
-                    phase1_span.record("result_state", "detect_merged_branches_error");
-                }
-            }
+            phase1_span.record("result_state", "success");
         });
     }
 

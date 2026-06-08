@@ -131,6 +131,71 @@ pub fn detect_merged_branches(
     Ok(reachable)
 }
 
+/// Build the set of all commit OIDs reachable from base using an already-open repository.
+/// Call this when you already have a repo handle on the current thread.
+#[instrument(skip(repo), fields(reachable_count = field::Empty))]
+pub fn build_reachable_set_from_repo(repo: &Repository, base_branch: &str) -> HashSet<git2::Oid> {
+    let span = Span::current();
+    let base_oid = match repo
+        .find_branch(base_branch, git2::BranchType::Local)
+        .ok()
+        .and_then(|b| b.get().target())
+    {
+        Some(oid) => oid,
+        None => return HashSet::new(),
+    };
+    let mut revwalk = match repo.revwalk() {
+        Ok(r) => r,
+        Err(_) => return HashSet::new(),
+    };
+    let _ = revwalk.set_sorting(git2::Sort::NONE);
+    let _ = revwalk.push(base_oid);
+    let mut set = HashSet::new();
+    for oid_result in &mut revwalk {
+        if let Ok(oid) = oid_result {
+            set.insert(oid);
+        }
+    }
+    span.record("reachable_count", set.len() as u64);
+    set
+}
+
+/// Build the set of all commit OIDs reachable from base by opening a fresh Repository.
+/// Intended for background-thread use: Repository is !Send, so callers open their own handle
+/// rather than sharing the main thread's repo.
+pub fn build_reachable_set(repo_path: &Path, base_branch: &str) -> HashSet<git2::Oid> {
+    let repo = match git2::Repository::open(repo_path) {
+        Ok(r) => r,
+        Err(_) => return HashSet::new(),
+    };
+    build_reachable_set_from_repo(&repo, base_branch)
+}
+
+/// Apply merge statuses to branches using a prebuilt reachable set.
+/// Used when the reachable set was built in a parallel thread via build_reachable_set,
+/// so we re-resolve each branch tip with the provided (main-thread) repo handle.
+pub fn apply_merge_statuses(
+    repo: &Repository,
+    branches: &mut [BranchInfo],
+    reachable: &HashSet<git2::Oid>,
+) {
+    if reachable.is_empty() {
+        return;
+    }
+    for branch in branches.iter_mut() {
+        if branch.is_base || branch.is_current {
+            continue;
+        }
+        if let Ok(b) = repo.find_branch(&branch.name, git2::BranchType::Local) {
+            if let Some(oid) = b.get().target() {
+                if reachable.contains(&oid) {
+                    branch.merge_status = MergeStatus::Merged;
+                }
+            }
+        }
+    }
+}
+
 /// Detect if a branch was squash-merged into the base branch using git CLI.
 /// Uses commit-tree + cherry to check if the branch's tree content already exists in base.
 #[instrument(skip(repo_path))]

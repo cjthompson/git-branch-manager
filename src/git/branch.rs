@@ -298,6 +298,7 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
     let span = Span::current();
     let repo_path = repo.workdir().unwrap_or_else(|| repo.path());
     let mut cache = super::cache::BranchCache::load(repo_path);
+
     let mut branches = collect_branch_metadata(repo, base_branch, false, true)?;
     let reachable =
         super::merge_detection::detect_merged_branches(repo, base_branch, &mut branches)?;
