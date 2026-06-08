@@ -749,3 +749,89 @@ The remote dump still does not finish inside 60 seconds. With cache progress now
 persisted, the next iteration can either keep running until cache warmup exposes
 the next phase, or reduce the per-miss command count in
 `git::merge_detection::is_squash_merged`.
+
+## Iteration 11: derive remote merged status from ahead count
+
+Date: 2026-06-07 local / 2026-06-08 UTC
+
+Commit before change: `a32b42a`
+
+### Baseline
+
+The baseline is the accepted repeated run from Iteration 10:
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-periodic-save-gbm-zenpayroll-remotes-60s-run2.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Result:
+
+| Repo / view | Wall time | Key span | Span time | Note |
+| --- | ---: | --- | ---: | --- |
+| `gbm-zenpayroll --remotes` | 60.01s cap | `git::branch::remote_enricher_worker` | 18.5s | `for-each-ref ... ahead-behind` 11.2s plus `branch -r --merged` 7.30s |
+| `gbm-zenpayroll --remotes` | 60.01s cap | `git::squash_loader::squash_candidate` | 411 candidates | 200 cache hits, 211 misses |
+
+### Decision
+
+Changed one function: `git::branch::spawn_remote_enricher`.
+
+The worker already runs `git for-each-ref refs/remotes
+--format='%(refname:short)%09%(ahead-behind:<base>)'`. A remote ref with
+`ahead == 0` has no commits not reachable from the base commit, which is the same
+merged condition needed by this view. A direct probe on `gbm-zenpayroll` matched
+exactly: 546 refs with `ahead == 0`, 546 refs from `git branch -r --merged
+<base>`, and no differences in either direction. This iteration removes the
+second Git command and derives `MergeStatus::Merged` from `ahead == Some(0)`.
+
+### After
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-merged-from-ahead-zenpayroll-branches.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --branches --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-merged-from-ahead-zenpayroll-worktrees.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --worktrees --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-merged-from-ahead-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Results:
+
+| Repo / view | Before | After | Delta | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| `remote_enricher_worker` | 18.5s | 12.2s | -34.1% | Removed the 7.30s `branch -r --merged` command |
+| Remote merged count | 546 | 546 | unchanged | Derived from `ahead == 0`; direct pre-change equivalence probe found no differences |
+| Remote enricher Git commands | 2 | 1 | -1 command | Remaining command is the existing `for-each-ref ... ahead-behind` |
+| `gbm-zenpayroll --remotes` full dump | 60.01s cap | 60.02s cap | unchanged | Still capped during squash checking |
+| `gbm-zenpayroll squash_candidate` progress | 411 candidates | 597 candidates | +45.3% | After run loaded 400 cache entries, so this combines cache progress with the faster remote enricher |
+| `zenpayroll --branches` guardrail | 2.89s | 2.95s | within variance | Changed path is not used |
+| `zenpayroll --worktrees` guardrail | 12.73s | 13.62s | within variance | Changed path is not used |
+
+### Outcome
+
+Accepted. The changed function removes a redundant multi-second Git command from
+the remote-enrichment phase while preserving the observed merged-status result
+set on the large remote repo and passing remote tests.
+
+### Validation
+
+- Direct equivalence probe on `gbm-zenpayroll`: `ahead == 0` count 546,
+  `branch -r --merged` count 546, no set differences.
+- `cargo test remote` passed.
+- `rustfmt src/git/branch.rs --check` passed.
+- `cargo build --release` passed.
+
+### Next bottleneck
+
+The fixed remote-enrichment cost is lower, so the remaining capped time is again
+remote squash checking. The latest run loaded 400 cached squash results but did
+not save the next 197 misses before the cap, so the cache-save interval may now
+be too coarse for the faster remote-enrichment phase.
