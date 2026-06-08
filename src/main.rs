@@ -211,7 +211,7 @@ fn main() -> Result<()> {
                                 base_tip,
                                 &mut mb_cache,
                             );
-                            mb_cache.mb_data.base_tip = base_tip_str;
+                            mb_cache.set_base_tip(base_tip_str);
                         } else {
                             branch::fill_merge_base_commits(&repo2, &mut branches2, &reachable);
                         }
