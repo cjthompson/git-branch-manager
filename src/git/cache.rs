@@ -1,14 +1,14 @@
 use crate::types::MergeStatus;
-use serde::{Deserialize, Serialize};
-use std::cell::Cell;
+use rusqlite::{params, Connection};
+use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use tracing::{field, instrument, Span};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 struct CacheEntry {
     merge_status: String,
     commit_hash: String,
@@ -17,6 +17,7 @@ struct CacheEntry {
 pub struct BranchCache {
     path: PathBuf,
     entries: HashMap<String, CacheEntry>,
+    dirty_entries: RefCell<HashSet<String>>,
     hits: Cell<u32>,
     misses: Cell<u32>,
 }
@@ -24,17 +25,17 @@ pub struct BranchCache {
 impl BranchCache {
     #[instrument(skip(repo_path), fields(path = ?repo_path, entry_count = field::Empty))]
     pub fn load(repo_path: &Path) -> Self {
+        Self::load_from_path(cache_path(repo_path))
+    }
+
+    fn load_from_path(path: PathBuf) -> Self {
         let span = Span::current();
-        let path = cache_path(repo_path);
-        let entries = fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        let entries: HashMap<String, CacheEntry> = entries;
+        let entries = read_entries(&path);
         span.record("entry_count", entries.len() as u64);
         Self {
             path,
             entries,
+            dirty_entries: RefCell::new(HashSet::new()),
             hits: Cell::new(0),
             misses: Cell::new(0),
         }
@@ -42,8 +43,44 @@ impl BranchCache {
 
     #[instrument(skip(self), fields(entry_count = self.entries.len()))]
     pub fn save(&self) {
-        if let Ok(json) = serde_json::to_string(&self.entries) {
-            let _ = fs::write(&self.path, json);
+        let dirty_entries: Vec<String> = self.dirty_entries.borrow().iter().cloned().collect();
+        if dirty_entries.is_empty() {
+            return;
+        }
+        if let Some(parent) = self.path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let Ok(mut conn) = Connection::open(&self.path) else {
+            return;
+        };
+        if ensure_schema(&conn).is_err() {
+            return;
+        }
+        let Ok(tx) = conn.transaction() else {
+            return;
+        };
+
+        for branch_name in &dirty_entries {
+            let Some(entry) = self.entries.get(branch_name) else {
+                continue;
+            };
+            if tx
+                .execute(
+                    "INSERT INTO branch_cache (branch_name, merge_status, commit_hash)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(branch_name) DO UPDATE SET
+                         merge_status = excluded.merge_status,
+                         commit_hash = excluded.commit_hash",
+                    params![branch_name, entry.merge_status, entry.commit_hash],
+                )
+                .is_err()
+            {
+                return;
+            }
+        }
+
+        if tx.commit().is_ok() {
+            self.dirty_entries.borrow_mut().clear();
         }
     }
 
@@ -168,6 +205,9 @@ impl BranchCache {
                 commit_hash: commit_hash.to_string(),
             },
         );
+        self.dirty_entries
+            .borrow_mut()
+            .insert(branch_name.to_string());
         span.record("inserted", true);
         span.record("result_state", "inserted");
     }
@@ -175,15 +215,63 @@ impl BranchCache {
     #[instrument(skip(self), fields(entry_count = self.entries.len()))]
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.dirty_entries.borrow_mut().clear();
         let _ = fs::remove_file(&self.path);
     }
+}
+
+fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS branch_cache (
+            branch_name TEXT PRIMARY KEY,
+            merge_status TEXT NOT NULL,
+            commit_hash TEXT NOT NULL
+        )",
+        [],
+    )?;
+    Ok(())
+}
+
+fn read_entries(path: &Path) -> HashMap<String, CacheEntry> {
+    if !path.exists() {
+        return HashMap::new();
+    }
+
+    let Ok(conn) = Connection::open(path) else {
+        return HashMap::new();
+    };
+    let Ok(mut stmt) =
+        conn.prepare("SELECT branch_name, merge_status, commit_hash FROM branch_cache")
+    else {
+        return HashMap::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            CacheEntry {
+                merge_status: row.get(1)?,
+                commit_hash: row.get(2)?,
+            },
+        ))
+    }) else {
+        return HashMap::new();
+    };
+
+    let mut entries = HashMap::new();
+    for (branch_name, entry) in rows.flatten() {
+        entries.insert(branch_name, entry);
+    }
+    entries
 }
 
 fn cache_path(repo_path: &Path) -> PathBuf {
     let mut hasher = DefaultHasher::new();
     repo_path.hash(&mut hasher);
     let hash = hasher.finish();
-    PathBuf::from(format!("/tmp/git-bm-cache-{hash:x}.json"))
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("git-branch-manager")
+        .join(format!("git-bm-cache-{hash:x}.sqlite3"))
 }
 
 #[cfg(test)]
@@ -256,14 +344,30 @@ mod tests {
     #[test]
     fn cache_save_and_reload() {
         let dir = TempDir::new().unwrap();
-        let mut cache = BranchCache::load(dir.path());
+        let cache_path = dir.path().join("cache.sqlite3");
+        let mut cache = BranchCache::load_from_path(cache_path.clone());
         cache.insert("feature/x", &MergeStatus::SquashMerged, "abc123");
         cache.save();
 
-        let reloaded = BranchCache::load(dir.path());
+        let reloaded = BranchCache::load_from_path(cache_path);
         assert_eq!(
             reloaded.lookup("feature/x", "abc123"),
             Some(MergeStatus::SquashMerged)
         );
+    }
+
+    #[test]
+    fn cache_path_uses_app_cache_directory() {
+        let dir = TempDir::new().unwrap();
+        let path = cache_path(dir.path());
+
+        assert_eq!(
+            path.parent().and_then(Path::file_name),
+            Some(std::ffi::OsStr::new("git-branch-manager"))
+        );
+        assert!(path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("git-bm-cache-") && name.ends_with(".sqlite3")));
     }
 }
