@@ -219,18 +219,16 @@ pub fn is_squash_merged(
         }
     };
 
+    let branchish = commit_hash.unwrap_or(branch_name);
+
     // Step 1: find merge-base
-    let ancestor = match git(&["merge-base", base_branch, branch_name]) {
+    let ancestor = match git(&["merge-base", base_branch, branchish]) {
         Some(a) if !a.is_empty() => a,
         _ => return false,
     };
 
     // Step 2: create temp commit-tree
-    let tree_spec = if let Some(hash) = commit_hash {
-        format!("{hash}^{{tree}}")
-    } else {
-        format!("{branch_name}^{{tree}}")
-    };
+    let tree_spec = format!("{branchish}^{{tree}}");
     let temp_commit = match git(&["commit-tree", &tree_spec, "-p", &ancestor, "-m", "_"]) {
         Some(c) if !c.is_empty() => c,
         _ => return false,
