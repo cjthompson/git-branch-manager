@@ -248,6 +248,7 @@ mod tests {
             merge_status: MergeStatus::Merged,
             ahead: None,
             behind: Some(2),
+            disjoint: false,
             pr: None,
         };
         assert_eq!(r.display_name(), "origin/main");

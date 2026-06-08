@@ -212,6 +212,7 @@ pub fn list_remote_branches_phase1(
             },
             ahead: None,
             behind: None,
+            disjoint: false,
             pr: None,
         });
     }
@@ -300,6 +301,13 @@ pub fn spawn_remote_enricher(
             .count();
         worker_span.record("merged_count", merged_count);
 
+        // Total commits reachable from base. A remote whose `behind` equals this
+        // shares no commit with base (none of base's commits are its ancestors) —
+        // i.e. a disjoint history. One cheap command, reused for every ref.
+        let base_total: Option<u32> =
+            remote_enricher_git_stdout(&repo_path, &["rev-list", "--count", &base_oid])
+                .and_then(|s| s.trim().parse::<u32>().ok());
+
         let mut result_count = 0usize;
         let mut skipped_base_count = 0usize;
         let mut missing_ahead_behind_count = 0usize;
@@ -318,12 +326,16 @@ pub fn spawn_remote_enricher(
             } else {
                 MergeStatus::Unmerged
             };
+            // Disjoint: base contributes none of its commits as ancestors, so the
+            // ref is behind by all of base. ahead/behind are then full history sizes.
+            let disjoint = base_total.is_some() && behind == base_total;
 
             let result = RemoteEnrichResult {
                 full_ref: branch.full_ref,
                 merge_status,
                 ahead,
                 behind,
+                disjoint,
             };
             if tx.send(result).is_err() {
                 worker_span.record("result_state", "receiver_dropped");

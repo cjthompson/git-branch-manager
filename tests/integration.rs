@@ -785,6 +785,53 @@ fn test_remote_branch_squash_merge_detection() {
     );
 }
 
+#[test]
+fn test_remote_disjoint_branch_detected() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    // A normal branch that shares history with main.
+    run_git(&work_dir, &["checkout", "-b", "normal"]);
+    std::fs::write(work_dir.join("normal.txt"), "n\n").unwrap();
+    run_git(&work_dir, &["add", "normal.txt"]);
+    run_git(&work_dir, &["commit", "-m", "normal commit"]);
+    run_git(&work_dir, &["push", "-u", "origin", "normal"]);
+
+    // An orphan branch: a separate root, so it shares NO history with main.
+    run_git(&work_dir, &["checkout", "--orphan", "disjoint"]);
+    run_git(&work_dir, &["rm", "-rf", "."]);
+    std::fs::write(work_dir.join("disjoint.txt"), "d\n").unwrap();
+    run_git(&work_dir, &["add", "disjoint.txt"]);
+    run_git(&work_dir, &["commit", "-m", "disjoint root"]);
+    run_git(&work_dir, &["push", "-u", "origin", "disjoint"]);
+
+    run_git(&work_dir, &["checkout", "main"]);
+
+    let repo = git2::Repository::open(&work_dir).unwrap();
+    let remotes = branch::list_remote_branches_phase1(&repo, "main")
+        .expect("list_remote_branches_phase1 failed");
+
+    let rx = branch::spawn_remote_enricher(work_dir.clone(), "main".to_string(), remotes);
+    let results: Vec<_> = rx.iter().collect();
+
+    let disjoint = results
+        .iter()
+        .find(|r| r.full_ref == "origin/disjoint")
+        .expect("origin/disjoint should be enriched");
+    assert!(
+        disjoint.disjoint,
+        "orphan branch shares no history with main and must be flagged disjoint"
+    );
+
+    let normal = results
+        .iter()
+        .find(|r| r.full_ref == "origin/normal")
+        .expect("origin/normal should be enriched");
+    assert!(
+        !normal.disjoint,
+        "a branch that shares history with main must not be flagged disjoint"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Working tree status detection
 // ---------------------------------------------------------------------------

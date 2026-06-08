@@ -134,6 +134,7 @@ mod tests {
             merge_status: MergeStatus::Unmerged,
             ahead: None,
             behind: None,
+            disjoint: false,
             pr: None,
         }
     }

@@ -10,6 +10,10 @@ pub struct SymbolSet {
     pub status_merged: &'static str,
     pub status_squash_merged: &'static str,
     pub status_unmerged: &'static str,
+    /// Shown in the A/B column for a branch that shares no history with the base
+    /// (no merge base); its ahead/behind counts would be the full, misleading
+    /// history sizes, so we render this marker instead.
+    pub disjoint: &'static str,
 }
 
 impl SymbolSet {
@@ -25,6 +29,7 @@ impl SymbolSet {
             status_merged: "+",
             status_squash_merged: "~",
             status_unmerged: "-",
+            disjoint: "!=",
         }
     }
 
@@ -40,6 +45,7 @@ impl SymbolSet {
             status_merged: "\u{2714}",        // heavy check mark
             status_squash_merged: "\u{2248}", // almost equal to
             status_unmerged: "\u{2718}",      // heavy ballot X
+            disjoint: "\u{2260}",             // not equal to (no shared history)
         }
     }
 
@@ -55,6 +61,7 @@ impl SymbolSet {
             status_merged: "\u{f126}",        // nerd font code-fork (merged)
             status_squash_merged: "\u{25cf}", // solid circle (squash-merged)
             status_unmerged: "\u{f00d}",      // nerd font x-mark
+            disjoint: "\u{2260}",             // not equal to (no shared history)
         }
     }
 
@@ -146,5 +153,12 @@ mod tests {
         let s = SymbolSet::unicode();
         assert_eq!(s.arrow_up, "\u{2191}");
         assert_eq!(s.arrow_down, "\u{2193}");
+    }
+
+    #[test]
+    fn every_set_defines_a_disjoint_marker() {
+        assert_eq!(SymbolSet::ascii().disjoint, "!=");
+        assert_eq!(SymbolSet::unicode().disjoint, "\u{2260}");
+        assert_eq!(SymbolSet::powerline().disjoint, "\u{2260}");
     }
 }

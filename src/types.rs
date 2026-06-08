@@ -183,6 +183,10 @@ pub struct RemoteBranchInfo {
     pub merge_status: MergeStatus,
     pub ahead: Option<u32>,
     pub behind: Option<u32>,
+    /// True when this remote shares no history with the base branch (no merge
+    /// base). ahead/behind then equal the full history sizes and are meaningless,
+    /// so the A/B column shows the `disjoint` marker instead of the counts.
+    pub disjoint: bool,
     pub pr: Option<PrInfo>,
 }
 
@@ -276,6 +280,7 @@ pub struct RemoteEnrichResult {
     pub merge_status: MergeStatus,
     pub ahead: Option<u32>,
     pub behind: Option<u32>,
+    pub disjoint: bool,
 }
 
 #[derive(Debug, Clone)]

@@ -102,6 +102,7 @@ pub fn run(
                     r.merge_status = res.merge_status;
                     r.ahead = res.ahead;
                     r.behind = res.behind;
+                    r.disjoint = res.disjoint;
                 }
             }
 

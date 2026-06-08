@@ -484,6 +484,7 @@ impl App {
                 b.merge_status = result.merge_status;
                 b.ahead = result.ahead;
                 b.behind = result.behind;
+                b.disjoint = result.disjoint;
             }
         }
 
@@ -2538,7 +2539,16 @@ pub(crate) fn render_remote_row(
                 lines.push(Line::from(Span::styled(text, style)));
             }
             2 => {
-                lines.push(ahead_behind_line(item.ahead, item.behind, ctx));
+                // Disjoint remotes share no history with base; their ahead/behind are
+                // full history sizes (misleading), so show the disjoint marker instead.
+                if item.disjoint {
+                    lines.push(Line::from(Span::styled(
+                        symbols.disjoint.to_string(),
+                        theme.secondary_text,
+                    )));
+                } else {
+                    lines.push(ahead_behind_line(item.ahead, item.behind, ctx));
+                }
             }
             3 => {
                 lines.push(pr_line(item.pr.as_ref(), ctx));
