@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::backend::CrosstermBackend;
 use ratatui::prelude::*;
-use ratatui::widgets::Cell;
+use ratatui::text::Line;
 use ratatui::Terminal;
 
 use git_branch_manager::config::Config;
@@ -18,7 +18,7 @@ use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::theme::Theme;
 use git_branch_manager::types::*;
 use git_branch_manager::ui::cells::{
-    age_cell, ahead_behind_cell, merge_status_cell, merge_status_cell_for_branch, pr_cell,
+    age_line, ahead_behind_line, merge_status_line, merge_status_line_for_branch, pr_line,
 };
 use git_branch_manager::ui::list_render::CellContext;
 use git_branch_manager::ui::menu::MenuItem;
@@ -2347,15 +2347,15 @@ fn branch_prefix_style(name: &str, theme: &Theme) -> Style {
 
 // ---- Row Renderers ----
 
-fn render_branch_row(
+pub(crate) fn render_branch_row(
     item: &BranchInfo,
     _raw_idx: usize,
     _is_selected: bool,
     _is_cursor: bool,
     visible_cols: &[usize],
     ctx: &CellContext,
-) -> Vec<Cell<'static>> {
-    let mut cells = Vec::new();
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
     let theme = ctx.theme;
     let symbols = ctx.symbols;
 
@@ -2385,7 +2385,7 @@ fn render_branch_row(
                     String::new()
                 };
                 let name = format!("{prefix}{}{suffix}", item.name);
-                cells.push(Cell::from(Span::styled(name, style)));
+                lines.push(Line::from(Span::styled(name, style)));
             }
             1 => {
                 // Remote tracking
@@ -2399,13 +2399,13 @@ fn render_branch_row(
                     }
                     TrackingStatus::Local => "local".to_string(),
                 };
-                cells.push(Cell::from(Span::styled(text, theme.secondary_text)));
+                lines.push(Line::from(Span::styled(text, theme.secondary_text)));
             }
             2 => {
-                cells.push(ahead_behind_cell(item.ahead, item.behind, ctx));
+                lines.push(ahead_behind_line(item.ahead, item.behind, ctx));
             }
             3 => {
-                cells.push(pr_cell(item.pr.as_ref(), ctx));
+                lines.push(pr_line(item.pr.as_ref(), ctx));
             }
             4 => {
                 let age = if ctx.compact {
@@ -2413,30 +2413,30 @@ fn render_branch_row(
                 } else {
                     item.age_display()
                 };
-                cells.push(age_cell(age, &item.last_commit_date, ctx));
+                lines.push(age_line(age, &item.last_commit_date, ctx));
             }
             5 => {
-                cells.push(merge_status_cell_for_branch(
+                lines.push(merge_status_line_for_branch(
                     &item.merge_status,
                     item.is_base,
                     ctx,
                 ));
             }
-            _ => cells.push(Cell::from("")),
+            _ => lines.push(Line::from("")),
         }
     }
-    cells
+    lines
 }
 
-fn render_remote_row(
+pub(crate) fn render_remote_row(
     item: &RemoteBranchInfo,
     _raw_idx: usize,
     _is_selected: bool,
     _is_cursor: bool,
     visible_cols: &[usize],
     ctx: &CellContext,
-) -> Vec<Cell<'static>> {
-    let mut cells = Vec::new();
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
     let theme = ctx.theme;
     let symbols = ctx.symbols;
 
@@ -2455,7 +2455,7 @@ fn render_remote_row(
                 } else {
                     item.full_ref.clone()
                 };
-                cells.push(Cell::from(Span::styled(name, style)));
+                lines.push(Line::from(Span::styled(name, style)));
             }
             1 => {
                 // Local indicator: checkmark symbol when local branch exists
@@ -2469,13 +2469,13 @@ fn render_remote_row(
                 } else {
                     theme.secondary_text
                 };
-                cells.push(Cell::from(Span::styled(text, style)));
+                lines.push(Line::from(Span::styled(text, style)));
             }
             2 => {
-                cells.push(ahead_behind_cell(item.ahead, item.behind, ctx));
+                lines.push(ahead_behind_line(item.ahead, item.behind, ctx));
             }
             3 => {
-                cells.push(pr_cell(item.pr.as_ref(), ctx));
+                lines.push(pr_line(item.pr.as_ref(), ctx));
             }
             4 => {
                 let age = if ctx.compact {
@@ -2483,26 +2483,26 @@ fn render_remote_row(
                 } else {
                     item.age_display()
                 };
-                cells.push(age_cell(age, &item.last_commit_date, ctx));
+                lines.push(age_line(age, &item.last_commit_date, ctx));
             }
             5 => {
-                cells.push(merge_status_cell(&item.merge_status, ctx));
+                lines.push(merge_status_line(&item.merge_status, ctx));
             }
-            _ => cells.push(Cell::from("")),
+            _ => lines.push(Line::from("")),
         }
     }
-    cells
+    lines
 }
 
-fn render_tag_row(
+pub(crate) fn render_tag_row(
     item: &TagInfo,
     _raw_idx: usize,
     _is_selected: bool,
     _is_cursor: bool,
     visible_cols: &[usize],
     ctx: &CellContext,
-) -> Vec<Cell<'static>> {
-    let mut cells = Vec::new();
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
     let theme = ctx.theme;
 
     for &col_idx in visible_cols {
@@ -2510,7 +2510,7 @@ fn render_tag_row(
             0 => {
                 // Tag name
                 let style = branch_prefix_style(&item.name, theme);
-                cells.push(Cell::from(Span::styled(item.name.clone(), style)));
+                lines.push(Line::from(Span::styled(item.name.clone(), style)));
             }
             1 => {
                 // Commit hash (short)
@@ -2519,7 +2519,7 @@ fn render_tag_row(
                 } else {
                     &item.commit_hash
                 };
-                cells.push(Cell::from(Span::styled(
+                lines.push(Line::from(Span::styled(
                     hash.to_string(),
                     theme.secondary_text,
                 )));
@@ -2530,7 +2530,7 @@ fn render_tag_row(
                 } else {
                     item.age_display()
                 };
-                cells.push(age_cell(age, &item.date, ctx));
+                lines.push(age_line(age, &item.date, ctx));
             }
             3 => {
                 // Message
@@ -2547,23 +2547,23 @@ fn render_tag_row(
                     20
                 };
                 let text = truncate(msg, max_width);
-                cells.push(Cell::from(Span::styled(text, theme.secondary_text)));
+                lines.push(Line::from(Span::styled(text, theme.secondary_text)));
             }
-            _ => cells.push(Cell::from("")),
+            _ => lines.push(Line::from("")),
         }
     }
-    cells
+    lines
 }
 
-fn render_worktree_row(
+pub(crate) fn render_worktree_row(
     item: &WorktreeInfo,
     _raw_idx: usize,
     _is_selected: bool,
     _is_cursor: bool,
     visible_cols: &[usize],
     ctx: &CellContext,
-) -> Vec<Cell<'static>> {
-    let mut cells = Vec::new();
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
     let theme = ctx.theme;
 
     for &col_idx in visible_cols {
@@ -2576,13 +2576,13 @@ fn render_worktree_row(
                 } else {
                     Style::default()
                 };
-                cells.push(Cell::from(Span::styled(path_str, style)));
+                lines.push(Line::from(Span::styled(path_str, style)));
             }
             1 => {
                 // Branch name
                 let name = item.branch.as_deref().unwrap_or("[detached]");
                 let style = prefix_style(name, theme).unwrap_or(theme.primary_text);
-                cells.push(Cell::from(Span::styled(name.to_string(), style)));
+                lines.push(Line::from(Span::styled(name.to_string(), style)));
             }
             2 => {
                 // Working tree status
@@ -2596,7 +2596,7 @@ fn render_worktree_row(
                 } else {
                     theme.unmerged
                 };
-                cells.push(Cell::from(Span::styled(text, style)));
+                lines.push(Line::from(Span::styled(text, style)));
             }
             3 => {
                 let age = if ctx.compact {
@@ -2604,13 +2604,13 @@ fn render_worktree_row(
                 } else {
                     item.age_display()
                 };
-                cells.push(age_cell(age, &item.age_date, ctx));
+                lines.push(age_line(age, &item.age_date, ctx));
             }
             4 => {
-                cells.push(merge_status_cell(&item.merge_status, ctx));
+                lines.push(merge_status_line(&item.merge_status, ctx));
             }
-            _ => cells.push(Cell::from("")),
+            _ => lines.push(Line::from("")),
         }
     }
-    cells
+    lines
 }

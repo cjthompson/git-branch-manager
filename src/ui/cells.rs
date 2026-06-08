@@ -6,13 +6,13 @@
 //! them so visual and responsive behavior cannot drift per tab.
 //!
 //! The cell builders take a `CellContext` (theme, symbols, width, compact) and
-//! return a ratatui `Cell`. Pure formatting logic is factored into small
+//! return a ratatui `Line`. Pure formatting logic is factored into small
 //! `(String, Style)` / `Vec<Span>` helpers so it can be unit-tested without
 //! introspecting an opaque `Cell`.
 
 use chrono::{DateTime, Utc};
 use ratatui::prelude::*;
-use ratatui::widgets::Cell;
+use ratatui::text::Line;
 
 use crate::types::{MergeStatus, PrInfo, PrStatus};
 use crate::ui::list_render::CellContext;
@@ -96,48 +96,48 @@ pub(crate) fn ahead_behind_spans(
     parts
 }
 
-// ── Public Cell builders ────────────────────────────────────────────────────
+// ── Public Line builders ────────────────────────────────────────────────────
 
-/// Ahead/behind cell (branch and remote rows).
-pub fn ahead_behind_cell(
+/// Ahead/behind line (branch and remote rows).
+pub fn ahead_behind_line(
     ahead: Option<u32>,
     behind: Option<u32>,
     ctx: &CellContext,
-) -> Cell<'static> {
-    Cell::from(Line::from(ahead_behind_spans(ahead, behind, ctx)))
+) -> Line<'static> {
+    Line::from(ahead_behind_spans(ahead, behind, ctx))
 }
 
-/// PR number cell (branch and remote rows).
-pub fn pr_cell(pr: Option<&PrInfo>, ctx: &CellContext) -> Cell<'static> {
+/// PR number line (branch and remote rows).
+pub fn pr_line(pr: Option<&PrInfo>, ctx: &CellContext) -> Line<'static> {
     let (text, style) = pr_parts(pr, ctx);
-    Cell::from(Span::styled(text, style))
+    Line::from(Span::styled(text, style))
 }
 
-/// Age cell, right-aligned. The caller passes the already-formatted age string
+/// Age line, right-aligned. The caller passes the already-formatted age string
 /// (`item.age_short()` or `item.age_display()` depending on `ctx.compact`); the
 /// date drives the age-based color.
-pub fn age_cell(age_text: String, date: &DateTime<Utc>, ctx: &CellContext) -> Cell<'static> {
+pub fn age_line(age_text: String, date: &DateTime<Utc>, ctx: &CellContext) -> Line<'static> {
     let style = age_style(date, ctx.theme);
-    Cell::from(Line::from(Span::styled(age_text, style)).alignment(Alignment::Right))
+    Line::from(Span::styled(age_text, style)).alignment(Alignment::Right)
 }
 
-/// Merge-status cell, right-aligned (remote and worktree rows).
-pub fn merge_status_cell(status: &MergeStatus, ctx: &CellContext) -> Cell<'static> {
+/// Merge-status line, right-aligned (remote and worktree rows).
+pub fn merge_status_line(status: &MergeStatus, ctx: &CellContext) -> Line<'static> {
     let (text, style) = merge_status_parts(status, ctx);
-    Cell::from(Line::from(Span::styled(text, style)).alignment(Alignment::Right))
+    Line::from(Span::styled(text, style)).alignment(Alignment::Right)
 }
 
-/// Merge-status cell for branch rows: the base branch shows a blank status,
-/// otherwise this delegates to [`merge_status_cell`].
-pub fn merge_status_cell_for_branch(
+/// Merge-status line for branch rows: the base branch shows a blank status,
+/// otherwise this delegates to [`merge_status_line`].
+pub fn merge_status_line_for_branch(
     status: &MergeStatus,
     is_base: bool,
     ctx: &CellContext,
-) -> Cell<'static> {
+) -> Line<'static> {
     if is_base {
-        Cell::from("")
+        Line::from("")
     } else {
-        merge_status_cell(status, ctx)
+        merge_status_line(status, ctx)
     }
 }
 
@@ -217,7 +217,7 @@ mod tests {
         assert_eq!(merge_status_parts(&MergeStatus::Merged, &narrow).0, "+");
     }
 
-    // --- merge_status_cell_for_branch: base is blank ---
+    // --- merge_status_line_for_branch: base is blank ---
 
     #[test]
     fn branch_base_status_is_blank() {
@@ -229,12 +229,12 @@ mod tests {
             compact: false,
         };
         assert_eq!(
-            merge_status_cell_for_branch(&MergeStatus::Merged, true, &ctx),
-            Cell::from("")
+            merge_status_line_for_branch(&MergeStatus::Merged, true, &ctx),
+            Line::from("")
         );
         assert_ne!(
-            merge_status_cell_for_branch(&MergeStatus::Merged, false, &ctx),
-            Cell::from("")
+            merge_status_line_for_branch(&MergeStatus::Merged, false, &ctx),
+            Line::from("")
         );
     }
 
