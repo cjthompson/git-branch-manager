@@ -1,4 +1,5 @@
 use ratatui::prelude::*;
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::symbols::SymbolSet;
@@ -21,8 +22,8 @@ pub struct CellContext<'a> {
 /// Type alias for the row-rendering callback function pointer.
 ///
 /// Parameters: (item, raw_index, is_selected, is_cursor_row, visible_col_indices, context)
-/// Returns: Vec of cells for the data columns (checkbox is handled automatically).
-pub type RowRenderer<T> = fn(&T, usize, bool, bool, &[usize], &CellContext) -> Vec<Cell<'static>>;
+/// Returns: Vec of Lines for the data columns (checkbox is handled automatically).
+pub type RowRenderer<T> = fn(&T, usize, bool, bool, &[usize], &CellContext) -> Vec<Line<'static>>;
 
 /// Bundles all parameters needed for generic list rendering.
 pub struct ListRenderParams<'a, T: ViewItem> {
@@ -152,14 +153,11 @@ pub fn render_list_view<T: ViewItem>(
 
             // Get view-specific cells
             let mut cells = vec![checkbox_cell];
-            cells.extend((params.render_row)(
-                item,
-                raw_idx,
-                is_selected,
-                is_cursor,
-                &visible_col_indices,
-                &ctx,
-            ));
+            cells.extend(
+                (params.render_row)(item, raw_idx, is_selected, is_cursor, &visible_col_indices, &ctx)
+                    .into_iter()
+                    .map(Cell::from),
+            );
 
             if is_selected {
                 Row::new(cells).style(theme.checked_row)
