@@ -418,6 +418,81 @@ fn parse_merged_remote_refs(output: &str) -> HashSet<String> {
         .collect()
 }
 
+const MERGE_BASE_WALK_LIMIT: usize = 1_000;
+
+enum MergeBaseSearch {
+    Found { oid: git2::Oid, walked: usize },
+    NotFound { walked: usize },
+    Limited { walked: usize },
+}
+
+fn collect_reachable_from_base(
+    repo: &Repository,
+    base_oid: git2::Oid,
+) -> Option<HashSet<git2::Oid>> {
+    let span = info_span!(
+        "collect_branch_metadata_base_revwalk",
+        base_oid = %base_oid,
+        reachable_count = field::Empty,
+        result_state = field::Empty,
+    );
+    let _entered = span.enter();
+    let mut revwalk = match repo.revwalk() {
+        Ok(revwalk) => revwalk,
+        Err(_) => {
+            span.record("result_state", "revwalk_error");
+            return None;
+        }
+    };
+    if revwalk.set_sorting(git2::Sort::NONE).is_err() || revwalk.push(base_oid).is_err() {
+        span.record("result_state", "setup_error");
+        return None;
+    }
+    let mut reachable = HashSet::new();
+    for oid in revwalk.flatten() {
+        reachable.insert(oid);
+    }
+    span.record("reachable_count", reachable.len() as u64);
+    span.record("result_state", "success");
+    Some(reachable)
+}
+
+fn find_merge_base_from_reachable(
+    repo: &Repository,
+    branch_oid: git2::Oid,
+    reachable: &HashSet<git2::Oid>,
+) -> MergeBaseSearch {
+    if reachable.contains(&branch_oid) {
+        return MergeBaseSearch::Found {
+            oid: branch_oid,
+            walked: 0,
+        };
+    }
+
+    let mut revwalk = match repo.revwalk() {
+        Ok(revwalk) => revwalk,
+        Err(_) => return MergeBaseSearch::NotFound { walked: 0 },
+    };
+    if revwalk.set_sorting(git2::Sort::NONE).is_err() || revwalk.push(branch_oid).is_err() {
+        return MergeBaseSearch::NotFound { walked: 0 };
+    }
+
+    let mut walked = 0usize;
+    for oid_result in revwalk {
+        if walked >= MERGE_BASE_WALK_LIMIT {
+            return MergeBaseSearch::Limited { walked };
+        }
+        walked += 1;
+        if let Ok(oid) = oid_result {
+            if reachable.contains(&oid) {
+                return MergeBaseSearch::Found { oid, walked };
+            }
+        }
+    }
+
+    MergeBaseSearch::NotFound { walked }
+}
+
 /// List all local branches with full metadata including squash-merge detection.
 /// Synchronous — runs squash checks inline. Used by `--list` mode and tests.
 #[instrument(skip(repo), fields(base_branch, result_count = field::Empty))]
@@ -477,6 +552,7 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
         ahead_behind_skip_count = field::Empty,
         merge_base_success_count = field::Empty,
         merge_base_error_count = field::Empty,
+        merge_base_limited_count = field::Empty,
         merge_base_skip_count = field::Empty,
         base_oid_missing_count = field::Empty,
     )
@@ -505,6 +581,11 @@ fn collect_branch_metadata(
         let base_oid_string = base_oid.to_string();
         span.record("base_oid", base_oid_string.as_str());
     }
+    let reachable_from_base = if skip_ahead_behind {
+        None
+    } else {
+        base_oid.and_then(|oid| collect_reachable_from_base(repo, oid))
+    };
 
     let mut branches = Vec::new();
     let branch_iter = info_span!(
@@ -524,6 +605,7 @@ fn collect_branch_metadata(
     let mut ahead_behind_skip_count = 0usize;
     let mut merge_base_success_count = 0usize;
     let mut merge_base_error_count = 0usize;
+    let mut merge_base_limited_count = 0usize;
     let mut merge_base_skip_count = 0usize;
     let mut base_oid_missing_count = 0usize;
     for branch_result in branch_iter {
@@ -686,6 +768,43 @@ fn collect_branch_metadata(
         let merge_base_commit = if skip_ahead_behind || is_base {
             merge_base_skip_count += 1;
             None
+        } else if let Some(reachable) = &reachable_from_base {
+            let branch_oid = commit.id();
+            let merge_span = info_span!(
+                "collect_branch_metadata_merge_base",
+                branch_name = %name,
+                branch_tip = %branch_oid,
+                method = "bounded_revwalk",
+                walk_limit = MERGE_BASE_WALK_LIMIT,
+                walked_count = field::Empty,
+                result_state = field::Empty,
+            );
+            let search = {
+                let _entered = merge_span.enter();
+                find_merge_base_from_reachable(repo, branch_oid, reachable)
+            };
+            match search {
+                MergeBaseSearch::Found { oid, walked } => {
+                    merge_base_success_count += 1;
+                    merge_span.record("walked_count", walked as u64);
+                    merge_span.record("result_state", "success");
+                    let oid = oid.to_string();
+                    branch_span.record("merge_base_oid", oid.as_str());
+                    Some(oid[..8].to_string())
+                }
+                MergeBaseSearch::NotFound { walked } => {
+                    merge_base_error_count += 1;
+                    merge_span.record("walked_count", walked as u64);
+                    merge_span.record("result_state", "not_found");
+                    None
+                }
+                MergeBaseSearch::Limited { walked } => {
+                    merge_base_limited_count += 1;
+                    merge_span.record("walked_count", walked as u64);
+                    merge_span.record("result_state", "limited");
+                    None
+                }
+            }
         } else if let Some(base_oid) = base_oid {
             let branch_oid = commit.id();
             match info_span!(
@@ -693,6 +812,7 @@ fn collect_branch_metadata(
                 branch_name = %name,
                 base_oid = %base_oid,
                 branch_tip = %branch_oid,
+                method = "graph_merge_base_fallback",
             )
             .in_scope(|| repo.merge_base(base_oid, branch_oid))
             {
@@ -748,6 +868,7 @@ fn collect_branch_metadata(
     span.record("ahead_behind_skip_count", ahead_behind_skip_count as u64);
     span.record("merge_base_success_count", merge_base_success_count as u64);
     span.record("merge_base_error_count", merge_base_error_count as u64);
+    span.record("merge_base_limited_count", merge_base_limited_count as u64);
     span.record("merge_base_skip_count", merge_base_skip_count as u64);
     span.record("base_oid_missing_count", base_oid_missing_count as u64);
     Ok(branches)

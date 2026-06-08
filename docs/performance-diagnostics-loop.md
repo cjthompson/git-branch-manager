@@ -412,3 +412,80 @@ improvement on `zenpayroll --branches`, with no new remote guardrail regression.
 For `zenpayroll --branches`, `git::branch::collect_branch_metadata` is now almost
 entirely merge-base work: 27 `collect_branch_metadata_merge_base` spans consumed
 13.59s in the accepted after-run.
+
+## Iteration 7: bounded merge-base lookup in branch metadata
+
+Date: 2026-06-07 local / 2026-06-08 UTC
+
+Commit before change: `eab83a2`
+
+### Baseline
+
+The baseline is the accepted after-run from Iteration 6:
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-detect-merged-revwalk-zenpayroll-branches.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --branches --color=never
+```
+
+Result:
+
+| Repo / view | Wall time | Key span | Span time | Note |
+| --- | ---: | --- | ---: | --- |
+| `zenpayroll --branches` | 14.90s | `git::branch::collect_branch_metadata_merge_base` | 13.59s | 27 per-branch `repo.merge_base()` spans dominated the run |
+| `zenpayroll --branches` | 14.90s | `git::merge_detection::detect_merged_branches` | 15.4ms | Already fixed in Iteration 6 |
+
+### Decision
+
+Changed one function: `git::branch::collect_branch_metadata`.
+
+The function previously called `repo.merge_base(base, branch_tip)` for every
+non-base local branch. This iteration builds one reachable set from the base
+branch, then finds a branch's merge-base by walking that branch until it hits the
+reachable set. Each branch walk is capped at 1,000 commits, matching the data:
+`zenpayroll` had two shallow merge-base successes and 25 branches with no useful
+intersection after very large graph walks. If the shared base revwalk cannot be
+built, the old `repo.merge_base()` path remains as a fallback.
+
+### After
+
+```sh
+GBM_TIMING_LOG=/tmp/gbm-loop-after-merge-base-bounded-zenpayroll-branches.log \
+  /usr/bin/time -p ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/zenpayroll --branches --color=never
+
+GBM_TIMING_LOG=/tmp/gbm-loop-after-merge-base-bounded-gbm-zenpayroll-remotes-60s.log \
+  /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
+  ./target/release/git-branch-manager \
+  --repo /Users/chris.thompson/workspace/gbm-zenpayroll --remotes --color=never
+```
+
+Results:
+
+| Repo / view | Before | After | Delta | Evidence |
+| --- | ---: | ---: | ---: | --- |
+| `collect_branch_metadata_merge_base` | 13.59s | 78.9ms | -99.4% | 27 bounded spans; `merge_base_success_count=2`, `merge_base_limited_count=25` |
+| `collect_branch_metadata` | 13.70s | 175ms | -98.7% | Includes a 53.7ms shared base revwalk |
+| `list_branches` | 13.70s | 189ms | -98.6% | Branch graph work is no longer the dominant runtime |
+| `zenpayroll --branches` full dump | 14.90s | 1.21s | -91.9% | Remaining wall time is mostly the failing PR lookup (`fetch_open_prs` 710ms) |
+| `gbm-zenpayroll --remotes` full dump | 60s cap | 60s cap | unchanged | Guardrail remained capped during remote squash checking |
+
+### Outcome
+
+Accepted. The changed function removed the last multi-second local branch graph
+span and made `zenpayroll --branches` effectively sub-second before PR lookup.
+
+### Validation
+
+- `cargo test branch` passed.
+- `cargo test merged_branch_detection` passed.
+- `cargo build --release` passed.
+- `git diff --check` passed.
+
+### Next bottleneck
+
+For `zenpayroll --branches`, the remaining user-visible time is now mostly PR
+lookup failure handling (`fetch_open_prs_checked` around 710ms in the accepted
+after-run). For `gbm-zenpayroll --remotes`, the bottleneck remains remote squash
+checking after remote enrichment.
