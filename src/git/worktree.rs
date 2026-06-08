@@ -184,28 +184,42 @@ pub fn enrich_worktrees(worktrees: Vec<WorktreeInfo>) -> Receiver<WorktreeEnrich
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || {
-        let worker_span = info_span!("enrich_worktrees_worker", count = worktrees.len());
+        let worker_count = worktrees.len();
+        let worker_span = info_span!(
+            "enrich_worktrees_worker",
+            count = worker_count,
+            worker_count,
+            join_error_count = field::Empty,
+        );
         let _worker_entered = worker_span.enter();
-        for (index, wt) in worktrees.iter().enumerate() {
-            let (wt_status, age_date) = info_span!(
-                "enrich_worktree_entry",
-                index,
-                path = ?wt.path,
-                branch = wt.branch.as_deref().unwrap_or("(detached)"),
-                is_main = wt.is_main,
-            )
-            .in_scope(|| status_and_age(&wt.path));
-            if tx
-                .send(WorktreeEnrichResult {
+        let mut handles = Vec::with_capacity(worker_count);
+        for (index, wt) in worktrees.into_iter().enumerate() {
+            let tx = tx.clone();
+            handles.push(std::thread::spawn(move || {
+                let (wt_status, age_date) = info_span!(
+                    "enrich_worktree_entry",
+                    index,
+                    path = ?wt.path,
+                    branch = wt.branch.as_deref().unwrap_or("(detached)"),
+                    is_main = wt.is_main,
+                )
+                .in_scope(|| status_and_age(&wt.path));
+                let _ = tx.send(WorktreeEnrichResult {
                     index,
                     wt_status,
                     age_date,
-                })
-                .is_err()
-            {
-                return;
+                });
+            }));
+        }
+        drop(tx);
+
+        let mut join_error_count = 0usize;
+        for handle in handles {
+            if handle.join().is_err() {
+                join_error_count += 1;
             }
         }
+        worker_span.record("join_error_count", join_error_count);
     });
 
     rx
