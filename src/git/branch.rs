@@ -420,6 +420,113 @@ pub fn fill_merge_base_commits(
     span.record("limited_count", limited_count as u64);
 }
 
+/// Like fill_merge_base_commits, but uses BranchCache to skip the bounded revwalk on
+/// cache hits. Results are stored back into the cache for future calls.
+/// base_tip_oid is the current tip of the base branch (used as part of the cache key).
+#[instrument(
+    skip(repo, branches, reachable, cache),
+    fields(
+        branch_count = branches.len(),
+        filled_count = field::Empty,
+        cache_hit_count = field::Empty,
+        miss_count = field::Empty,
+        limited_count = field::Empty,
+    )
+)]
+pub fn fill_merge_base_commits_cached(
+    repo: &Repository,
+    branches: &mut [BranchInfo],
+    reachable: &std::collections::HashSet<git2::Oid>,
+    base_tip_oid: git2::Oid,
+    cache: &mut super::cache::BranchCache,
+) {
+    let span = tracing::Span::current();
+    let mut filled_count = 0usize;
+    let mut cache_hit_count = 0usize;
+    let mut miss_count = 0usize;
+    let mut limited_count = 0usize;
+    for branch in branches.iter_mut() {
+        if branch.is_base || branch.merge_base_commit.is_some() {
+            continue;
+        }
+        let tip_oid = match repo
+            .find_branch(&branch.name, git2::BranchType::Local)
+            .and_then(|b| {
+                b.get()
+                    .target()
+                    .ok_or_else(|| git2::Error::from_str("no target"))
+            }) {
+            Ok(oid) => oid,
+            Err(_) => {
+                miss_count += 1;
+                continue;
+            }
+        };
+        // Cache lookup: None = miss, Some(None) = disconnected, Some(Some(h)) = found
+        if let Some(cached) = cache.lookup_merge_base(tip_oid, base_tip_oid) {
+            branch.merge_base_commit = cached;
+            cache_hit_count += 1;
+            if branch.merge_base_commit.is_some() {
+                filled_count += 1;
+            }
+            continue;
+        }
+        // Cache miss: compute via bounded revwalk (same logic as fill_merge_base_commits)
+        if reachable.is_empty() {
+            cache.insert_merge_base(tip_oid, base_tip_oid, None);
+            miss_count += 1;
+            continue;
+        }
+        if reachable.contains(&tip_oid) {
+            let s = tip_oid.to_string();
+            let hash = s[..8].to_string();
+            branch.merge_base_commit = Some(hash.clone());
+            cache.insert_merge_base(tip_oid, base_tip_oid, Some(hash));
+            filled_count += 1;
+            continue;
+        }
+        let mut found_oid: Option<git2::Oid> = None;
+        let mut hit_limit = false;
+        if let Ok(mut revwalk) = repo.revwalk() {
+            let _ = revwalk.set_sorting(git2::Sort::NONE);
+            let _ = revwalk.push(tip_oid);
+            for (n, oid_result) in (&mut revwalk).enumerate() {
+                if n >= MERGE_BASE_WALK_LIMIT {
+                    hit_limit = true;
+                    break;
+                }
+                if let Ok(oid) = oid_result {
+                    if reachable.contains(&oid) {
+                        found_oid = Some(oid);
+                        break;
+                    }
+                }
+            }
+        }
+        match found_oid {
+            Some(oid) => {
+                let s = oid.to_string();
+                let hash = s[..8].to_string();
+                branch.merge_base_commit = Some(hash.clone());
+                cache.insert_merge_base(tip_oid, base_tip_oid, Some(hash));
+                filled_count += 1;
+            }
+            None => {
+                cache.insert_merge_base(tip_oid, base_tip_oid, None);
+                if hit_limit {
+                    limited_count += 1;
+                } else {
+                    miss_count += 1;
+                }
+            }
+        }
+    }
+    span.record("filled_count", filled_count as u64);
+    span.record("cache_hit_count", cache_hit_count as u64);
+    span.record("miss_count", miss_count as u64);
+    span.record("limited_count", limited_count as u64);
+}
+
 #[instrument(
     skip(repo),
     fields(

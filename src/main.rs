@@ -137,17 +137,93 @@ fn main() -> Result<()> {
                     let Ok(repo2) = git2::Repository::open(&secondary_path) else {
                         return;
                     };
-                    let reachable =
-                        merge_detection::build_reachable_set_from_repo(&repo2, &secondary_base);
+                    // Resolve current base tip for cache key and shortcut check.
+                    let base_tip_oid = repo2
+                        .find_branch(&secondary_base, git2::BranchType::Local)
+                        .ok()
+                        .and_then(|b| b.get().target());
+                    let mut mb_cache = cache::BranchCache::load(&secondary_path);
                     let mut branches2 = branches_clone;
-                    merge_detection::apply_merge_statuses(&repo2, &mut branches2, &reachable);
+
+                    // Fast path: if base tip matches the cache, skip the full revwalk and
+                    // restore merge statuses + merge bases from cache. Base tip unchanged
+                    // means nothing new was merged, so cached statuses are still valid.
+                    let base_tip_str = base_tip_oid.map(|o| o.to_string());
+                    let cache_hit =
+                        base_tip_str.is_some() && base_tip_str == mb_cache.mb_data.base_tip;
+
+                    if cache_hit {
+                        // Restore merge statuses from merge-status cache.
+                        for branch in branches2.iter_mut() {
+                            if branch.is_base || branch.is_current {
+                                continue;
+                            }
+                            if let Some(tip_oid) = repo2
+                                .find_branch(&branch.name, git2::BranchType::Local)
+                                .ok()
+                                .and_then(|b| b.get().target())
+                            {
+                                let tip_str = tip_oid.to_string();
+                                if let Some(status) = mb_cache.lookup(&branch.name, &tip_str) {
+                                    branch.merge_status = status;
+                                }
+                                // Unknown tip (new branch since last run) stays Pending; squash
+                                // loader will check it. This is correct — base unchanged means
+                                // the branch can't be regularly merged yet.
+                            }
+                        }
+                        // Restore merge bases from mb_cache; hits are O(1) map lookups.
+                        if let Some(base_tip) = base_tip_oid {
+                            branch::fill_merge_base_commits_cached(
+                                &repo2,
+                                &mut branches2,
+                                &std::collections::HashSet::new(),
+                                base_tip,
+                                &mut mb_cache,
+                            );
+                        }
+                    } else {
+                        // Full recompute: build reachable set, apply statuses, fill bases.
+                        let reachable =
+                            merge_detection::build_reachable_set_from_repo(&repo2, &secondary_base);
+                        merge_detection::apply_merge_statuses(&repo2, &mut branches2, &reachable);
+                        // Cache the newly computed merge statuses.
+                        for branch in branches2.iter() {
+                            if !branch.is_base && !branch.is_current {
+                                if let Some(tip_oid) = repo2
+                                    .find_branch(&branch.name, git2::BranchType::Local)
+                                    .ok()
+                                    .and_then(|b| b.get().target())
+                                {
+                                    mb_cache.insert(
+                                        &branch.name,
+                                        &branch.merge_status,
+                                        &tip_oid.to_string(),
+                                    );
+                                }
+                            }
+                        }
+                        if let Some(base_tip) = base_tip_oid {
+                            branch::fill_merge_base_commits_cached(
+                                &repo2,
+                                &mut branches2,
+                                &reachable,
+                                base_tip,
+                                &mut mb_cache,
+                            );
+                            mb_cache.mb_data.base_tip = base_tip_str;
+                        } else {
+                            branch::fill_merge_base_commits(&repo2, &mut branches2, &reachable);
+                        }
+                        mb_cache.save();
+                    }
+
                     let merge_status_updates: Vec<(String, MergeStatus)> = branches2
                         .iter()
                         .map(|b| (b.name.clone(), b.merge_status))
                         .collect();
                     let _ =
                         phase1_tx_clone.send(app::Phase1Msg::MergeStatuses(merge_status_updates));
-                    branch::fill_merge_base_commits(&repo2, &mut branches2, &reachable);
                     let merge_base_updates: Vec<(String, String)> = branches2
                         .into_iter()
                         .filter_map(|b| b.merge_base_commit.map(|h| (b.name, h)))

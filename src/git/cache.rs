@@ -14,6 +14,21 @@ struct CacheEntry {
     commit_hash: String,
 }
 
+/// Merge-base and base-tip cache. Stored in a separate JSON file.
+/// When the base branch tip hasn't changed, we can skip the full revwalk and
+/// restore merge statuses + merge bases entirely from these cached values.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct MergeBaseData {
+    /// Last-seen base branch tip OID (hex string). When this matches the current
+    /// base tip, all cached merge statuses and merge bases are still valid.
+    #[serde(default)]
+    pub base_tip: Option<String>,
+    /// Merge base hash keyed by "{branch_tip_oid}:{base_tip_oid}".
+    /// Value is None for disconnected branches, Some(hash) for connected ones.
+    #[serde(default)]
+    pub entries: HashMap<String, Option<String>>,
+}
+
 pub struct BranchCache {
     path: PathBuf,
     entries: HashMap<String, CacheEntry>,
@@ -21,6 +36,8 @@ pub struct BranchCache {
     /// Ahead/behind counts keyed by "{branch_oid}:{upstream_oid}".
     /// Same OID pair always yields the same count — valid until either tip changes.
     ab_entries: HashMap<String, [u32; 2]>,
+    pub mb_path: PathBuf,
+    pub mb_data: MergeBaseData,
     hits: Cell<u32>,
     misses: Cell<u32>,
 }
@@ -40,11 +57,18 @@ impl BranchCache {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
+        let mb_path = mb_cache_path(repo_path);
+        let mb_data: MergeBaseData = fs::read_to_string(&mb_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
         Self {
             path,
             entries,
             ab_path,
             ab_entries,
+            mb_path,
+            mb_data,
             hits: Cell::new(0),
             misses: Cell::new(0),
         }
@@ -58,6 +82,32 @@ impl BranchCache {
         if let Ok(json) = serde_json::to_string(&self.ab_entries) {
             let _ = fs::write(&self.ab_path, json);
         }
+        if let Ok(json) = serde_json::to_string(&self.mb_data) {
+            let _ = fs::write(&self.mb_path, json);
+        }
+    }
+
+    /// Returns the cached merge base for (branch_tip, base_tip):
+    /// - `None` → not in cache (miss)
+    /// - `Some(None)` → cached as disconnected (no common ancestor within walk limit)
+    /// - `Some(Some(hash))` → cached merge base hash
+    pub fn lookup_merge_base(
+        &self,
+        branch_tip: git2::Oid,
+        base_tip: git2::Oid,
+    ) -> Option<Option<String>> {
+        let key = format!("{branch_tip}:{base_tip}");
+        self.mb_data.entries.get(&key).cloned()
+    }
+
+    pub fn insert_merge_base(
+        &mut self,
+        branch_tip: git2::Oid,
+        base_tip: git2::Oid,
+        merge_base: Option<String>,
+    ) {
+        let key = format!("{branch_tip}:{base_tip}");
+        self.mb_data.entries.insert(key, merge_base);
     }
 
     pub fn lookup_ahead_behind(
@@ -226,6 +276,13 @@ fn ab_cache_path(repo_path: &Path) -> PathBuf {
     PathBuf::from(format!("/tmp/git-bm-ab-{hash:x}.json"))
 }
 
+fn mb_cache_path(repo_path: &Path) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    repo_path.hash(&mut hasher);
+    let hash = hasher.finish();
+    PathBuf::from(format!("/tmp/git-bm-mb-{hash:x}.json"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,5 +392,50 @@ mod tests {
 
         let reloaded = BranchCache::load(dir.path());
         assert_eq!(reloaded.lookup_ahead_behind(oid_a, oid_b), Some((100, 5)));
+    }
+
+    #[test]
+    fn merge_base_cache_hit_miss_disconnected() {
+        let dir = TempDir::new().unwrap();
+        let mut cache = BranchCache::load(dir.path());
+        let branch_tip = git2::Oid::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        let base_tip = git2::Oid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+
+        // Not in cache yet
+        assert_eq!(cache.lookup_merge_base(branch_tip, base_tip), None);
+
+        // Insert disconnected
+        cache.insert_merge_base(branch_tip, base_tip, None);
+        assert_eq!(cache.lookup_merge_base(branch_tip, base_tip), Some(None));
+
+        // Insert connected
+        let c_tip = git2::Oid::from_str("cccccccccccccccccccccccccccccccccccccccc").unwrap();
+        cache.insert_merge_base(c_tip, base_tip, Some("deadbeef".to_string()));
+        assert_eq!(
+            cache.lookup_merge_base(c_tip, base_tip),
+            Some(Some("deadbeef".to_string()))
+        );
+    }
+
+    #[test]
+    fn merge_base_cache_save_and_reload() {
+        let dir = TempDir::new().unwrap();
+        let mut cache = BranchCache::load(dir.path());
+        let branch_tip = git2::Oid::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        let base_tip = git2::Oid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+
+        cache.insert_merge_base(branch_tip, base_tip, Some("cafebabe".to_string()));
+        cache.mb_data.base_tip = Some(base_tip.to_string());
+        cache.save();
+
+        let reloaded = BranchCache::load(dir.path());
+        assert_eq!(
+            reloaded.lookup_merge_base(branch_tip, base_tip),
+            Some(Some("cafebabe".to_string()))
+        );
+        assert_eq!(
+            reloaded.mb_data.base_tip.as_deref(),
+            Some(&*base_tip.to_string())
+        );
     }
 }
