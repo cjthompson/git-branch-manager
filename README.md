@@ -49,7 +49,20 @@ git branch-manager
 # Override the base branch
 git branch-manager --base develop
 
-# Non-interactive mode: print branch list to stdout
+# Non-interactive dumps: print a fully-enriched view to stdout and exit
+git branch-manager --branches          # branch list (equivalent to --list)
+git branch-manager --remotes           # remote-tracking branches
+git branch-manager --tags              # tags
+git branch-manager --worktrees         # worktrees
+
+# Run against a repo at a specific path (defaults to current directory)
+git branch-manager --repo /path/to/repo --branches
+
+# Control ANSI color in dump output (default: auto-detect TTY)
+git branch-manager --branches --color always   # force color (e.g. for less -R)
+git branch-manager --branches --color never    # strip color (stable diffs)
+
+# --list is a deprecated alias for --branches
 git branch-manager --list
 ```
 

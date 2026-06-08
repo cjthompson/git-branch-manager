@@ -7,7 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```sh
 cargo build                          # build
 cargo run                            # run TUI (must be inside a git repo)
-cargo run -- --list                  # non-interactive branch list to stdout
+cargo run -- --list                  # deprecated alias of --branches
+cargo run -- --branches              # print the Branches view to stdout (fully enriched)
+cargo run -- --remotes               # Remotes view to stdout
+cargo run -- --tags                  # Tags view to stdout
+cargo run -- --worktrees             # Worktrees view to stdout
+cargo run -- --branches --color=never   # plain text (for diffing / scripting)
 cargo run -- --base develop          # override base branch
 cargo test                           # run all tests
 cargo test test_squash               # run a single test by name
