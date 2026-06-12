@@ -23,7 +23,7 @@ use git_branch_manager::ui::cells::{
 use git_branch_manager::ui::list_render::CellContext;
 use git_branch_manager::ui::menu::MenuItem;
 use git_branch_manager::ui::render::{Overlay, RenderContext};
-use git_branch_manager::ui::shared::{prefix_style, truncate};
+use git_branch_manager::ui::shared::{abbreviate_path, prefix_style, truncate, truncate_left};
 use git_branch_manager::ui::toast::Toast;
 use git_branch_manager::view::branches::BranchesViewDef;
 use git_branch_manager::view::column::ColumnDef;
@@ -2412,6 +2412,33 @@ fn branch_prefix_style(name: &str, theme: &Theme) -> Style {
     prefix_style(prefix, theme).unwrap_or_default()
 }
 
+fn visible_data_col_width(
+    visible_cols: &[usize],
+    ctx: &CellContext,
+    col_idx: usize,
+) -> Option<usize> {
+    visible_cols
+        .iter()
+        .position(|&visible_col_idx| visible_col_idx == col_idx)
+        .and_then(|visible_pos| ctx.data_col_widths.get(visible_pos))
+        .map(|&width| width as usize)
+}
+
+fn age_text_for_column(
+    visible_cols: &[usize],
+    ctx: &CellContext,
+    col_idx: usize,
+    long: String,
+    short: String,
+) -> String {
+    match visible_data_col_width(visible_cols, ctx, col_idx) {
+        Some(width) if long.chars().count() <= width => long,
+        Some(_) => short,
+        None if ctx.compact => short,
+        None => long,
+    }
+}
+
 // ---- Row Renderers ----
 
 pub(crate) fn render_branch_row(
@@ -2475,11 +2502,13 @@ pub(crate) fn render_branch_row(
                 lines.push(pr_line(item.pr.as_ref(), ctx));
             }
             4 => {
-                let age = if ctx.compact {
-                    item.age_short()
-                } else {
-                    item.age_display()
-                };
+                let age = age_text_for_column(
+                    visible_cols,
+                    ctx,
+                    col_idx,
+                    item.age_display(),
+                    item.age_short(),
+                );
                 lines.push(age_line(age, &item.last_commit_date, ctx));
             }
             5 => {
@@ -2554,11 +2583,13 @@ pub(crate) fn render_remote_row(
                 lines.push(pr_line(item.pr.as_ref(), ctx));
             }
             4 => {
-                let age = if ctx.compact {
-                    item.age_short()
-                } else {
-                    item.age_display()
-                };
+                let age = age_text_for_column(
+                    visible_cols,
+                    ctx,
+                    col_idx,
+                    item.age_display(),
+                    item.age_short(),
+                );
                 lines.push(age_line(age, &item.last_commit_date, ctx));
             }
             5 => {
@@ -2601,11 +2632,13 @@ pub(crate) fn render_tag_row(
                 )));
             }
             2 => {
-                let age = if ctx.compact {
-                    item.age_short()
-                } else {
-                    item.age_display()
-                };
+                let age = age_text_for_column(
+                    visible_cols,
+                    ctx,
+                    col_idx,
+                    item.age_display(),
+                    item.age_short(),
+                );
                 lines.push(age_line(age, &item.date, ctx));
             }
             3 => {
@@ -2645,8 +2678,9 @@ pub(crate) fn render_worktree_row(
     for &col_idx in visible_cols {
         match col_idx {
             0 => {
-                // Path
-                let path_str = item.path.to_string_lossy().to_string();
+                // Path — abbreviate leading dirs / left-truncate so the END of
+                // the path stays visible when the column is too narrow for it.
+                let path_str = abbreviate_path(&item.path, ctx.first_col_width as usize);
                 let style = if item.is_main {
                     theme.current_branch
                 } else {
@@ -2658,7 +2692,17 @@ pub(crate) fn render_worktree_row(
                 // Branch name
                 let name = item.branch.as_deref().unwrap_or("[detached]");
                 let style = prefix_style(name, theme).unwrap_or(theme.primary_text);
-                lines.push(Line::from(Span::styled(name.to_string(), style)));
+                let col_width = visible_data_col_width(visible_cols, ctx, col_idx);
+                let display_name = match col_width {
+                    Some(0) => String::new(),
+                    Some(width) => truncate_left(name, width),
+                    None => name.to_string(),
+                };
+                let mut line = Line::from(Span::styled(display_name, style));
+                if col_width.is_some_and(|width| name.chars().count() > width) {
+                    line = line.alignment(Alignment::Right);
+                }
+                lines.push(line);
             }
             2 => {
                 // Working tree status
@@ -2675,11 +2719,13 @@ pub(crate) fn render_worktree_row(
                 lines.push(Line::from(Span::styled(text, style)));
             }
             3 => {
-                let age = if ctx.compact {
-                    item.age_short()
-                } else {
-                    item.age_display()
-                };
+                let age = age_text_for_column(
+                    visible_cols,
+                    ctx,
+                    col_idx,
+                    item.age_display(),
+                    item.age_short(),
+                );
                 lines.push(age_line(age, &item.age_date, ctx));
             }
             4 => {
@@ -2689,4 +2735,134 @@ pub(crate) fn render_worktree_row(
         }
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, Utc};
+
+    fn worktree(branch: &str) -> WorktreeInfo {
+        WorktreeInfo {
+            path: PathBuf::from("/repo/.worktrees/example"),
+            branch: Some(branch.to_string()),
+            is_main: false,
+            commit_hash: "abc1234".into(),
+            wt_status: WorkingTreeStatus::clean(),
+            age_date: Utc::now(),
+            merge_status: MergeStatus::Unmerged,
+            ahead: None,
+            behind: None,
+            pr: None,
+        }
+    }
+
+    fn remote_branch() -> RemoteBranchInfo {
+        RemoteBranchInfo {
+            full_ref: "origin/feature/remote-age".into(),
+            remote: "origin".into(),
+            short_name: "feature/remote-age".into(),
+            has_local: false,
+            is_base: false,
+            last_commit_date: Utc::now() - Duration::minutes(5),
+            merge_status: MergeStatus::Unmerged,
+            ahead: None,
+            behind: None,
+            disjoint: false,
+            pr: None,
+        }
+    }
+
+    fn cell_text(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn worktree_branch_cell_left_truncates_to_column_width() {
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: 100,
+            compact: false,
+            data_col_widths: vec![20, 12],
+            first_col_width: 20,
+        };
+        let rows = render_worktree_row(
+            &worktree("feature/very-long-branch-name"),
+            0,
+            false,
+            false,
+            &[0, 1],
+            &ctx,
+        );
+
+        assert_eq!(cell_text(&rows[1]), "\u{2026}branch-name");
+        assert_eq!(rows[1].alignment, Some(Alignment::Right));
+    }
+
+    #[test]
+    fn remote_age_cell_uses_short_text_when_column_is_too_narrow() {
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: 120,
+            compact: false,
+            data_col_widths: vec![30, 6, 8, 5, 12],
+            first_col_width: 30,
+        };
+        let rows = render_remote_row(&remote_branch(), 0, false, false, &[0, 1, 2, 3, 4], &ctx);
+
+        assert_eq!(cell_text(&rows[4]), "5m");
+        assert_eq!(rows[4].alignment, Some(Alignment::Right));
+    }
+
+    #[test]
+    fn remote_age_cell_uses_long_text_when_column_fits() {
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: 120,
+            compact: false,
+            data_col_widths: vec![30, 6, 8, 5, 14],
+            first_col_width: 30,
+        };
+        let rows = render_remote_row(&remote_branch(), 0, false, false, &[0, 1, 2, 3, 4], &ctx);
+
+        assert_eq!(cell_text(&rows[4]), "5 minutes ago");
+        assert_eq!(rows[4].alignment, Some(Alignment::Right));
+    }
+
+    #[test]
+    fn worktree_branch_cell_does_not_truncate_when_width_unknown() {
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: 100,
+            compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: 20,
+        };
+        let rows = render_worktree_row(
+            &worktree("feature/very-long-branch-name"),
+            0,
+            false,
+            false,
+            &[1],
+            &ctx,
+        );
+
+        assert_eq!(cell_text(&rows[0]), "feature/very-long-branch-name");
+        assert_eq!(rows[0].alignment, None);
+    }
 }
