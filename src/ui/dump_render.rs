@@ -76,13 +76,7 @@ fn color_code(c: Color, fg: bool) -> Option<String> {
         Color::LightCyan => base(96),
         Color::White => base(97),
         Color::Indexed(n) => format!("{};5;{}", if fg { 38 } else { 48 }, n),
-        Color::Rgb(r, g, b) => format!(
-            "{};2;{};{};{}",
-            if fg { 38 } else { 48 },
-            r,
-            g,
-            b
-        ),
+        Color::Rgb(r, g, b) => format!("{};2;{};{};{}", if fg { 38 } else { 48 }, r, g, b),
         Color::Reset => return None,
     };
     Some(code)
@@ -306,7 +300,10 @@ mod tests {
     ) -> Vec<Line<'static>> {
         cols.iter()
             .map(|&c| match c {
-                0 => Line::from(Span::styled(item.name.clone(), Style::new().fg(Color::Green))),
+                0 => Line::from(Span::styled(
+                    item.name.clone(),
+                    Style::new().fg(Color::Green),
+                )),
                 _ => Line::from("2d"),
             })
             .collect()
@@ -321,6 +318,8 @@ mod tests {
             symbols: &symbols,
             area_width: DUMP_AREA_WIDTH,
             compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: DUMP_AREA_WIDTH,
         };
         let rows = vec![Dummy {
             name: "main".into(),
@@ -350,6 +349,8 @@ mod tests {
             symbols: &symbols,
             area_width: DUMP_AREA_WIDTH,
             compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: DUMP_AREA_WIDTH,
         };
         let rows = vec![Dummy {
             name: "main".into(),
@@ -367,24 +368,53 @@ mod tests {
     fn render_table_first_column_not_truncated() {
         let theme = Theme::dark();
         let symbols = SymbolSet::ascii();
-        let ctx = CellContext { theme: &theme, symbols: &symbols, area_width: DUMP_AREA_WIDTH, compact: false };
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: DUMP_AREA_WIDTH,
+            compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: DUMP_AREA_WIDTH,
+        };
         let long = "a-very-long-branch-name-exceeding-min-width";
-        let rows = vec![Dummy { name: long.into(), pinned: false }];
+        let rows = vec![Dummy {
+            name: long.into(),
+            pinned: false,
+        }];
         let cols = dummy_cols();
         let out = render_table(None, &rows, &cols, dummy_row, &ctx, ColorChoice::Never);
-        assert!(out.contains(long), "first column must not be truncated: {out:?}");
+        assert!(
+            out.contains(long),
+            "first column must not be truncated: {out:?}"
+        );
     }
 
     #[test]
     fn render_table_exact_fit_keeps_color() {
         let theme = Theme::dark();
         let symbols = SymbolSet::ascii();
-        let ctx = CellContext { theme: &theme, symbols: &symbols, area_width: DUMP_AREA_WIDTH, compact: false };
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: DUMP_AREA_WIDTH,
+            compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: DUMP_AREA_WIDTH,
+        };
         // Single row → first column auto-sizes to exactly this name's width.
-        let rows = vec![Dummy { name: "exactly-this-wide".into(), pinned: false }];
+        let rows = vec![Dummy {
+            name: "exactly-this-wide".into(),
+            pinned: false,
+        }];
         let cols = dummy_cols();
         let out = render_table(None, &rows, &cols, dummy_row, &ctx, ColorChoice::Always);
-        assert!(out.contains("\x1b[32m"), "exact-fit first column must keep color: {out:?}");
-        assert!(out.contains("exactly-this-wide"), "name must appear in full: {out:?}");
+        assert!(
+            out.contains("\x1b[32m"),
+            "exact-fit first column must keep color: {out:?}"
+        );
+        assert!(
+            out.contains("exactly-this-wide"),
+            "name must appear in full: {out:?}"
+        );
     }
 }

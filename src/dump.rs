@@ -61,6 +61,9 @@ pub fn run(
         symbols: &symbols,
         area_width: DUMP_AREA_WIDTH,
         compact: false,
+        data_col_widths: Vec::new(),
+        // Unbounded so paths render in full; the dump auto-grows column 0 to fit.
+        first_col_width: u16::MAX,
     };
 
     match view {

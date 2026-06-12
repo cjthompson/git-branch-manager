@@ -974,7 +974,7 @@ Expected: clean build, all tests green, no clippy warnings.
 
 - [ ] **Step 3: Manual smoke check against the perf repo**
 
-Run: `cargo run --release -- --repo ~/workspace/gbm-zenpayroll --branches --color=never | head -20`
+Run: `cargo run --release -- --repo ~/workspace/remote-heavy-repo --branches --color=never | head -20`
 Expected: a `base: <branch>` header, a column header row, and enriched branch rows (Branch / Remote / A/B / PR / Age / Status). No panics.
 
 - [ ] **Step 4: Commit**

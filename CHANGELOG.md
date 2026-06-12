@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-06-09
+
+### Tasks
+- Remotes view: widen Age when space allows and fall back to compact ages when the resolved cell is too narrow
+
+## 2026-06-08
+
+### Tasks
+- Worktrees view: Path column shows the end of the path, and Branch gets more room with left-truncated ellipsis display when too narrow
+
 ## 2026-06-06
 
 ### Tasks
