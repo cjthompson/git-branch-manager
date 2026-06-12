@@ -161,6 +161,8 @@ mod tests {
             symbols: &symbols,
             area_width: 60,
             compact: true,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
         };
         assert_eq!(merge_status_parts(&MergeStatus::Merged, &ctx).0, "+");
         assert_eq!(merge_status_parts(&MergeStatus::SquashMerged, &ctx).0, "~");
@@ -179,6 +181,8 @@ mod tests {
             symbols: &symbols,
             area_width: 80,
             compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
         };
         assert_eq!(merge_status_parts(&MergeStatus::Merged, &ctx).0, "merged +");
         assert_eq!(
@@ -203,12 +207,16 @@ mod tests {
             symbols: &symbols,
             area_width: 70,
             compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
         };
         let narrow = CellContext {
             theme: &theme,
             symbols: &symbols,
             area_width: 69,
             compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
         };
         assert_eq!(
             merge_status_parts(&MergeStatus::Merged, &wide).0,
@@ -227,6 +235,8 @@ mod tests {
             symbols: &symbols,
             area_width: 80,
             compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
         };
         assert_eq!(
             merge_status_line_for_branch(&MergeStatus::Merged, true, &ctx),
@@ -248,6 +258,8 @@ mod tests {
             symbols: &symbols,
             area_width: 80,
             compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
         };
         let (text, style) = pr_parts(None, &ctx);
         assert_eq!(text, "");
@@ -262,6 +274,8 @@ mod tests {
             symbols: &symbols,
             area_width: 80,
             compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
         };
         for (status, expected) in [
             (PrStatus::Draft, theme.pr_draft),
@@ -286,6 +300,8 @@ mod tests {
             symbols: &symbols,
             area_width: 80,
             compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
         };
         assert!(ahead_behind_spans(Some(0), Some(0), &ctx).is_empty());
         assert!(ahead_behind_spans(None, None, &ctx).is_empty());
@@ -299,6 +315,8 @@ mod tests {
             symbols: &symbols,
             area_width: 80,
             compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
         };
         let ahead = ahead_behind_spans(Some(3), Some(0), &ctx);
         assert_eq!(ahead.len(), 1);
@@ -317,6 +335,8 @@ mod tests {
             symbols: &symbols,
             area_width: 80,
             compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
         };
         let spans = ahead_behind_spans(Some(1), Some(2), &ctx);
         assert_eq!(spans.len(), 3);

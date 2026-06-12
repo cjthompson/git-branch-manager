@@ -25,7 +25,7 @@ pub fn age_column<T: ViewItem>() -> ColumnDef<T> {
     ColumnDef {
         name: "Age",
         min_width: 5,
-        wide_width: Some(12),
+        wide_width: Some(14),
         hide_below_width: Some(60),
         compare: Some(age_cmp),
     }
@@ -202,7 +202,7 @@ mod tests {
         let col = age_column::<BranchInfo>();
         assert_eq!(col.name, "Age");
         assert_eq!(col.min_width, 5);
-        assert_eq!(col.wide_width, Some(12));
+        assert_eq!(col.wide_width, Some(14));
         assert_eq!(col.hide_below_width, Some(60));
         assert!(col.compare.is_some());
     }

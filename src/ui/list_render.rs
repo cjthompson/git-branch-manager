@@ -17,6 +17,12 @@ pub struct CellContext<'a> {
     pub symbols: &'a SymbolSet,
     pub area_width: u16,
     pub compact: bool,
+    /// Resolved render widths for visible data columns, in the same order as
+    /// the `visible_col_indices` passed to row renderers.
+    pub data_col_widths: Vec<u16>,
+    /// Resolved render width of the first (stretchy) data column, in cells.
+    /// Used by views that fit content to the first column (e.g. worktree paths).
+    pub first_col_width: u16,
 }
 
 /// Type alias for the row-rendering callback function pointer.
@@ -94,28 +100,46 @@ pub fn render_list_view<T: ViewItem>(
     let header = Row::new(header_cells).height(1);
 
     // Build column widths: checkbox + visible columns.
-    // First visible column (name) gets Min (stretchy), rest get Length (fixed).
-    // This matches the original app's pattern and ensures ratatui fills all cells.
+    // Branches/remotes/tags keep the original shape: first data column stretches,
+    // later columns are fixed. Worktrees also lets Branch stretch because Path
+    // would otherwise take all spare width and squeeze branch names.
     let short_status = area.width < 70;
     let mut widths: Vec<Constraint> = vec![Constraint::Length(3)]; // checkbox
     for (i, col) in visible_columns.iter().enumerate() {
-        if i == 0 {
-            widths.push(Constraint::Min(col.min_width));
+        let col_width = if !short_status {
+            col.wide_width.unwrap_or(col.min_width)
         } else {
-            let col_width = if !short_status {
-                col.wide_width.unwrap_or(col.min_width)
-            } else {
-                col.min_width
-            };
+            col.min_width
+        };
+        if i == 0 {
+            widths.push(Constraint::Min(col_width));
+        } else if params.active_view == ViewId::Worktrees && col.name == "Branch" {
+            widths.push(Constraint::Min(col_width));
+        } else {
             widths.push(Constraint::Length(col_width));
         }
     }
+
+    // Resolve the constraint widths once so row renderers can fit text to real
+    // cells. This mirrors ratatui Table's width calculation: the table first
+    // reserves highlight-symbol space, then applies column spacing.
+    let highlight_width = symbols.cursor_prefix.len() as u16 + 1;
+    let table_width = area.width.saturating_sub(2);
+    let [_highlight_area, columns_area] =
+        Layout::horizontal([Constraint::Length(highlight_width), Constraint::Fill(0)])
+            .areas(Rect::new(0, 0, table_width, 1));
+    let resolved = Layout::horizontal(&widths).spacing(1).split(columns_area);
+    // resolved[0] is the checkbox; resolved[1] is the first data column.
+    let data_col_widths: Vec<u16> = resolved.iter().skip(1).map(|r| r.width).collect();
+    let first_col_width = data_col_widths.first().copied().unwrap_or(0);
 
     let ctx = CellContext {
         theme,
         symbols,
         area_width: area.width,
         compact,
+        data_col_widths,
+        first_col_width,
     };
 
     // Build rows from display indices
@@ -154,9 +178,16 @@ pub fn render_list_view<T: ViewItem>(
             // Get view-specific cells
             let mut cells = vec![checkbox_cell];
             cells.extend(
-                (params.render_row)(item, raw_idx, is_selected, is_cursor, &visible_col_indices, &ctx)
-                    .into_iter()
-                    .map(Cell::from),
+                (params.render_row)(
+                    item,
+                    raw_idx,
+                    is_selected,
+                    is_cursor,
+                    &visible_col_indices,
+                    &ctx,
+                )
+                .into_iter()
+                .map(Cell::from),
             );
 
             if is_selected {
@@ -173,7 +204,6 @@ pub fn render_list_view<T: ViewItem>(
 
     // Store header column positions for mouse click sorting
     {
-        let highlight_width = symbols.cursor_prefix.len() as u16 + 1;
         let x = area.x + 1 + highlight_width; // +1 for left border
 
         // Build sort column map: checkbox=skip, then visible columns -> sort indices
@@ -186,10 +216,7 @@ pub fn render_list_view<T: ViewItem>(
             }
         }
 
-        // Resolve constraint widths
-        let available = area.width.saturating_sub(2 + highlight_width);
-        let resolved = Layout::horizontal(&widths).split(Rect::new(0, 0, available, 1));
-
+        // `resolved` (the per-column rects) was computed above when building ctx.
         let mut col_positions: Vec<(u16, usize)> = Vec::new();
         for (i, rect) in resolved.iter().enumerate() {
             if let Some(&Some(sort_idx)) = sort_col_map.get(i) {

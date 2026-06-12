@@ -16,8 +16,8 @@ impl WorktreesViewDef {
             },
             ColumnDef {
                 name: "Branch",
-                min_width: 10,
-                wide_width: None,
+                min_width: 20,
+                wide_width: Some(32),
                 hide_below_width: None,
                 compare: Some(|a, b| a.branch.cmp(&b.branch)),
             },
