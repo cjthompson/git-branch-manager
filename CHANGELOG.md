@@ -3,6 +3,7 @@
 ## 2026-06-23
 
 ### Fixes
+- Add abbreviated versions for Merge and Status columns (responsive like Age); rename merge column to "Merge" for consistency across views (#ui, #columns, #responsive)
 - Change Remote column in Branches view to show indicator symbol instead of branch name (#ui, #columns)
 - Make Path column have priority over Branch column in Worktrees view (#ui, #columns, #worktrees)
 
