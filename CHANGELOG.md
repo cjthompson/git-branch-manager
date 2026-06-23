@@ -3,6 +3,7 @@
 ## 2026-06-23
 
 ### Fixes
+- Diagnostics: cache-accuracy audit now verifies every local branch (running the real squash check per non-reachable branch) instead of only cached ones, and reports verified/skipped counts with reasons rather than a misleading "verified" tally (#diagnostics, #cache)
 - Filter modal: keep open on selection; add ESC hint; rename section to Merge Status (#ui, #filter)
 - Rename merge filter syntax `status:` to `merge:` (e.g. `merge:merged`) for consistency with the renamed Merge column (#ui, #filter)
 - Add abbreviated versions for Merge and Status columns (responsive like Age); rename merge column to "Merge" for consistency across views (#ui, #columns, #responsive)
