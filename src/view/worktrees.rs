@@ -8,9 +8,12 @@ impl WorktreesViewDef {
     pub fn columns(&self) -> Vec<ColumnDef<WorktreeInfo>> {
         vec![
             ColumnDef {
+                // Path is the priority column: its floor stays above Branch's so it
+                // always receives at least as much width as Branch when both stretch
+                // (see the Worktrees Min-constraint handling in ui/list_render.rs).
                 name: "Path",
-                min_width: 15,
-                wide_width: None,
+                min_width: 25,
+                wide_width: Some(40),
                 hide_below_width: None,
                 compare: Some(|a, b| a.path.cmp(&b.path)),
             },
