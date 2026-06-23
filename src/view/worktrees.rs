@@ -31,7 +31,7 @@ impl WorktreesViewDef {
     }
 
     pub fn filter_tokens(&self) -> Vec<FilterTokenDef> {
-        let mut t = super::filter::status_tokens();
+        let mut t = super::filter::merge_tokens();
         t.extend(super::filter::age_tokens());
         t
     }
@@ -65,7 +65,7 @@ mod tests {
     fn filter_tokens_include_status_and_age() {
         let view = WorktreesViewDef;
         let tokens = view.filter_tokens();
-        assert!(tokens.iter().any(|t| t.token == "status:merged"));
+        assert!(tokens.iter().any(|t| t.token == "merge:merged"));
         assert!(tokens.iter().any(|t| t.token == "age:<7d"));
     }
 

@@ -226,7 +226,7 @@ Column headers are clickable to sort by that column. All 4 views support clickab
 - Filter persists while view is active, cleared on `Esc`
 - **Filters correspond to columns**: each view offers filter tokens for the columns it displays. Filter tokens for columns that don't exist in a view are not shown/ignored.
 - Common filter tokens available across views (where the column exists):
-  - `status:merged` / `status:squash` / `status:unmerged` — filter by merge status
+  - `merge:merged` / `merge:squash` / `merge:unmerged` — filter by merge status
   - `age:<7d` / `age:<30d` / `age:>30d` / `age:>90d` — filter by age
 - View-specific filter tokens are defined in each view's section
 
@@ -278,7 +278,7 @@ Plus all common keys from §4 (navigation, selection, sorting, search, filter, t
 - (if PR exists) Open PR in browser
 
 ### 5.6 Filter Tokens
-- `status:merged` / `status:squash` / `status:unmerged` — filter by merge status
+- `merge:merged` / `merge:squash` / `merge:unmerged` — filter by merge status
 - `pr:yes` / `pr:no` — filter by PR association
 - `sync:ahead` / `sync:behind` — filter by sync status
 - `age:<7d` / `age:<30d` / `age:>30d` / `age:>90d` — filter by age
@@ -368,7 +368,7 @@ Plus all common keys from §4 (navigation, selection, sorting, search, filter, t
 - Open PR in browser
 
 ### 7.5 Filter Tokens
-- `status:merged` / `status:squash` / `status:unmerged` — filter by merge status
+- `merge:merged` / `merge:squash` / `merge:unmerged` — filter by merge status
 - `pr:yes` / `pr:no` — filter by PR association
 - `sync:ahead` / `sync:behind` — filter by sync status
 - `age:<7d` / `age:<30d` / `age:>30d` / `age:>90d` — filter by age
@@ -406,7 +406,7 @@ Plus all common keys from §4 (navigation, selection, sorting, search, filter, t
 - Force remove worktree
 
 ### 8.5 Filter Tokens
-- `status:merged` / `status:squash` / `status:unmerged` — filter by merge status
+- `merge:merged` / `merge:squash` / `merge:unmerged` — filter by merge status
 - `age:<7d` / `age:<30d` / `age:>30d` / `age:>90d` — filter by age
 - Text search on path/branch name (via `/`)
 

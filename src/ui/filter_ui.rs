@@ -87,8 +87,8 @@ pub fn draw_filter(
 
 /// Determine the section name from a filter token's prefix.
 fn token_section(token: &str) -> &'static str {
-    if token.starts_with("status:") {
-        "Status"
+    if token.starts_with("merge:") {
+        "Merge"
     } else if token.starts_with("pr:") {
         "Pull Requests"
     } else if token.starts_with("sync:") {
@@ -130,8 +130,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn token_section_status() {
-        assert_eq!(token_section("status:merged"), "Status");
+    fn token_section_merge() {
+        assert_eq!(token_section("merge:merged"), "Merge");
     }
 
     #[test]

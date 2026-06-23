@@ -28,9 +28,9 @@ impl FilterSet {
 
         for token in query.split_whitespace() {
             match token {
-                "status:merged" => fs.statuses.push(MergeStatus::Merged),
-                "status:squash" => fs.statuses.push(MergeStatus::SquashMerged),
-                "status:unmerged" => fs.statuses.push(MergeStatus::Unmerged),
+                "merge:merged" => fs.statuses.push(MergeStatus::Merged),
+                "merge:squash" => fs.statuses.push(MergeStatus::SquashMerged),
+                "merge:unmerged" => fs.statuses.push(MergeStatus::Unmerged),
                 "pr:yes" => fs.pr_yes = true,
                 "pr:no" => fs.pr_no = true,
                 "sync:ahead" => fs.sync_ahead = true,
@@ -92,22 +92,22 @@ impl FilterSet {
 
 /// Returns the three merge-status filter tokens (merged / squash / unmerged).
 /// Used by the Branches, Remotes, and Worktrees views.
-pub fn status_tokens() -> Vec<FilterTokenDef> {
+pub fn merge_tokens() -> Vec<FilterTokenDef> {
     vec![
         FilterTokenDef {
             key: 'm',
             label: "Merged",
-            token: "status:merged",
+            token: "merge:merged",
         },
         FilterTokenDef {
             key: 's',
             label: "Squash-merged",
-            token: "status:squash",
+            token: "merge:squash",
         },
         FilterTokenDef {
             key: 'u',
             label: "Unmerged",
-            token: "status:unmerged",
+            token: "merge:unmerged",
         },
     ]
 }
@@ -201,25 +201,25 @@ mod tests {
 
     #[test]
     fn parse_status_merged() {
-        let fs = FilterSet::parse("status:merged");
+        let fs = FilterSet::parse("merge:merged");
         assert_eq!(fs.statuses, vec![MergeStatus::Merged]);
     }
 
     #[test]
     fn parse_status_squash() {
-        let fs = FilterSet::parse("status:squash");
+        let fs = FilterSet::parse("merge:squash");
         assert_eq!(fs.statuses, vec![MergeStatus::SquashMerged]);
     }
 
     #[test]
     fn parse_status_unmerged() {
-        let fs = FilterSet::parse("status:unmerged");
+        let fs = FilterSet::parse("merge:unmerged");
         assert_eq!(fs.statuses, vec![MergeStatus::Unmerged]);
     }
 
     #[test]
     fn parse_multiple_tokens() {
-        let fs = FilterSet::parse("status:merged pr:yes age:<7d");
+        let fs = FilterSet::parse("merge:merged pr:yes age:<7d");
         assert_eq!(fs.statuses, vec![MergeStatus::Merged]);
         assert!(fs.pr_yes);
         assert!(fs.age_newer_secs.is_some());
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn parse_text_tokens() {
-        let fs = FilterSet::parse("feature status:merged foo");
+        let fs = FilterSet::parse("feature merge:merged foo");
         assert_eq!(fs.text, "feature foo");
         assert_eq!(fs.statuses, vec![MergeStatus::Merged]);
     }
@@ -283,47 +283,47 @@ mod tests {
 
     #[test]
     fn is_empty_with_status() {
-        let fs = FilterSet::parse("status:merged");
+        let fs = FilterSet::parse("merge:merged");
         assert!(!fs.is_empty());
     }
 
     #[test]
     fn toggle_token_adds() {
-        let result = FilterSet::toggle_token("", "status:merged");
-        assert_eq!(result, "status:merged");
+        let result = FilterSet::toggle_token("", "merge:merged");
+        assert_eq!(result, "merge:merged");
     }
 
     #[test]
     fn toggle_token_removes() {
-        let result = FilterSet::toggle_token("status:merged pr:yes", "status:merged");
+        let result = FilterSet::toggle_token("merge:merged pr:yes", "merge:merged");
         assert_eq!(result, "pr:yes");
     }
 
     #[test]
     fn toggle_token_adds_to_existing() {
-        let result = FilterSet::toggle_token("pr:yes", "status:merged");
-        assert_eq!(result, "pr:yes status:merged");
+        let result = FilterSet::toggle_token("pr:yes", "merge:merged");
+        assert_eq!(result, "pr:yes merge:merged");
     }
 
     #[test]
     fn has_token_true() {
         assert!(FilterSet::has_token(
-            "status:merged pr:yes",
-            "status:merged"
+            "merge:merged pr:yes",
+            "merge:merged"
         ));
     }
 
     #[test]
     fn has_token_false() {
         assert!(!FilterSet::has_token(
-            "status:merged pr:yes",
-            "status:squash"
+            "merge:merged pr:yes",
+            "merge:squash"
         ));
     }
 
     #[test]
     fn has_token_empty() {
-        assert!(!FilterSet::has_token("", "status:merged"));
+        assert!(!FilterSet::has_token("", "merge:merged"));
     }
 
     #[test]
@@ -341,13 +341,13 @@ mod tests {
     }
 
     #[test]
-    fn status_tokens_exact() {
+    fn merge_tokens_exact() {
         assert_eq!(
-            tuples(&super::status_tokens()),
+            tuples(&super::merge_tokens()),
             vec![
-                ('m', "Merged", "status:merged"),
-                ('s', "Squash-merged", "status:squash"),
-                ('u', "Unmerged", "status:unmerged"),
+                ('m', "Merged", "merge:merged"),
+                ('s', "Squash-merged", "merge:squash"),
+                ('u', "Unmerged", "merge:unmerged"),
             ]
         );
     }
@@ -404,16 +404,16 @@ mod tests {
     }
 
     #[test]
-    fn branches_remotes_worktrees_share_status_tokens() {
+    fn branches_remotes_worktrees_share_merge_tokens() {
         let b = super::super::branches::BranchesViewDef.filter_tokens();
         let r = super::super::remotes::RemotesViewDef.filter_tokens();
         let w = super::super::worktrees::WorktreesViewDef.filter_tokens();
-        let kinds = ["status:"];
+        let kinds = ["merge:"];
         assert_eq!(subset(&b, &kinds), subset(&r, &kinds));
         assert_eq!(subset(&b, &kinds), subset(&w, &kinds));
         assert_eq!(
             subset(&b, &kinds),
-            vec!["status:merged", "status:squash", "status:unmerged"]
+            vec!["merge:merged", "merge:squash", "merge:unmerged"]
         );
     }
 

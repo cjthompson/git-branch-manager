@@ -29,7 +29,7 @@ impl RemotesViewDef {
     }
 
     pub fn filter_tokens(&self) -> Vec<FilterTokenDef> {
-        let mut t = super::filter::status_tokens();
+        let mut t = super::filter::merge_tokens();
         t.extend(super::filter::pr_tokens());
         t.extend(super::filter::sync_tokens());
         t.extend(super::filter::age_tokens());
@@ -65,7 +65,7 @@ mod tests {
     fn filter_tokens_include_status() {
         let view = RemotesViewDef;
         let tokens = view.filter_tokens();
-        assert!(tokens.iter().any(|t| t.token == "status:merged"));
+        assert!(tokens.iter().any(|t| t.token == "merge:merged"));
     }
 
     #[test]

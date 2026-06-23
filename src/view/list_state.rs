@@ -996,7 +996,7 @@ mod tests {
     #[test]
     fn filter_query_status_merged() {
         let mut state = ListState::new(sample_branches());
-        state.set_filter_query("status:merged".to_string());
+        state.set_filter_query("merge:merged".to_string());
         // After rebuilding, only merged items + pinned should show
         let visible: Vec<&str> = state
             .display_indices()
@@ -1012,7 +1012,7 @@ mod tests {
     fn search_and_filter_combine() {
         let mut state = ListState::new(sample_branches());
         state.set_search_query("feature".to_string());
-        state.set_filter_query("status:merged".to_string());
+        state.set_filter_query("merge:merged".to_string());
         // Only feature/b matches both
         let visible: Vec<&str> = state
             .display_indices()
