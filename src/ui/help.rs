@@ -28,6 +28,7 @@ const COMMON_KEYS: &[(&str, &str)] = &[
     ("T", "Cycle theme"),
     ("Y", "Cycle symbols"),
     (",", "Settings"),
+    ("F2", "Diagnostics"),
     ("?", "Toggle help"),
     ("q", "Quit"),
 ];

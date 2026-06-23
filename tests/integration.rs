@@ -2,9 +2,9 @@ use std::process::Command;
 use std::sync::atomic::AtomicBool;
 
 use git_branch_manager::git::{
-    branch, merge_detection, operations, squash_loader, status, tags, worktree,
+    branch, cache, diagnostics, merge_detection, operations, squash_loader, status, tags, worktree,
 };
-use git_branch_manager::types::MergeStatus;
+use git_branch_manager::types::{DiagKind, MergeStatus};
 
 /// Create a temporary git repository with an initial commit on the "main" branch.
 ///
@@ -1985,5 +1985,146 @@ fn dump_worktrees_basic() {
     assert!(
         s.contains(canonical_str),
         "main worktree full path missing: {s:?}\nexpected: {canonical_str}"
+    );
+}
+
+#[test]
+fn test_cache_audit_detects_and_fixes_stale_status() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // An unmerged feature branch with its own commit.
+    run_git(dir, &["checkout", "-b", "feature/wip"]);
+    std::fs::write(dir.join("wip.txt"), "work in progress\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "WIP commit"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let repo = git2::Repository::open(dir).expect("re-open repo");
+    let tip = repo
+        .find_branch("feature/wip", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .target()
+        .unwrap()
+        .to_string();
+
+    // Poison the cache: claim the unmerged branch is permanently squash-merged,
+    // and add an orphan row for a branch that does not exist.
+    let cache_path = dir.join("audit-cache.sqlite3");
+    {
+        let mut c = cache::BranchCache::load_from_path(cache_path.clone());
+        c.insert("feature/wip", &MergeStatus::SquashMerged, &tip);
+        c.insert("feature/ghost", &MergeStatus::Merged, "deadbeef");
+        c.save();
+    }
+
+    let cache = cache::BranchCache::load_from_path(cache_path.clone());
+    let cancel = AtomicBool::new(false);
+    let audit = diagnostics::audit_cache(&repo, dir, "main", &cache, &cancel, |_, _, _| {});
+
+    // Exactly one merge-status discrepancy for the poisoned branch.
+    let status_discrepancies: Vec<_> = audit
+        .discrepancies
+        .iter()
+        .filter(|d| d.kind == DiagKind::MergeStatus)
+        .collect();
+    assert_eq!(
+        status_discrepancies.len(),
+        1,
+        "expected one stale merge-status entry, got {:?}",
+        audit.discrepancies
+    );
+    let d = status_discrepancies[0];
+    assert_eq!(d.branch, "feature/wip");
+    assert_eq!(d.cached, "squash-merged");
+    assert_eq!(d.actual, "unmerged");
+    assert_eq!(audit.merge_status.mismatched, 1);
+
+    // The deleted branch surfaces as an orphan.
+    assert!(
+        audit.orphans.contains(&"feature/ghost".to_string()),
+        "expected feature/ghost orphan, got {:?}",
+        audit.orphans
+    );
+
+    // Apply the fix, then confirm the cache now reflects reality.
+    let mut cache = cache::BranchCache::load_from_path(cache_path.clone());
+    diagnostics::apply_fix(&mut cache, &audit);
+
+    let fixed = cache::BranchCache::load_from_path(cache_path.clone());
+    assert_eq!(
+        fixed.lookup("feature/wip", &tip),
+        Some(MergeStatus::Unmerged),
+        "stale status should be corrected to unmerged"
+    );
+    assert_eq!(
+        fixed.lookup("feature/ghost", "deadbeef"),
+        None,
+        "orphan entry should be removed"
+    );
+
+    // A re-audit now reports a clean cache.
+    let clean = diagnostics::audit_cache(&repo, dir, "main", &fixed, &cancel, |_, _, _| {});
+    assert!(
+        clean.is_clean(),
+        "cache should be clean after fix, got {clean:?}"
+    );
+}
+
+#[test]
+fn test_cache_audit_merge_base_not_false_positive() {
+    // Regression: merge-base entries are stored as short hashes via a bounded
+    // walk. The audit must recompute truth the same way, or every entry would
+    // appear mismatched (cached short hash vs full unbounded merge_base).
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // An unmerged feature branch...
+    run_git(dir, &["checkout", "-b", "feature/x"]);
+    std::fs::write(dir.join("x.txt"), "x\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "x commit"]);
+    run_git(dir, &["checkout", "main"]);
+    // ...and advance main so the merge base is a real ancestor, not the tip.
+    std::fs::write(dir.join("m.txt"), "m\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "main commit"]);
+
+    let repo = git2::Repository::open(dir).unwrap();
+    let base_tip = repo
+        .find_branch("main", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .target()
+        .unwrap();
+    let reachable = merge_detection::build_reachable_set_from_repo(&repo, "main");
+
+    // Fill the merge-base cache exactly as the app does.
+    let cache_path = dir.join("mb-cache.sqlite3");
+    {
+        let mut branches = branch::list_branches_phase1(&repo, "main").unwrap();
+        // phase1 already fills merge bases; clear them so the *cached* filler
+        // (the path that actually populates the merge-base cache) runs.
+        for b in &mut branches {
+            b.merge_base_commit = None;
+        }
+        let mut cache = cache::BranchCache::load_from_path(cache_path.clone());
+        branch::fill_merge_base_commits_cached(&repo, &mut branches, &reachable, base_tip, &mut cache);
+        cache.save();
+    }
+
+    let cache = cache::BranchCache::load_from_path(cache_path);
+    let cancel = AtomicBool::new(false);
+    let audit = diagnostics::audit_cache(&repo, dir, "main", &cache, &cancel, |_, _, _| {});
+
+    assert!(
+        audit.merge_base.verified >= 1,
+        "expected at least one merge-base entry to be checked: {audit:?}"
+    );
+    assert_eq!(
+        audit.merge_base.mismatched, 0,
+        "merge-base entries must not false-positive: {:?}",
+        audit.discrepancies
     );
 }

@@ -17,6 +17,7 @@ use crate::view::ViewId;
 use crate::view::ViewItem;
 
 use super::confirm::draw_confirm;
+use super::diagnostics::{draw_diagnostics_menu, draw_diagnostics_report};
 use super::executing::draw_executing;
 use super::filter_ui::draw_filter;
 use super::help::draw_help;
@@ -50,6 +51,15 @@ pub enum Overlay {
         cursor: usize,
     },
     Filter,
+    /// Diagnostics menu: pick a debugging tool to run.
+    Diagnostics {
+        cursor: usize,
+    },
+    /// Result of a cache-accuracy audit, with an optional one-key fix.
+    DiagnosticsReport {
+        audit: CacheAudit,
+        scroll: usize,
+    },
 }
 
 /// Everything the renderer needs to draw one frame.
@@ -249,6 +259,12 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                     ctx.theme,
                 );
             }
+            Overlay::Diagnostics { cursor } => {
+                draw_diagnostics_menu(frame, *cursor, ctx.theme);
+            }
+            Overlay::DiagnosticsReport { audit, scroll } => {
+                draw_diagnostics_report(frame, audit, *scroll, ctx.theme);
+            }
         }
     }
 
@@ -264,7 +280,7 @@ fn default_status_text(ctx: &RenderContext) -> String {
         ViewId::Branches => format_branch_like(
             "branches",
             branch_like_summary(ctx.branches),
-            "[/]search [\\]filter [c]heckout [d]el [D]el+remote [f]etch [?]help [q]uit",
+            "[/]search [\\]filter [c]heckout [d]el [D]el+remote [f]etch [F2]diag [?]help [q]uit",
         ),
         ViewId::Remotes => format_branch_like(
             "remote branches",

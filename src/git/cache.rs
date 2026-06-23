@@ -45,6 +45,8 @@ pub struct BranchCache {
     dirty_entries: RefCell<HashSet<String>>,
     dirty_ab: RefCell<HashSet<String>>,
     dirty_mb: RefCell<HashSet<String>>,
+    /// Branch-status rows to remove from disk on the next save (orphan cleanup).
+    deleted_entries: RefCell<HashSet<String>>,
     base_tip_dirty: Cell<bool>,
     hits: Cell<u32>,
     misses: Cell<u32>,
@@ -56,7 +58,9 @@ impl BranchCache {
         Self::load_from_path(cache_path(repo_path))
     }
 
-    fn load_from_path(path: PathBuf) -> Self {
+    /// Load a cache from an explicit path. Primarily for tests that need a
+    /// controlled location instead of the per-repo OS cache directory.
+    pub fn load_from_path(path: PathBuf) -> Self {
         let span = Span::current();
         let (entries, ab_entries, mb_entries, base_tip) = read_all(&path);
         span.record("entry_count", entries.len() as u64);
@@ -71,6 +75,7 @@ impl BranchCache {
             dirty_entries: RefCell::new(HashSet::new()),
             dirty_ab: RefCell::new(HashSet::new()),
             dirty_mb: RefCell::new(HashSet::new()),
+            deleted_entries: RefCell::new(HashSet::new()),
             base_tip_dirty: Cell::new(false),
             hits: Cell::new(0),
             misses: Cell::new(0),
@@ -82,8 +87,13 @@ impl BranchCache {
         let dirty_entries: Vec<String> = self.dirty_entries.borrow().iter().cloned().collect();
         let dirty_ab: Vec<String> = self.dirty_ab.borrow().iter().cloned().collect();
         let dirty_mb: Vec<String> = self.dirty_mb.borrow().iter().cloned().collect();
+        let deleted_entries: Vec<String> = self.deleted_entries.borrow().iter().cloned().collect();
         let write_base_tip = self.base_tip_dirty.get();
-        if dirty_entries.is_empty() && dirty_ab.is_empty() && dirty_mb.is_empty() && !write_base_tip
+        if dirty_entries.is_empty()
+            && dirty_ab.is_empty()
+            && dirty_mb.is_empty()
+            && deleted_entries.is_empty()
+            && !write_base_tip
         {
             return;
         }
@@ -155,6 +165,18 @@ impl BranchCache {
             }
         }
 
+        for branch_name in &deleted_entries {
+            if tx
+                .execute(
+                    "DELETE FROM branch_cache WHERE branch_name = ?1",
+                    params![branch_name],
+                )
+                .is_err()
+            {
+                return;
+            }
+        }
+
         if write_base_tip {
             if let Some(base_tip) = &self.mb_data.base_tip {
                 if tx
@@ -174,6 +196,7 @@ impl BranchCache {
             self.dirty_entries.borrow_mut().clear();
             self.dirty_ab.borrow_mut().clear();
             self.dirty_mb.borrow_mut().clear();
+            self.deleted_entries.borrow_mut().clear();
             self.base_tip_dirty.set(false);
         }
     }
@@ -359,6 +382,22 @@ impl BranchCache {
         span.record("result_state", "inserted");
     }
 
+    /// All branch names that have a cached merge-status row. Used by the cache
+    /// audit to detect orphans (rows whose branch no longer exists).
+    pub fn cached_branch_names(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
+    }
+
+    /// Remove a branch's merge-status row. The deletion is buffered and applied
+    /// to disk on the next [`save`](Self::save). Used to clean up orphan rows.
+    pub fn delete_branch_entry(&mut self, branch_name: &str) {
+        self.entries.remove(branch_name);
+        self.dirty_entries.borrow_mut().remove(branch_name);
+        self.deleted_entries
+            .borrow_mut()
+            .insert(branch_name.to_string());
+    }
+
     #[instrument(skip(self), fields(entry_count = self.entries.len()))]
     pub fn clear(&mut self) {
         self.entries.clear();
@@ -367,6 +406,7 @@ impl BranchCache {
         self.dirty_entries.borrow_mut().clear();
         self.dirty_ab.borrow_mut().clear();
         self.dirty_mb.borrow_mut().clear();
+        self.deleted_entries.borrow_mut().clear();
         self.base_tip_dirty.set(false);
         let _ = fs::remove_file(&self.path);
     }
@@ -530,6 +570,39 @@ mod tests {
         // Merged is permanent regardless of commit hash
         assert_eq!(
             cache.lookup("feature/x", "def456"),
+            Some(MergeStatus::Merged)
+        );
+    }
+
+    #[test]
+    fn cached_branch_names_lists_all_entries() {
+        let (_dir, mut cache) = temp_cache();
+        cache.insert("feature/x", &MergeStatus::Merged, "abc123");
+        cache.insert("feature/y", &MergeStatus::Unmerged, "def456");
+        let mut names = cache.cached_branch_names();
+        names.sort();
+        assert_eq!(names, vec!["feature/x".to_string(), "feature/y".to_string()]);
+    }
+
+    #[test]
+    fn delete_branch_entry_removes_from_memory_and_disk() {
+        let dir = TempDir::new().unwrap();
+        let cache_path = dir.path().join("cache.sqlite3");
+        let mut cache = BranchCache::load_from_path(cache_path.clone());
+        cache.insert("feature/x", &MergeStatus::Merged, "abc123");
+        cache.insert("feature/y", &MergeStatus::Merged, "def456");
+        cache.save();
+
+        // Delete one entry and persist.
+        cache.delete_branch_entry("feature/x");
+        assert_eq!(cache.lookup("feature/x", "abc123"), None);
+        cache.save();
+
+        // The deletion survives a reload from disk.
+        let reloaded = BranchCache::load_from_path(cache_path);
+        assert_eq!(reloaded.lookup("feature/x", "abc123"), None);
+        assert_eq!(
+            reloaded.lookup("feature/y", "def456"),
             Some(MergeStatus::Merged)
         );
     }

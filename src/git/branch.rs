@@ -555,6 +555,44 @@ pub fn fill_merge_base_commits(
     span.record("limited_count", limited_count as u64);
 }
 
+/// Compute a branch's merge base with the base branch exactly as the cache
+/// stores it: the **short (8-char)** hash, or `None` when disconnected. Uses the
+/// precomputed `reachable` set and a revwalk bounded by `MERGE_BASE_WALK_LIMIT`,
+/// so it never traverses the full history of a disjoint branch.
+///
+/// Returns `(merge_base, hit_limit)`; `hit_limit` is true when the bounded walk
+/// gave up without finding a base, letting callers distinguish "limited" from a
+/// genuine miss. The diagnostics audit reuses this so its recomputed truth
+/// matches the cached value byte-for-byte.
+pub fn compute_merge_base_short(
+    repo: &Repository,
+    tip_oid: git2::Oid,
+    reachable: &std::collections::HashSet<git2::Oid>,
+) -> (Option<String>, bool) {
+    if reachable.is_empty() {
+        return (None, false);
+    }
+    if reachable.contains(&tip_oid) {
+        return (Some(tip_oid.to_string()[..8].to_string()), false);
+    }
+    let Ok(mut revwalk) = repo.revwalk() else {
+        return (None, false);
+    };
+    let _ = revwalk.set_sorting(git2::Sort::NONE);
+    let _ = revwalk.push(tip_oid);
+    for (n, oid_result) in (&mut revwalk).enumerate() {
+        if n >= MERGE_BASE_WALK_LIMIT {
+            return (None, true);
+        }
+        if let Ok(oid) = oid_result {
+            if reachable.contains(&oid) {
+                return (Some(oid.to_string()[..8].to_string()), false);
+            }
+        }
+    }
+    (None, false)
+}
+
 /// Like fill_merge_base_commits, but uses BranchCache to skip the bounded revwalk on
 /// cache hits. Results are stored back into the cache for future calls.
 /// base_tip_oid is the current tip of the base branch (used as part of the cache key).
@@ -606,42 +644,10 @@ pub fn fill_merge_base_commits_cached(
             }
             continue;
         }
-        // Cache miss: compute via bounded revwalk (same logic as fill_merge_base_commits)
-        if reachable.is_empty() {
-            cache.insert_merge_base(tip_oid, base_tip_oid, None);
-            miss_count += 1;
-            continue;
-        }
-        if reachable.contains(&tip_oid) {
-            let s = tip_oid.to_string();
-            let hash = s[..8].to_string();
-            branch.merge_base_commit = Some(hash.clone());
-            cache.insert_merge_base(tip_oid, base_tip_oid, Some(hash));
-            filled_count += 1;
-            continue;
-        }
-        let mut found_oid: Option<git2::Oid> = None;
-        let mut hit_limit = false;
-        if let Ok(mut revwalk) = repo.revwalk() {
-            let _ = revwalk.set_sorting(git2::Sort::NONE);
-            let _ = revwalk.push(tip_oid);
-            for (n, oid_result) in (&mut revwalk).enumerate() {
-                if n >= MERGE_BASE_WALK_LIMIT {
-                    hit_limit = true;
-                    break;
-                }
-                if let Ok(oid) = oid_result {
-                    if reachable.contains(&oid) {
-                        found_oid = Some(oid);
-                        break;
-                    }
-                }
-            }
-        }
-        match found_oid {
-            Some(oid) => {
-                let s = oid.to_string();
-                let hash = s[..8].to_string();
+        // Cache miss: compute via the same bounded walk the diagnostics audit uses.
+        let (mb, hit_limit) = compute_merge_base_short(repo, tip_oid, reachable);
+        match mb {
+            Some(hash) => {
                 branch.merge_base_commit = Some(hash.clone());
                 cache.insert_merge_base(tip_oid, base_tip_oid, Some(hash));
                 filled_count += 1;

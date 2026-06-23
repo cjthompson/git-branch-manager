@@ -12,7 +12,7 @@ use ratatui::Terminal;
 
 use git_branch_manager::config::Config;
 use git_branch_manager::git::{
-    branch, cache, operations, pr_loader, squash_loader, tags, worktree,
+    branch, cache, diagnostics, operations, pr_loader, squash_loader, tags, worktree,
 };
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::theme::Theme;
@@ -89,6 +89,8 @@ pub struct App {
     pub op_rx: Option<Receiver<Vec<OperationResult>>>,
     pub progress_rx: Option<Receiver<ProgressUpdate>>,
     pub progress: Option<ProgressUpdate>,
+    /// Result channel for the background cache-accuracy audit.
+    pub diag_rx: Option<Receiver<CacheAudit>>,
     pub remote_fetch_rx: Option<Receiver<bool>>,
     pub tag_load_rx: Option<Receiver<Vec<TagInfo>>>,
     pub worktree_load_rx: Option<Receiver<Vec<WorktreeInfo>>>,
@@ -235,6 +237,7 @@ impl App {
             op_rx: None,
             progress_rx: None,
             progress: None,
+            diag_rx: None,
             remote_fetch_rx: None,
             tag_load_rx: None,
             worktree_load_rx: None,
@@ -570,6 +573,14 @@ impl App {
             self.overlay = Some(Overlay::Results { results });
         }
 
+        // Cache-audit result (one-shot)
+        for audit in drain_channel(&mut self.diag_rx, 1) {
+            self.cancel_flag = None;
+            self.progress_rx = None;
+            self.progress = None;
+            self.overlay = Some(Overlay::DiagnosticsReport { audit, scroll: 0 });
+        }
+
         // Progress updates
         for update in drain_channel(&mut self.progress_rx, 32) {
             self.progress = Some(update.clone());
@@ -673,6 +684,11 @@ impl App {
             }
             KeyCode::Char('\\') => {
                 self.overlay = Some(Overlay::Filter);
+                return;
+            }
+            KeyCode::F(2) => {
+                self.return_view = self.active_view;
+                self.overlay = Some(Overlay::Diagnostics { cursor: 0 });
                 return;
             }
             _ => {}
@@ -947,6 +963,7 @@ impl App {
                     // Option 3: drop receivers so UI recovers immediately;
                     // the background thread will fail on its next send and exit.
                     self.op_rx = None;
+                    self.diag_rx = None;
                     self.progress_rx = None;
                     self.progress = None;
                     self.cancel_flag = None;
@@ -962,6 +979,53 @@ impl App {
             Some(Overlay::Filter) => {
                 self.handle_filter_key(key);
             }
+            Some(Overlay::Diagnostics { cursor }) => {
+                let count = DiagnosticAction::ALL.len();
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        self.overlay = Some(Overlay::Diagnostics {
+                            cursor: (cursor + 1).min(count.saturating_sub(1)),
+                        });
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.overlay = Some(Overlay::Diagnostics {
+                            cursor: cursor.saturating_sub(1),
+                        });
+                    }
+                    KeyCode::Enter => {
+                        if let Some(action) = DiagnosticAction::ALL.get(cursor) {
+                            match action {
+                                DiagnosticAction::VerifyCache => self.run_cache_audit(),
+                            }
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {} // close
+                    _ => {
+                        self.overlay = Some(Overlay::Diagnostics { cursor });
+                    }
+                }
+            }
+            Some(Overlay::DiagnosticsReport { audit, scroll }) => match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.overlay = Some(Overlay::DiagnosticsReport {
+                        audit,
+                        scroll: scroll + 1,
+                    });
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.overlay = Some(Overlay::DiagnosticsReport {
+                        audit,
+                        scroll: scroll.saturating_sub(1),
+                    });
+                }
+                KeyCode::Char('f') if !audit.is_clean() => {
+                    self.apply_cache_fix(audit);
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {} // close
+                _ => {
+                    self.overlay = Some(Overlay::DiagnosticsReport { audit, scroll });
+                }
+            },
             None => {}
         }
     }
@@ -2066,6 +2130,60 @@ impl App {
         bc.clear();
         self.refresh_branches("manual_refresh_R");
         self.toast = Some(Toast::new("Cache cleared".into(), 3));
+    }
+
+    // ---- Diagnostics ----
+
+    /// Run the cache-accuracy audit on a background thread, recomputing every
+    /// cached value fresh and diffing it against the on-disk cache. Progress is
+    /// streamed to the Executing overlay; the result lands in `diag_rx`.
+    fn run_cache_audit(&mut self) {
+        let repo_path = self.repo_path.clone();
+        let base_branch = self.base_branch.clone();
+
+        let (diag_tx, diag_rx) = mpsc::channel();
+        let (prog_tx, prog_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = Arc::clone(&cancel);
+
+        self.overlay = Some(Overlay::Executing {
+            label: "Verifying cache accuracy...".into(),
+            progress: None,
+        });
+        self.diag_rx = Some(diag_rx);
+        self.progress_rx = Some(prog_rx);
+        self.cancel_flag = Some(cancel);
+
+        std::thread::spawn(move || {
+            let Ok(repo) = git2::Repository::open(&repo_path) else {
+                return;
+            };
+            let branch_cache = cache::BranchCache::load(&repo_path);
+            let audit = diagnostics::audit_cache(
+                &repo,
+                &repo_path,
+                &base_branch,
+                &branch_cache,
+                &cancel_clone,
+                |completed, total, item| {
+                    let _ = prog_tx.send(ProgressUpdate {
+                        completed,
+                        total,
+                        current_item: item.to_string(),
+                    });
+                },
+            );
+            let _ = diag_tx.send(audit);
+        });
+    }
+
+    /// Write the audit's freshly-computed corrections back to the cache and
+    /// reload the view so the screen reflects the corrected data.
+    fn apply_cache_fix(&mut self, audit: CacheAudit) {
+        let mut branch_cache = cache::BranchCache::load(&self.repo_path);
+        diagnostics::apply_fix(&mut branch_cache, &audit);
+        self.toast = Some(Toast::new("Cache corrected".into(), 3));
+        self.refresh_after_operation();
     }
 
     // ---- Config ----
