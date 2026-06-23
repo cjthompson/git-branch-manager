@@ -16,20 +16,21 @@ impl BranchesViewDef {
             },
             ColumnDef {
                 name: "Remote",
-                min_width: 18,
-                wide_width: Some(28),
+                min_width: 6,
+                wide_width: None,
                 hide_below_width: Some(80),
                 compare: Some(|a, b| {
-                    let key = |item: &BranchInfo| -> String {
+                    // Sort by presence: local-only (0) < gone (1) < tracked (2).
+                    let key = |item: &BranchInfo| -> u8 {
                         match &item.tracking {
-                            crate::types::TrackingStatus::Tracked { remote_ref, gone } => {
+                            crate::types::TrackingStatus::Tracked { gone, .. } => {
                                 if *gone {
-                                    "gone".to_string()
+                                    1
                                 } else {
-                                    remote_ref.clone()
+                                    2
                                 }
                             }
-                            crate::types::TrackingStatus::Local => "local".to_string(),
+                            crate::types::TrackingStatus::Local => 0,
                         }
                     };
                     key(a).cmp(&key(b))

@@ -2600,18 +2600,20 @@ pub(crate) fn render_branch_row(
                 lines.push(Line::from(Span::styled(name, style)));
             }
             1 => {
-                // Remote tracking
-                let text = match &item.tracking {
-                    TrackingStatus::Tracked { remote_ref, gone } => {
+                // Remote indicator: symbol when a remote-tracking branch exists,
+                // "gone" when the upstream was deleted, "-" when local-only.
+                // Mirrors the Remotes view's "Local" column.
+                let (text, style) = match &item.tracking {
+                    TrackingStatus::Tracked { gone, .. } => {
                         if *gone {
-                            "gone".to_string()
+                            ("gone".to_string(), theme.secondary_text)
                         } else {
-                            remote_ref.clone()
+                            (symbols.status_merged.to_string(), theme.merged)
                         }
                     }
-                    TrackingStatus::Local => "local".to_string(),
+                    TrackingStatus::Local => ("-".to_string(), theme.secondary_text),
                 };
-                lines.push(Line::from(Span::styled(text, theme.secondary_text)));
+                lines.push(Line::from(Span::styled(text, style)));
             }
             2 => {
                 lines.push(ahead_behind_line(item.ahead, item.behind, ctx));
