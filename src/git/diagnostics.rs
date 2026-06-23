@@ -26,6 +26,7 @@ struct AuditCtx<'a> {
     repo: &'a Repository,
     repo_path: &'a Path,
     base_branch: &'a str,
+    current_branch: String,
     reachable: HashSet<Oid>,
     base_oid: Option<Oid>,
     cache: &'a BranchCache,
@@ -56,6 +57,11 @@ pub fn audit_cache(
         repo,
         repo_path,
         base_branch,
+        current_branch: repo
+            .head()
+            .ok()
+            .and_then(|h| h.shorthand().map(|s| s.to_string()))
+            .unwrap_or_default(),
         base_oid: repo
             .find_branch(base_branch, git2::BranchType::Local)
             .ok()
@@ -147,24 +153,43 @@ fn local_branches(repo: &Repository) -> Vec<(String, Oid)> {
 
 fn verify_merge_status(ctx: &AuditCtx, name: &str, tip: Oid, audit: &mut CacheAudit) {
     let commit_hash = tip.to_string();
-    let Some(cached) = ctx.cache.lookup(name, &commit_hash) else {
-        return; // cache miss — recomputed on demand, not a discrepancy
-    };
+
+    // Always compute truth so the squash check genuinely runs for every
+    // non-reachable branch, proportional to branch count.
     let truth = truth_merge_status(ctx, name, tip);
-    if cached == truth {
-        audit.merge_status.verified += 1;
-    } else {
-        audit.merge_status.mismatched += 1;
-        audit.discrepancies.push(Discrepancy {
-            branch: name.to_string(),
-            kind: DiagKind::MergeStatus,
-            cached: status_label(cached).to_string(),
-            actual: status_label(truth).to_string(),
-            fix: CacheFix::Status {
-                commit_hash,
-                status: truth,
-            },
-        });
+
+    match ctx.cache.lookup(name, &commit_hash) {
+        Some(cached) => {
+            // Cache hit: compare against truth.
+            if cached == truth {
+                audit.merge_status.verified += 1;
+            } else {
+                audit.merge_status.mismatched += 1;
+                audit.discrepancies.push(Discrepancy {
+                    branch: name.to_string(),
+                    kind: DiagKind::MergeStatus,
+                    cached: status_label(cached).to_string(),
+                    actual: status_label(truth).to_string(),
+                    fix: CacheFix::Status {
+                        commit_hash,
+                        status: truth,
+                    },
+                });
+            }
+        }
+        None => {
+            // No cache row — the app recomputes these on demand, so this
+            // is not drift. Record it as skipped with a human-readable reason.
+            let reason = if name == ctx.base_branch {
+                "base branch"
+            } else if name == ctx.current_branch {
+                "current branch"
+            } else {
+                "no cached status"
+            };
+            audit.merge_status.skipped += 1;
+            audit.merge_status.skip_reasons.push(reason);
+        }
     }
 }
 

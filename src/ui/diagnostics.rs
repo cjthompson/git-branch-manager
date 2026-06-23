@@ -71,9 +71,9 @@ pub fn draw_diagnostics_report(
 
     // Fixed header: one line per category breakdown.
     let header: Vec<Line> = vec![
-        category_line("Merge status", audit.merge_status, theme),
-        category_line("Ahead/behind", audit.ahead_behind, theme),
-        category_line("Merge base  ", audit.merge_base, theme),
+        category_line("Merge status", &audit.merge_status, theme),
+        category_line("Ahead/behind", &audit.ahead_behind, theme),
+        category_line("Merge base  ", &audit.merge_base, theme),
         Line::from(""),
     ];
 
@@ -153,7 +153,7 @@ pub fn draw_diagnostics_report(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn category_line(label: &str, stat: CategoryStat, theme: &Theme) -> Line<'static> {
+fn category_line(label: &str, stat: &CategoryStat, theme: &Theme) -> Line<'static> {
     let mut spans = vec![
         Span::styled(format!("  {label}  "), Style::default()),
         Span::styled(format!("{} verified", stat.verified), theme.merged),
@@ -163,6 +163,22 @@ fn category_line(label: &str, stat: CategoryStat, theme: &Theme) -> Line<'static
         spans.push(Span::styled(
             format!("{} mismatched", stat.mismatched),
             theme.error,
+        ));
+    }
+    if stat.skipped > 0 {
+        // Deduplicate reasons while preserving first-seen order.
+        let mut seen = std::collections::HashSet::new();
+        let unique_reasons: Vec<&str> = stat
+            .skip_reasons
+            .iter()
+            .filter(|&&r| seen.insert(r))
+            .copied()
+            .collect();
+        let reasons_str = unique_reasons.join("; ");
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("{} skipped ({})", stat.skipped, reasons_str),
+            theme.dim,
         ));
     }
     Line::from(spans)

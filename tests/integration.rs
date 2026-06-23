@@ -2128,3 +2128,76 @@ fn test_cache_audit_merge_base_not_false_positive() {
         audit.discrepancies
     );
 }
+
+#[test]
+fn test_cache_audit_skipped_counts_for_uncached_branches() {
+    // Regression test: verify_merge_status must count ALL branches, not just
+    // those with a cache row. Base branch, current branch, and regular-merged
+    // branches never get a cache row → were silently dropped before this fix.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // Create a feature branch that will be regular-merged into main.
+    run_git(dir, &["checkout", "-b", "feature/merged-normal"]);
+    std::fs::write(dir.join("feat.txt"), "feature\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "feature commit"]);
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--no-ff", "feature/merged-normal", "-m", "Merge feature"]);
+
+    // Create an unmerged branch with a cache row (squash-checked as unmerged).
+    run_git(dir, &["checkout", "-b", "feature/unmerged"]);
+    std::fs::write(dir.join("unmerged.txt"), "wip\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "unmerged commit"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let repo = git2::Repository::open(dir).expect("re-open repo");
+    let unmerged_tip = repo
+        .find_branch("feature/unmerged", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .target()
+        .unwrap()
+        .to_string();
+
+    // Only cache the unmerged branch — base and merged-normal have no cache row.
+    let cache_path = dir.join("skipped-test.sqlite3");
+    {
+        let mut c = cache::BranchCache::load_from_path(cache_path.clone());
+        c.insert("feature/unmerged", &MergeStatus::Unmerged, &unmerged_tip);
+        c.save();
+    }
+
+    let cache = cache::BranchCache::load_from_path(cache_path);
+    let cancel = AtomicBool::new(false);
+    let audit = diagnostics::audit_cache(&repo, dir, "main", &cache, &cancel, |_, _, _| {});
+
+    // The cached unmerged branch must be verified (truth = Unmerged, cache = Unmerged).
+    assert_eq!(
+        audit.merge_status.verified, 1,
+        "the cached unmerged branch should be verified: {audit:?}"
+    );
+
+    // No discrepancies — the cached entry is correct.
+    assert_eq!(
+        audit.discrepancies.len(), 0,
+        "no discrepancies expected: {:?}", audit.discrepancies
+    );
+
+    // Three branches have no cache row vs cached: main (base+current) and
+    // feature/merged-normal (regular-merged, never cached) are skipped.
+    assert_eq!(
+        audit.merge_status.skipped, 2,
+        "expected 2 skipped (main=base, merged-normal=no cached status): {audit:?}"
+    );
+
+    assert!(
+        audit.merge_status.skip_reasons.contains(&"base branch"),
+        "expected 'base branch' reason: {:?}", audit.merge_status.skip_reasons
+    );
+    assert!(
+        audit.merge_status.skip_reasons.contains(&"no cached status"),
+        "expected 'no cached status' reason: {:?}", audit.merge_status.skip_reasons
+    );
+}

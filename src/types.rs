@@ -346,14 +346,19 @@ impl DiagKind {
 }
 
 /// Per-category tally from a cache audit: how many cached entries matched git
-/// reality (`verified`) versus drifted from it (`mismatched`).
-#[derive(Debug, Clone, Copy, Default)]
+/// reality (`verified`) versus drifted from it (`mismatched`). Branches that
+/// had no cache row contribute to `skipped` with a human-readable `skip_reasons`
+/// entry — they are not discrepancies (the app recomputes those on demand).
+#[derive(Debug, Clone, Default)]
 pub struct CategoryStat {
     pub verified: usize,
     pub mismatched: usize,
+    pub skipped: usize,
+    pub skip_reasons: Vec<&'static str>,
 }
 
 impl CategoryStat {
+    /// Number of cached entries actually compared against truth.
     pub fn checked(&self) -> usize {
         self.verified + self.mismatched
     }
