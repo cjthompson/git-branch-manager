@@ -137,6 +137,22 @@ impl WorkingTreeStatus {
         }
         parts.join("+")
     }
+
+    /// Single-letter abbreviation for narrow columns: staged→`s`, unstaged→`u`,
+    /// untracked→`t`, joined by `+` (e.g. `s+u`). Empty when clean.
+    pub fn short_summary(&self) -> String {
+        let mut parts = Vec::new();
+        if self.has_staged {
+            parts.push("s");
+        }
+        if self.has_unstaged {
+            parts.push("u");
+        }
+        if self.has_untracked {
+            parts.push("t");
+        }
+        parts.join("+")
+    }
 }
 
 // --- Data Model Structs ---

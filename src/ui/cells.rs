@@ -14,39 +14,76 @@ use chrono::{DateTime, Utc};
 use ratatui::prelude::*;
 use ratatui::text::Line;
 
-use crate::types::{MergeStatus, PrInfo, PrStatus};
+use crate::types::{MergeStatus, PrInfo, PrStatus, WorkingTreeStatus};
 use crate::ui::list_render::CellContext;
 use crate::ui::shared::age_style;
 
 // ── Pure formatting helpers (testable without building a Cell) ──────────────
 
-/// Merge-status text + style. Symbol-only below width 70, full text at 70+.
-pub(crate) fn merge_status_parts(status: &MergeStatus, ctx: &CellContext) -> (String, Style) {
+/// Choose between a full and abbreviated label based on the resolved column
+/// width: show `full` when it fits, otherwise `short`. When the width is
+/// unknown (`None`), fall back to `compact` (the global narrow-terminal flag).
+///
+/// This is the single responsive-label rule shared by the Age, Merge, and
+/// worktree Status columns so their narrow/wide behavior cannot drift.
+pub fn fit_text(full: String, short: String, col_width: Option<usize>, compact: bool) -> String {
+    match col_width {
+        Some(width) if full.chars().count() <= width => full,
+        Some(_) => short,
+        None if compact => short,
+        None => full,
+    }
+}
+
+/// Merge-status text + style, fit to the resolved column width: full words
+/// (`merged`/`squash-merged`/`unmerged`) when the column is wide enough,
+/// abbreviations (`m`/`sm`/`u`) when narrow. The status symbol is always shown.
+pub(crate) fn merge_status_parts(
+    status: &MergeStatus,
+    ctx: &CellContext,
+    col_width: Option<usize>,
+) -> (String, Style) {
     let theme = ctx.theme;
     let symbols = ctx.symbols;
-    if ctx.area_width < 70 {
-        match status {
-            MergeStatus::Merged => (symbols.status_merged.to_string(), theme.merged),
-            MergeStatus::SquashMerged => (
-                symbols.status_squash_merged.to_string(),
-                theme.squash_merged,
-            ),
-            MergeStatus::Unmerged => (symbols.status_unmerged.to_string(), theme.unmerged),
-            MergeStatus::Pending => ("\u{2026}".to_string(), theme.dim),
-        }
+    let (full, short, style) = match status {
+        MergeStatus::Merged => (
+            format!("merged {}", symbols.status_merged),
+            format!("m {}", symbols.status_merged),
+            theme.merged,
+        ),
+        MergeStatus::SquashMerged => (
+            format!("squash-merged {}", symbols.status_squash_merged),
+            format!("sm {}", symbols.status_squash_merged),
+            theme.squash_merged,
+        ),
+        MergeStatus::Unmerged => (
+            format!("unmerged {}", symbols.status_unmerged),
+            format!("u {}", symbols.status_unmerged),
+            theme.unmerged,
+        ),
+        MergeStatus::Pending => ("pending \u{2026}".to_string(), "\u{2026}".to_string(), theme.dim),
+    };
+    (fit_text(full, short, col_width, ctx.compact), style)
+}
+
+/// Worktree working-tree-status text + style, fit to the resolved column width:
+/// full words (`clean`/`staged`/`unstaged`/…) when wide, abbreviations
+/// (`c`/`s`/`u`/`t`) when narrow.
+pub(crate) fn worktree_status_parts(
+    status: &WorkingTreeStatus,
+    ctx: &CellContext,
+    col_width: Option<usize>,
+) -> (String, Style) {
+    if status.is_clean() {
+        (
+            fit_text("clean".to_string(), "c".to_string(), col_width, ctx.compact),
+            ctx.theme.merged,
+        )
     } else {
-        match status {
-            MergeStatus::Merged => (format!("merged {}", symbols.status_merged), theme.merged),
-            MergeStatus::SquashMerged => (
-                format!("squash-merged {}", symbols.status_squash_merged),
-                theme.squash_merged,
-            ),
-            MergeStatus::Unmerged => (
-                format!("unmerged {}", symbols.status_unmerged),
-                theme.unmerged,
-            ),
-            MergeStatus::Pending => ("pending \u{2026}".to_string(), theme.dim),
-        }
+        (
+            fit_text(status.summary(), status.short_summary(), col_width, ctx.compact),
+            ctx.theme.unmerged,
+        )
     }
 }
 
@@ -121,9 +158,14 @@ pub fn age_line(age_text: String, date: &DateTime<Utc>, ctx: &CellContext) -> Li
     Line::from(Span::styled(age_text, style)).alignment(Alignment::Right)
 }
 
-/// Merge-status line, right-aligned (remote and worktree rows).
-pub fn merge_status_line(status: &MergeStatus, ctx: &CellContext) -> Line<'static> {
-    let (text, style) = merge_status_parts(status, ctx);
+/// Merge-status line, right-aligned (remote and worktree rows). `col_width` is
+/// the resolved column width, used to choose full vs abbreviated text.
+pub fn merge_status_line(
+    status: &MergeStatus,
+    ctx: &CellContext,
+    col_width: Option<usize>,
+) -> Line<'static> {
+    let (text, style) = merge_status_parts(status, ctx, col_width);
     Line::from(Span::styled(text, style)).alignment(Alignment::Right)
 }
 
@@ -133,12 +175,24 @@ pub fn merge_status_line_for_branch(
     status: &MergeStatus,
     is_base: bool,
     ctx: &CellContext,
+    col_width: Option<usize>,
 ) -> Line<'static> {
     if is_base {
         Line::from("")
     } else {
-        merge_status_line(status, ctx)
+        merge_status_line(status, ctx, col_width)
     }
+}
+
+/// Worktree working-tree-status line (left-aligned). `col_width` is the resolved
+/// column width, used to choose full vs abbreviated text.
+pub fn worktree_status_line(
+    status: &WorkingTreeStatus,
+    ctx: &CellContext,
+    col_width: Option<usize>,
+) -> Line<'static> {
+    let (text, style) = worktree_status_parts(status, ctx, col_width);
+    Line::from(Span::styled(text, style))
 }
 
 #[cfg(test)]
@@ -151,10 +205,10 @@ mod tests {
         (Theme::dark(), SymbolSet::ascii())
     }
 
-    // --- merge_status_parts: symbol-only < 70, full text >= 70 ---
+    // --- merge_status_parts: abbreviated when the column is too narrow ---
 
     #[test]
-    fn merge_status_narrow_is_symbol_only() {
+    fn merge_status_narrow_is_abbreviated() {
         let (theme, symbols) = theme_and_symbols();
         let ctx = CellContext {
             theme: &theme,
@@ -164,11 +218,16 @@ mod tests {
             data_col_widths: Vec::new(),
             first_col_width: 80,
         };
-        assert_eq!(merge_status_parts(&MergeStatus::Merged, &ctx).0, "+");
-        assert_eq!(merge_status_parts(&MergeStatus::SquashMerged, &ctx).0, "~");
-        assert_eq!(merge_status_parts(&MergeStatus::Unmerged, &ctx).0, "-");
+        // Column width 4 fits "sm ~"/"u -"/"m +" but not the full words.
+        let w = Some(4);
+        assert_eq!(merge_status_parts(&MergeStatus::Merged, &ctx, w).0, "m +");
         assert_eq!(
-            merge_status_parts(&MergeStatus::Pending, &ctx).0,
+            merge_status_parts(&MergeStatus::SquashMerged, &ctx, w).0,
+            "sm ~"
+        );
+        assert_eq!(merge_status_parts(&MergeStatus::Unmerged, &ctx, w).0, "u -");
+        assert_eq!(
+            merge_status_parts(&MergeStatus::Pending, &ctx, w).0,
             "\u{2026}"
         );
     }
@@ -184,45 +243,75 @@ mod tests {
             data_col_widths: Vec::new(),
             first_col_width: 80,
         };
-        assert_eq!(merge_status_parts(&MergeStatus::Merged, &ctx).0, "merged +");
+        let w = Some(15);
         assert_eq!(
-            merge_status_parts(&MergeStatus::SquashMerged, &ctx).0,
+            merge_status_parts(&MergeStatus::Merged, &ctx, w).0,
+            "merged +"
+        );
+        assert_eq!(
+            merge_status_parts(&MergeStatus::SquashMerged, &ctx, w).0,
             "squash-merged ~"
         );
         assert_eq!(
-            merge_status_parts(&MergeStatus::Unmerged, &ctx).0,
+            merge_status_parts(&MergeStatus::Unmerged, &ctx, w).0,
             "unmerged -"
         );
         assert_eq!(
-            merge_status_parts(&MergeStatus::Pending, &ctx).0,
+            merge_status_parts(&MergeStatus::Pending, &ctx, w).0,
             "pending \u{2026}"
         );
     }
 
     #[test]
-    fn merge_status_boundary_70_is_wide_69_is_narrow() {
+    fn merge_status_fits_full_at_exact_width_abbrev_one_less() {
         let (theme, symbols) = theme_and_symbols();
-        let wide = CellContext {
+        let ctx = CellContext {
             theme: &theme,
             symbols: &symbols,
-            area_width: 70,
+            area_width: 80,
             compact: false,
             data_col_widths: Vec::new(),
             first_col_width: 80,
         };
-        let narrow = CellContext {
-            theme: &theme,
-            symbols: &symbols,
-            area_width: 69,
-            compact: false,
-            data_col_widths: Vec::new(),
-            first_col_width: 80,
-        };
+        // "merged +" is 8 chars: width 8 shows full, width 7 abbreviates.
         assert_eq!(
-            merge_status_parts(&MergeStatus::Merged, &wide).0,
+            merge_status_parts(&MergeStatus::Merged, &ctx, Some(8)).0,
             "merged +"
         );
-        assert_eq!(merge_status_parts(&MergeStatus::Merged, &narrow).0, "+");
+        assert_eq!(
+            merge_status_parts(&MergeStatus::Merged, &ctx, Some(7)).0,
+            "m +"
+        );
+    }
+
+    // --- worktree_status_parts: full when wide, single letters when narrow ---
+
+    #[test]
+    fn worktree_status_full_and_abbreviated() {
+        let (theme, symbols) = theme_and_symbols();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: 80,
+            compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
+        };
+        let clean = WorkingTreeStatus::clean();
+        let dirty = WorkingTreeStatus {
+            has_staged: true,
+            has_unstaged: true,
+            has_untracked: false,
+        };
+        // Wide enough for the full label.
+        assert_eq!(worktree_status_parts(&clean, &ctx, Some(9)).0, "clean");
+        assert_eq!(
+            worktree_status_parts(&dirty, &ctx, Some(15)).0,
+            "staged+unstaged"
+        );
+        // Too narrow: abbreviate.
+        assert_eq!(worktree_status_parts(&clean, &ctx, Some(3)).0, "c");
+        assert_eq!(worktree_status_parts(&dirty, &ctx, Some(3)).0, "s+u");
     }
 
     // --- merge_status_line_for_branch: base is blank ---
@@ -239,11 +328,11 @@ mod tests {
             first_col_width: 80,
         };
         assert_eq!(
-            merge_status_line_for_branch(&MergeStatus::Merged, true, &ctx),
+            merge_status_line_for_branch(&MergeStatus::Merged, true, &ctx, Some(15)),
             Line::from("")
         );
         assert_ne!(
-            merge_status_line_for_branch(&MergeStatus::Merged, false, &ctx),
+            merge_status_line_for_branch(&MergeStatus::Merged, false, &ctx, Some(15)),
             Line::from("")
         );
     }

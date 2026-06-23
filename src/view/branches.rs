@@ -39,7 +39,7 @@ impl BranchesViewDef {
             super::column::ahead_behind_column(),
             super::column::pr_column(),
             super::column::age_column(),
-            super::column::merge_status_column("Status"),
+            super::column::merge_status_column("Merge"),
         ]
     }
 

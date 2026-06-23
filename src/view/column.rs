@@ -1,5 +1,5 @@
 use super::ViewItem;
-use crate::types::MergeStatus;
+use crate::types::{MergeStatus, WorkingTreeStatus, WorktreeInfo};
 use std::cmp::Ordering;
 
 /// Defines a single column in a view's table layout.
@@ -88,8 +88,8 @@ pub fn merge_status_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
     rank_a.cmp(&rank_b)
 }
 
-/// Build a standard "Status" / "Merge" column definition. Pass the column name
-/// ("Status" for branches/remotes, "Merge" for worktrees).
+/// Build the shared merge-status column ("Merge" in every view). The name is a
+/// parameter only so callers read explicitly; pass `"Merge"`.
 pub fn merge_status_column<T: ViewItem>(name: &'static str) -> ColumnDef<T> {
     ColumnDef {
         name,
@@ -97,6 +97,30 @@ pub fn merge_status_column<T: ViewItem>(name: &'static str) -> ColumnDef<T> {
         wide_width: Some(15),
         hide_below_width: None,
         compare: Some(merge_status_cmp),
+    }
+}
+
+/// Rank a working-tree status for sorting: dirtier states sort later.
+pub fn wt_status_rank(s: &WorkingTreeStatus) -> u8 {
+    (s.has_staged as u8) * 4 + (s.has_unstaged as u8) * 2 + (s.has_untracked as u8)
+}
+
+/// Comparator: sort worktrees by working-tree dirtiness.
+pub fn wt_status_cmp(a: &WorktreeInfo, b: &WorktreeInfo) -> Ordering {
+    wt_status_rank(&a.wt_status).cmp(&wt_status_rank(&b.wt_status))
+}
+
+/// Build the shared worktree "Status" (working-tree dirtiness) column. This is
+/// the single definition of how the Status column sizes and sorts; views use it
+/// rather than declaring their own. Renders full words when wide and single
+/// letters when narrow (see `ui::cells::worktree_status_line`).
+pub fn worktree_status_column() -> ColumnDef<WorktreeInfo> {
+    ColumnDef {
+        name: "Status",
+        min_width: 3,
+        wide_width: Some(9),
+        hide_below_width: Some(80),
+        compare: Some(wt_status_cmp),
     }
 }
 
@@ -309,8 +333,8 @@ mod tests {
 
     #[test]
     fn merge_status_column_has_correct_properties() {
-        let col = merge_status_column::<BranchInfo>("Status");
-        assert_eq!(col.name, "Status");
+        let col = merge_status_column::<BranchInfo>("Merge");
+        assert_eq!(col.name, "Merge");
         assert_eq!(col.min_width, 4);
         assert_eq!(col.wide_width, Some(15));
         assert_eq!(col.hide_below_width, None);

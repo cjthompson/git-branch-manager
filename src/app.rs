@@ -18,7 +18,8 @@ use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::theme::Theme;
 use git_branch_manager::types::*;
 use git_branch_manager::ui::cells::{
-    age_line, ahead_behind_line, merge_status_line, merge_status_line_for_branch, pr_line,
+    age_line, ahead_behind_line, fit_text, merge_status_line, merge_status_line_for_branch,
+    pr_line, worktree_status_line,
 };
 use git_branch_manager::ui::list_render::CellContext;
 use git_branch_manager::ui::menu::MenuItem;
@@ -2549,12 +2550,8 @@ fn age_text_for_column(
     long: String,
     short: String,
 ) -> String {
-    match visible_data_col_width(visible_cols, ctx, col_idx) {
-        Some(width) if long.chars().count() <= width => long,
-        Some(_) => short,
-        None if ctx.compact => short,
-        None => long,
-    }
+    let col_width = visible_data_col_width(visible_cols, ctx, col_idx);
+    fit_text(long, short, col_width, ctx.compact)
 }
 
 // ---- Row Renderers ----
@@ -2636,6 +2633,7 @@ pub(crate) fn render_branch_row(
                     &item.merge_status,
                     item.is_base,
                     ctx,
+                    visible_data_col_width(visible_cols, ctx, col_idx),
                 ));
             }
             _ => lines.push(Line::from("")),
@@ -2713,7 +2711,11 @@ pub(crate) fn render_remote_row(
                 lines.push(age_line(age, &item.last_commit_date, ctx));
             }
             5 => {
-                lines.push(merge_status_line(&item.merge_status, ctx));
+                lines.push(merge_status_line(
+                    &item.merge_status,
+                    ctx,
+                    visible_data_col_width(visible_cols, ctx, col_idx),
+                ));
             }
             _ => lines.push(Line::from("")),
         }
@@ -2825,18 +2827,12 @@ pub(crate) fn render_worktree_row(
                 lines.push(line);
             }
             2 => {
-                // Working tree status
-                let text = if item.wt_status.is_clean() {
-                    "clean".to_string()
-                } else {
-                    item.wt_status.summary()
-                };
-                let style = if item.wt_status.is_clean() {
-                    theme.merged
-                } else {
-                    theme.unmerged
-                };
-                lines.push(Line::from(Span::styled(text, style)));
+                // Working tree status — full words when wide, single letters when narrow.
+                lines.push(worktree_status_line(
+                    &item.wt_status,
+                    ctx,
+                    visible_data_col_width(visible_cols, ctx, col_idx),
+                ));
             }
             3 => {
                 let age = age_text_for_column(
@@ -2849,7 +2845,11 @@ pub(crate) fn render_worktree_row(
                 lines.push(age_line(age, &item.age_date, ctx));
             }
             4 => {
-                lines.push(merge_status_line(&item.merge_status, ctx));
+                lines.push(merge_status_line(
+                    &item.merge_status,
+                    ctx,
+                    visible_data_col_width(visible_cols, ctx, col_idx),
+                ));
             }
             _ => lines.push(Line::from("")),
         }

@@ -109,22 +109,26 @@ pub fn render_table<T: ViewItem>(
         .map(|(idx, item)| render_row(item, idx, false, false, &all_cols, ctx))
         .collect();
 
-    // Column widths: fixed (wide_width or min_width) for every column, except the
-    // first — the TUI's stretchy Min-constrained column — which grows to fit its
-    // content so names/paths are never truncated.
+    // Column widths: every column grows to fit the widest of its header label,
+    // configured width, and rendered content. The dump is "fully enriched" — it
+    // never truncates and never shows the TUI's narrow short-forms (those are a
+    // responsive, terminal-width concern; here the synthetic width is unbounded).
     let mut widths: Vec<usize> = columns
         .iter()
-        .map(|c| c.wide_width.unwrap_or(c.min_width) as usize)
+        .map(|c| {
+            c.name
+                .chars()
+                .count()
+                .max(c.wide_width.unwrap_or(c.min_width) as usize)
+        })
         .collect();
-    if !columns.is_empty() {
-        let mut w0 = columns[0].name.chars().count().max(widths[0]);
-        for lines in &rendered {
-            if let Some(first) = lines.first() {
-                let vis: usize = first.spans.iter().map(|s| s.content.chars().count()).sum();
-                w0 = w0.max(vis);
+    for lines in &rendered {
+        for (i, line) in lines.iter().enumerate() {
+            if let Some(w) = widths.get_mut(i) {
+                let vis: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+                *w = (*w).max(vis);
             }
         }
-        widths[0] = w0;
     }
 
     // Header alignment uses the TUI's positional header rule (mirrors

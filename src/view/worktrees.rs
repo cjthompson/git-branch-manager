@@ -24,21 +24,7 @@ impl WorktreesViewDef {
                 hide_below_width: None,
                 compare: Some(|a, b| a.branch.cmp(&b.branch)),
             },
-            ColumnDef {
-                name: "Status",
-                min_width: 8,
-                wide_width: None,
-                hide_below_width: Some(80),
-                compare: Some(|a, b| {
-                    let rank = |w: &WorktreeInfo| {
-                        let s = &w.wt_status;
-                        (s.has_staged as u8) * 4
-                            + (s.has_unstaged as u8) * 2
-                            + (s.has_untracked as u8)
-                    };
-                    rank(a).cmp(&rank(b))
-                }),
-            },
+            super::column::worktree_status_column(),
             super::column::age_column(),
             super::column::merge_status_column("Merge"),
         ]
