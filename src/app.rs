@@ -1137,21 +1137,22 @@ impl App {
 
         match key.code {
             KeyCode::Esc | KeyCode::Char('\\') => {
-                // Close filter (overlay already taken)
+                // Close filter (overlay already taken); only Esc / \ dismiss it.
             }
             KeyCode::Char('c') => {
-                // Clear all filters
+                // Clear all filters, but keep the modal open.
                 self.set_active_filter(String::new());
+                self.overlay = Some(Overlay::Filter);
             }
             KeyCode::Char(ch) => {
-                // Check if this matches a filter token
+                // Toggle the matching filter token (if any). Either way the modal
+                // stays open so the user can adjust several filters in a row.
                 if let Some(token_def) = active_tokens.iter().find(|t| t.key == ch) {
                     let current = self.active_filter_query();
                     let new = FilterSet::toggle_token(&current, token_def.token);
                     self.set_active_filter(new);
-                } else {
-                    self.overlay = Some(Overlay::Filter);
                 }
+                self.overlay = Some(Overlay::Filter);
             }
             _ => {
                 self.overlay = Some(Overlay::Filter);

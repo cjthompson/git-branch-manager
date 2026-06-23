@@ -69,6 +69,13 @@ pub fn draw_filter(
         Span::styled("  Clear all filters", label_style),
     ]));
 
+    // Footer hint: selecting filters keeps the modal open; Esc closes it.
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("esc", key_style),
+        Span::styled("  close", label_style),
+    ]));
+
     let content_height = lines.len() as u16 + 2; // +2 for borders
     let width = 36u16.min(area.width);
     let height = content_height.min(area.height);
@@ -88,7 +95,7 @@ pub fn draw_filter(
 /// Determine the section name from a filter token's prefix.
 fn token_section(token: &str) -> &'static str {
     if token.starts_with("merge:") {
-        "Merge"
+        "Merge Status"
     } else if token.starts_with("pr:") {
         "Pull Requests"
     } else if token.starts_with("sync:") {
@@ -131,7 +138,7 @@ mod tests {
 
     #[test]
     fn token_section_merge() {
-        assert_eq!(token_section("merge:merged"), "Merge");
+        assert_eq!(token_section("merge:merged"), "Merge Status");
     }
 
     #[test]
