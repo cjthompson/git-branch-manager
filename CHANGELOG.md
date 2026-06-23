@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-23
+
+### Fixes
+- Change Remote column in Branches view to show indicator symbol instead of branch name (#ui, #columns)
+- Make Path column have priority over Branch column in Worktrees view (#ui, #columns, #worktrees)
+
+### Tasks
+- Add Diagnostics modal (F2) with cache-accuracy verification (#diagnostics, #cache)
+
 ## 2026-06-09
 
 ### Tasks
