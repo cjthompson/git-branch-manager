@@ -46,12 +46,12 @@ pub(crate) fn merge_status_parts(
     let theme = ctx.theme;
     let symbols = ctx.symbols;
     let (full, short, style) = match status {
-        MergeStatus::Merged => (
+        MergeStatus::Merged | MergeStatus::LocalMerged | MergeStatus::RemoteMerged => (
             format!("merged {}", symbols.status_merged),
             format!("m {}", symbols.status_merged),
             theme.merged,
         ),
-        MergeStatus::SquashMerged => (
+        MergeStatus::SquashMerged | MergeStatus::LocalSquashMerged | MergeStatus::RemoteSquashMerged => (
             format!("squash-merged {}", symbols.status_squash_merged),
             format!("sm {}", symbols.status_squash_merged),
             theme.squash_merged,

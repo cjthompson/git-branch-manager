@@ -280,6 +280,10 @@ impl BranchCache {
         let status = match entry.merge_status.as_str() {
             "merged" => MergeStatus::Merged,
             "squash_merged" => MergeStatus::SquashMerged,
+            "local_merged" => MergeStatus::LocalMerged,
+            "remote_merged" => MergeStatus::RemoteMerged,
+            "local_squash_merged" => MergeStatus::LocalSquashMerged,
+            "remote_squash_merged" => MergeStatus::RemoteSquashMerged,
             "unmerged" => MergeStatus::Unmerged,
             _ => {
                 self.record_miss();
@@ -290,8 +294,8 @@ impl BranchCache {
         };
         span.record("cached_status", entry.merge_status.as_str());
         match status {
-            // Merged and SquashMerged are permanent
-            MergeStatus::Merged | MergeStatus::SquashMerged => {
+            // Merged and SquashMerged are permanent; LocalMerged/RemoteMerged stub with Merged behavior, LocalSquashMerged/RemoteSquashMerged stub with SquashMerged behavior
+            MergeStatus::Merged | MergeStatus::LocalMerged | MergeStatus::RemoteMerged | MergeStatus::SquashMerged | MergeStatus::LocalSquashMerged | MergeStatus::RemoteSquashMerged => {
                 self.record_hit();
                 span.record("hit", true);
                 span.record("result_state", "hit_permanent");
@@ -361,6 +365,10 @@ impl BranchCache {
         let status_str = match status {
             MergeStatus::Merged => "merged",
             MergeStatus::SquashMerged => "squash_merged",
+            MergeStatus::LocalMerged => "local_merged",
+            MergeStatus::RemoteMerged => "remote_merged",
+            MergeStatus::LocalSquashMerged => "local_squash_merged",
+            MergeStatus::RemoteSquashMerged => "remote_squash_merged",
             MergeStatus::Unmerged => "unmerged",
             MergeStatus::Pending => {
                 span.record("inserted", false);

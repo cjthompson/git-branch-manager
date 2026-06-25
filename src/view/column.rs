@@ -74,8 +74,8 @@ pub fn pr_column<T: ViewItem>() -> ColumnDef<T> {
 /// Rank a MergeStatus for sorting: Merged=0, SquashMerged=1, Unmerged=2, Pending=3.
 pub fn merge_status_rank(status: &MergeStatus) -> u8 {
     match status {
-        MergeStatus::Merged => 0,
-        MergeStatus::SquashMerged => 1,
+        MergeStatus::Merged | MergeStatus::LocalMerged | MergeStatus::RemoteMerged => 0,
+        MergeStatus::SquashMerged | MergeStatus::LocalSquashMerged | MergeStatus::RemoteSquashMerged => 1,
         MergeStatus::Unmerged => 2,
         MergeStatus::Pending => 3,
     }
