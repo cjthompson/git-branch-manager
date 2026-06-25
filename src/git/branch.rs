@@ -447,17 +447,37 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
         };
         if let Some(status) = cache.lookup(&branch.name, &commit_hash) {
             branch.merge_status = status;
-        } else if super::merge_detection::is_squash_merged(
-            repo_path,
-            base_branch,
-            &branch.name,
-            Some(&commit_hash),
-            Some(&merge_base),
-        ) {
-            branch.merge_status = MergeStatus::SquashMerged;
-            cache.insert(&branch.name, &MergeStatus::SquashMerged, &commit_hash);
         } else {
-            cache.insert(&branch.name, &MergeStatus::Unmerged, &commit_hash);
+            let local_squash = super::merge_detection::is_squash_merged(
+                repo_path,
+                base_branch,
+                &branch.name,
+                Some(&commit_hash),
+                Some(&merge_base),
+            );
+            // Only check remote if origin/<base> actually exists
+            let has_remote_base = repo
+                .find_branch(&format!("origin/{base_branch}"), git2::BranchType::Remote)
+                .is_ok();
+            let remote_squash = if has_remote_base {
+                super::merge_detection::is_squash_merged(
+                    repo_path,
+                    &format!("origin/{base_branch}"),
+                    &branch.name,
+                    Some(&commit_hash),
+                    None,
+                )
+            } else {
+                false
+            };
+            let status = match (local_squash, remote_squash) {
+                (true, true) => MergeStatus::SquashMerged,
+                (false, true) => MergeStatus::RemoteSquashMerged,
+                (true, false) => MergeStatus::LocalSquashMerged,
+                (false, false) => MergeStatus::Unmerged,
+            };
+            branch.merge_status = status;
+            cache.insert(&branch.name, &status, &commit_hash);
         }
     }
 

@@ -175,8 +175,8 @@ fn test_squash_merged_branch_detection() {
         .expect("feature-squashed branch not found");
     assert_eq!(
         feature.merge_status,
-        MergeStatus::SquashMerged,
-        "feature-squashed should be detected as SquashMerged"
+        MergeStatus::LocalSquashMerged,
+        "feature-squashed should be detected as LocalSquashMerged (no remote in test repo)"
     );
 }
 
