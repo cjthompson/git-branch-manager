@@ -297,7 +297,7 @@ pub struct ProgressUpdate {
 #[derive(Debug, Clone)]
 pub struct SquashResult {
     pub branch_name: String,
-    pub is_squash_merged: bool,
+    pub status: MergeStatus,
 }
 
 #[derive(Debug, Clone)]

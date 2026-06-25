@@ -458,11 +458,7 @@ impl App {
                 .iter_mut()
                 .find(|b| b.name == result.branch_name)
             {
-                b.merge_status = if result.is_squash_merged {
-                    MergeStatus::SquashMerged
-                } else {
-                    MergeStatus::Unmerged
-                };
+                b.merge_status = result.status;
             }
         }
         if had_squash_results {
@@ -478,11 +474,7 @@ impl App {
                 .iter_mut()
                 .find(|b| b.full_ref == result.branch_name)
             {
-                b.merge_status = if result.is_squash_merged {
-                    MergeStatus::SquashMerged
-                } else {
-                    MergeStatus::Unmerged
-                };
+                b.merge_status = result.status;
             }
         }
 

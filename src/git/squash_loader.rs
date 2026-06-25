@@ -7,6 +7,8 @@ use tracing::instrument;
 
 /// Spawn a background thread that checks each candidate branch for squash-merge status.
 /// Uses the cache for previously computed results and updates it as new results arrive.
+/// Runs is_squash_merged twice per branch — once against the local base and once against
+/// origin/<base> — to distinguish LocalSquashMerged / RemoteSquashMerged / SquashMerged.
 #[instrument(skip(candidates, cache), fields(base_branch, candidate_count = candidates.len()))]
 pub fn spawn_squash_checker(
     repo_path: PathBuf,
@@ -30,14 +32,14 @@ pub fn spawn_squash_checker(
             let _entered = span.enter();
 
             // Check cache first
-            if let Some(status) = cache.lookup(branch_name, commit_hash) {
+            if let Some(cached_status) = cache.lookup(branch_name, commit_hash) {
                 span.record("cache_hit", true);
-                let is_squash = matches!(status, MergeStatus::SquashMerged);
+                let is_squash = !matches!(cached_status, MergeStatus::Unmerged);
                 span.record("squash", is_squash);
                 if tx
                     .send(SquashResult {
                         branch_name: branch_name.clone(),
-                        is_squash_merged: is_squash,
+                        status: cached_status,
                     })
                     .is_err()
                 {
@@ -50,20 +52,35 @@ pub fn spawn_squash_checker(
             }
             span.record("cache_hit", false);
 
-            let is_squash = is_squash_merged(
+            // Run squash detection against local base
+            let local_squash = is_squash_merged(
                 &repo_path,
                 &base_branch,
                 branch_name,
                 Some(commit_hash),
                 merge_base.as_deref(),
             );
+
+            // Run squash detection against remote base (origin/<base>).
+            // Don't reuse local merge_base — remote base may differ.
+            let remote_base = format!("origin/{base_branch}");
+            let remote_squash = is_squash_merged(
+                &repo_path,
+                &remote_base,
+                branch_name,
+                Some(commit_hash),
+                None,
+            );
+
+            let status = match (local_squash, remote_squash) {
+                (true, true) => MergeStatus::SquashMerged,
+                (false, true) => MergeStatus::RemoteSquashMerged,
+                (true, false) => MergeStatus::LocalSquashMerged,
+                (false, false) => MergeStatus::Unmerged,
+            };
+            let is_squash = !matches!(status, MergeStatus::Unmerged);
             span.record("squash", is_squash);
 
-            let status = if is_squash {
-                MergeStatus::SquashMerged
-            } else {
-                MergeStatus::Unmerged
-            };
             cache.insert(branch_name, &status, commit_hash);
             unsaved_inserts += 1;
             if unsaved_inserts >= CACHE_SAVE_INTERVAL {
@@ -74,7 +91,7 @@ pub fn spawn_squash_checker(
             if tx
                 .send(SquashResult {
                     branch_name: branch_name.clone(),
-                    is_squash_merged: is_squash,
+                    status,
                 })
                 .is_err()
             {

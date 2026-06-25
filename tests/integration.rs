@@ -837,11 +837,7 @@ fn test_remote_branch_squash_merge_detection() {
     let mut remotes = remotes;
     for result in rx {
         if let Some(&idx) = index_map.get(&result.branch_name) {
-            remotes[idx].merge_status = if result.is_squash_merged {
-                MergeStatus::SquashMerged
-            } else {
-                MergeStatus::Unmerged
-            };
+            remotes[idx].merge_status = result.status;
         }
     }
 
@@ -2320,7 +2316,7 @@ fn test_cache_audit_merge_base_not_false_positive() {
         branch::fill_merge_base_commits_cached(
             &repo,
             &mut branches,
-            &reachable,
+            &reachable.local,
             base_tip,
             &mut cache,
         );
