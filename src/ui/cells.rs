@@ -12,6 +12,7 @@
 
 use chrono::{DateTime, Utc};
 use ratatui::prelude::*;
+use ratatui::style::Modifier;
 use ratatui::text::Line;
 
 use crate::types::{MergeStatus, PrInfo, PrStatus, WorkingTreeStatus};
@@ -46,15 +47,35 @@ pub(crate) fn merge_status_parts(
     let theme = ctx.theme;
     let symbols = ctx.symbols;
     let (full, short, style) = match status {
-        MergeStatus::Merged | MergeStatus::LocalMerged | MergeStatus::RemoteMerged => (
+        MergeStatus::Merged => (
             format!("merged {}", symbols.status_merged),
             format!("m {}", symbols.status_merged),
             theme.merged,
         ),
-        MergeStatus::SquashMerged | MergeStatus::LocalSquashMerged | MergeStatus::RemoteSquashMerged => (
+        MergeStatus::SquashMerged => (
             format!("squash-merged {}", symbols.status_squash_merged),
             format!("sm {}", symbols.status_squash_merged),
             theme.squash_merged,
+        ),
+        MergeStatus::LocalMerged => (
+            format!("local-merged {}{}", symbols.status_merged, symbols.status_local_suffix),
+            format!("lm {}{}", symbols.status_merged, symbols.status_local_suffix),
+            theme.merged.add_modifier(Modifier::ITALIC),
+        ),
+        MergeStatus::RemoteMerged => (
+            format!("remote-merged {}{}", symbols.status_merged, symbols.status_remote_suffix),
+            format!("rm {}{}", symbols.status_merged, symbols.status_remote_suffix),
+            theme.merged.add_modifier(Modifier::ITALIC),
+        ),
+        MergeStatus::LocalSquashMerged => (
+            format!("local-squash {}{}", symbols.status_squash_merged, symbols.status_local_suffix),
+            format!("ls {}{}", symbols.status_squash_merged, symbols.status_local_suffix),
+            theme.squash_merged.add_modifier(Modifier::ITALIC),
+        ),
+        MergeStatus::RemoteSquashMerged => (
+            format!("remote-squash {}{}", symbols.status_squash_merged, symbols.status_remote_suffix),
+            format!("rs {}{}", symbols.status_squash_merged, symbols.status_remote_suffix),
+            theme.squash_merged.add_modifier(Modifier::ITALIC),
         ),
         MergeStatus::Unmerged => (
             format!("unmerged {}", symbols.status_unmerged),
@@ -268,6 +289,45 @@ mod tests {
         assert_eq!(
             merge_status_parts(&MergeStatus::Pending, &ctx, w).0,
             "pending \u{2026}"
+        );
+    }
+
+    #[test]
+    fn merge_status_local_remote_variants() {
+        let (theme, symbols) = theme_and_symbols();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: 80,
+            compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
+        };
+        let w = Some(20);
+        assert_eq!(
+            merge_status_parts(&MergeStatus::RemoteMerged, &ctx, w).0,
+            "remote-merged +v"
+        );
+        assert_eq!(
+            merge_status_parts(&MergeStatus::LocalMerged, &ctx, w).0,
+            "local-merged +^"
+        );
+        assert_eq!(
+            merge_status_parts(&MergeStatus::RemoteSquashMerged, &ctx, w).0,
+            "remote-squash ~v"
+        );
+        assert_eq!(
+            merge_status_parts(&MergeStatus::LocalSquashMerged, &ctx, w).0,
+            "local-squash ~^"
+        );
+        // abbreviated forms
+        assert_eq!(
+            merge_status_parts(&MergeStatus::RemoteMerged, &ctx, Some(5)).0,
+            "rm +v"
+        );
+        assert_eq!(
+            merge_status_parts(&MergeStatus::LocalMerged, &ctx, Some(5)).0,
+            "lm +^"
         );
     }
 
