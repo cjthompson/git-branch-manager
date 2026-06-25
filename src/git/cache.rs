@@ -294,15 +294,19 @@ impl BranchCache {
         };
         span.record("cached_status", entry.merge_status.as_str());
         match status {
-            // Merged and SquashMerged are permanent; LocalMerged/RemoteMerged stub with Merged behavior, LocalSquashMerged/RemoteSquashMerged stub with SquashMerged behavior
-            MergeStatus::Merged | MergeStatus::LocalMerged | MergeStatus::RemoteMerged | MergeStatus::SquashMerged | MergeStatus::LocalSquashMerged | MergeStatus::RemoteSquashMerged => {
+            // Merged and SquashMerged are permanent
+            MergeStatus::Merged | MergeStatus::SquashMerged => {
                 self.record_hit();
                 span.record("hit", true);
                 span.record("result_state", "hit_permanent");
                 Some(status)
             }
-            // Unmerged is only valid if commit hasn't changed
-            MergeStatus::Unmerged => {
+            // Unmerged and local/remote variants are only valid if commit hasn't changed
+            MergeStatus::Unmerged
+            | MergeStatus::LocalMerged
+            | MergeStatus::RemoteMerged
+            | MergeStatus::LocalSquashMerged
+            | MergeStatus::RemoteSquashMerged => {
                 if entry.commit_hash == current_commit_hash {
                     self.record_hit();
                     span.record("hit", true);
