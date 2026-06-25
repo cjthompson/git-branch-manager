@@ -18,7 +18,7 @@ use git2::{Oid, Repository};
 
 use crate::git::branch;
 use crate::git::cache::BranchCache;
-use crate::git::merge_detection::{build_reachable_set_from_repo, is_squash_merged};
+use crate::git::merge_detection::{build_reachable_set_from_repo, is_squash_merged, BaseReachable};
 use crate::types::{CacheAudit, CacheFix, DiagKind, Discrepancy, MergeStatus};
 
 /// Shared read-only context for one audit pass.
@@ -27,7 +27,7 @@ struct AuditCtx<'a> {
     repo_path: &'a Path,
     base_branch: &'a str,
     current_branch: String,
-    reachable: HashSet<Oid>,
+    reachable: BaseReachable,
     base_oid: Option<Oid>,
     cache: &'a BranchCache,
 }
@@ -196,23 +196,36 @@ fn verify_merge_status(ctx: &AuditCtx, name: &str, tip: Oid, audit: &mut CacheAu
 /// Recompute a branch's merge status from scratch, mirroring the detection
 /// pipeline: regular-merge via the reachable set, then squash-merge, else unmerged.
 fn truth_merge_status(ctx: &AuditCtx, name: &str, tip: Oid) -> MergeStatus {
-    if ctx.reachable.contains(&tip) {
-        return MergeStatus::Merged;
+    // Check regular merge first (covers Merged / LocalMerged / RemoteMerged).
+    if let Some(status) = ctx.reachable.regular_merge_status(tip) {
+        return status;
     }
+    // Not regularly merged — check squash-merge against local base.
     let merge_base = ctx
         .base_oid
         .and_then(|b| ctx.repo.merge_base(tip, b).ok())
         .map(|o| o.to_string());
-    if is_squash_merged(
+    let tip_str = tip.to_string();
+    let local_squash = is_squash_merged(
         ctx.repo_path,
         ctx.base_branch,
         name,
-        Some(&tip.to_string()),
+        Some(&tip_str),
         merge_base.as_deref(),
-    ) {
-        MergeStatus::SquashMerged
-    } else {
-        MergeStatus::Unmerged
+    );
+    let remote_base = format!("origin/{}", ctx.base_branch);
+    let remote_squash = is_squash_merged(
+        ctx.repo_path,
+        &remote_base,
+        name,
+        Some(&tip_str),
+        None,
+    );
+    match (local_squash, remote_squash) {
+        (true, true) => MergeStatus::SquashMerged,
+        (false, true) => MergeStatus::RemoteSquashMerged,
+        (true, false) => MergeStatus::LocalSquashMerged,
+        (false, false) => MergeStatus::Unmerged,
     }
 }
 
@@ -253,7 +266,7 @@ fn verify_merge_base(ctx: &AuditCtx, name: &str, tip: Oid, base_oid: Oid, audit:
     // Recompute exactly as the cache was filled (short hash, bounded walk) so a
     // correct cache compares equal — comparing against the full unbounded
     // `repo.merge_base` would mismatch on representation alone.
-    let truth = branch::compute_merge_base_short(ctx.repo, tip, &ctx.reachable).0;
+    let truth = branch::compute_merge_base_short(ctx.repo, tip, &ctx.reachable.local).0;
     if cached == truth {
         audit.merge_base.verified += 1;
     } else {
