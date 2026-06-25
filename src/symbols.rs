@@ -10,6 +10,8 @@ pub struct SymbolSet {
     pub status_merged: &'static str,
     pub status_squash_merged: &'static str,
     pub status_unmerged: &'static str,
+    pub status_local_suffix: &'static str,
+    pub status_remote_suffix: &'static str,
     /// Shown in the A/B column for a branch that shares no history with the base
     /// (no merge base); its ahead/behind counts would be the full, misleading
     /// history sizes, so we render this marker instead.
@@ -29,6 +31,8 @@ impl SymbolSet {
             status_merged: "+",
             status_squash_merged: "~",
             status_unmerged: "-",
+            status_local_suffix: "^",
+            status_remote_suffix: "v",
             disjoint: "!=",
         }
     }
@@ -45,6 +49,8 @@ impl SymbolSet {
             status_merged: "\u{2714}",        // heavy check mark
             status_squash_merged: "\u{2248}", // almost equal to
             status_unmerged: "\u{2718}",      // heavy ballot X
+            status_local_suffix: "\u{2191}",  // ↑ upwards arrow
+            status_remote_suffix: "\u{2193}", // ↓ downwards arrow
             disjoint: "\u{2260}",             // not equal to (no shared history)
         }
     }
@@ -61,6 +67,8 @@ impl SymbolSet {
             status_merged: "\u{f126}",        // nerd font code-fork (merged)
             status_squash_merged: "\u{25cf}", // solid circle (squash-merged)
             status_unmerged: "\u{f00d}",      // nerd font x-mark
+            status_local_suffix: "\u{2191}",  // ↑ upwards arrow
+            status_remote_suffix: "\u{2193}", // ↓ downwards arrow
             disjoint: "\u{2260}",             // not equal to (no shared history)
         }
     }
