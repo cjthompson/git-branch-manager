@@ -231,8 +231,8 @@ fn test_squash_merged_branch_detection() {
         .expect("feature-squashed branch not found");
     assert_eq!(
         feature.merge_status,
-        MergeStatus::SquashMerged,
-        "feature-squashed should be detected as SquashMerged"
+        MergeStatus::LocalSquashMerged,
+        "feature-squashed should be detected as LocalSquashMerged (no remote in test repo)"
     );
 }
 
@@ -2509,7 +2509,9 @@ fn test_worktree_merge_status_from_branches() {
             .merge_status
     };
     assert_eq!(branch_status("feat-merged"), MergeStatus::Merged);
-    assert_eq!(branch_status("feat-squashed"), MergeStatus::SquashMerged);
+    // No remote in this repo, so a squash-merge resolves to the local-only
+    // variant (matching test_squash_merged_branch_detection).
+    assert_eq!(branch_status("feat-squashed"), MergeStatus::LocalSquashMerged);
     assert_eq!(branch_status("feat-unmerged"), MergeStatus::Unmerged);
 
     let mut worktrees = worktree::list_worktrees(dir);
@@ -2530,7 +2532,7 @@ fn test_worktree_merge_status_from_branches() {
     );
     assert_eq!(
         wt_for("feat-squashed").merge_status,
-        MergeStatus::SquashMerged,
+        MergeStatus::LocalSquashMerged,
         "squash-merged worktree should match its branch"
     );
     assert_eq!(

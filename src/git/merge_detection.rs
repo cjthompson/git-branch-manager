@@ -62,10 +62,8 @@ fn revwalk_from_oid(repo: &Repository, oid: git2::Oid) -> HashSet<git2::Oid> {
     let _ = revwalk.set_sorting(git2::Sort::NONE);
     let _ = revwalk.push(oid);
     let mut set = HashSet::new();
-    for oid_result in &mut revwalk {
-        if let Ok(oid) = oid_result {
-            set.insert(oid);
-        }
+    for oid in revwalk.flatten() {
+        set.insert(oid);
     }
     set
 }
