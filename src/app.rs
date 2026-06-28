@@ -21,12 +21,12 @@ use git_branch_manager::ui::cells::{
     age_line, ahead_behind_line, fit_text, merge_status_line, merge_status_line_for_branch,
     pr_line, worktree_status_line,
 };
+use git_branch_manager::ui::info_modal::{InfoHitRegion, InfoModalRow};
 use git_branch_manager::ui::list_render::CellContext;
 use git_branch_manager::ui::menu::MenuItem;
 use git_branch_manager::ui::render::{Overlay, RenderContext};
 use git_branch_manager::ui::shared::{abbreviate_path, prefix_style, truncate, truncate_left};
 use git_branch_manager::ui::toast::Toast;
-use git_branch_manager::ui::info_modal::{InfoHitRegion, InfoModalRow};
 use git_branch_manager::view::branches::BranchesViewDef;
 use git_branch_manager::view::column::ColumnDef;
 use git_branch_manager::view::filter::{FilterSet, FilterTokenDef};
@@ -163,7 +163,9 @@ fn now_ms() -> u64 {
 /// Copy `text` to the host system clipboard. Returns an error string on failure.
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    clipboard.set_text(text.to_string()).map_err(|e| e.to_string())
+    clipboard
+        .set_text(text.to_string())
+        .map_err(|e| e.to_string())
 }
 
 // ---- Generic channel drain helper ----
@@ -969,7 +971,12 @@ impl App {
                     self.overlay = Some(Overlay::Menu { cursor, items });
                 }
             },
-            Some(Overlay::InfoModal { cursor, items, row, scroll_offset }) => match key.code {
+            Some(Overlay::InfoModal {
+                cursor,
+                items,
+                row,
+                scroll_offset,
+            }) => match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
                     let mut new_cursor = cursor + 1;
                     while new_cursor < items.len() && !items[new_cursor].enabled {
@@ -1556,10 +1563,22 @@ impl App {
 
     fn build_info_modal_row(&self) -> Option<InfoModalRow> {
         match self.active_view {
-            ViewId::Branches => self.branches.cursor_item().cloned().map(InfoModalRow::Branch),
-            ViewId::Remotes => self.remotes.cursor_item().cloned().map(InfoModalRow::Remote),
+            ViewId::Branches => self
+                .branches
+                .cursor_item()
+                .cloned()
+                .map(InfoModalRow::Branch),
+            ViewId::Remotes => self
+                .remotes
+                .cursor_item()
+                .cloned()
+                .map(InfoModalRow::Remote),
             ViewId::Tags => self.tags.cursor_item().cloned().map(InfoModalRow::Tag),
-            ViewId::Worktrees => self.worktrees.cursor_item().cloned().map(InfoModalRow::Worktree),
+            ViewId::Worktrees => self
+                .worktrees
+                .cursor_item()
+                .cloned()
+                .map(InfoModalRow::Worktree),
         }
     }
 

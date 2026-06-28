@@ -2511,7 +2511,10 @@ fn test_worktree_merge_status_from_branches() {
     assert_eq!(branch_status("feat-merged"), MergeStatus::Merged);
     // No remote in this repo, so a squash-merge resolves to the local-only
     // variant (matching test_squash_merged_branch_detection).
-    assert_eq!(branch_status("feat-squashed"), MergeStatus::LocalSquashMerged);
+    assert_eq!(
+        branch_status("feat-squashed"),
+        MergeStatus::LocalSquashMerged
+    );
     assert_eq!(branch_status("feat-unmerged"), MergeStatus::Unmerged);
 
     let mut worktrees = worktree::list_worktrees(dir);

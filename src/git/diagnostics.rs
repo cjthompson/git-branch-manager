@@ -214,13 +214,7 @@ fn truth_merge_status(ctx: &AuditCtx, name: &str, tip: Oid) -> MergeStatus {
         merge_base.as_deref(),
     );
     let remote_base = format!("origin/{}", ctx.base_branch);
-    let remote_squash = is_squash_merged(
-        ctx.repo_path,
-        &remote_base,
-        name,
-        Some(&tip_str),
-        None,
-    );
+    let remote_squash = is_squash_merged(ctx.repo_path, &remote_base, name, Some(&tip_str), None);
     match (local_squash, remote_squash) {
         (true, true) => MergeStatus::SquashMerged,
         (false, true) => MergeStatus::RemoteSquashMerged,
@@ -297,7 +291,9 @@ fn branch_and_upstream_oid(repo: &Repository, name: &str) -> Option<(Oid, Oid)> 
 fn status_label(status: MergeStatus) -> &'static str {
     match status {
         MergeStatus::Merged | MergeStatus::LocalMerged | MergeStatus::RemoteMerged => "merged",
-        MergeStatus::SquashMerged | MergeStatus::LocalSquashMerged | MergeStatus::RemoteSquashMerged => "squash-merged",
+        MergeStatus::SquashMerged
+        | MergeStatus::LocalSquashMerged
+        | MergeStatus::RemoteSquashMerged => "squash-merged",
         MergeStatus::Unmerged => "unmerged",
         MergeStatus::Pending => "pending",
     }

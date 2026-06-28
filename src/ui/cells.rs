@@ -58,23 +58,47 @@ pub(crate) fn merge_status_parts(
             theme.squash_merged,
         ),
         MergeStatus::LocalMerged => (
-            format!("local-merged {}{}", symbols.status_merged, symbols.status_local_suffix),
-            format!("lm {}{}", symbols.status_merged, symbols.status_local_suffix),
+            format!(
+                "local-merged {}{}",
+                symbols.status_merged, symbols.status_local_suffix
+            ),
+            format!(
+                "lm {}{}",
+                symbols.status_merged, symbols.status_local_suffix
+            ),
             theme.merged.add_modifier(Modifier::ITALIC),
         ),
         MergeStatus::RemoteMerged => (
-            format!("remote-merged {}{}", symbols.status_merged, symbols.status_remote_suffix),
-            format!("rm {}{}", symbols.status_merged, symbols.status_remote_suffix),
+            format!(
+                "remote-merged {}{}",
+                symbols.status_merged, symbols.status_remote_suffix
+            ),
+            format!(
+                "rm {}{}",
+                symbols.status_merged, symbols.status_remote_suffix
+            ),
             theme.merged.add_modifier(Modifier::ITALIC),
         ),
         MergeStatus::LocalSquashMerged => (
-            format!("local-squash {}{}", symbols.status_squash_merged, symbols.status_local_suffix),
-            format!("ls {}{}", symbols.status_squash_merged, symbols.status_local_suffix),
+            format!(
+                "local-squash {}{}",
+                symbols.status_squash_merged, symbols.status_local_suffix
+            ),
+            format!(
+                "ls {}{}",
+                symbols.status_squash_merged, symbols.status_local_suffix
+            ),
             theme.squash_merged.add_modifier(Modifier::ITALIC),
         ),
         MergeStatus::RemoteSquashMerged => (
-            format!("remote-squash {}{}", symbols.status_squash_merged, symbols.status_remote_suffix),
-            format!("rs {}{}", symbols.status_squash_merged, symbols.status_remote_suffix),
+            format!(
+                "remote-squash {}{}",
+                symbols.status_squash_merged, symbols.status_remote_suffix
+            ),
+            format!(
+                "rs {}{}",
+                symbols.status_squash_merged, symbols.status_remote_suffix
+            ),
             theme.squash_merged.add_modifier(Modifier::ITALIC),
         ),
         MergeStatus::Unmerged => (

@@ -1,12 +1,15 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState,
+};
 
+use super::menu::MenuItem;
+use super::shared::centered_rect_pct;
 use crate::symbols::SymbolSet;
 use crate::theme::Theme;
 use crate::types::*;
-use super::menu::MenuItem;
-use super::shared::centered_rect_pct;
 
 #[derive(Debug, Clone)]
 pub enum InfoModalRow {
@@ -62,12 +65,28 @@ pub fn draw_info_modal(
     if width >= 100 {
         // Two-column layout: info left, actions right
         draw_info_modal_wide(
-            frame, &title, &fields, items, cursor, copied_msg, hit_regions, theme, symbols,
+            frame,
+            &title,
+            &fields,
+            items,
+            cursor,
+            copied_msg,
+            hit_regions,
+            theme,
+            symbols,
         );
     } else {
         // Single-column layout with scrolling
         draw_info_modal_narrow(
-            frame, &title, &fields, items, cursor, scroll_offset, copied_msg, hit_regions, theme,
+            frame,
+            &title,
+            &fields,
+            items,
+            cursor,
+            scroll_offset,
+            copied_msg,
+            hit_regions,
+            theme,
             symbols,
         );
     }
@@ -328,6 +347,10 @@ fn merge_status_str(status: &MergeStatus) -> &'static str {
     match status {
         MergeStatus::Merged => "Merged",
         MergeStatus::SquashMerged => "Squash Merged",
+        MergeStatus::LocalMerged => "Local Merged",
+        MergeStatus::RemoteMerged => "Remote Merged",
+        MergeStatus::LocalSquashMerged => "Local Squash Merged",
+        MergeStatus::RemoteSquashMerged => "Remote Squash Merged",
         MergeStatus::Unmerged => "Unmerged",
         MergeStatus::Pending => "Pending",
     }
@@ -373,7 +396,11 @@ fn wrap_value(value: &str, width: usize) -> Vec<String> {
             continue;
         }
 
-        let needed = if current.is_empty() { word_len } else { word_len + 1 };
+        let needed = if current.is_empty() {
+            word_len
+        } else {
+            word_len + 1
+        };
         if current_len + needed > width && !current.is_empty() {
             lines.push(std::mem::take(&mut current));
             current_len = 0;

@@ -21,13 +21,13 @@ use super::diagnostics::{draw_diagnostics_menu, draw_diagnostics_report};
 use super::executing::draw_executing;
 use super::filter_ui::draw_filter;
 use super::help::draw_help;
+use super::info_modal::{draw_info_modal, InfoHitRegion, InfoModalRow};
 use super::list_render::{ListRenderParams, RowRenderer};
 use super::menu::{draw_menu, MenuItem};
 use super::results::draw_results;
 use super::settings::{draw_settings, settings_rows};
 use super::status_bar;
 use super::toast::{draw_toast, Toast};
-use super::info_modal::{draw_info_modal, InfoHitRegion, InfoModalRow};
 
 /// Overlay state for the top-level renderer.
 #[derive(Debug, Clone)]
@@ -241,7 +241,12 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 };
                 draw_menu(frame, items, *cursor, anchor, ctx.theme, ctx.symbols);
             }
-            Overlay::InfoModal { items, cursor, row, scroll_offset } => {
+            Overlay::InfoModal {
+                items,
+                cursor,
+                row,
+                scroll_offset,
+            } => {
                 draw_info_modal(
                     frame,
                     row,
