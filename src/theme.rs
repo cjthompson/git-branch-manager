@@ -11,7 +11,6 @@ pub struct Theme {
     pub cursor: Style,
     pub selected: Style,
     pub current_branch: Style,
-    #[allow(dead_code)]
     pub ahead_behind: Style,
     pub pinned_row: Style,
     pub checked_row: Style,
@@ -65,20 +64,28 @@ impl Theme {
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
             toast_border: Style::new().fg(Color::Yellow),
-            toast_text: Style::new().fg(Color::Yellow).add_modifier(Modifier::ITALIC),
+            toast_text: Style::new()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::ITALIC),
         }
     }
 
     pub fn light() -> Self {
         Self {
             name: "light",
-            merged: Style::new().fg(Color::Indexed(28)).add_modifier(Modifier::BOLD), // dark green
-            squash_merged: Style::new().fg(Color::Indexed(172)).add_modifier(Modifier::BOLD), // dark orange
+            merged: Style::new()
+                .fg(Color::Indexed(28))
+                .add_modifier(Modifier::BOLD), // dark green
+            squash_merged: Style::new()
+                .fg(Color::Indexed(172))
+                .add_modifier(Modifier::BOLD), // dark orange
             unmerged: Style::new().fg(Color::Red),
             primary_text: Style::new().fg(Color::Black).add_modifier(Modifier::BOLD),
             secondary_text: Style::new().fg(Color::DarkGray),
             cursor: Style::new().bg(Color::Indexed(153)), // light blue
-            selected: Style::new().fg(Color::Indexed(28)).add_modifier(Modifier::BOLD), // dark green
+            selected: Style::new()
+                .fg(Color::Indexed(28))
+                .add_modifier(Modifier::BOLD), // dark green
             current_branch: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
             ahead_behind: Style::new().fg(Color::Blue),
             pinned_row: Style::new().add_modifier(Modifier::DIM),
@@ -96,13 +103,17 @@ impl Theme {
             pr_open: Style::new().fg(Color::Indexed(28)),
             pr_merged: Style::new().fg(Color::Indexed(92)),
             pr_closed: Style::new().fg(Color::Red),
-            remote_title: Style::new().fg(Color::Indexed(92)).add_modifier(Modifier::BOLD),
+            remote_title: Style::new()
+                .fg(Color::Indexed(92))
+                .add_modifier(Modifier::BOLD),
             remote_header: Style::new()
                 .fg(Color::Indexed(92))
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
             toast_border: Style::new().fg(Color::Indexed(172)),
-            toast_text: Style::new().fg(Color::Indexed(172)).add_modifier(Modifier::ITALIC),
+            toast_text: Style::new()
+                .fg(Color::Indexed(172))
+                .add_modifier(Modifier::ITALIC),
         }
     }
 
@@ -142,13 +153,17 @@ impl Theme {
             pr_open: Style::new().fg(green),
             pr_merged: Style::new().fg(Color::Indexed(61)),
             pr_closed: Style::new().fg(red),
-            remote_title: Style::new().fg(Color::Indexed(125)).add_modifier(Modifier::BOLD),
+            remote_title: Style::new()
+                .fg(Color::Indexed(125))
+                .add_modifier(Modifier::BOLD),
             remote_header: Style::new()
                 .fg(Color::Indexed(125))
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
             toast_border: Style::new().fg(Color::Indexed(136)),
-            toast_text: Style::new().fg(Color::Indexed(136)).add_modifier(Modifier::ITALIC),
+            toast_text: Style::new()
+                .fg(Color::Indexed(136))
+                .add_modifier(Modifier::ITALIC),
         }
     }
 
@@ -186,14 +201,28 @@ impl Theme {
             pr_open: Style::new().fg(green),
             pr_merged: Style::new().fg(purple),
             pr_closed: Style::new().fg(red),
-            remote_title: Style::new().fg(Color::Indexed(212)).add_modifier(Modifier::BOLD),
+            remote_title: Style::new()
+                .fg(Color::Indexed(212))
+                .add_modifier(Modifier::BOLD),
             remote_header: Style::new()
                 .fg(Color::Indexed(212))
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
             toast_border: Style::new().fg(Color::Indexed(228)),
-            toast_text: Style::new().fg(Color::Indexed(228)).add_modifier(Modifier::ITALIC),
+            toast_text: Style::new()
+                .fg(Color::Indexed(228))
+                .add_modifier(Modifier::ITALIC),
         }
+    }
+
+    /// Returns the dim foreground color (from the `dim` style's fg, or DarkGray fallback).
+    pub fn dim_fg(&self) -> Color {
+        self.dim.fg.unwrap_or(Color::DarkGray)
+    }
+
+    /// Returns the accent color (from the `title` style's fg, or White fallback).
+    pub fn accent_fg(&self) -> Color {
+        self.title.fg.unwrap_or(Color::White)
     }
 
     pub fn from_name(name: &str) -> Self {
@@ -213,5 +242,54 @@ impl Theme {
             "dracula" => Self::dark(),
             _ => Self::dark(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theme_cycle() {
+        let t = Theme::dark();
+        let t2 = t.next();
+        assert_eq!(t2.name, "light");
+        let t3 = t2.next();
+        assert_eq!(t3.name, "solarized");
+        let t4 = t3.next();
+        assert_eq!(t4.name, "dracula");
+        let t5 = t4.next();
+        assert_eq!(t5.name, "dark");
+    }
+
+    #[test]
+    fn theme_from_name() {
+        let t = Theme::from_name("dracula");
+        assert_eq!(t.name, "dracula");
+        let t = Theme::from_name("invalid");
+        assert_eq!(t.name, "dark"); // default
+    }
+
+    #[test]
+    fn theme_from_name_all_variants() {
+        assert_eq!(Theme::from_name("dark").name, "dark");
+        assert_eq!(Theme::from_name("light").name, "light");
+        assert_eq!(Theme::from_name("solarized").name, "solarized");
+        assert_eq!(Theme::from_name("dracula").name, "dracula");
+    }
+
+    #[test]
+    fn dark_theme_has_expected_styles() {
+        let t = Theme::dark();
+        // Just verify a few key styles are configured
+        assert_eq!(t.merged.fg, Some(Color::Green));
+        assert_eq!(t.unmerged.fg, Some(Color::Red));
+        assert_eq!(t.current_branch.fg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn light_theme_has_expected_styles() {
+        let t = Theme::light();
+        assert_eq!(t.primary_text.fg, Some(Color::Black));
     }
 }

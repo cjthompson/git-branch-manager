@@ -1,13 +1,57 @@
 use std::process::Command;
+use std::sync::atomic::AtomicBool;
 
-use git_branch_manager::git::{branch, operations, squash_loader, status, worktree};
-use git_branch_manager::types::MergeStatus;
+use git_branch_manager::git::{
+    branch, cache, diagnostics, merge_detection, operations, squash_loader, status, tags, worktree,
+};
+use git_branch_manager::types::{DiagKind, MergeStatus};
+
+/// A temp directory for tests. Deletes itself on drop, EXCEPT when the
+/// `GBM_KEEP_TEST_REPOS` env var is set — then it leaks the directory and prints
+/// the path, so you can inspect the repo state after a run:
+///
+/// ```sh
+/// GBM_KEEP_TEST_REPOS=1 cargo test --test integration <name> -- --nocapture
+/// ```
+struct TestDir {
+    inner: Option<tempfile::TempDir>,
+    path: std::path::PathBuf,
+}
+
+impl TestDir {
+    fn new(td: tempfile::TempDir) -> Self {
+        let path = td.path().to_path_buf();
+        Self {
+            inner: Some(td),
+            path,
+        }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        if std::env::var_os("GBM_KEEP_TEST_REPOS").is_some() {
+            if let Some(td) = self.inner.take() {
+                let kept = td.keep(); // leak: skip the recursive delete
+                eprintln!("[GBM_KEEP_TEST_REPOS] kept test repo: {}", kept.display());
+            }
+        }
+        // Otherwise `inner` drops normally and deletes the directory.
+    }
+}
 
 /// Create a temporary git repository with an initial commit on the "main" branch.
 ///
-/// Returns the tempdir (must be kept alive for the duration of the test) and the
-/// git2::Repository handle.
-fn setup_test_repo() -> (tempfile::TempDir, git2::Repository) {
+/// Returns the temp dir guard (must be kept alive for the duration of the test)
+/// and the git2::Repository handle.
+fn setup_test_repo() -> (TestDir, git2::Repository) {
+    // Use the OS temp dir (std::env::temp_dir): portable across Windows/macOS/
+    // Linux. When kept (GBM_KEEP_TEST_REPOS=1), the path is printed on drop, so
+    // it stays findable without hardcoding a platform-specific location.
     let tmpdir = tempfile::tempdir().expect("failed to create tempdir");
     let dir = tmpdir.path();
 
@@ -25,7 +69,7 @@ fn setup_test_repo() -> (tempfile::TempDir, git2::Repository) {
     run_git(dir, &["commit", "-m", "Initial commit"]);
 
     let repo = git2::Repository::open(dir).expect("failed to open repo");
-    (tmpdir, repo)
+    (TestDir::new(tmpdir), repo)
 }
 
 /// Run a git command in the given directory, panicking on failure.
@@ -37,12 +81,22 @@ fn run_git(dir: &std::path::Path, args: &[&str]) {
         .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!(
-            "git {:?} failed in {}: {}",
-            args,
-            dir.display(),
-            stderr
-        );
+        panic!("git {:?} failed in {}: {}", args, dir.display(), stderr);
+    }
+}
+
+/// Run a git command with scoped environment variables in the given directory,
+/// panicking on failure.
+fn run_git_with_env(dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]) {
+    let output = Command::new("git")
+        .args(args)
+        .envs(env.iter().copied())
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!("git {:?} failed in {}: {}", args, dir.display(), stderr);
     }
 }
 
@@ -76,7 +130,10 @@ fn test_detect_base_branch_override_nonexistent() {
     let (_tmpdir, repo) = setup_test_repo();
 
     let result = branch::detect_base_branch(&repo, Some("nonexistent"));
-    assert!(result.is_err(), "expected error for nonexistent branch override");
+    assert!(
+        result.is_err(),
+        "expected error for nonexistent branch override"
+    );
 }
 
 #[test]
@@ -91,8 +148,12 @@ fn test_list_branches() {
     let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
 
     // Should have 3 branches: main, feature-a, feature-b
-    assert_eq!(branches.len(), 3, "expected 3 branches, got: {:?}",
-        branches.iter().map(|b| &b.name).collect::<Vec<_>>());
+    assert_eq!(
+        branches.len(),
+        3,
+        "expected 3 branches, got: {:?}",
+        branches.iter().map(|b| &b.name).collect::<Vec<_>>()
+    );
 
     let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
     assert!(names.contains(&"main"), "missing 'main'");
@@ -122,7 +183,10 @@ fn test_merged_branch_detection() {
     std::fs::write(&main_file, "main branch change\n").expect("failed to write main file");
     run_git(dir, &["add", "main-change.txt"]);
     run_git(dir, &["commit", "-m", "Main branch commit"]);
-    run_git(dir, &["merge", "feature-merged", "-m", "Merge feature-merged"]);
+    run_git(
+        dir,
+        &["merge", "feature-merged", "-m", "Merge feature-merged"],
+    );
 
     // Re-open the repo so git2 sees the merge commit
     let repo = git2::Repository::open(dir).expect("failed to re-open repo");
@@ -155,10 +219,7 @@ fn test_squash_merged_branch_detection() {
     // Switch back to main and squash merge
     run_git(dir, &["checkout", "main"]);
     run_git(dir, &["merge", "--squash", "feature-squashed"]);
-    run_git(
-        dir,
-        &["commit", "-m", "squash merge feature-squashed"],
-    );
+    run_git(dir, &["commit", "-m", "squash merge feature-squashed"]);
 
     // Re-open the repo so git2 sees the latest state
     let repo = git2::Repository::open(dir).expect("failed to re-open repo");
@@ -170,8 +231,8 @@ fn test_squash_merged_branch_detection() {
         .expect("feature-squashed branch not found");
     assert_eq!(
         feature.merge_status,
-        MergeStatus::SquashMerged,
-        "feature-squashed should be detected as SquashMerged"
+        MergeStatus::LocalSquashMerged,
+        "feature-squashed should be detected as LocalSquashMerged (no remote in test repo)"
     );
 }
 
@@ -215,16 +276,22 @@ fn test_delete_local_branch() {
 
     // Verify it exists
     assert!(
-        repo.find_branch("to-delete", git2::BranchType::Local).is_ok(),
+        repo.find_branch("to-delete", git2::BranchType::Local)
+            .is_ok(),
         "branch should exist before deletion"
     );
 
     let result = operations::delete_local(&repo, "to-delete");
-    assert!(result.success, "delete_local should succeed: {}", result.message);
+    assert!(
+        result.success,
+        "delete_local should succeed: {}",
+        result.message
+    );
 
     // Verify it's gone
     assert!(
-        repo.find_branch("to-delete", git2::BranchType::Local).is_err(),
+        repo.find_branch("to-delete", git2::BranchType::Local)
+            .is_err(),
         "branch should not exist after deletion"
     );
 }
@@ -254,10 +321,7 @@ fn test_ahead_behind_indicators() {
 
     // 2. Clone it into a working directory
     let work_dir = base_dir.join("work");
-    run_git(
-        base_dir,
-        &["clone", remote_dir.to_str().unwrap(), "work"],
-    );
+    run_git(base_dir, &["clone", remote_dir.to_str().unwrap(), "work"]);
 
     // 3. Configure user in the clone
     run_git(&work_dir, &["config", "user.name", "Test User"]);
@@ -282,7 +346,10 @@ fn test_ahead_behind_indicators() {
     let feature_file2 = work_dir.join("feature2.txt");
     std::fs::write(&feature_file2, "more feature content\n").unwrap();
     run_git(&work_dir, &["add", "feature2.txt"]);
-    run_git(&work_dir, &["commit", "-m", "Feature commit 2 (local only)"]);
+    run_git(
+        &work_dir,
+        &["commit", "-m", "Feature commit 2 (local only)"],
+    );
 
     // 7. Go back to main for listing
     run_git(&work_dir, &["checkout", "main"]);
@@ -344,7 +411,11 @@ fn test_checkout_branch() {
     run_git(dir, &["branch", "feature-checkout"]);
 
     let result = operations::checkout_branch(&repo, dir, "feature-checkout", false);
-    assert!(result.success, "checkout should succeed: {}", result.message);
+    assert!(
+        result.success,
+        "checkout should succeed: {}",
+        result.message
+    );
 
     let repo = git2::Repository::open(dir).unwrap();
     let head = repo.head().unwrap();
@@ -362,7 +433,11 @@ fn test_checkout_branch_with_stash() {
     std::fs::write(&dirty_file, "# Modified\n").expect("failed to write dirty file");
 
     let result = operations::checkout_branch(&repo, dir, "feature-stash-checkout", true);
-    assert!(result.success, "checkout with stash should succeed: {}", result.message);
+    assert!(
+        result.success,
+        "checkout with stash should succeed: {}",
+        result.message
+    );
 
     let repo = git2::Repository::open(dir).unwrap();
     let head = repo.head().unwrap();
@@ -430,7 +505,10 @@ fn test_list_remote_branches() {
     // Should have origin/main and origin/feature-remote
     let names: Vec<&str> = remotes.iter().map(|r| r.short_name.as_str()).collect();
     assert!(names.contains(&"main"), "should list origin/main");
-    assert!(names.contains(&"feature-remote"), "should list origin/feature-remote");
+    assert!(
+        names.contains(&"feature-remote"),
+        "should list origin/feature-remote"
+    );
 
     // origin/main should be marked as base
     let main_remote = remotes.iter().find(|r| r.short_name == "main").unwrap();
@@ -464,11 +542,23 @@ fn test_remote_branch_has_local() {
     let remotes = branch::list_remote_branches_phase1(&repo, "main")
         .expect("list_remote_branches_phase1 failed");
 
-    let has_local_branch = remotes.iter().find(|r| r.short_name == "has-local").unwrap();
-    assert!(has_local_branch.has_local, "has-local should have has_local=true");
+    let has_local_branch = remotes
+        .iter()
+        .find(|r| r.short_name == "has-local")
+        .unwrap();
+    assert!(
+        has_local_branch.has_local,
+        "has-local should have has_local=true"
+    );
 
-    let remote_only_branch = remotes.iter().find(|r| r.short_name == "remote-only").unwrap();
-    assert!(!remote_only_branch.has_local, "remote-only should have has_local=false");
+    let remote_only_branch = remotes
+        .iter()
+        .find(|r| r.short_name == "remote-only")
+        .unwrap();
+    assert!(
+        !remote_only_branch.has_local,
+        "remote-only should have has_local=false"
+    );
 }
 
 #[test]
@@ -491,7 +581,10 @@ fn test_remote_branch_merged_detection() {
     run_git(&work_dir, &["commit", "-m", "Main branch commit"]);
 
     // Merge and push
-    run_git(&work_dir, &["merge", "feature-to-merge", "-m", "Merge feature"]);
+    run_git(
+        &work_dir,
+        &["merge", "feature-to-merge", "-m", "Merge feature"],
+    );
     run_git(&work_dir, &["push", "origin", "main"]);
 
     // Re-open to see updated refs
@@ -512,7 +605,10 @@ fn test_remote_branch_merged_detection() {
         }
     }
 
-    let merged = remotes.iter().find(|r| r.short_name == "feature-to-merge").unwrap();
+    let merged = remotes
+        .iter()
+        .find(|r| r.short_name == "feature-to-merge")
+        .unwrap();
     assert_eq!(
         merged.merge_status,
         MergeStatus::Merged,
@@ -537,7 +633,10 @@ fn test_remote_branch_unmerged_detection() {
         .expect("list_remote_branches_phase1 failed");
 
     // Phase-1 sets non-base branches to Pending; squash check resolves to Unmerged/SquashMerged.
-    let unmerged = remotes.iter().find(|r| r.short_name == "feature-unmerged").unwrap();
+    let unmerged = remotes
+        .iter()
+        .find(|r| r.short_name == "feature-unmerged")
+        .unwrap();
     assert_eq!(
         unmerged.merge_status,
         MergeStatus::Pending,
@@ -558,7 +657,10 @@ fn test_remote_branch_skips_head() {
 
     // Should not include any entry with short_name "HEAD"
     let head_entries: Vec<_> = remotes.iter().filter(|r| r.short_name == "HEAD").collect();
-    assert!(head_entries.is_empty(), "origin/HEAD pseudo-ref should be filtered out");
+    assert!(
+        head_entries.is_empty(),
+        "origin/HEAD pseudo-ref should be filtered out"
+    );
 }
 
 #[test]
@@ -577,7 +679,11 @@ fn test_checkout_remote_branch() {
 
     // Now checkout from remote
     let result = operations::checkout_remote_branch(&work_dir, "origin", "remote-checkout-test");
-    assert!(result.success, "checkout_remote_branch should succeed: {}", result.message);
+    assert!(
+        result.success,
+        "checkout_remote_branch should succeed: {}",
+        result.message
+    );
 
     // Verify we're on the new local branch
     let repo = git2::Repository::open(&work_dir).unwrap();
@@ -585,7 +691,10 @@ fn test_checkout_remote_branch() {
     assert_eq!(head.shorthand().unwrap(), "remote-checkout-test");
 
     // Verify the file from the remote branch exists
-    assert!(work_dir.join("checkout-test.txt").exists(), "checked-out file should exist");
+    assert!(
+        work_dir.join("checkout-test.txt").exists(),
+        "checked-out file should exist"
+    );
 }
 
 #[test]
@@ -603,7 +712,10 @@ fn test_checkout_remote_branch_already_exists() {
 
     // Trying to checkout remote when local already exists should fail
     let result = operations::checkout_remote_branch(&work_dir, "origin", "already-local");
-    assert!(!result.success, "should fail when local branch already exists");
+    assert!(
+        !result.success,
+        "should fail when local branch already exists"
+    );
 }
 
 #[test]
@@ -619,12 +731,20 @@ fn test_fetch_sync() {
 fn test_remote_branches_sorted_by_date() {
     let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
 
-    // Create branches with different commit times (sequential commits)
+    // Create branches with explicit, distinct commit times. list_remote_branches_phase1
+    // sorts by committer date, so set both author and committer dates.
     run_git(&work_dir, &["checkout", "-b", "older-branch"]);
     let f1 = work_dir.join("older.txt");
     std::fs::write(&f1, "older\n").unwrap();
     run_git(&work_dir, &["add", "older.txt"]);
-    run_git(&work_dir, &["commit", "-m", "Older commit"]);
+    run_git_with_env(
+        &work_dir,
+        &["commit", "-m", "Older commit"],
+        &[
+            ("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z"),
+            ("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z"),
+        ],
+    );
     run_git(&work_dir, &["push", "-u", "origin", "older-branch"]);
 
     run_git(&work_dir, &["checkout", "main"]);
@@ -632,7 +752,14 @@ fn test_remote_branches_sorted_by_date() {
     let f2 = work_dir.join("newer.txt");
     std::fs::write(&f2, "newer\n").unwrap();
     run_git(&work_dir, &["add", "newer.txt"]);
-    run_git(&work_dir, &["commit", "-m", "Newer commit"]);
+    run_git_with_env(
+        &work_dir,
+        &["commit", "-m", "Newer commit"],
+        &[
+            ("GIT_AUTHOR_DATE", "2001-01-02T00:00:00Z"),
+            ("GIT_COMMITTER_DATE", "2001-01-02T00:00:00Z"),
+        ],
+    );
     run_git(&work_dir, &["push", "-u", "origin", "newer-branch"]);
     run_git(&work_dir, &["checkout", "main"]);
 
@@ -641,8 +768,14 @@ fn test_remote_branches_sorted_by_date() {
         .expect("list_remote_branches_phase1 failed");
 
     // Find positions — newer should come before older (sorted newest-first)
-    let newer_pos = remotes.iter().position(|r| r.short_name == "newer-branch").unwrap();
-    let older_pos = remotes.iter().position(|r| r.short_name == "older-branch").unwrap();
+    let newer_pos = remotes
+        .iter()
+        .position(|r| r.short_name == "newer-branch")
+        .unwrap();
+    let older_pos = remotes
+        .iter()
+        .position(|r| r.short_name == "older-branch")
+        .unwrap();
     assert!(
         newer_pos < older_pos,
         "newer-branch (pos {}) should come before older-branch (pos {}) in date-descending sort",
@@ -675,7 +808,7 @@ fn test_remote_branch_squash_merge_detection() {
         .expect("list_remote_branches_phase1 failed");
 
     // Build candidates for squash checker: (full_ref, commit_hash) for pending non-base branches
-    let candidates: Vec<(String, String)> = remotes
+    let candidates: Vec<(String, String, Option<String>)> = remotes
         .iter()
         .filter(|b| b.merge_status == MergeStatus::Pending && !b.is_base)
         .filter_map(|b| {
@@ -683,7 +816,7 @@ fn test_remote_branch_squash_merge_detection() {
             repo.find_reference(&refname)
                 .ok()
                 .and_then(|r| r.peel_to_commit().ok())
-                .map(|c| (b.full_ref.clone(), c.id().to_string()))
+                .map(|c| (b.full_ref.clone(), c.id().to_string(), None))
         })
         .collect();
 
@@ -704,19 +837,65 @@ fn test_remote_branch_squash_merge_detection() {
     let mut remotes = remotes;
     for result in rx {
         if let Some(&idx) = index_map.get(&result.branch_name) {
-            remotes[idx].merge_status = if result.is_squash_merged {
-                MergeStatus::SquashMerged
-            } else {
-                MergeStatus::Unmerged
-            };
+            remotes[idx].merge_status = result.status;
         }
     }
 
-    let squashed = remotes.iter().find(|r| r.short_name == "squash-feature").unwrap();
+    let squashed = remotes
+        .iter()
+        .find(|r| r.short_name == "squash-feature")
+        .unwrap();
     assert_eq!(
         squashed.merge_status,
         MergeStatus::SquashMerged,
         "squash-feature should be detected as SquashMerged on remote"
+    );
+}
+
+#[test]
+fn test_remote_disjoint_branch_detected() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    // A normal branch that shares history with main.
+    run_git(&work_dir, &["checkout", "-b", "normal"]);
+    std::fs::write(work_dir.join("normal.txt"), "n\n").unwrap();
+    run_git(&work_dir, &["add", "normal.txt"]);
+    run_git(&work_dir, &["commit", "-m", "normal commit"]);
+    run_git(&work_dir, &["push", "-u", "origin", "normal"]);
+
+    // An orphan branch: a separate root, so it shares NO history with main.
+    run_git(&work_dir, &["checkout", "--orphan", "disjoint"]);
+    run_git(&work_dir, &["rm", "-rf", "."]);
+    std::fs::write(work_dir.join("disjoint.txt"), "d\n").unwrap();
+    run_git(&work_dir, &["add", "disjoint.txt"]);
+    run_git(&work_dir, &["commit", "-m", "disjoint root"]);
+    run_git(&work_dir, &["push", "-u", "origin", "disjoint"]);
+
+    run_git(&work_dir, &["checkout", "main"]);
+
+    let repo = git2::Repository::open(&work_dir).unwrap();
+    let remotes = branch::list_remote_branches_phase1(&repo, "main")
+        .expect("list_remote_branches_phase1 failed");
+
+    let rx = branch::spawn_remote_enricher(work_dir.clone(), "main".to_string(), remotes);
+    let results: Vec<_> = rx.iter().collect();
+
+    let disjoint = results
+        .iter()
+        .find(|r| r.full_ref == "origin/disjoint")
+        .expect("origin/disjoint should be enriched");
+    assert!(
+        disjoint.disjoint,
+        "orphan branch shares no history with main and must be flagged disjoint"
+    );
+
+    let normal = results
+        .iter()
+        .find(|r| r.full_ref == "origin/normal")
+        .expect("origin/normal should be enriched");
+    assert!(
+        !normal.disjoint,
+        "a branch that shares history with main must not be flagged disjoint"
     );
 }
 
@@ -742,7 +921,7 @@ fn test_wt_status_staged_only() {
 
     let s = status::detect_working_tree_status(&repo);
     assert!(s.has_staged, "should detect staged file");
-    assert!(!s.has_unstaged, "should not detect unstaged changes");
+    assert!(!s.has_modified, "should not detect modified changes");
     assert!(!s.has_untracked, "should not detect untracked files");
 }
 
@@ -756,7 +935,7 @@ fn test_wt_status_unstaged_only() {
 
     let s = status::detect_working_tree_status(&repo);
     assert!(!s.has_staged, "should not detect staged changes");
-    assert!(s.has_unstaged, "should detect unstaged modification");
+    assert!(s.has_modified, "should detect modified file");
     assert!(!s.has_untracked, "should not detect untracked files");
 }
 
@@ -770,7 +949,7 @@ fn test_wt_status_untracked_only() {
 
     let s = status::detect_working_tree_status(&repo);
     assert!(!s.has_staged, "should not detect staged changes");
-    assert!(!s.has_unstaged, "should not detect unstaged changes");
+    assert!(!s.has_modified, "should not detect modified changes");
     assert!(s.has_untracked, "should detect untracked file");
 }
 
@@ -791,9 +970,59 @@ fn test_wt_status_all_three() {
 
     let s = status::detect_working_tree_status(&repo);
     assert!(s.has_staged, "should detect staged file");
-    assert!(s.has_unstaged, "should detect unstaged modification");
+    assert!(s.has_modified, "should detect modified file");
     assert!(s.has_untracked, "should detect untracked file");
     assert!(!s.is_clean());
+}
+
+#[test]
+fn test_worktree_status_reports_modified_not_staged() {
+    // Regression: a tracked file that is modified but NOT staged must report as
+    // `modified`, not `staged`. The old worktree status parser trimmed the
+    // leading (empty) index column out of `git status --porcelain` and misread
+    // the unstaged change as staged. Covers BOTH the main worktree and an
+    // additional worktree, since the enrich path runs once per worktree.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // An additional worktree on its own branch.
+    run_git(dir, &["branch", "wt-mod"]);
+    run_git(dir, &["worktree", "add", ".worktrees/wt-mod", "wt-mod"]);
+
+    // Modify a tracked file (without staging) in BOTH the main dir and the
+    // additional worktree.
+    std::fs::write(dir.join("README.md"), "# Modified, not staged\n").unwrap();
+    std::fs::write(
+        dir.join(".worktrees").join("wt-mod").join("README.md"),
+        "# Modified in additional worktree\n",
+    )
+    .unwrap();
+
+    let worktrees = worktree::list_worktrees(dir);
+    let rx = worktree::enrich_worktrees(worktrees.clone());
+    let mut results: Vec<_> = rx.iter().collect();
+    results.sort_by_key(|r| r.index);
+
+    // The crux of the regression: a modified-not-staged file must classify as
+    // modified, never staged. (We don't assert on has_untracked here: the main
+    // worktree legitimately sees the in-repo `.worktrees/` dir as untracked.)
+    for (idx, wt) in worktrees.iter().enumerate() {
+        let status = &results[idx].wt_status;
+        assert!(
+            status.has_modified,
+            "{:?}: modified-not-staged file should be reported as modified",
+            wt.branch
+        );
+        assert!(
+            !status.has_staged,
+            "{:?}: nothing is staged, so has_staged must be false",
+            wt.branch
+        );
+    }
+
+    if std::env::var_os("GBM_KEEP_TEST_REPOS").is_none() {
+        run_git(dir, &["worktree", "remove", "--force", ".worktrees/wt-mod"]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -814,10 +1043,25 @@ fn test_merge_branch_success() {
 
     let results = operations::merge_branch(dir, "feature-to-merge", "main", false, false);
     assert_eq!(results.len(), 1);
-    assert!(results[0].success, "merge should succeed: {}", results[0].message);
+    assert!(
+        results[0].success,
+        "merge should succeed: {}",
+        results[0].message
+    );
 
     // Verify the feature file is present on main
-    assert!(dir.join("feature.txt").exists(), "feature.txt should be on main after merge");
+    assert!(
+        dir.join("feature.txt").exists(),
+        "feature.txt should be on main after merge"
+    );
+
+    // The operation's contract is to leave HEAD on the base branch.
+    let repo = git2::Repository::open(dir).expect("re-open repo");
+    assert_eq!(
+        repo.head().unwrap().shorthand(),
+        Some("main"),
+        "HEAD should remain on the base branch after merge"
+    );
 }
 
 #[test]
@@ -833,19 +1077,34 @@ fn test_merge_branch_squash_success() {
 
     let results = operations::merge_branch(dir, "feature-squash", "main", true, false);
     assert_eq!(results.len(), 1);
-    assert!(results[0].success, "squash merge should succeed: {}", results[0].message);
+    assert!(
+        results[0].success,
+        "squash merge should succeed: {}",
+        results[0].message
+    );
 
     // The squash content should exist on main
-    assert!(dir.join("squash.txt").exists(), "squash.txt should be on main after squash merge");
+    assert!(
+        dir.join("squash.txt").exists(),
+        "squash.txt should be on main after squash merge"
+    );
 
-    // And main should have a single new commit (not a merge commit)
-    let log = std::process::Command::new("git")
-        .args(["log", "--oneline", "-3"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    let log_str = String::from_utf8_lossy(&log.stdout);
-    assert!(log_str.contains("Squash merge feature-squash"), "should have squash merge commit");
+    // And main should have a single new commit (NOT a merge commit): the squash
+    // commit must have exactly one parent.
+    let repo = git2::Repository::open(dir).expect("re-open repo");
+    let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+    assert!(
+        head_commit
+            .summary()
+            .is_some_and(|s| s.contains("Squash merge feature-squash")),
+        "HEAD should be the squash merge commit, got: {:?}",
+        head_commit.summary()
+    );
+    assert_eq!(
+        head_commit.parent_count(),
+        1,
+        "squash merge must be a single-parent commit, not a merge commit"
+    );
 }
 
 #[test]
@@ -868,14 +1127,27 @@ fn test_merge_branch_conflict_aborts() {
     assert_eq!(results.len(), 1);
     assert!(!results[0].success, "conflicting merge should fail");
 
-    // Verify merge was aborted: repo must not be in mid-merge state
-    let status = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    let status_str = String::from_utf8_lossy(&status.stdout);
-    assert!(!status_str.contains("UU"), "merge should have been aborted, no unresolved conflicts");
+    // Verify merge was aborted cleanly: no conflicts, no half-staged leftovers,
+    // and HEAD restored to the base branch.
+    let repo = git2::Repository::open(dir).expect("re-open repo");
+    let statuses = repo.statuses(None).unwrap();
+    let dirty = statuses.iter().any(|e| {
+        e.status().intersects(
+            git2::Status::CONFLICTED
+                | git2::Status::INDEX_NEW
+                | git2::Status::INDEX_MODIFIED
+                | git2::Status::INDEX_DELETED,
+        )
+    });
+    assert!(
+        !dirty,
+        "merge abort should leave no conflicts or staged leftovers"
+    );
+    assert_eq!(
+        repo.head().unwrap().shorthand(),
+        Some("main"),
+        "HEAD should be back on the base branch after abort"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -902,16 +1174,37 @@ fn test_rebase_branch_success() {
     // Rebase feature onto main (rebase checks out the feature branch internally)
     let results = operations::rebase_branch(dir, "feature-rebase", "main", false);
     assert_eq!(results.len(), 1);
-    assert!(results[0].success, "rebase should succeed: {}", results[0].message);
+    assert!(
+        results[0].success,
+        "rebase should succeed: {}",
+        results[0].message
+    );
 
     // After rebase, feature should be 1 commit ahead of main
     let repo = git2::Repository::open(dir).unwrap();
-    let feature_oid = repo.find_branch("feature-rebase", git2::BranchType::Local)
-        .unwrap().get().peel_to_commit().unwrap().id();
-    let main_oid = repo.find_branch("main", git2::BranchType::Local)
-        .unwrap().get().peel_to_commit().unwrap().id();
-    let (ahead, _behind) = repo.graph_ahead_behind(feature_oid, main_oid).unwrap();
-    assert_eq!(ahead, 1, "feature should be 1 commit ahead of main after rebase");
+    let feature_oid = repo
+        .find_branch("feature-rebase", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .peel_to_commit()
+        .unwrap()
+        .id();
+    let main_oid = repo
+        .find_branch("main", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .peel_to_commit()
+        .unwrap()
+        .id();
+    let (ahead, behind) = repo.graph_ahead_behind(feature_oid, main_oid).unwrap();
+    assert_eq!(
+        ahead, 1,
+        "feature should be 1 commit ahead of main after rebase"
+    );
+    assert_eq!(
+        behind, 0,
+        "feature should be 0 commits behind main after rebase onto it"
+    );
 }
 
 #[test]
@@ -940,13 +1233,32 @@ fn test_rebase_branch_conflict_aborts() {
     assert_eq!(results.len(), 1);
     assert!(!results[0].success, "conflicting rebase should fail");
     assert!(
-        results[0].message.contains("Rebase conflicts") || results[0].message.contains("conflict"),
-        "message should mention conflict: {}", results[0].message
+        results[0].message.contains("Rebase conflict") && results[0].message.contains("aborted"),
+        "message should report the conflict was aborted: {}",
+        results[0].message
     );
 
     // Rebase should be aborted: no ongoing rebase state
     let rebase_head = dir.join(".git").join("REBASE_HEAD");
-    assert!(!rebase_head.exists(), "REBASE_HEAD should not exist after abort");
+    assert!(
+        !rebase_head.exists(),
+        "REBASE_HEAD should not exist after abort"
+    );
+    // And the working tree must be clean — no conflict markers left behind, HEAD
+    // restored to the branch that was being rebased.
+    let repo = git2::Repository::open(dir).unwrap();
+    let statuses = repo.statuses(None).unwrap();
+    assert!(
+        !statuses
+            .iter()
+            .any(|e| e.status().contains(git2::Status::CONFLICTED)),
+        "rebase abort should leave no conflicted files"
+    );
+    assert_eq!(
+        repo.head().unwrap().shorthand(),
+        Some("rebase-conflict"),
+        "HEAD should be restored to the rebased branch after abort"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -964,14 +1276,19 @@ fn test_push_branch() {
     run_git(&work_dir, &["commit", "-m", "Push test commit"]);
     run_git(&work_dir, &["checkout", "main"]);
 
-    let result = operations::push_branch(&work_dir, "push-test");
-    assert!(result.success, "push_branch should succeed: {}", result.message);
+    let result = operations::push_branch(&work_dir, "push-test", &AtomicBool::new(false));
+    assert!(
+        result.success,
+        "push_branch should succeed: {}",
+        result.message
+    );
 
     // Fetch and verify remote has the branch
     run_git(&work_dir, &["fetch", "origin"]);
     let repo = git2::Repository::open(&work_dir).unwrap();
     assert!(
-        repo.find_branch("origin/push-test", git2::BranchType::Remote).is_ok(),
+        repo.find_branch("origin/push-test", git2::BranchType::Remote)
+            .is_ok(),
         "origin/push-test should exist after push"
     );
 }
@@ -984,7 +1301,10 @@ fn test_pull_branch_current() {
     let tmpdir2 = tempfile::tempdir().unwrap();
     let clone2 = tmpdir2.path().join("clone2");
     let remote_dir = work_dir.parent().unwrap().join("remote.git");
-    run_git(tmpdir2.path(), &["clone", remote_dir.to_str().unwrap(), "clone2"]);
+    run_git(
+        tmpdir2.path(),
+        &["clone", remote_dir.to_str().unwrap(), "clone2"],
+    );
     run_git(&clone2, &["config", "user.name", "Other User"]);
     run_git(&clone2, &["config", "user.email", "other@example.com"]);
     std::fs::write(clone2.join("other.txt"), "other commit\n").unwrap();
@@ -993,11 +1313,18 @@ fn test_pull_branch_current() {
     run_git(&clone2, &["push", "origin", "main"]);
 
     // Pull in work_dir (main is current branch)
-    let result = operations::pull_branch(&work_dir, "main", true);
-    assert!(result.success, "pull_branch (current) should succeed: {}", result.message);
+    let result = operations::pull_branch(&work_dir, "main", true, &AtomicBool::new(false));
+    assert!(
+        result.success,
+        "pull_branch (current) should succeed: {}",
+        result.message
+    );
 
     // Verify the new file exists locally
-    assert!(work_dir.join("other.txt").exists(), "pulled file should exist after pull");
+    assert!(
+        work_dir.join("other.txt").exists(),
+        "pulled file should exist after pull"
+    );
 }
 
 #[test]
@@ -1015,7 +1342,10 @@ fn test_pull_branch_non_current() {
     let tmpdir2 = tempfile::tempdir().unwrap();
     let clone2 = tmpdir2.path().join("clone2");
     let remote_dir = work_dir.parent().unwrap().join("remote.git");
-    run_git(tmpdir2.path(), &["clone", remote_dir.to_str().unwrap(), "clone2"]);
+    run_git(
+        tmpdir2.path(),
+        &["clone", remote_dir.to_str().unwrap(), "clone2"],
+    );
     run_git(&clone2, &["config", "user.name", "Other User"]);
     run_git(&clone2, &["config", "user.email", "other@example.com"]);
     run_git(&clone2, &["checkout", "pull-non-current"]);
@@ -1028,13 +1358,27 @@ fn test_pull_branch_non_current() {
     run_git(&work_dir, &["fetch", "origin"]);
     run_git(&work_dir, &["checkout", "main"]);
 
-    let result = operations::pull_branch(&work_dir, "pull-non-current", false);
-    assert!(result.success, "pull_branch (non-current) should succeed: {}", result.message);
+    let result = operations::pull_branch(
+        &work_dir,
+        "pull-non-current",
+        false,
+        &AtomicBool::new(false),
+    );
+    assert!(
+        result.success,
+        "pull_branch (non-current) should succeed: {}",
+        result.message
+    );
 
     // The local branch tip should now be at "Extra commit"
     let repo = git2::Repository::open(&work_dir).unwrap();
-    let branch_oid = repo.find_branch("pull-non-current", git2::BranchType::Local)
-        .unwrap().get().peel_to_commit().unwrap().id();
+    let branch_oid = repo
+        .find_branch("pull-non-current", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .peel_to_commit()
+        .unwrap()
+        .id();
     let commit = repo.find_commit(branch_oid).unwrap();
     assert_eq!(
         commit.summary().unwrap_or(""),
@@ -1058,7 +1402,10 @@ fn test_fast_forward_branch() {
     let tmpdir2 = tempfile::tempdir().unwrap();
     let clone2 = tmpdir2.path().join("clone2");
     let remote_dir = work_dir.parent().unwrap().join("remote.git");
-    run_git(tmpdir2.path(), &["clone", remote_dir.to_str().unwrap(), "clone2"]);
+    run_git(
+        tmpdir2.path(),
+        &["clone", remote_dir.to_str().unwrap(), "clone2"],
+    );
     run_git(&clone2, &["config", "user.name", "Other User"]);
     run_git(&clone2, &["config", "user.email", "other@example.com"]);
     run_git(&clone2, &["checkout", "ff-branch"]);
@@ -1071,13 +1418,21 @@ fn test_fast_forward_branch() {
     run_git(&work_dir, &["checkout", "main"]);
 
     // fast_forward fetches origin/ff-branch:ff-branch
-    let result = operations::fast_forward(&work_dir, "ff-branch");
-    assert!(result.success, "fast_forward should succeed: {}", result.message);
+    let result = operations::fast_forward(&work_dir, "ff-branch", &AtomicBool::new(false));
+    assert!(
+        result.success,
+        "fast_forward should succeed: {}",
+        result.message
+    );
 
     // Verify the local branch was advanced
     let repo = git2::Repository::open(&work_dir).unwrap();
-    let commit = repo.find_branch("ff-branch", git2::BranchType::Local)
-        .unwrap().get().peel_to_commit().unwrap();
+    let commit = repo
+        .find_branch("ff-branch", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .peel_to_commit()
+        .unwrap();
     assert_eq!(
         commit.summary().unwrap_or(""),
         "FF commit 2",
@@ -1105,17 +1460,24 @@ fn test_fetch_prune_removes_stale_remote() {
     // Confirm origin/prune-me is still in local tracking refs before pruning
     let repo = git2::Repository::open(&work_dir).unwrap();
     assert!(
-        repo.find_branch("origin/prune-me", git2::BranchType::Remote).is_ok(),
+        repo.find_branch("origin/prune-me", git2::BranchType::Remote)
+            .is_ok(),
         "origin/prune-me should still exist in local refs before prune"
     );
 
-    let result = operations::fetch_prune(&work_dir);
-    assert!(result.success, "fetch_prune should succeed: {}", result.message);
+    let result = operations::fetch_prune(&work_dir, &AtomicBool::new(false));
+    assert!(
+        result.success,
+        "fetch_prune should succeed: {}",
+        result.message
+    );
 
     // After prune, stale tracking ref should be gone
     let repo2 = git2::Repository::open(&work_dir).unwrap();
     assert!(
-        repo2.find_branch("origin/prune-me", git2::BranchType::Remote).is_err(),
+        repo2
+            .find_branch("origin/prune-me", git2::BranchType::Remote)
+            .is_err(),
         "origin/prune-me should be removed after fetch --prune"
     );
 }
@@ -1133,27 +1495,40 @@ fn test_delete_remotes_batch_success() {
         run_git(&work_dir, &["checkout", "-b", branch_name]);
         std::fs::write(work_dir.join(format!("{}.txt", branch_name)), "content\n").unwrap();
         run_git(&work_dir, &["add", &format!("{}.txt", branch_name)]);
-        run_git(&work_dir, &["commit", "-m", &format!("Add {}", branch_name)]);
+        run_git(
+            &work_dir,
+            &["commit", "-m", &format!("Add {}", branch_name)],
+        );
         run_git(&work_dir, &["push", "-u", "origin", branch_name]);
         run_git(&work_dir, &["checkout", "main"]);
     }
 
     let names: Vec<String> = vec!["batch-del-1".to_string(), "batch-del-2".to_string()];
-    let results = operations::delete_remotes_batch(&work_dir, &names);
+    let results = operations::delete_remotes_batch(&work_dir, &names, &AtomicBool::new(false));
 
     assert_eq!(results.len(), 2);
-    assert!(results[0].success, "first remote delete should succeed: {}", results[0].message);
-    assert!(results[1].success, "second remote delete should succeed: {}", results[1].message);
+    assert!(
+        results[0].success,
+        "first remote delete should succeed: {}",
+        results[0].message
+    );
+    assert!(
+        results[1].success,
+        "second remote delete should succeed: {}",
+        results[1].message
+    );
 
     // Fetch to sync tracking refs, then verify branches are gone
     run_git(&work_dir, &["fetch", "--prune"]);
     let repo = git2::Repository::open(&work_dir).unwrap();
     assert!(
-        repo.find_branch("origin/batch-del-1", git2::BranchType::Remote).is_err(),
+        repo.find_branch("origin/batch-del-1", git2::BranchType::Remote)
+            .is_err(),
         "origin/batch-del-1 should be deleted"
     );
     assert!(
-        repo.find_branch("origin/batch-del-2", git2::BranchType::Remote).is_err(),
+        repo.find_branch("origin/batch-del-2", git2::BranchType::Remote)
+            .is_err(),
         "origin/batch-del-2 should be deleted"
     );
 }
@@ -1163,8 +1538,11 @@ fn test_delete_remotes_batch_empty() {
     let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
 
     // Empty input should return empty results immediately (no git command run)
-    let results = operations::delete_remotes_batch(&work_dir, &[]);
-    assert!(results.is_empty(), "empty input should produce empty results");
+    let results = operations::delete_remotes_batch(&work_dir, &[], &AtomicBool::new(false));
+    assert!(
+        results.is_empty(),
+        "empty input should produce empty results"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1179,12 +1557,26 @@ fn test_create_worktree_simple() {
     run_git(dir, &["branch", "wt-feature"]);
 
     let result = operations::create_worktree(dir, "wt-feature");
-    assert!(result.success, "create_worktree should succeed: {}", result.message);
+    assert!(
+        result.success,
+        "create_worktree should succeed: {}",
+        result.message
+    );
 
     let wt_path = dir.join(".worktrees").join("wt-feature");
     assert!(wt_path.exists(), ".worktrees/wt-feature should be created");
     // A worktree directory contains a .git file (not a directory like the main repo)
-    assert!(wt_path.join(".git").exists(), "worktree directory should be a valid git working tree");
+    assert!(
+        wt_path.join(".git").exists(),
+        "worktree directory should be a valid git working tree"
+    );
+    // It must be checked out on the requested branch, not left detached.
+    let wts = worktree::list_worktrees(dir);
+    assert!(
+        wts.iter()
+            .any(|w| w.branch.as_deref() == Some("wt-feature")),
+        "worktree should be checked out on wt-feature: {wts:?}"
+    );
 }
 
 #[test]
@@ -1196,10 +1588,32 @@ fn test_create_worktree_sanitizes_slash() {
     run_git(dir, &["branch", "feature/slash-test"]);
 
     let result = operations::create_worktree(dir, "feature/slash-test");
-    assert!(result.success, "create_worktree with slash should succeed: {}", result.message);
+    assert!(
+        result.success,
+        "create_worktree with slash should succeed: {}",
+        result.message
+    );
 
     let wt_path = dir.join(".worktrees").join("feature-slash-test");
-    assert!(wt_path.exists(), ".worktrees/feature-slash-test should be created (slash → dash)");
+    assert!(
+        wt_path.exists(),
+        ".worktrees/feature-slash-test should be created (slash → dash)"
+    );
+    // The slash must be sanitized to a dash, NOT create a nested directory.
+    assert!(
+        !dir.join(".worktrees")
+            .join("feature")
+            .join("slash-test")
+            .exists(),
+        "slash should be replaced with a dash, not create nested dirs"
+    );
+    // And the worktree is checked out on the real (slashed) branch name.
+    let wts = worktree::list_worktrees(dir);
+    assert!(
+        wts.iter()
+            .any(|w| w.branch.as_deref() == Some("feature/slash-test")),
+        "worktree should be on feature/slash-test: {wts:?}"
+    );
 }
 
 #[test]
@@ -1208,14 +1622,30 @@ fn test_remove_worktree_clean() {
     let dir = tmpdir.path();
 
     run_git(dir, &["branch", "wt-remove"]);
-    run_git(dir, &["worktree", "add", ".worktrees/wt-remove", "wt-remove"]);
+    run_git(
+        dir,
+        &["worktree", "add", ".worktrees/wt-remove", "wt-remove"],
+    );
 
     let wt_path = dir.join(".worktrees").join("wt-remove");
     assert!(wt_path.exists(), "worktree should exist before removal");
 
     let result = operations::remove_worktree(dir, &wt_path);
-    assert!(result.success, "remove_worktree should succeed on clean worktree: {}", result.message);
+    assert!(
+        result.success,
+        "remove_worktree should succeed on clean worktree: {}",
+        result.message
+    );
     assert!(!wt_path.exists(), "worktree directory should be removed");
+    // It must also be deregistered from git's worktree list, not just unlinked
+    // on disk — only the main worktree should remain.
+    let wts = worktree::list_worktrees(dir);
+    assert_eq!(
+        wts.len(),
+        1,
+        "only the main worktree should remain: {wts:?}"
+    );
+    assert!(wts[0].is_main, "the remaining worktree is the main one");
 }
 
 #[test]
@@ -1228,16 +1658,28 @@ fn test_force_remove_worktree_dirty() {
 
     let wt_path = dir.join(".worktrees").join("wt-dirty");
 
-    // Create an uncommitted change in the worktree — regular remove should fail
-    std::fs::write(wt_path.join("dirty.txt"), "uncommitted change\n").unwrap();
+    // Modify a TRACKED file in the worktree. `git worktree remove` reliably
+    // refuses on tracked-file modifications across git versions; an untracked
+    // file alone is not a dependable refusal trigger.
+    std::fs::write(wt_path.join("README.md"), "# Modified in worktree\n").unwrap();
 
     let result = operations::remove_worktree(dir, &wt_path);
-    assert!(!result.success, "remove_worktree should fail on dirty worktree");
+    assert!(
+        !result.success,
+        "remove_worktree should fail on dirty worktree"
+    );
 
     // Force remove should succeed regardless
     let result = operations::force_remove_worktree(dir, &wt_path);
-    assert!(result.success, "force_remove_worktree should succeed even when dirty: {}", result.message);
-    assert!(!wt_path.exists(), "worktree directory should be removed after force-remove");
+    assert!(
+        result.success,
+        "force_remove_worktree should succeed even when dirty: {}",
+        result.message
+    );
+    assert!(
+        !wt_path.exists(),
+        "worktree directory should be removed after force-remove"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1253,9 +1695,20 @@ fn test_list_worktrees_main_only() {
     assert_eq!(worktrees.len(), 1, "should have exactly 1 worktree (main)");
 
     let main_wt = &worktrees[0];
-    assert!(main_wt.is_main, "first worktree should be the main worktree");
-    assert_eq!(main_wt.branch.as_deref(), Some("main"), "main worktree should be on 'main'");
-    assert_eq!(main_wt.commit_hash.len(), 7, "commit_hash should be 7 chars");
+    assert!(
+        main_wt.is_main,
+        "first worktree should be the main worktree"
+    );
+    assert_eq!(
+        main_wt.branch.as_deref(),
+        Some("main"),
+        "main worktree should be on 'main'"
+    );
+    assert_eq!(
+        main_wt.commit_hash.len(),
+        7,
+        "commit_hash should be 7 chars"
+    );
 }
 
 #[test]
@@ -1264,15 +1717,24 @@ fn test_list_worktrees_with_additional() {
     let dir = tmpdir.path();
 
     run_git(dir, &["branch", "wt-list-test"]);
-    run_git(dir, &["worktree", "add", ".worktrees/wt-list-test", "wt-list-test"]);
+    run_git(
+        dir,
+        &["worktree", "add", ".worktrees/wt-list-test", "wt-list-test"],
+    );
 
     let worktrees = worktree::list_worktrees(dir);
     assert_eq!(worktrees.len(), 2, "should have 2 worktrees");
 
-    let main_wt = worktrees.iter().find(|w| w.is_main).expect("should have a main worktree");
+    let main_wt = worktrees
+        .iter()
+        .find(|w| w.is_main)
+        .expect("should have a main worktree");
     assert_eq!(main_wt.branch.as_deref(), Some("main"));
 
-    let extra_wt = worktrees.iter().find(|w| !w.is_main).expect("should have a non-main worktree");
+    let extra_wt = worktrees
+        .iter()
+        .find(|w| !w.is_main)
+        .expect("should have a non-main worktree");
     assert_eq!(extra_wt.branch.as_deref(), Some("wt-list-test"));
 
     // Clean up before tmpdir drops
@@ -1292,5 +1754,840 @@ fn test_enrich_worktrees_clean() {
 
     assert_eq!(results.len(), 1, "should receive one enrichment result");
     assert_eq!(results[0].index, 0);
-    assert!(results[0].wt_status.is_clean(), "clean repo worktree should report clean status");
+    assert!(
+        results[0].wt_status.is_clean(),
+        "clean repo worktree should report clean status"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Additional rewrite-specific tests (tag operations, phase1, direct merge detection)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_list_branches_phase1() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/a"]);
+    std::fs::write(dir.join("a.txt"), "a").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "feature a"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let branches = branch::list_branches_phase1(&repo, "main").unwrap();
+    assert!(branches.len() >= 2);
+    let main_branch = branches.iter().find(|b| b.name == "main").unwrap();
+    assert!(main_branch.is_base);
+    let feature = branches.iter().find(|b| b.name == "feature/a").unwrap();
+    assert!(!feature.is_base);
+    // Phase 1 marks unmerged non-pinned as Pending
+    assert_eq!(feature.merge_status, MergeStatus::Pending);
+}
+
+#[test]
+fn test_create_and_list_worktree() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["checkout", "-b", "feature/wt-test"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let result = operations::create_worktree(dir, "feature/wt-test");
+    assert!(result.success);
+
+    let worktrees = worktree::list_worktrees(dir);
+    assert_eq!(worktrees.len(), 2);
+    let wt = worktrees.iter().find(|w| !w.is_main).unwrap();
+    assert_eq!(wt.branch.as_deref(), Some("feature/wt-test"));
+}
+
+#[test]
+fn test_list_tags_empty() {
+    let (_tmpdir, repo) = setup_test_repo();
+    let result = tags::list_tags(&repo);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_list_tags_lightweight() {
+    let (tmpdir, repo) = setup_test_repo();
+    run_git(tmpdir.path(), &["tag", "v0.1"]);
+    let result = tags::list_tags(&repo);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].name, "v0.1");
+    assert!(!result[0].is_annotated);
+    assert!(result[0].message.is_none());
+}
+
+#[test]
+fn test_list_tags_with_annotated() {
+    let (tmpdir, repo) = setup_test_repo();
+    run_git(tmpdir.path(), &["tag", "-a", "v1.0", "-m", "Release 1.0"]);
+    let result = tags::list_tags(&repo);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].name, "v1.0");
+    assert!(result[0].is_annotated);
+    assert_eq!(result[0].message.as_deref(), Some("Release 1.0"));
+}
+
+#[test]
+fn test_delete_tag() {
+    let (tmpdir, repo) = setup_test_repo();
+    run_git(tmpdir.path(), &["tag", "v1.0"]);
+    let result = tags::delete_tag(&repo, "v1.0");
+    assert!(result.success);
+    let remaining = tags::list_tags(&repo);
+    assert!(remaining.is_empty());
+}
+
+#[test]
+fn test_delete_tags_batch() {
+    let (tmpdir, repo) = setup_test_repo();
+    run_git(tmpdir.path(), &["tag", "v1.0"]);
+    run_git(tmpdir.path(), &["tag", "v2.0"]);
+    let names = vec!["v1.0".to_string(), "v2.0".to_string()];
+    let results = tags::delete_tags_batch(&repo, &names);
+    assert!(results.iter().all(|r| r.success));
+    let remaining = tags::list_tags(&repo);
+    assert!(remaining.is_empty());
+}
+
+#[test]
+fn test_is_squash_merged_direct() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/squashed"]);
+    std::fs::write(dir.join("squash.txt"), "squash content").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "squash commit"]);
+    run_git(dir, &["checkout", "main"]);
+
+    run_git(dir, &["merge", "--squash", "feature/squashed"]);
+    run_git(dir, &["commit", "-m", "squashed feature"]);
+
+    assert!(merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/squashed",
+        None,
+        None
+    ));
+}
+
+#[test]
+fn test_is_squash_merged_with_precomputed_merge_base() {
+    // The fast path: a precomputed merge base is supplied, so is_squash_merged must
+    // not need to derive it via `git merge-base` and still detect the squash.
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // HEAD is the initial commit; it becomes the merge base after we branch.
+    let merge_base = repo
+        .head()
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id()
+        .to_string();
+
+    run_git(dir, &["checkout", "-b", "feature/squashed"]);
+    std::fs::write(dir.join("squash.txt"), "squash content").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "squash commit"]);
+    run_git(dir, &["checkout", "main"]);
+
+    run_git(dir, &["merge", "--squash", "feature/squashed"]);
+    run_git(dir, &["commit", "-m", "squashed feature"]);
+
+    assert!(merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/squashed",
+        None,
+        Some(&merge_base),
+    ));
+}
+
+#[test]
+fn test_is_not_squash_merged_direct() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/unmerged"]);
+    std::fs::write(dir.join("unmerged.txt"), "unmerged").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "unmerged commit"]);
+    run_git(dir, &["checkout", "main"]);
+
+    assert!(!merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/unmerged",
+        None,
+        None
+    ));
+}
+
+#[test]
+fn dump_branches_basic() {
+    let (tmp, _repo) = setup_test_repo();
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--branches",
+            "--color=never",
+        ])
+        .output()
+        .expect("failed to run binary");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.starts_with("base: main"), "got: {s:?}");
+    assert!(s.contains("Branch"), "header missing: {s:?}");
+    assert!(s.contains("main"), "base branch row missing: {s:?}");
+    assert!(!s.contains('\x1b'), "--color=never must be plain: {s:?}");
+}
+
+#[test]
+fn dump_rejects_two_view_flags() {
+    let (tmp, _repo) = setup_test_repo();
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--branches",
+            "--tags",
+        ])
+        .output()
+        .expect("failed to run binary");
+    assert!(
+        !out.status.success(),
+        "two view flags must be a usage error"
+    );
+}
+
+#[test]
+fn dump_list_is_branches_alias() {
+    let (tmp, _repo) = setup_test_repo();
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--list",
+            "--color=never",
+        ])
+        .output()
+        .expect("failed to run binary");
+    assert!(out.status.success());
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.starts_with("base: main"), "got: {s:?}");
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        err.contains("deprecated"),
+        "expected --list deprecation note on stderr, got: {err:?}"
+    );
+}
+
+#[test]
+fn dump_remotes_basic() {
+    let (tmp, _repo) = setup_test_repo();
+    // A bare "remote" with one branch, fetched into the test repo.
+    let remote = tempfile::tempdir().unwrap();
+    run_git(remote.path(), &["init", "--bare", "-b", "main"]);
+    run_git(
+        tmp.path(),
+        &["remote", "add", "origin", remote.path().to_str().unwrap()],
+    );
+    run_git(tmp.path(), &["push", "origin", "main"]);
+    run_git(tmp.path(), &["fetch", "origin"]);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--remotes",
+            "--color=never",
+        ])
+        .output()
+        .expect("failed to run binary");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("Name"), "header missing: {s:?}");
+    assert!(s.contains("origin/main"), "remote row missing: {s:?}");
+}
+
+#[test]
+fn dump_tags_basic() {
+    let (tmp, _repo) = setup_test_repo();
+    run_git(tmp.path(), &["tag", "-a", "v1.0", "-m", "release one"]);
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--tags",
+            "--color=never",
+        ])
+        .output()
+        .expect("failed to run binary");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("Name"), "header missing: {s:?}");
+    assert!(s.contains("v1.0"), "tag row missing: {s:?}");
+}
+
+/// The Tags "Message" column is the last column but is emitted LEFT-aligned.
+/// Data-cell alignment must come from the rendered Line, not the positional
+/// "last column" heuristic (which would right-align it). With a message
+/// shorter than the column width (10), a right-aligned cell would pad the
+/// message with leading spaces; a left-aligned cell places it directly after
+/// the two-space inter-column gap.
+#[test]
+fn dump_tags_message_is_left_aligned() {
+    let (tmp, _repo) = setup_test_repo();
+    // Message "rel one" (7 chars) is shorter than the Message column width (10),
+    // so alignment padding is observable (vs. truncated for longer messages).
+    run_git(tmp.path(), &["tag", "-a", "v1.0", "-m", "rel one"]);
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--tags",
+            "--color=never",
+        ])
+        .output()
+        .expect("failed to run binary");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("rel one"), "tag message missing: {s:?}");
+    // Left-aligned: message follows the 2-space inter-column gap directly.
+    assert!(
+        s.contains("  rel one"),
+        "message should sit right after the inter-column gap: {s:?}"
+    );
+    // Would FAIL under the old positional right-align: that pads the 7-char
+    // message to width 10, yielding 3 leading spaces (2-space gap + 3 pad).
+    assert!(
+        !s.contains("   rel one"),
+        "message must not be right-aligned (no leading pad): {s:?}"
+    );
+}
+
+/// The `--remotes` dump must run the remote squash-merge pass (mirroring the
+/// TUI's Remotes tab), so a remote branch whose content was squash-merged into
+/// the base shows the SquashMerged indicator rather than Unmerged.
+#[test]
+fn dump_remotes_detects_squash_merged() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    // Feature branch with unique content, pushed to the remote.
+    run_git(&work_dir, &["checkout", "-b", "squash-feature"]);
+    std::fs::write(
+        work_dir.join("squash-feature.txt"),
+        "squash feature content\n",
+    )
+    .unwrap();
+    run_git(&work_dir, &["add", "squash-feature.txt"]);
+    run_git(&work_dir, &["commit", "-m", "Squash feature commit"]);
+    run_git(&work_dir, &["push", "-u", "origin", "squash-feature"]);
+
+    // Squash-merge into main (no merge commit) and push.
+    run_git(&work_dir, &["checkout", "main"]);
+    run_git(&work_dir, &["merge", "--squash", "squash-feature"]);
+    run_git(&work_dir, &["commit", "-m", "Squash merge squash-feature"]);
+    run_git(&work_dir, &["push", "origin", "main"]);
+
+    // ascii symbols make the SquashMerged Status cell deterministic:
+    // "squash-merged ~" (status_squash_merged = "~", full text at wide width).
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args([
+            "--repo",
+            work_dir.to_str().unwrap(),
+            "--remotes",
+            "--symbols",
+            "ascii",
+            "--color=never",
+        ])
+        .output()
+        .expect("failed to run binary");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        s.contains("origin/squash-feature"),
+        "remote row missing: {s:?}"
+    );
+    // The squash-feature row must carry the SquashMerged indicator, not Unmerged.
+    let row = s
+        .lines()
+        .find(|l| l.contains("origin/squash-feature"))
+        .unwrap_or_else(|| panic!("squash-feature row not found: {s:?}"));
+    assert!(
+        row.contains("squash-merged ~"),
+        "squash-feature should show SquashMerged in --remotes dump, got row: {row:?}\nfull: {s:?}"
+    );
+    assert!(
+        !row.contains("unmerged -"),
+        "squash-feature must not show Unmerged: {row:?}"
+    );
+}
+
+#[test]
+fn dump_worktrees_basic() {
+    let (tmp, _repo) = setup_test_repo();
+    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+        .args([
+            "--repo",
+            tmp.path().to_str().unwrap(),
+            "--worktrees",
+            "--color=never",
+        ])
+        .output()
+        .expect("failed to run binary");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("Path"), "header missing: {s:?}");
+    // The main working tree is always listed. The dump auto-sizes the first
+    // (Path) column to its content, so the full canonicalized path appears.
+    let canonical = tmp.path().canonicalize().unwrap();
+    let canonical_str = canonical.to_str().unwrap();
+    assert!(
+        s.contains(canonical_str),
+        "main worktree full path missing: {s:?}\nexpected: {canonical_str}"
+    );
+    // The main worktree is on the base branch, so its Merge cell must be blank
+    // (a branch can't be merged into itself). This guards the render bug where
+    // the base worktree wrongly showed "unmerged".
+    let main_row = s
+        .lines()
+        .find(|l| l.contains(canonical_str))
+        .expect("main worktree row");
+    assert!(
+        !main_row.contains("unmerged"),
+        "base worktree row must not show a merge status: {main_row:?}"
+    );
+}
+
+#[test]
+fn test_cache_audit_detects_and_fixes_stale_status() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // An unmerged feature branch with its own commit.
+    run_git(dir, &["checkout", "-b", "feature/wip"]);
+    std::fs::write(dir.join("wip.txt"), "work in progress\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "WIP commit"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let repo = git2::Repository::open(dir).expect("re-open repo");
+    let tip = repo
+        .find_branch("feature/wip", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .target()
+        .unwrap()
+        .to_string();
+
+    // Poison the cache: claim the unmerged branch is permanently squash-merged,
+    // and add an orphan row for a branch that does not exist.
+    let cache_path = dir.join("audit-cache.sqlite3");
+    {
+        let mut c = cache::BranchCache::load_from_path(cache_path.clone());
+        c.insert("feature/wip", &MergeStatus::SquashMerged, &tip);
+        c.insert("feature/ghost", &MergeStatus::Merged, "deadbeef");
+        c.save();
+    }
+
+    let cache = cache::BranchCache::load_from_path(cache_path.clone());
+    let cancel = AtomicBool::new(false);
+    let audit = diagnostics::audit_cache(&repo, dir, "main", &cache, &cancel, |_, _, _| {});
+
+    // Exactly one merge-status discrepancy for the poisoned branch.
+    let status_discrepancies: Vec<_> = audit
+        .discrepancies
+        .iter()
+        .filter(|d| d.kind == DiagKind::MergeStatus)
+        .collect();
+    assert_eq!(
+        status_discrepancies.len(),
+        1,
+        "expected one stale merge-status entry, got {:?}",
+        audit.discrepancies
+    );
+    let d = status_discrepancies[0];
+    assert_eq!(d.branch, "feature/wip");
+    assert_eq!(d.cached, "squash-merged");
+    assert_eq!(d.actual, "unmerged");
+    assert_eq!(audit.merge_status.mismatched, 1);
+
+    // The deleted branch surfaces as an orphan.
+    assert!(
+        audit.orphans.contains(&"feature/ghost".to_string()),
+        "expected feature/ghost orphan, got {:?}",
+        audit.orphans
+    );
+
+    // Apply the fix, then confirm the cache now reflects reality.
+    let mut cache = cache::BranchCache::load_from_path(cache_path.clone());
+    diagnostics::apply_fix(&mut cache, &audit);
+
+    let fixed = cache::BranchCache::load_from_path(cache_path.clone());
+    assert_eq!(
+        fixed.lookup("feature/wip", &tip),
+        Some(MergeStatus::Unmerged),
+        "stale status should be corrected to unmerged"
+    );
+    assert_eq!(
+        fixed.lookup("feature/ghost", "deadbeef"),
+        None,
+        "orphan entry should be removed"
+    );
+
+    // A re-audit now reports a clean cache.
+    let clean = diagnostics::audit_cache(&repo, dir, "main", &fixed, &cancel, |_, _, _| {});
+    assert!(
+        clean.is_clean(),
+        "cache should be clean after fix, got {clean:?}"
+    );
+}
+
+#[test]
+fn test_cache_audit_merge_base_not_false_positive() {
+    // Regression: merge-base entries are stored as short hashes via a bounded
+    // walk. The audit must recompute truth the same way, or every entry would
+    // appear mismatched (cached short hash vs full unbounded merge_base).
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // An unmerged feature branch...
+    run_git(dir, &["checkout", "-b", "feature/x"]);
+    std::fs::write(dir.join("x.txt"), "x\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "x commit"]);
+    run_git(dir, &["checkout", "main"]);
+    // ...and advance main so the merge base is a real ancestor, not the tip.
+    std::fs::write(dir.join("m.txt"), "m\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "main commit"]);
+
+    let repo = git2::Repository::open(dir).unwrap();
+    let base_tip = repo
+        .find_branch("main", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .target()
+        .unwrap();
+    let reachable = merge_detection::build_reachable_set_from_repo(&repo, "main");
+
+    // Fill the merge-base cache exactly as the app does.
+    let cache_path = dir.join("mb-cache.sqlite3");
+    {
+        let mut branches = branch::list_branches_phase1(&repo, "main").unwrap();
+        // phase1 already fills merge bases; clear them so the *cached* filler
+        // (the path that actually populates the merge-base cache) runs.
+        for b in &mut branches {
+            b.merge_base_commit = None;
+        }
+        let mut cache = cache::BranchCache::load_from_path(cache_path.clone());
+        branch::fill_merge_base_commits_cached(
+            &repo,
+            &mut branches,
+            &reachable.local,
+            base_tip,
+            &mut cache,
+        );
+        cache.save();
+    }
+
+    let cache = cache::BranchCache::load_from_path(cache_path);
+    let cancel = AtomicBool::new(false);
+    let audit = diagnostics::audit_cache(&repo, dir, "main", &cache, &cancel, |_, _, _| {});
+
+    assert!(
+        audit.merge_base.verified >= 1,
+        "expected at least one merge-base entry to be checked: {audit:?}"
+    );
+    assert_eq!(
+        audit.merge_base.mismatched, 0,
+        "merge-base entries must not false-positive: {:?}",
+        audit.discrepancies
+    );
+}
+
+#[test]
+fn test_cache_audit_skipped_counts_for_uncached_branches() {
+    // Regression test: verify_merge_status must count ALL branches, not just
+    // those with a cache row. Base branch, current branch, and regular-merged
+    // branches never get a cache row → were silently dropped before this fix.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // Create a feature branch that will be regular-merged into main.
+    run_git(dir, &["checkout", "-b", "feature/merged-normal"]);
+    std::fs::write(dir.join("feat.txt"), "feature\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "feature commit"]);
+    run_git(dir, &["checkout", "main"]);
+    run_git(
+        dir,
+        &[
+            "merge",
+            "--no-ff",
+            "feature/merged-normal",
+            "-m",
+            "Merge feature",
+        ],
+    );
+
+    // Create an unmerged branch with a cache row (squash-checked as unmerged).
+    run_git(dir, &["checkout", "-b", "feature/unmerged"]);
+    std::fs::write(dir.join("unmerged.txt"), "wip\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "unmerged commit"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let repo = git2::Repository::open(dir).expect("re-open repo");
+    let unmerged_tip = repo
+        .find_branch("feature/unmerged", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .target()
+        .unwrap()
+        .to_string();
+
+    // Only cache the unmerged branch — base and merged-normal have no cache row.
+    let cache_path = dir.join("skipped-test.sqlite3");
+    {
+        let mut c = cache::BranchCache::load_from_path(cache_path.clone());
+        c.insert("feature/unmerged", &MergeStatus::Unmerged, &unmerged_tip);
+        c.save();
+    }
+
+    let cache = cache::BranchCache::load_from_path(cache_path);
+    let cancel = AtomicBool::new(false);
+    let audit = diagnostics::audit_cache(&repo, dir, "main", &cache, &cancel, |_, _, _| {});
+
+    // The cached unmerged branch must be verified (truth = Unmerged, cache = Unmerged).
+    assert_eq!(
+        audit.merge_status.verified, 1,
+        "the cached unmerged branch should be verified: {audit:?}"
+    );
+
+    // No discrepancies — the cached entry is correct.
+    assert_eq!(
+        audit.discrepancies.len(),
+        0,
+        "no discrepancies expected: {:?}",
+        audit.discrepancies
+    );
+
+    // Two branches have no cache row vs cached: main (base+current) and
+    // feature/merged-normal (regular-merged, never cached) are skipped.
+    assert_eq!(
+        audit.merge_status.skipped, 2,
+        "expected 2 skipped (main=base, merged-normal=no cached status): {audit:?}"
+    );
+
+    assert!(
+        audit.merge_status.skip_reasons.contains(&"base branch"),
+        "expected 'base branch' reason: {:?}",
+        audit.merge_status.skip_reasons
+    );
+    assert!(
+        audit
+            .merge_status
+            .skip_reasons
+            .contains(&"no cached status"),
+        "expected 'no cached status' reason: {:?}",
+        audit.merge_status.skip_reasons
+    );
+}
+
+/// Live, end-to-end test: build one repo containing every merge scenario, give
+/// each feature branch its own worktree, and assert that a worktree's Merge
+/// status matches its branch's. Also covers clean vs dirty working trees. The
+/// temp repo lives in the OS temp dir and is deleted on pass, fail, or panic
+/// (TempDir's Drop runs during unwind).
+#[test]
+fn test_worktree_merge_status_from_branches() {
+    let tmpdir = TestDir::new(tempfile::tempdir().expect("failed to create tempdir"));
+    let dir = tmpdir.path();
+
+    // --- base repo on main with an initial README.md commit ---
+    run_git(dir, &["init", "-b", "main"]);
+    run_git(dir, &["config", "user.name", "Test User"]);
+    run_git(dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.join("README.md"), "# Test Repo\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "Initial commit"]);
+
+    // --- regular-merged branch (non-ff so a merge commit is recorded) ---
+    run_git(dir, &["checkout", "-b", "feat-merged"]);
+    std::fs::write(dir.join("feature.txt"), "feature\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "feat-merged work"]);
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("main-change.txt"), "main\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "main commit"]);
+    run_git(dir, &["merge", "feat-merged", "-m", "Merge feat-merged"]);
+
+    // --- squash-merged branch: 3 commits each editing README.md, then
+    //     `git merge --squash` + commit on main; branch left intact ---
+    run_git(dir, &["checkout", "-b", "feat-squashed"]);
+    for i in 1..=3 {
+        std::fs::write(
+            dir.join("README.md"),
+            format!("# Test Repo\nsquash line {i}\n"),
+        )
+        .unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", &format!("squash work {i}")]);
+    }
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feat-squashed"]);
+    run_git(dir, &["commit", "-m", "squash merge feat-squashed"]);
+
+    // --- unmerged branch ---
+    run_git(dir, &["checkout", "-b", "feat-unmerged"]);
+    std::fs::write(dir.join("wip.txt"), "wip\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "wip"]);
+    run_git(dir, &["checkout", "main"]);
+
+    // --- one worktree per feature branch (main dir stays on main) ---
+    run_git(
+        dir,
+        &["worktree", "add", ".worktrees/merged", "feat-merged"],
+    );
+    run_git(
+        dir,
+        &["worktree", "add", ".worktrees/squashed", "feat-squashed"],
+    );
+    run_git(
+        dir,
+        &["worktree", "add", ".worktrees/unmerged", "feat-unmerged"],
+    );
+
+    // dirty the unmerged worktree (untracked file); leave the others clean
+    std::fs::write(dir.join(".worktrees/unmerged/dirty.txt"), "x\n").unwrap();
+
+    // --- exercise the real library APIs in production order ---
+    let repo = git2::Repository::open(dir).expect("failed to re-open repo");
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+
+    // sanity: branch statuses themselves are correct
+    let branch_status = |name: &str| {
+        branches
+            .iter()
+            .find(|b| b.name == name)
+            .unwrap_or_else(|| panic!("branch {name} not found"))
+            .merge_status
+    };
+    assert_eq!(branch_status("feat-merged"), MergeStatus::Merged);
+    // No remote in this repo, so a squash-merge resolves to the local-only
+    // variant (matching test_squash_merged_branch_detection).
+    assert_eq!(branch_status("feat-squashed"), MergeStatus::LocalSquashMerged);
+    assert_eq!(branch_status("feat-unmerged"), MergeStatus::Unmerged);
+
+    let mut worktrees = worktree::list_worktrees(dir);
+
+    // THE API UNDER TEST: correlate worktree merge status from the branch list.
+    worktree::apply_branch_merge_status(&mut worktrees, &branches);
+
+    let wt_for = |name: &str| {
+        worktrees
+            .iter()
+            .find(|w| w.branch.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no worktree for branch {name}"))
+    };
+    assert_eq!(
+        wt_for("feat-merged").merge_status,
+        MergeStatus::Merged,
+        "merged worktree should match its branch"
+    );
+    assert_eq!(
+        wt_for("feat-squashed").merge_status,
+        MergeStatus::LocalSquashMerged,
+        "squash-merged worktree should match its branch"
+    );
+    assert_eq!(
+        wt_for("feat-unmerged").merge_status,
+        MergeStatus::Unmerged,
+        "unmerged worktree should match its branch"
+    );
+
+    // main worktree is on the base branch: it must be flagged is_base so the
+    // renderer blanks its Merge cell (a branch can't be merged into itself).
+    // The raw merge_status copied from the base BranchInfo is an implementation
+    // detail; the contract that matters is is_base. (See the render-level test
+    // `worktree_base_merge_cell_is_blank` in src/app.rs for the blanking.)
+    let main_wt = worktrees.iter().find(|w| w.is_main).expect("main worktree");
+    assert_eq!(main_wt.branch.as_deref(), Some("main"));
+    assert!(
+        main_wt.is_base,
+        "main worktree is on the base branch and must be marked is_base"
+    );
+    // The feature worktrees are NOT the base.
+    assert!(!wt_for("feat-merged").is_base);
+    assert!(!wt_for("feat-unmerged").is_base);
+
+    // --- clean vs dirty working tree via enrich_worktrees (sets wt_status) ---
+    let unmerged_idx = worktrees
+        .iter()
+        .position(|w| w.branch.as_deref() == Some("feat-unmerged"))
+        .unwrap();
+    let merged_idx = worktrees
+        .iter()
+        .position(|w| w.branch.as_deref() == Some("feat-merged"))
+        .unwrap();
+    let rx = worktree::enrich_worktrees(worktrees.clone());
+    let mut results: Vec<_> = rx.iter().collect();
+    results.sort_by_key(|r| r.index);
+    // The dirty file is untracked specifically — assert the exact buckets, not
+    // just !is_clean (which would pass under a staged/modified misclassification).
+    let unmerged_status = &results[unmerged_idx].wt_status;
+    assert!(unmerged_status.has_untracked, "dirty file is untracked");
+    assert!(!unmerged_status.has_staged, "nothing staged");
+    assert!(!unmerged_status.has_modified, "no tracked modifications");
+    assert!(
+        results[merged_idx].wt_status.is_clean(),
+        "merged worktree is untouched -> clean"
+    );
+
+    // cleanup worktrees before the tempdir drops — skipped when keeping repos
+    // for manual inspection, so the worktrees stay on disk too
+    if std::env::var_os("GBM_KEEP_TEST_REPOS").is_none() {
+        for p in [
+            ".worktrees/merged",
+            ".worktrees/squashed",
+            ".worktrees/unmerged",
+        ] {
+            run_git(dir, &["worktree", "remove", "--force", p]);
+        }
+    }
 }

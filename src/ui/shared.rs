@@ -1,17 +1,16 @@
 use chrono::{DateTime, Utc};
-use crossterm::event::KeyCode;
 use ratatui::prelude::*;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::style::{Color, Style};
 
-use crate::app::{App, View};
+use crate::theme::Theme;
 
 /// Returns a color style for known branch name prefixes (text before the first `/`).
-pub fn prefix_style(prefix: &str) -> Option<Style> {
+/// Colors are theme-independent since they represent semantic categories.
+pub fn prefix_style(prefix: &str, _theme: &Theme) -> Option<Style> {
     match prefix {
         "fix" => Some(Style::new().fg(Color::Red)),
         "feat" | "feature" => Some(Style::new().fg(Color::Green)),
-        "chore" => Some(Style::new().fg(Color::Indexed(130))),
+        "chore" => Some(Style::new().fg(Color::Indexed(130))), // amber
         "hotfix" => Some(Style::new().fg(Color::Magenta)),
         "release" => Some(Style::new().fg(Color::Cyan)),
         _ => None,
@@ -19,7 +18,8 @@ pub fn prefix_style(prefix: &str) -> Option<Style> {
 }
 
 /// Returns a color style based on how old a commit is.
-pub fn age_style(date: &DateTime<Utc>) -> Style {
+/// <7d green, <30d yellow, <90d orange, >90d red.
+pub fn age_style(date: &DateTime<Utc>, _theme: &Theme) -> Style {
     let days = (Utc::now() - *date).num_days();
     if days < 7 {
         Style::new().fg(Color::Green)
@@ -32,159 +32,294 @@ pub fn age_style(date: &DateTime<Utc>) -> Style {
     }
 }
 
-/// Truncates `s` to fit within `max_chars`, appending `ellipsis` if truncated.
-pub fn truncate(s: &str, max_chars: usize, ellipsis: &str) -> String {
-    if s.len() <= max_chars {
+/// Truncates `s` to fit within `max_width` characters, appending an ellipsis if truncated.
+/// Uses unicode ellipsis by default.
+pub fn truncate(s: &str, max_width: usize) -> String {
+    if s.chars().count() <= max_width {
         s.to_string()
-    } else if max_chars > ellipsis.len() {
-        format!("{}{}", &s[..max_chars - ellipsis.len()], ellipsis)
+    } else if max_width > 1 {
+        let truncated: String = s.chars().take(max_width - 1).collect();
+        format!("{}\u{2026}", truncated)
+    } else if max_width == 1 {
+        "\u{2026}".to_string()
     } else {
-        ellipsis.to_string()
+        String::new()
     }
 }
 
-/// Builds a styled tab bar `Line` for use as a Block title.
-/// The `active` parameter indicates which view is currently displayed.
-/// The `title_style` is the style used for the active tab text.
-pub fn tab_bar_line<'a>(active: &View, title_style: Style) -> Line<'a> {
-    let tabs: &[(&str, View)] = &[
-        ("Branches", View::BranchList),
-        ("Remote", View::RemoteBranches),
-        ("Worktrees", View::Worktrees),
-    ];
-
-    let inactive_style = Style::default().add_modifier(Modifier::DIM);
-    let separator_style = Style::default().add_modifier(Modifier::DIM);
-
-    let mut spans: Vec<Span<'a>> = Vec::new();
-    spans.push(Span::styled(" ", Style::default()));
-
-    for (i, (label, view)) in tabs.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(" | ", separator_style));
-        }
-        if *active == *view {
-            spans.push(Span::styled((*label).to_string(), title_style));
-        } else {
-            spans.push(Span::styled((*label).to_string(), inactive_style));
-        }
+/// Truncates `s` from the LEFT to fit `max_width`, prefixing `…` so the END
+/// of the string stays visible. Mirror of [`truncate`], which drops the tail.
+pub fn truncate_left(s: &str, max_width: usize) -> String {
+    let count = s.chars().count();
+    if count <= max_width {
+        s.to_string()
+    } else if max_width <= 1 {
+        "\u{2026}".to_string()
+    } else {
+        let skip = count - (max_width - 1);
+        let tail: String = s.chars().skip(skip).collect();
+        format!("\u{2026}{tail}")
     }
-
-    spans.push(Span::styled(" ", Style::default()));
-
-    Line::from(spans)
 }
 
-/// Renders a status bar Paragraph into `area`, parsing [X]word patterns.
-/// Shortcut keys are styled bold with `accent_color` fg.
-/// Returns clickable regions as (x_start, x_end_exclusive, KeyCode).
-pub fn render_status_bar(
-    frame: &mut Frame,
-    area: Rect,
-    text: &str,
-    accent_color: Color,
-    status_bar_style: Style,
-) -> Vec<(u16, u16, KeyCode)> {
-    // Phase A: build clickable regions
-    let mut items: Vec<(u16, u16, KeyCode)> = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
-    let base_x = area.x;
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '[' && i + 2 < chars.len() && chars[i + 2] == ']' {
-            let key_char = chars[i + 1];
-            let key_code = match key_char {
-                '/' => KeyCode::Char('/'),
-                '?' => KeyCode::Char('?'),
-                'q' => KeyCode::Char('q'),
-                'c' => KeyCode::Char('c'),
-                'd' => KeyCode::Char('d'),
-                'D' => KeyCode::Char('D'),
-                'f' => KeyCode::Char('f'),
-                'r' => KeyCode::Char('r'),
-                'w' => KeyCode::Char('w'),
-                't' => KeyCode::Char('t'),
-                'p' => KeyCode::Char('p'),
-                's' => KeyCode::Char('s'),
-                'E' => KeyCode::Char('E'),
-                'a' => KeyCode::Char('a'),
-                'n' => KeyCode::Char('n'),
-                'i' => KeyCode::Char('i'),
-                _ => {
-                    i += 1;
-                    continue;
-                }
-            };
-            let x_start = base_x + i as u16;
-            let mut j = i + 3;
-            while j < chars.len() && chars[j] != ' ' && chars[j] != '[' {
-                j += 1;
+/// Joins path `segs` with `/`, restoring a leading slash when `had_root`.
+fn join_path(segs: &[String], had_root: bool) -> String {
+    let body = segs.join("/");
+    if had_root {
+        format!("/{body}")
+    } else {
+        body
+    }
+}
+
+/// Formats a filesystem path to fit `max_width`, keeping the END visible.
+///
+/// - If the full path fits, returns it unchanged.
+/// - Otherwise abbreviates leading directory components to their first
+///   character, left-to-right, stopping as soon as it fits (the final
+///   component is always kept full).
+/// - If even the fully-abbreviated form is too wide, left-truncates with `…`.
+///
+/// Example (narrowing): `/Users/chris/dev/git-branch-manager/.claude/worktrees/feat`
+///   → `/U/c/d/git-branch-manager/.claude/worktrees/feat`
+///   → `…/worktrees/feat`
+pub fn abbreviate_path(path: &std::path::Path, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let full = path.to_string_lossy();
+    if full.chars().count() <= max_width {
+        return full.into_owned();
+    }
+
+    let had_root = full.starts_with('/');
+    let mut segs: Vec<String> = full
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .map(|p| p.to_string())
+        .collect();
+
+    if segs.len() > 1 {
+        let last = segs.len() - 1;
+        for i in 0..last {
+            if let Some(c) = segs[i].chars().next() {
+                segs[i] = c.to_string();
             }
-            let x_end = base_x + j as u16;
-            items.push((x_start, x_end, key_code));
-            i = j;
-        } else {
-            i += 1;
+            let candidate = join_path(&segs, had_root);
+            if candidate.chars().count() <= max_width {
+                return candidate;
+            }
         }
     }
 
-    // Phase B: build styled spans and render
-    let key_style = Style::default()
-        .fg(accent_color)
-        .bg(status_bar_style.bg.unwrap_or(Color::Reset))
-        .add_modifier(Modifier::BOLD);
-    let mut spans: Vec<Span> = Vec::new();
-    let mut remaining = text;
-    while let Some(open) = remaining.find('[') {
-        if open > 0 {
-            spans.push(Span::styled(remaining[..open].to_string(), status_bar_style));
-        }
-        remaining = &remaining[open..];
-        if let Some(close) = remaining.find(']') {
-            spans.push(Span::styled("[".to_string(), status_bar_style));
-            spans.push(Span::styled(remaining[1..close].to_string(), key_style));
-            let after_close = &remaining[close..];
-            let word_end = after_close[1..]
-                .find([' ', '['])
-                .map(|idx| idx + 1)
-                .unwrap_or(after_close.len());
-            spans.push(Span::styled(after_close[..word_end].to_string(), status_bar_style));
-            remaining = &after_close[word_end..];
-        } else {
-            spans.push(Span::styled(remaining.to_string(), status_bar_style));
-            remaining = "";
-        }
-    }
-    if !remaining.is_empty() {
-        spans.push(Span::styled(remaining.to_string(), status_bar_style));
-    }
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(status_bar_style),
-        area,
-    );
-
-    items
+    truncate_left(&join_path(&segs, had_root), max_width)
 }
 
-/// Renders the current toast message from `app.toast` as a bottom-right bordered overlay.
-/// No-op if `app.toast` is None.
-/// `area` should be the full terminal area (frame.area()).
-pub fn draw_toast(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(msg) = &app.toast else { return };
-    let toast_width = msg.len() as u16 + 2; // +2 for left/right borders
-    let toast_height: u16 = 3;
-    let x = area.width.saturating_sub(toast_width).saturating_sub(1);
-    let y = area.height.saturating_sub(toast_height).saturating_sub(2); // above status bar
-    let toast_area = Rect::new(x, y, toast_width, toast_height);
+/// Returns a centered rectangle of given dimensions within the provided area.
+/// `width_pct` is a percentage (0-100) of the area width; `height` is absolute rows.
+pub fn centered_rect_pct(width_pct: u16, height: u16, area: Rect) -> Rect {
+    let width = (area.width as u32 * width_pct as u32 / 100) as u16;
+    centered_rect(width, height, area)
+}
 
-    let toast = Paragraph::new(msg.as_str())
-        .style(app.theme.toast_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(app.theme.toast_border),
-        )
-        .alignment(Alignment::Center);
-    frame.render_widget(Clear, toast_area);
-    frame.render_widget(toast, toast_area);
+/// Returns a centered rectangle with absolute width and height within the provided area.
+pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    Rect::new(x, y, w, h)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::Theme;
+    use chrono::Utc;
+
+    #[test]
+    fn prefix_style_known_prefixes() {
+        let theme = Theme::dark();
+        assert!(prefix_style("fix", &theme).is_some());
+        assert!(prefix_style("feat", &theme).is_some());
+        assert!(prefix_style("feature", &theme).is_some());
+        assert!(prefix_style("chore", &theme).is_some());
+        assert!(prefix_style("hotfix", &theme).is_some());
+        assert!(prefix_style("release", &theme).is_some());
+    }
+
+    #[test]
+    fn prefix_style_unknown_returns_none() {
+        let theme = Theme::dark();
+        assert!(prefix_style("unknown", &theme).is_none());
+        assert!(prefix_style("main", &theme).is_none());
+    }
+
+    #[test]
+    fn age_style_recent() {
+        let theme = Theme::dark();
+        let recent = Utc::now() - chrono::Duration::days(1);
+        let style = age_style(&recent, &theme);
+        assert_eq!(style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn age_style_week_old() {
+        let theme = Theme::dark();
+        let date = Utc::now() - chrono::Duration::days(10);
+        let style = age_style(&date, &theme);
+        assert_eq!(style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn age_style_month_old() {
+        let theme = Theme::dark();
+        let date = Utc::now() - chrono::Duration::days(45);
+        let style = age_style(&date, &theme);
+        assert_eq!(style.fg, Some(Color::Indexed(208)));
+    }
+
+    #[test]
+    fn age_style_old() {
+        let theme = Theme::dark();
+        let date = Utc::now() - chrono::Duration::days(100);
+        let style = age_style(&date, &theme);
+        assert_eq!(style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn truncate_short_string() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_length() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_long_string() {
+        let result = truncate("hello world", 6);
+        assert_eq!(result, "hello\u{2026}");
+    }
+
+    #[test]
+    fn truncate_width_one() {
+        assert_eq!(truncate("hello", 1), "\u{2026}");
+    }
+
+    #[test]
+    fn truncate_width_zero() {
+        assert_eq!(truncate("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_left_short_string() {
+        assert_eq!(truncate_left("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_left_keeps_tail() {
+        // Keeps the last (max_width - 1) chars, prefixed with the ellipsis.
+        assert_eq!(truncate_left("hello world", 6), "\u{2026}world");
+    }
+
+    #[test]
+    fn truncate_left_width_one() {
+        assert_eq!(truncate_left("hello", 1), "\u{2026}");
+    }
+
+    #[test]
+    fn truncate_left_width_zero() {
+        assert_eq!(truncate_left("hello", 0), "\u{2026}");
+    }
+
+    #[test]
+    fn abbreviate_path_fits_unchanged() {
+        let p = std::path::Path::new("/Users/chris/dev/proj/feat");
+        assert_eq!(abbreviate_path(p, 100), "/Users/chris/dev/proj/feat");
+    }
+
+    #[test]
+    fn abbreviate_path_zero_width() {
+        let p = std::path::Path::new("/Users/chris/dev/proj/feat");
+        assert_eq!(abbreviate_path(p, 0), "");
+    }
+
+    #[test]
+    fn abbreviate_path_abbreviates_leading_keeps_tail() {
+        let p = std::path::Path::new("/Users/chris/dev/git-branch-manager/.claude/worktrees/feat");
+        // Wide enough to keep the tail full but too narrow for the whole path.
+        let result = abbreviate_path(p, 45);
+        assert!(result.starts_with('/'), "got: {result:?}");
+        assert!(result.ends_with("/feat"), "got: {result:?}");
+        // Last component must be kept full (not abbreviated to "f").
+        assert!(result.contains("/feat"), "got: {result:?}");
+        assert!(result.chars().count() <= 45, "got: {result:?}");
+    }
+
+    #[test]
+    fn abbreviate_path_left_truncates_when_very_narrow() {
+        let p = std::path::Path::new("/Users/chris/dev/git-branch-manager/.claude/worktrees/feat");
+        let result = abbreviate_path(p, 8);
+        assert!(result.starts_with('\u{2026}'), "got: {result:?}");
+        assert!(result.chars().count() <= 8, "got: {result:?}");
+    }
+
+    #[test]
+    fn abbreviate_path_shortens_worktrees_before_clipping_tail() {
+        // Real-world shape: long shared prefix, then `worktrees`, then a long
+        // worktree name. At this width, keeping `worktrees` full would overflow,
+        // so it must be abbreviated too — and the final name stays fully visible.
+        let p = std::path::Path::new(
+            "/Users/chris/workspace/zen/.claude/worktrees/idempotent-create-payroll-admin-rspec",
+        );
+        let result = abbreviate_path(p, 52);
+        assert!(!result.contains("worktrees"), "got: {result:?}");
+        assert!(
+            result.contains("/w/"),
+            "expected worktrees→w; got: {result:?}"
+        );
+        assert!(
+            result.ends_with("idempotent-create-payroll-admin-rspec"),
+            "tail must stay visible; got: {result:?}"
+        );
+        assert!(result.chars().count() <= 52, "got: {result:?}");
+    }
+
+    #[test]
+    fn abbreviate_path_single_component_narrow() {
+        let p = std::path::Path::new("my-feature");
+        let result = abbreviate_path(p, 5);
+        // No parents to abbreviate → left-truncated, end visible, no panic.
+        assert!(result.starts_with('\u{2026}'), "got: {result:?}");
+        assert!(result.ends_with("ure"), "got: {result:?}");
+        assert!(result.chars().count() <= 5, "got: {result:?}");
+    }
+
+    #[test]
+    fn centered_rect_basic() {
+        let area = Rect::new(0, 0, 80, 24);
+        let r = centered_rect(40, 10, area);
+        assert_eq!(r.x, 20);
+        assert_eq!(r.y, 7);
+        assert_eq!(r.width, 40);
+        assert_eq!(r.height, 10);
+    }
+
+    #[test]
+    fn centered_rect_larger_than_area() {
+        let area = Rect::new(0, 0, 40, 10);
+        let r = centered_rect(80, 20, area);
+        assert_eq!(r.width, 40);
+        assert_eq!(r.height, 10);
+    }
+
+    #[test]
+    fn centered_rect_pct_50() {
+        let area = Rect::new(0, 0, 100, 50);
+        let r = centered_rect_pct(50, 10, area);
+        assert_eq!(r.width, 50);
+        assert_eq!(r.x, 25);
+    }
 }
