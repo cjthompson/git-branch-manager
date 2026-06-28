@@ -26,6 +26,7 @@ use git_branch_manager::ui::menu::MenuItem;
 use git_branch_manager::ui::render::{Overlay, RenderContext};
 use git_branch_manager::ui::shared::{abbreviate_path, prefix_style, truncate, truncate_left};
 use git_branch_manager::ui::toast::Toast;
+use git_branch_manager::ui::info_modal::{InfoHitRegion, InfoModalRow};
 use git_branch_manager::view::branches::BranchesViewDef;
 use git_branch_manager::view::column::ColumnDef;
 use git_branch_manager::view::filter::{FilterSet, FilterTokenDef};
@@ -118,6 +119,11 @@ pub struct App {
     // Terminal dimensions (for mouse handling)
     pub terminal_rows: u16,
 
+    // Info modal: click-to-copy hit regions (recorded each frame) and the
+    // confirmation message shown after a successful copy.
+    pub info_hit_regions: Vec<InfoHitRegion>,
+    pub info_copied_msg: Option<String>,
+
     // Whether remote fetch has been done this session
     pub remote_fetched: bool,
 
@@ -152,6 +158,12 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Copy `text` to the host system clipboard. Returns an error string on failure.
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.set_text(text.to_string()).map_err(|e| e.to_string())
 }
 
 // ---- Generic channel drain helper ----
@@ -248,6 +260,8 @@ impl App {
             toast: None,
             cancel_flag: None,
             terminal_rows: 0,
+            info_hit_regions: Vec::new(),
+            info_copied_msg: None,
             remote_fetched,
             last_branch_fingerprint: None,
         }
@@ -322,6 +336,8 @@ impl App {
             theme: &self.theme,
             symbols: &self.symbols,
             config: &self.config,
+            info_copied_msg: self.info_copied_msg.as_deref(),
+            info_hit_regions: &mut self.info_hit_regions,
             branches: &mut self.branches,
             remotes: &mut self.remotes,
             tags: &mut self.tags,
@@ -961,6 +977,104 @@ impl App {
                     self.overlay = Some(Overlay::Menu { cursor, items });
                 }
             },
+            Some(Overlay::InfoModal { cursor, items, row, scroll_offset }) => match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    let mut new_cursor = cursor + 1;
+                    while new_cursor < items.len() && !items[new_cursor].enabled {
+                        new_cursor += 1;
+                    }
+                    if new_cursor < items.len() {
+                        self.overlay = Some(Overlay::InfoModal {
+                            cursor: new_cursor,
+                            items,
+                            row,
+                            scroll_offset,
+                        });
+                    } else {
+                        self.overlay = Some(Overlay::InfoModal {
+                            cursor,
+                            items,
+                            row,
+                            scroll_offset,
+                        });
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    let mut new_cursor = cursor;
+                    loop {
+                        if new_cursor == 0 {
+                            break;
+                        }
+                        new_cursor -= 1;
+                        if items[new_cursor].enabled {
+                            break;
+                        }
+                    }
+                    self.overlay = Some(Overlay::InfoModal {
+                        cursor: new_cursor,
+                        items,
+                        row,
+                        scroll_offset,
+                    });
+                }
+                KeyCode::Char('u') | KeyCode::PageUp => {
+                    let new_offset = scroll_offset.saturating_sub(5);
+                    self.overlay = Some(Overlay::InfoModal {
+                        cursor,
+                        items,
+                        row,
+                        scroll_offset: new_offset,
+                    });
+                }
+                KeyCode::Char('d') | KeyCode::PageDown => {
+                    let new_offset = scroll_offset.saturating_add(5);
+                    self.overlay = Some(Overlay::InfoModal {
+                        cursor,
+                        items,
+                        row,
+                        scroll_offset: new_offset,
+                    });
+                }
+                KeyCode::Enter => {
+                    if let Some(item) = items.get(cursor) {
+                        if item.enabled {
+                            self.execute_menu_action(item.action);
+                        } else {
+                            self.overlay = Some(Overlay::InfoModal {
+                                cursor,
+                                items,
+                                row,
+                                scroll_offset,
+                            });
+                        }
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {} // close
+                KeyCode::Char(c) => {
+                    if let Some((_, item)) = items
+                        .iter()
+                        .enumerate()
+                        .find(|(_, mi)| mi.shortcut == Some(c) && mi.enabled)
+                    {
+                        self.execute_menu_action(item.action);
+                    } else {
+                        self.overlay = Some(Overlay::InfoModal {
+                            cursor,
+                            items,
+                            row,
+                            scroll_offset,
+                        });
+                    }
+                }
+                _ => {
+                    self.overlay = Some(Overlay::InfoModal {
+                        cursor,
+                        items,
+                        row,
+                        scroll_offset,
+                    });
+                }
+            },
             Some(Overlay::Results { results }) => match key.code {
                 KeyCode::Enter | KeyCode::Esc => {
                     // Operation completion already refreshed the backing view;
@@ -1230,7 +1344,15 @@ impl App {
     // ---- Mouse handling ----
 
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
-        // Don't handle mouse in overlays
+        // The info modal handles left-clicks (click a value to copy it).
+        if matches!(self.overlay, Some(Overlay::InfoModal { .. })) {
+            if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                self.handle_info_modal_click(mouse.column, mouse.row);
+            }
+            return;
+        }
+
+        // Don't handle mouse in other overlays
         if self.overlay.is_some() {
             return;
         }
@@ -1269,6 +1391,28 @@ impl App {
                 self.handle_right_click(mouse.column, mouse.row);
             }
             _ => {}
+        }
+    }
+
+    /// A left-click inside the info modal: if it landed on a value, copy that
+    /// value to the host clipboard and show a confirmation in the modal.
+    fn handle_info_modal_click(&mut self, x: u16, y: u16) {
+        let hit = self
+            .info_hit_regions
+            .iter()
+            .find(|r| {
+                x >= r.rect.x
+                    && x < r.rect.x + r.rect.width
+                    && y >= r.rect.y
+                    && y < r.rect.y + r.rect.height
+            })
+            .map(|r| (r.label.clone(), r.value.clone()));
+
+        if let Some((label, value)) = hit {
+            self.info_copied_msg = Some(match copy_to_clipboard(&value) {
+                Ok(()) => format!("{label} copied to clipboard"),
+                Err(e) => format!("Clipboard error: {e}"),
+            });
         }
     }
 
@@ -1394,8 +1538,19 @@ impl App {
         if items.is_empty() {
             return;
         }
+        let row = self.build_info_modal_row();
+        if row.is_none() {
+            return;
+        }
         self.return_view = self.active_view;
-        self.overlay = Some(Overlay::Menu { items, cursor: 0 });
+        // Clear any stale copy confirmation from a previous opening.
+        self.info_copied_msg = None;
+        self.overlay = Some(Overlay::InfoModal {
+            items,
+            cursor: 0,
+            row: row.unwrap(),
+            scroll_offset: 0,
+        });
     }
 
     fn build_menu_items(&self) -> Vec<MenuItem> {
@@ -1404,6 +1559,15 @@ impl App {
             ViewId::Remotes => self.build_remote_menu(),
             ViewId::Tags => self.build_tag_menu(),
             ViewId::Worktrees => self.build_worktree_menu(),
+        }
+    }
+
+    fn build_info_modal_row(&self) -> Option<InfoModalRow> {
+        match self.active_view {
+            ViewId::Branches => self.branches.cursor_item().cloned().map(InfoModalRow::Branch),
+            ViewId::Remotes => self.remotes.cursor_item().cloned().map(InfoModalRow::Remote),
+            ViewId::Tags => self.tags.cursor_item().cloned().map(InfoModalRow::Tag),
+            ViewId::Worktrees => self.worktrees.cursor_item().cloned().map(InfoModalRow::Worktree),
         }
     }
 

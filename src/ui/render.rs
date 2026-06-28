@@ -27,6 +27,7 @@ use super::results::draw_results;
 use super::settings::{draw_settings, settings_rows};
 use super::status_bar;
 use super::toast::{draw_toast, Toast};
+use super::info_modal::{draw_info_modal, InfoHitRegion, InfoModalRow};
 
 /// Overlay state for the top-level renderer.
 #[derive(Debug, Clone)]
@@ -35,6 +36,12 @@ pub enum Overlay {
     Menu {
         items: Vec<MenuItem>,
         cursor: usize,
+    },
+    InfoModal {
+        items: Vec<MenuItem>,
+        cursor: usize,
+        row: InfoModalRow,
+        scroll_offset: u16,
     },
     Confirm {
         action: BranchAction,
@@ -71,6 +78,9 @@ pub struct RenderContext<'a> {
     pub theme: &'a Theme,
     pub symbols: &'a SymbolSet,
     pub config: &'a Config,
+    // Info modal: confirmation message + recorded click-to-copy hit regions
+    pub info_copied_msg: Option<&'a str>,
+    pub info_hit_regions: &'a mut Vec<InfoHitRegion>,
     // List states
     pub branches: &'a mut ListState<BranchInfo>,
     pub remotes: &'a mut ListState<RemoteBranchInfo>,
@@ -230,6 +240,19 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                     }
                 };
                 draw_menu(frame, items, *cursor, anchor, ctx.theme, ctx.symbols);
+            }
+            Overlay::InfoModal { items, cursor, row, scroll_offset } => {
+                draw_info_modal(
+                    frame,
+                    row,
+                    items,
+                    *cursor,
+                    *scroll_offset,
+                    ctx.info_copied_msg,
+                    ctx.info_hit_regions,
+                    ctx.theme,
+                    ctx.symbols,
+                );
             }
             Overlay::Confirm { action, targets } => {
                 draw_confirm(frame, *action, targets, ctx.theme);

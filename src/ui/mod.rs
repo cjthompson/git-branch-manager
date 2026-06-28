@@ -5,6 +5,7 @@ pub mod dump_render;
 pub mod executing;
 pub mod filter_ui;
 pub mod help;
+pub mod info_modal;
 pub mod list_render;
 pub mod menu;
 pub mod render;
