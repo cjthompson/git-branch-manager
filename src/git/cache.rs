@@ -581,7 +581,10 @@ mod tests {
         cache.insert("feature/y", &MergeStatus::Unmerged, "def456");
         let mut names = cache.cached_branch_names();
         names.sort();
-        assert_eq!(names, vec!["feature/x".to_string(), "feature/y".to_string()]);
+        assert_eq!(
+            names,
+            vec!["feature/x".to_string(), "feature/y".to_string()]
+        );
     }
 
     #[test]

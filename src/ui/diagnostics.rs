@@ -86,7 +86,10 @@ pub fn draw_diagnostics_report(
         )));
         for d in &audit.discrepancies {
             body.push(Line::from(vec![
-                Span::styled(format!("  {:<28}", truncate(&d.branch, 28)), Style::default()),
+                Span::styled(
+                    format!("  {:<28}", truncate(&d.branch, 28)),
+                    Style::default(),
+                ),
                 Span::styled(format!("{:<13}", d.kind.label()), theme.dim),
                 Span::styled(d.cached.clone(), theme.error),
                 Span::styled(" \u{2192} ", theme.dim),
@@ -115,7 +118,10 @@ pub fn draw_diagnostics_report(
     let footer: Line = if audit.is_clean() {
         Line::from(vec![
             Span::styled(
-                format!("\u{2713} Cache is accurate \u{2014} {} entries verified   ", audit.total_checked()),
+                format!(
+                    "\u{2713} Cache is accurate \u{2014} {} entries verified   ",
+                    audit.total_checked()
+                ),
                 theme.merged,
             ),
             Span::styled("Esc", key_style),

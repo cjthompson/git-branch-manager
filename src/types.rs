@@ -107,7 +107,9 @@ impl BranchAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkingTreeStatus {
     pub has_staged: bool,
-    pub has_unstaged: bool,
+    /// Tracked files with working-tree changes that are not staged. Named to
+    /// match git's own "modified" wording in `git status`.
+    pub has_modified: bool,
     pub has_untracked: bool,
 }
 
@@ -115,13 +117,13 @@ impl WorkingTreeStatus {
     pub fn clean() -> Self {
         Self {
             has_staged: false,
-            has_unstaged: false,
+            has_modified: false,
             has_untracked: false,
         }
     }
 
     pub fn is_clean(&self) -> bool {
-        !self.has_staged && !self.has_unstaged && !self.has_untracked
+        !self.has_staged && !self.has_modified && !self.has_untracked
     }
 
     pub fn summary(&self) -> String {
@@ -129,8 +131,8 @@ impl WorkingTreeStatus {
         if self.has_staged {
             parts.push("staged");
         }
-        if self.has_unstaged {
-            parts.push("unstaged");
+        if self.has_modified {
+            parts.push("modified");
         }
         if self.has_untracked {
             parts.push("untracked");
@@ -138,15 +140,15 @@ impl WorkingTreeStatus {
         parts.join("+")
     }
 
-    /// Single-letter abbreviation for narrow columns: staged→`s`, unstaged→`u`,
-    /// untracked→`t`, joined by `+` (e.g. `s+u`). Empty when clean.
+    /// Single-letter abbreviation for narrow columns: staged→`s`, modified→`m`,
+    /// untracked→`t`, joined by `+` (e.g. `s+m`). Empty when clean.
     pub fn short_summary(&self) -> String {
         let mut parts = Vec::new();
         if self.has_staged {
             parts.push("s");
         }
-        if self.has_unstaged {
-            parts.push("u");
+        if self.has_modified {
+            parts.push("m");
         }
         if self.has_untracked {
             parts.push("t");
@@ -225,6 +227,10 @@ pub struct WorktreeInfo {
     pub path: PathBuf,
     pub branch: Option<String>,
     pub is_main: bool,
+    /// True when this worktree is checked out on the base branch. The merge
+    /// column is then blank — a branch can't be "merged into itself". Set by
+    /// [`crate::git::worktree::apply_branch_merge_status`] from the branch list.
+    pub is_base: bool,
     pub commit_hash: String,
     pub wt_status: WorkingTreeStatus,
     pub age_date: DateTime<Utc>,
@@ -553,7 +559,7 @@ mod tests {
     fn working_tree_status_staged_only() {
         let s = WorkingTreeStatus {
             has_staged: true,
-            has_unstaged: false,
+            has_modified: false,
             has_untracked: false,
         };
         assert!(!s.is_clean());
@@ -564,10 +570,10 @@ mod tests {
     fn working_tree_status_all_three() {
         let s = WorkingTreeStatus {
             has_staged: true,
-            has_unstaged: true,
+            has_modified: true,
             has_untracked: true,
         };
-        assert_eq!(s.summary(), "staged+unstaged+untracked");
+        assert_eq!(s.summary(), "staged+modified+untracked");
     }
 
     #[test]
@@ -624,6 +630,7 @@ mod tests {
             path: PathBuf::from("/repo"),
             branch: Some("main".into()),
             is_main: true,
+            is_base: true,
             commit_hash: "abc1234".into(),
             wt_status: WorkingTreeStatus::clean(),
             age_date: Utc::now(),

@@ -13,7 +13,7 @@ pub fn detect_working_tree_status(repo: &Repository) -> WorkingTreeStatus {
     };
 
     let mut has_staged = false;
-    let mut has_unstaged = false;
+    let mut has_modified = false;
     let mut has_untracked = false;
 
     for entry in statuses.iter() {
@@ -33,7 +33,7 @@ pub fn detect_working_tree_status(repo: &Repository) -> WorkingTreeStatus {
                 | git2::Status::WT_RENAMED
                 | git2::Status::WT_TYPECHANGE,
         ) {
-            has_unstaged = true;
+            has_modified = true;
         }
         if s.contains(git2::Status::WT_NEW) {
             has_untracked = true;
@@ -42,7 +42,7 @@ pub fn detect_working_tree_status(repo: &Repository) -> WorkingTreeStatus {
 
     WorkingTreeStatus {
         has_staged,
-        has_unstaged,
+        has_modified,
         has_untracked,
     }
 }

@@ -188,6 +188,12 @@ pub fn run(
                     w.age_date = res.age_date;
                 }
             }
+            // Correlate merge status from the branch list (same data the
+            // Branches view shows). Graceful degrade: on error, worktrees keep
+            // their Unmerged default.
+            if let Ok(branches) = branch::list_branches(repo, base) {
+                worktree::apply_branch_merge_status(&mut rows, &branches);
+            }
             pin_first(&mut rows);
             let cols = WorktreesViewDef.columns();
             Ok(render_table(

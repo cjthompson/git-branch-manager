@@ -102,7 +102,7 @@ pub fn merge_status_column<T: ViewItem>(name: &'static str) -> ColumnDef<T> {
 
 /// Rank a working-tree status for sorting: dirtier states sort later.
 pub fn wt_status_rank(s: &WorkingTreeStatus) -> u8 {
-    (s.has_staged as u8) * 4 + (s.has_unstaged as u8) * 2 + (s.has_untracked as u8)
+    (s.has_staged as u8) * 4 + (s.has_modified as u8) * 2 + (s.has_untracked as u8)
 }
 
 /// Comparator: sort worktrees by working-tree dirtiness.

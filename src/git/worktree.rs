@@ -1,4 +1,6 @@
-use crate::types::{MergeStatus, WorkingTreeStatus, WorktreeEnrichResult, WorktreeInfo};
+use crate::types::{
+    BranchInfo, MergeStatus, WorkingTreeStatus, WorktreeEnrichResult, WorktreeInfo,
+};
 use chrono::{DateTime, TimeZone, Utc};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -225,6 +227,25 @@ pub fn enrich_worktrees(worktrees: Vec<WorktreeInfo>) -> Receiver<WorktreeEnrich
     rx
 }
 
+/// Copy each worktree's merge status from its checked-out branch.
+///
+/// Matches by short branch name. Detached-HEAD worktrees (`branch == None`) and
+/// any worktree whose branch has no entry in `branches` keep their existing
+/// default (`Unmerged`). Pure and synchronous — callers already hold the
+/// enriched branch list, so this never recomputes merge detection.
+pub fn apply_branch_merge_status(worktrees: &mut [WorktreeInfo], branches: &[BranchInfo]) {
+    for wt in worktrees.iter_mut() {
+        if let Some(name) = wt.branch.as_deref() {
+            if let Some(b) = branches.iter().find(|b| b.name == name) {
+                wt.merge_status = b.merge_status;
+                // The base-branch worktree has no meaningful merge status (a
+                // branch can't be merged into itself); the renderer blanks it.
+                wt.is_base = b.is_base;
+            }
+        }
+    }
+}
+
 fn build_worktree(
     path: PathBuf,
     commit_hash: String,
@@ -235,6 +256,7 @@ fn build_worktree(
         path,
         branch,
         is_main,
+        is_base: false,
         commit_hash,
         wt_status: WorkingTreeStatus::clean(),
         age_date: Utc::now(),
@@ -247,36 +269,12 @@ fn build_worktree(
 
 #[instrument(skip(dir), fields(path = ?dir))]
 fn status_and_age(dir: &Path) -> (WorkingTreeStatus, DateTime<Utc>) {
-    let output = git_out(dir, &["status", "--porcelain"]);
-    let mut has_staged = false;
-    let mut has_unstaged = false;
-    let mut has_untracked = false;
-
-    for line in output.lines() {
-        let bytes = line.as_bytes();
-        if bytes.len() < 2 {
-            continue;
-        }
-        let index = bytes[0];
-        let work = bytes[1];
-
-        if index == b'?' {
-            has_untracked = true;
-            continue;
-        }
-        if index != b' ' && index != b'?' {
-            has_staged = true;
-        }
-        if work != b' ' && work != b'?' {
-            has_unstaged = true;
-        }
-    }
-
-    let status = WorkingTreeStatus {
-        has_staged,
-        has_unstaged,
-        has_untracked,
-    };
+    // Use git2's structured status rather than parsing `git status --porcelain`
+    // text: the porcelain X/Y columns are position-significant whitespace, and
+    // trimming the output shifts an unstaged change into the staged column.
+    let status = git2::Repository::open(dir)
+        .map(|repo| super::status::detect_working_tree_status(&repo))
+        .unwrap_or_else(|_| WorkingTreeStatus::clean());
     let age = head_commit_date(dir);
     (status, age)
 }

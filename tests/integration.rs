@@ -6,11 +6,52 @@ use git_branch_manager::git::{
 };
 use git_branch_manager::types::{DiagKind, MergeStatus};
 
+/// A temp directory for tests. Deletes itself on drop, EXCEPT when the
+/// `GBM_KEEP_TEST_REPOS` env var is set — then it leaks the directory and prints
+/// the path, so you can inspect the repo state after a run:
+///
+/// ```sh
+/// GBM_KEEP_TEST_REPOS=1 cargo test --test integration <name> -- --nocapture
+/// ```
+struct TestDir {
+    inner: Option<tempfile::TempDir>,
+    path: std::path::PathBuf,
+}
+
+impl TestDir {
+    fn new(td: tempfile::TempDir) -> Self {
+        let path = td.path().to_path_buf();
+        Self {
+            inner: Some(td),
+            path,
+        }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        if std::env::var_os("GBM_KEEP_TEST_REPOS").is_some() {
+            if let Some(td) = self.inner.take() {
+                let kept = td.keep(); // leak: skip the recursive delete
+                eprintln!("[GBM_KEEP_TEST_REPOS] kept test repo: {}", kept.display());
+            }
+        }
+        // Otherwise `inner` drops normally and deletes the directory.
+    }
+}
+
 /// Create a temporary git repository with an initial commit on the "main" branch.
 ///
-/// Returns the tempdir (must be kept alive for the duration of the test) and the
-/// git2::Repository handle.
-fn setup_test_repo() -> (tempfile::TempDir, git2::Repository) {
+/// Returns the temp dir guard (must be kept alive for the duration of the test)
+/// and the git2::Repository handle.
+fn setup_test_repo() -> (TestDir, git2::Repository) {
+    // Use the OS temp dir (std::env::temp_dir): portable across Windows/macOS/
+    // Linux. When kept (GBM_KEEP_TEST_REPOS=1), the path is printed on drop, so
+    // it stays findable without hardcoding a platform-specific location.
     let tmpdir = tempfile::tempdir().expect("failed to create tempdir");
     let dir = tmpdir.path();
 
@@ -28,13 +69,28 @@ fn setup_test_repo() -> (tempfile::TempDir, git2::Repository) {
     run_git(dir, &["commit", "-m", "Initial commit"]);
 
     let repo = git2::Repository::open(dir).expect("failed to open repo");
-    (tmpdir, repo)
+    (TestDir::new(tmpdir), repo)
 }
 
 /// Run a git command in the given directory, panicking on failure.
 fn run_git(dir: &std::path::Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!("git {:?} failed in {}: {}", args, dir.display(), stderr);
+    }
+}
+
+/// Run a git command with scoped environment variables in the given directory,
+/// panicking on failure.
+fn run_git_with_env(dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]) {
+    let output = Command::new("git")
+        .args(args)
+        .envs(env.iter().copied())
         .current_dir(dir)
         .output()
         .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
@@ -675,12 +731,20 @@ fn test_fetch_sync() {
 fn test_remote_branches_sorted_by_date() {
     let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
 
-    // Create branches with different commit times (sequential commits)
+    // Create branches with explicit, distinct commit times. list_remote_branches_phase1
+    // sorts by committer date, so set both author and committer dates.
     run_git(&work_dir, &["checkout", "-b", "older-branch"]);
     let f1 = work_dir.join("older.txt");
     std::fs::write(&f1, "older\n").unwrap();
     run_git(&work_dir, &["add", "older.txt"]);
-    run_git(&work_dir, &["commit", "-m", "Older commit"]);
+    run_git_with_env(
+        &work_dir,
+        &["commit", "-m", "Older commit"],
+        &[
+            ("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z"),
+            ("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z"),
+        ],
+    );
     run_git(&work_dir, &["push", "-u", "origin", "older-branch"]);
 
     run_git(&work_dir, &["checkout", "main"]);
@@ -688,7 +752,14 @@ fn test_remote_branches_sorted_by_date() {
     let f2 = work_dir.join("newer.txt");
     std::fs::write(&f2, "newer\n").unwrap();
     run_git(&work_dir, &["add", "newer.txt"]);
-    run_git(&work_dir, &["commit", "-m", "Newer commit"]);
+    run_git_with_env(
+        &work_dir,
+        &["commit", "-m", "Newer commit"],
+        &[
+            ("GIT_AUTHOR_DATE", "2001-01-02T00:00:00Z"),
+            ("GIT_COMMITTER_DATE", "2001-01-02T00:00:00Z"),
+        ],
+    );
     run_git(&work_dir, &["push", "-u", "origin", "newer-branch"]);
     run_git(&work_dir, &["checkout", "main"]);
 
@@ -854,7 +925,7 @@ fn test_wt_status_staged_only() {
 
     let s = status::detect_working_tree_status(&repo);
     assert!(s.has_staged, "should detect staged file");
-    assert!(!s.has_unstaged, "should not detect unstaged changes");
+    assert!(!s.has_modified, "should not detect modified changes");
     assert!(!s.has_untracked, "should not detect untracked files");
 }
 
@@ -868,7 +939,7 @@ fn test_wt_status_unstaged_only() {
 
     let s = status::detect_working_tree_status(&repo);
     assert!(!s.has_staged, "should not detect staged changes");
-    assert!(s.has_unstaged, "should detect unstaged modification");
+    assert!(s.has_modified, "should detect modified file");
     assert!(!s.has_untracked, "should not detect untracked files");
 }
 
@@ -882,7 +953,7 @@ fn test_wt_status_untracked_only() {
 
     let s = status::detect_working_tree_status(&repo);
     assert!(!s.has_staged, "should not detect staged changes");
-    assert!(!s.has_unstaged, "should not detect unstaged changes");
+    assert!(!s.has_modified, "should not detect modified changes");
     assert!(s.has_untracked, "should detect untracked file");
 }
 
@@ -903,9 +974,59 @@ fn test_wt_status_all_three() {
 
     let s = status::detect_working_tree_status(&repo);
     assert!(s.has_staged, "should detect staged file");
-    assert!(s.has_unstaged, "should detect unstaged modification");
+    assert!(s.has_modified, "should detect modified file");
     assert!(s.has_untracked, "should detect untracked file");
     assert!(!s.is_clean());
+}
+
+#[test]
+fn test_worktree_status_reports_modified_not_staged() {
+    // Regression: a tracked file that is modified but NOT staged must report as
+    // `modified`, not `staged`. The old worktree status parser trimmed the
+    // leading (empty) index column out of `git status --porcelain` and misread
+    // the unstaged change as staged. Covers BOTH the main worktree and an
+    // additional worktree, since the enrich path runs once per worktree.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // An additional worktree on its own branch.
+    run_git(dir, &["branch", "wt-mod"]);
+    run_git(dir, &["worktree", "add", ".worktrees/wt-mod", "wt-mod"]);
+
+    // Modify a tracked file (without staging) in BOTH the main dir and the
+    // additional worktree.
+    std::fs::write(dir.join("README.md"), "# Modified, not staged\n").unwrap();
+    std::fs::write(
+        dir.join(".worktrees").join("wt-mod").join("README.md"),
+        "# Modified in additional worktree\n",
+    )
+    .unwrap();
+
+    let worktrees = worktree::list_worktrees(dir);
+    let rx = worktree::enrich_worktrees(worktrees.clone());
+    let mut results: Vec<_> = rx.iter().collect();
+    results.sort_by_key(|r| r.index);
+
+    // The crux of the regression: a modified-not-staged file must classify as
+    // modified, never staged. (We don't assert on has_untracked here: the main
+    // worktree legitimately sees the in-repo `.worktrees/` dir as untracked.)
+    for (idx, wt) in worktrees.iter().enumerate() {
+        let status = &results[idx].wt_status;
+        assert!(
+            status.has_modified,
+            "{:?}: modified-not-staged file should be reported as modified",
+            wt.branch
+        );
+        assert!(
+            !status.has_staged,
+            "{:?}: nothing is staged, so has_staged must be false",
+            wt.branch
+        );
+    }
+
+    if std::env::var_os("GBM_KEEP_TEST_REPOS").is_none() {
+        run_git(dir, &["worktree", "remove", "--force", ".worktrees/wt-mod"]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -937,6 +1058,14 @@ fn test_merge_branch_success() {
         dir.join("feature.txt").exists(),
         "feature.txt should be on main after merge"
     );
+
+    // The operation's contract is to leave HEAD on the base branch.
+    let repo = git2::Repository::open(dir).expect("re-open repo");
+    assert_eq!(
+        repo.head().unwrap().shorthand(),
+        Some("main"),
+        "HEAD should remain on the base branch after merge"
+    );
 }
 
 #[test]
@@ -964,16 +1093,21 @@ fn test_merge_branch_squash_success() {
         "squash.txt should be on main after squash merge"
     );
 
-    // And main should have a single new commit (not a merge commit)
-    let log = std::process::Command::new("git")
-        .args(["log", "--oneline", "-3"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    let log_str = String::from_utf8_lossy(&log.stdout);
+    // And main should have a single new commit (NOT a merge commit): the squash
+    // commit must have exactly one parent.
+    let repo = git2::Repository::open(dir).expect("re-open repo");
+    let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
     assert!(
-        log_str.contains("Squash merge feature-squash"),
-        "should have squash merge commit"
+        head_commit
+            .summary()
+            .is_some_and(|s| s.contains("Squash merge feature-squash")),
+        "HEAD should be the squash merge commit, got: {:?}",
+        head_commit.summary()
+    );
+    assert_eq!(
+        head_commit.parent_count(),
+        1,
+        "squash merge must be a single-parent commit, not a merge commit"
     );
 }
 
@@ -997,16 +1131,26 @@ fn test_merge_branch_conflict_aborts() {
     assert_eq!(results.len(), 1);
     assert!(!results[0].success, "conflicting merge should fail");
 
-    // Verify merge was aborted: repo must not be in mid-merge state
-    let status = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    let status_str = String::from_utf8_lossy(&status.stdout);
+    // Verify merge was aborted cleanly: no conflicts, no half-staged leftovers,
+    // and HEAD restored to the base branch.
+    let repo = git2::Repository::open(dir).expect("re-open repo");
+    let statuses = repo.statuses(None).unwrap();
+    let dirty = statuses.iter().any(|e| {
+        e.status().intersects(
+            git2::Status::CONFLICTED
+                | git2::Status::INDEX_NEW
+                | git2::Status::INDEX_MODIFIED
+                | git2::Status::INDEX_DELETED,
+        )
+    });
     assert!(
-        !status_str.contains("UU"),
-        "merge should have been aborted, no unresolved conflicts"
+        !dirty,
+        "merge abort should leave no conflicts or staged leftovers"
+    );
+    assert_eq!(
+        repo.head().unwrap().shorthand(),
+        Some("main"),
+        "HEAD should be back on the base branch after abort"
     );
 }
 
@@ -1056,10 +1200,14 @@ fn test_rebase_branch_success() {
         .peel_to_commit()
         .unwrap()
         .id();
-    let (ahead, _behind) = repo.graph_ahead_behind(feature_oid, main_oid).unwrap();
+    let (ahead, behind) = repo.graph_ahead_behind(feature_oid, main_oid).unwrap();
     assert_eq!(
         ahead, 1,
         "feature should be 1 commit ahead of main after rebase"
+    );
+    assert_eq!(
+        behind, 0,
+        "feature should be 0 commits behind main after rebase onto it"
     );
 }
 
@@ -1089,8 +1237,8 @@ fn test_rebase_branch_conflict_aborts() {
     assert_eq!(results.len(), 1);
     assert!(!results[0].success, "conflicting rebase should fail");
     assert!(
-        results[0].message.contains("Rebase conflicts") || results[0].message.contains("conflict"),
-        "message should mention conflict: {}",
+        results[0].message.contains("Rebase conflict") && results[0].message.contains("aborted"),
+        "message should report the conflict was aborted: {}",
         results[0].message
     );
 
@@ -1099,6 +1247,21 @@ fn test_rebase_branch_conflict_aborts() {
     assert!(
         !rebase_head.exists(),
         "REBASE_HEAD should not exist after abort"
+    );
+    // And the working tree must be clean — no conflict markers left behind, HEAD
+    // restored to the branch that was being rebased.
+    let repo = git2::Repository::open(dir).unwrap();
+    let statuses = repo.statuses(None).unwrap();
+    assert!(
+        !statuses
+            .iter()
+            .any(|e| e.status().contains(git2::Status::CONFLICTED)),
+        "rebase abort should leave no conflicted files"
+    );
+    assert_eq!(
+        repo.head().unwrap().shorthand(),
+        Some("rebase-conflict"),
+        "HEAD should be restored to the rebased branch after abort"
     );
 }
 
@@ -1411,6 +1574,13 @@ fn test_create_worktree_simple() {
         wt_path.join(".git").exists(),
         "worktree directory should be a valid git working tree"
     );
+    // It must be checked out on the requested branch, not left detached.
+    let wts = worktree::list_worktrees(dir);
+    assert!(
+        wts.iter()
+            .any(|w| w.branch.as_deref() == Some("wt-feature")),
+        "worktree should be checked out on wt-feature: {wts:?}"
+    );
 }
 
 #[test]
@@ -1432,6 +1602,21 @@ fn test_create_worktree_sanitizes_slash() {
     assert!(
         wt_path.exists(),
         ".worktrees/feature-slash-test should be created (slash → dash)"
+    );
+    // The slash must be sanitized to a dash, NOT create a nested directory.
+    assert!(
+        !dir.join(".worktrees")
+            .join("feature")
+            .join("slash-test")
+            .exists(),
+        "slash should be replaced with a dash, not create nested dirs"
+    );
+    // And the worktree is checked out on the real (slashed) branch name.
+    let wts = worktree::list_worktrees(dir);
+    assert!(
+        wts.iter()
+            .any(|w| w.branch.as_deref() == Some("feature/slash-test")),
+        "worktree should be on feature/slash-test: {wts:?}"
     );
 }
 
@@ -1456,6 +1641,15 @@ fn test_remove_worktree_clean() {
         result.message
     );
     assert!(!wt_path.exists(), "worktree directory should be removed");
+    // It must also be deregistered from git's worktree list, not just unlinked
+    // on disk — only the main worktree should remain.
+    let wts = worktree::list_worktrees(dir);
+    assert_eq!(
+        wts.len(),
+        1,
+        "only the main worktree should remain: {wts:?}"
+    );
+    assert!(wts[0].is_main, "the remaining worktree is the main one");
 }
 
 #[test]
@@ -1468,8 +1662,10 @@ fn test_force_remove_worktree_dirty() {
 
     let wt_path = dir.join(".worktrees").join("wt-dirty");
 
-    // Create an uncommitted change in the worktree — regular remove should fail
-    std::fs::write(wt_path.join("dirty.txt"), "uncommitted change\n").unwrap();
+    // Modify a TRACKED file in the worktree. `git worktree remove` reliably
+    // refuses on tracked-file modifications across git versions; an untracked
+    // file alone is not a dependable refusal trigger.
+    std::fs::write(wt_path.join("README.md"), "# Modified in worktree\n").unwrap();
 
     let result = operations::remove_worktree(dir, &wt_path);
     assert!(
@@ -1687,17 +1883,17 @@ fn test_is_squash_merged_direct() {
 fn test_is_squash_merged_with_precomputed_merge_base() {
     // The fast path: a precomputed merge base is supplied, so is_squash_merged must
     // not need to derive it via `git merge-base` and still detect the squash.
-    let (tmpdir, _repo) = setup_test_repo();
+    let (tmpdir, repo) = setup_test_repo();
     let dir = tmpdir.path();
 
-    let merge_base = {
-        let out = Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    };
+    // HEAD is the initial commit; it becomes the merge base after we branch.
+    let merge_base = repo
+        .head()
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id()
+        .to_string();
 
     run_git(dir, &["checkout", "-b", "feature/squashed"]);
     std::fs::write(dir.join("squash.txt"), "squash content").unwrap();
@@ -1986,6 +2182,17 @@ fn dump_worktrees_basic() {
         s.contains(canonical_str),
         "main worktree full path missing: {s:?}\nexpected: {canonical_str}"
     );
+    // The main worktree is on the base branch, so its Merge cell must be blank
+    // (a branch can't be merged into itself). This guards the render bug where
+    // the base worktree wrongly showed "unmerged".
+    let main_row = s
+        .lines()
+        .find(|l| l.contains(canonical_str))
+        .expect("main worktree row");
+    assert!(
+        !main_row.contains("unmerged"),
+        "base worktree row must not show a merge status: {main_row:?}"
+    );
 }
 
 #[test]
@@ -2110,7 +2317,13 @@ fn test_cache_audit_merge_base_not_false_positive() {
             b.merge_base_commit = None;
         }
         let mut cache = cache::BranchCache::load_from_path(cache_path.clone());
-        branch::fill_merge_base_commits_cached(&repo, &mut branches, &reachable, base_tip, &mut cache);
+        branch::fill_merge_base_commits_cached(
+            &repo,
+            &mut branches,
+            &reachable,
+            base_tip,
+            &mut cache,
+        );
         cache.save();
     }
 
@@ -2143,7 +2356,16 @@ fn test_cache_audit_skipped_counts_for_uncached_branches() {
     run_git(dir, &["add", "."]);
     run_git(dir, &["commit", "-m", "feature commit"]);
     run_git(dir, &["checkout", "main"]);
-    run_git(dir, &["merge", "--no-ff", "feature/merged-normal", "-m", "Merge feature"]);
+    run_git(
+        dir,
+        &[
+            "merge",
+            "--no-ff",
+            "feature/merged-normal",
+            "-m",
+            "Merge feature",
+        ],
+    );
 
     // Create an unmerged branch with a cache row (squash-checked as unmerged).
     run_git(dir, &["checkout", "-b", "feature/unmerged"]);
@@ -2181,11 +2403,13 @@ fn test_cache_audit_skipped_counts_for_uncached_branches() {
 
     // No discrepancies — the cached entry is correct.
     assert_eq!(
-        audit.discrepancies.len(), 0,
-        "no discrepancies expected: {:?}", audit.discrepancies
+        audit.discrepancies.len(),
+        0,
+        "no discrepancies expected: {:?}",
+        audit.discrepancies
     );
 
-    // Three branches have no cache row vs cached: main (base+current) and
+    // Two branches have no cache row vs cached: main (base+current) and
     // feature/merged-normal (regular-merged, never cached) are skipped.
     assert_eq!(
         audit.merge_status.skipped, 2,
@@ -2194,10 +2418,178 @@ fn test_cache_audit_skipped_counts_for_uncached_branches() {
 
     assert!(
         audit.merge_status.skip_reasons.contains(&"base branch"),
-        "expected 'base branch' reason: {:?}", audit.merge_status.skip_reasons
+        "expected 'base branch' reason: {:?}",
+        audit.merge_status.skip_reasons
     );
     assert!(
-        audit.merge_status.skip_reasons.contains(&"no cached status"),
-        "expected 'no cached status' reason: {:?}", audit.merge_status.skip_reasons
+        audit
+            .merge_status
+            .skip_reasons
+            .contains(&"no cached status"),
+        "expected 'no cached status' reason: {:?}",
+        audit.merge_status.skip_reasons
     );
+}
+
+/// Live, end-to-end test: build one repo containing every merge scenario, give
+/// each feature branch its own worktree, and assert that a worktree's Merge
+/// status matches its branch's. Also covers clean vs dirty working trees. The
+/// temp repo lives in the OS temp dir and is deleted on pass, fail, or panic
+/// (TempDir's Drop runs during unwind).
+#[test]
+fn test_worktree_merge_status_from_branches() {
+    let tmpdir = TestDir::new(tempfile::tempdir().expect("failed to create tempdir"));
+    let dir = tmpdir.path();
+
+    // --- base repo on main with an initial README.md commit ---
+    run_git(dir, &["init", "-b", "main"]);
+    run_git(dir, &["config", "user.name", "Test User"]);
+    run_git(dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.join("README.md"), "# Test Repo\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "Initial commit"]);
+
+    // --- regular-merged branch (non-ff so a merge commit is recorded) ---
+    run_git(dir, &["checkout", "-b", "feat-merged"]);
+    std::fs::write(dir.join("feature.txt"), "feature\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "feat-merged work"]);
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("main-change.txt"), "main\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "main commit"]);
+    run_git(dir, &["merge", "feat-merged", "-m", "Merge feat-merged"]);
+
+    // --- squash-merged branch: 3 commits each editing README.md, then
+    //     `git merge --squash` + commit on main; branch left intact ---
+    run_git(dir, &["checkout", "-b", "feat-squashed"]);
+    for i in 1..=3 {
+        std::fs::write(
+            dir.join("README.md"),
+            format!("# Test Repo\nsquash line {i}\n"),
+        )
+        .unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", &format!("squash work {i}")]);
+    }
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feat-squashed"]);
+    run_git(dir, &["commit", "-m", "squash merge feat-squashed"]);
+
+    // --- unmerged branch ---
+    run_git(dir, &["checkout", "-b", "feat-unmerged"]);
+    std::fs::write(dir.join("wip.txt"), "wip\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "wip"]);
+    run_git(dir, &["checkout", "main"]);
+
+    // --- one worktree per feature branch (main dir stays on main) ---
+    run_git(
+        dir,
+        &["worktree", "add", ".worktrees/merged", "feat-merged"],
+    );
+    run_git(
+        dir,
+        &["worktree", "add", ".worktrees/squashed", "feat-squashed"],
+    );
+    run_git(
+        dir,
+        &["worktree", "add", ".worktrees/unmerged", "feat-unmerged"],
+    );
+
+    // dirty the unmerged worktree (untracked file); leave the others clean
+    std::fs::write(dir.join(".worktrees/unmerged/dirty.txt"), "x\n").unwrap();
+
+    // --- exercise the real library APIs in production order ---
+    let repo = git2::Repository::open(dir).expect("failed to re-open repo");
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+
+    // sanity: branch statuses themselves are correct
+    let branch_status = |name: &str| {
+        branches
+            .iter()
+            .find(|b| b.name == name)
+            .unwrap_or_else(|| panic!("branch {name} not found"))
+            .merge_status
+    };
+    assert_eq!(branch_status("feat-merged"), MergeStatus::Merged);
+    assert_eq!(branch_status("feat-squashed"), MergeStatus::SquashMerged);
+    assert_eq!(branch_status("feat-unmerged"), MergeStatus::Unmerged);
+
+    let mut worktrees = worktree::list_worktrees(dir);
+
+    // THE API UNDER TEST: correlate worktree merge status from the branch list.
+    worktree::apply_branch_merge_status(&mut worktrees, &branches);
+
+    let wt_for = |name: &str| {
+        worktrees
+            .iter()
+            .find(|w| w.branch.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no worktree for branch {name}"))
+    };
+    assert_eq!(
+        wt_for("feat-merged").merge_status,
+        MergeStatus::Merged,
+        "merged worktree should match its branch"
+    );
+    assert_eq!(
+        wt_for("feat-squashed").merge_status,
+        MergeStatus::SquashMerged,
+        "squash-merged worktree should match its branch"
+    );
+    assert_eq!(
+        wt_for("feat-unmerged").merge_status,
+        MergeStatus::Unmerged,
+        "unmerged worktree should match its branch"
+    );
+
+    // main worktree is on the base branch: it must be flagged is_base so the
+    // renderer blanks its Merge cell (a branch can't be merged into itself).
+    // The raw merge_status copied from the base BranchInfo is an implementation
+    // detail; the contract that matters is is_base. (See the render-level test
+    // `worktree_base_merge_cell_is_blank` in src/app.rs for the blanking.)
+    let main_wt = worktrees.iter().find(|w| w.is_main).expect("main worktree");
+    assert_eq!(main_wt.branch.as_deref(), Some("main"));
+    assert!(
+        main_wt.is_base,
+        "main worktree is on the base branch and must be marked is_base"
+    );
+    // The feature worktrees are NOT the base.
+    assert!(!wt_for("feat-merged").is_base);
+    assert!(!wt_for("feat-unmerged").is_base);
+
+    // --- clean vs dirty working tree via enrich_worktrees (sets wt_status) ---
+    let unmerged_idx = worktrees
+        .iter()
+        .position(|w| w.branch.as_deref() == Some("feat-unmerged"))
+        .unwrap();
+    let merged_idx = worktrees
+        .iter()
+        .position(|w| w.branch.as_deref() == Some("feat-merged"))
+        .unwrap();
+    let rx = worktree::enrich_worktrees(worktrees.clone());
+    let mut results: Vec<_> = rx.iter().collect();
+    results.sort_by_key(|r| r.index);
+    // The dirty file is untracked specifically — assert the exact buckets, not
+    // just !is_clean (which would pass under a staged/modified misclassification).
+    let unmerged_status = &results[unmerged_idx].wt_status;
+    assert!(unmerged_status.has_untracked, "dirty file is untracked");
+    assert!(!unmerged_status.has_staged, "nothing staged");
+    assert!(!unmerged_status.has_modified, "no tracked modifications");
+    assert!(
+        results[merged_idx].wt_status.is_clean(),
+        "merged worktree is untouched -> clean"
+    );
+
+    // cleanup worktrees before the tempdir drops — skipped when keeping repos
+    // for manual inspection, so the worktrees stay on disk too
+    if std::env::var_os("GBM_KEEP_TEST_REPOS").is_none() {
+        for p in [
+            ".worktrees/merged",
+            ".worktrees/squashed",
+            ".worktrees/unmerged",
+        ] {
+            run_git(dir, &["worktree", "remove", "--force", p]);
+        }
+    }
 }

@@ -61,7 +61,11 @@ pub(crate) fn merge_status_parts(
             format!("u {}", symbols.status_unmerged),
             theme.unmerged,
         ),
-        MergeStatus::Pending => ("pending \u{2026}".to_string(), "\u{2026}".to_string(), theme.dim),
+        MergeStatus::Pending => (
+            "pending \u{2026}".to_string(),
+            "\u{2026}".to_string(),
+            theme.dim,
+        ),
     };
     (fit_text(full, short, col_width, ctx.compact), style)
 }
@@ -81,7 +85,12 @@ pub(crate) fn worktree_status_parts(
         )
     } else {
         (
-            fit_text(status.summary(), status.short_summary(), col_width, ctx.compact),
+            fit_text(
+                status.summary(),
+                status.short_summary(),
+                col_width,
+                ctx.compact,
+            ),
             ctx.theme.unmerged,
         )
     }
@@ -300,18 +309,18 @@ mod tests {
         let clean = WorkingTreeStatus::clean();
         let dirty = WorkingTreeStatus {
             has_staged: true,
-            has_unstaged: true,
+            has_modified: true,
             has_untracked: false,
         };
         // Wide enough for the full label.
         assert_eq!(worktree_status_parts(&clean, &ctx, Some(9)).0, "clean");
         assert_eq!(
             worktree_status_parts(&dirty, &ctx, Some(15)).0,
-            "staged+unstaged"
+            "staged+modified"
         );
         // Too narrow: abbreviate.
         assert_eq!(worktree_status_parts(&clean, &ctx, Some(3)).0, "c");
-        assert_eq!(worktree_status_parts(&dirty, &ctx, Some(3)).0, "s+u");
+        assert_eq!(worktree_status_parts(&dirty, &ctx, Some(3)).0, "s+m");
     }
 
     // --- merge_status_line_for_branch: base is blank ---

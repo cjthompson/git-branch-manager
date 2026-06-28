@@ -413,6 +413,9 @@ impl App {
                         }
                     }
                     self.pr_rx = Some(pr_loader::spawn_pr_loader(repo_path));
+                    // Branch merge statuses just changed; re-correlate worktrees
+                    // if they're already loaded.
+                    self.refresh_worktree_merge_status();
                 }
                 Phase1Msg::AheadBehind(updates) => {
                     for (name, ahead, behind) in updates {
@@ -445,7 +448,9 @@ impl App {
         }
 
         // Squash-merge results (cap 32 per tick)
-        for result in drain_channel(&mut self.squash_rx, 32) {
+        let squash_results = drain_channel(&mut self.squash_rx, 32);
+        let had_squash_results = !squash_results.is_empty();
+        for result in squash_results {
             self.squash_checked += 1;
             if let Some(b) = self
                 .branches
@@ -459,6 +464,10 @@ impl App {
                     MergeStatus::Unmerged
                 };
             }
+        }
+        if had_squash_results {
+            // Squash detection just resolved branch statuses; re-correlate worktrees.
+            self.refresh_worktree_merge_status();
         }
 
         // Remote squash-merge results
@@ -561,6 +570,9 @@ impl App {
             self.worktrees.loading = false;
             self.clear_toast();
 
+            // Branches may already be loaded; correlate merge status now.
+            self.refresh_worktree_merge_status();
+
             // Spawn worktree enrichment
             let rx = worktree::enrich_worktrees(self.worktrees.items().to_vec());
             self.worktree_enrich_rx = Some(rx);
@@ -571,6 +583,7 @@ impl App {
             self.cancel_flag = None;
             self.progress_rx = None;
             self.progress = None;
+            self.refresh_after_operation();
             self.overlay = Some(Overlay::Results { results });
         }
 
@@ -950,7 +963,8 @@ impl App {
             },
             Some(Overlay::Results { results }) => match key.code {
                 KeyCode::Enter | KeyCode::Esc => {
-                    self.refresh_after_operation();
+                    // Operation completion already refreshed the backing view;
+                    // closing results should only reveal the refreshed list.
                 }
                 _ => {
                     self.overlay = Some(Overlay::Results { results });
@@ -1990,6 +2004,14 @@ impl App {
         });
     }
 
+    /// Re-correlate each loaded worktree's merge status from the current branch
+    /// list. Cheap linear scan, no I/O. Called whenever either the worktree set
+    /// or branch merge statuses change, since the two load on separate channels
+    /// and can arrive in any order.
+    fn refresh_worktree_merge_status(&mut self) {
+        worktree::apply_branch_merge_status(self.worktrees.items_mut(), self.branches.items());
+    }
+
     fn spawn_worktree_load(&mut self) {
         self.worktrees.loading = true;
         let repo_path = self.repo_path.clone();
@@ -2846,8 +2868,11 @@ pub(crate) fn render_worktree_row(
                 lines.push(age_line(age, &item.age_date, ctx));
             }
             4 => {
-                lines.push(merge_status_line(
+                // Blank the merge cell for the base-branch worktree, mirroring
+                // the Branches view (a branch can't be merged into itself).
+                lines.push(merge_status_line_for_branch(
                     &item.merge_status,
+                    item.is_base,
                     ctx,
                     visible_data_col_width(visible_cols, ctx, col_idx),
                 ));
@@ -2861,13 +2886,15 @@ pub(crate) fn render_worktree_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration, Utc};
+    use chrono::{Duration, TimeZone, Utc};
+    use std::process::Command;
 
     fn worktree(branch: &str) -> WorktreeInfo {
         WorktreeInfo {
             path: PathBuf::from("/repo/.worktrees/example"),
             branch: Some(branch.to_string()),
             is_main: false,
+            is_base: false,
             commit_hash: "abc1234".into(),
             wt_status: WorkingTreeStatus::clean(),
             age_date: Utc::now(),
@@ -2901,6 +2928,129 @@ mod tests {
             .collect()
     }
 
+    fn run_git(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+        if !output.status.success() {
+            panic!(
+                "git {:?} failed in {}: {}",
+                args,
+                dir.display(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    fn run_git_with_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) {
+        let output = Command::new("git")
+            .args(args)
+            .envs(env.iter().copied())
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+        if !output.status.success() {
+            panic!(
+                "git {:?} failed in {}: {}",
+                args,
+                dir.display(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn branch_operation_result_refreshes_branch_metadata_immediately() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+
+        std::fs::write(dir.join("README.md"), "base\n").unwrap();
+        run_git(dir, &["add", "README.md"]);
+        run_git_with_env(
+            dir,
+            &["commit", "-m", "initial"],
+            &[
+                ("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z"),
+                ("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z"),
+            ],
+        );
+        run_git(dir, &["branch", "-M", "main"]);
+
+        let branch_name = "feature/rebase-refresh";
+        run_git(dir, &["checkout", "-b", branch_name]);
+        std::fs::write(dir.join("feature.txt"), "old\n").unwrap();
+        run_git(dir, &["add", "feature.txt"]);
+        run_git_with_env(
+            dir,
+            &["commit", "-m", "feature old"],
+            &[
+                ("GIT_AUTHOR_DATE", "2001-01-02T00:00:00Z"),
+                ("GIT_COMMITTER_DATE", "2001-01-02T00:00:00Z"),
+            ],
+        );
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.return_view = ViewId::Branches;
+        let stale_date = Utc.with_ymd_and_hms(1999, 1, 1, 0, 0, 0).unwrap();
+        app.branches.set_items(vec![BranchInfo {
+            name: branch_name.into(),
+            is_current: false,
+            is_base: false,
+            tracking: TrackingStatus::Local,
+            ahead: Some(99),
+            behind: Some(99),
+            last_commit_date: stale_date,
+            merge_status: MergeStatus::Merged,
+            base_branch: "main".into(),
+            merge_base_commit: Some("stale".into()),
+            pr: Some(PrInfo {
+                number: 123,
+                status: PrStatus::Open,
+            }),
+        }]);
+
+        std::fs::write(dir.join("feature.txt"), "new\n").unwrap();
+        run_git(dir, &["add", "feature.txt"]);
+        run_git_with_env(
+            dir,
+            &["commit", "-m", "feature new"],
+            &[
+                ("GIT_AUTHOR_DATE", "2001-01-03T00:00:00Z"),
+                ("GIT_COMMITTER_DATE", "2001-01-03T00:00:00Z"),
+            ],
+        );
+
+        let (tx, rx) = mpsc::channel();
+        app.op_rx = Some(rx);
+        tx.send(vec![OperationResult {
+            branch_name: branch_name.into(),
+            action: BranchAction::Rebase,
+            success: true,
+            message: "Rebased feature/rebase-refresh onto main".into(),
+        }])
+        .unwrap();
+
+        app.drain_channels();
+
+        let refreshed = app
+            .branches
+            .items()
+            .iter()
+            .find(|branch| branch.name == branch_name)
+            .expect("refreshed feature branch");
+        assert_eq!(
+            refreshed.last_commit_date,
+            Utc.with_ymd_and_hms(2001, 1, 3, 0, 0, 0).unwrap(),
+            "branch metadata should refresh as soon as operation results arrive"
+        );
+        assert!(matches!(app.overlay, Some(Overlay::Results { .. })));
+    }
+
     #[test]
     fn worktree_branch_cell_left_truncates_to_column_width() {
         let theme = Theme::dark();
@@ -2924,6 +3074,42 @@ mod tests {
 
         assert_eq!(cell_text(&rows[1]), "\u{2026}branch-name");
         assert_eq!(rows[1].alignment, Some(Alignment::Right));
+    }
+
+    #[test]
+    fn worktree_base_merge_cell_is_blank() {
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: 120,
+            compact: false,
+            data_col_widths: vec![30, 20, 12, 8, 12],
+            first_col_width: 30,
+        };
+
+        // Base-branch worktree: a branch can't be merged into itself, so the
+        // Merge cell must be blank (mirrors the Branches view's base row).
+        let mut base_wt = worktree("main");
+        base_wt.is_base = true;
+        base_wt.merge_status = MergeStatus::Unmerged;
+        let rows = render_worktree_row(&base_wt, 0, false, false, &[0, 1, 2, 3, 4], &ctx);
+        assert_eq!(
+            cell_text(&rows[4]),
+            "",
+            "base worktree Merge cell should be blank, not 'unmerged'"
+        );
+
+        // Non-base worktree: the Merge cell shows the real status.
+        let mut feat_wt = worktree("feature/x");
+        feat_wt.merge_status = MergeStatus::Merged;
+        let rows = render_worktree_row(&feat_wt, 0, false, false, &[0, 1, 2, 3, 4], &ctx);
+        assert_ne!(
+            cell_text(&rows[4]),
+            "",
+            "non-base worktree should display its merge status"
+        );
     }
 
     #[test]
