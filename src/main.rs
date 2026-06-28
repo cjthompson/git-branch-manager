@@ -184,9 +184,9 @@ fn main() -> Result<()> {
                         }
                     } else {
                         // Full recompute: build reachable set, apply statuses, fill bases.
-                        let reachable =
+                        let base_reachable =
                             merge_detection::build_reachable_set_from_repo(&repo2, &secondary_base);
-                        merge_detection::apply_merge_statuses(&repo2, &mut branches2, &reachable);
+                        merge_detection::apply_merge_statuses(&repo2, &mut branches2, &base_reachable);
                         // Cache the newly computed merge statuses.
                         for branch in branches2.iter() {
                             if !branch.is_base && !branch.is_current {
@@ -207,13 +207,13 @@ fn main() -> Result<()> {
                             branch::fill_merge_base_commits_cached(
                                 &repo2,
                                 &mut branches2,
-                                &reachable,
+                                &base_reachable.local,
                                 base_tip,
                                 &mut mb_cache,
                             );
                             mb_cache.set_base_tip(base_tip_str);
                         } else {
-                            branch::fill_merge_base_commits(&repo2, &mut branches2, &reachable);
+                            branch::fill_merge_base_commits(&repo2, &mut branches2, &base_reachable.local);
                         }
                         mb_cache.save();
                     }

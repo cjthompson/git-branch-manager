@@ -71,13 +71,17 @@ pub fn pr_column<T: ViewItem>() -> ColumnDef<T> {
     }
 }
 
-/// Rank a MergeStatus for sorting: Merged=0, SquashMerged=1, Unmerged=2, Pending=3.
+/// Rank a MergeStatus for sorting: lower = sorted first.
 pub fn merge_status_rank(status: &MergeStatus) -> u8 {
     match status {
         MergeStatus::Merged => 0,
         MergeStatus::SquashMerged => 1,
-        MergeStatus::Unmerged => 2,
-        MergeStatus::Pending => 3,
+        MergeStatus::RemoteMerged => 2,
+        MergeStatus::LocalMerged => 3,
+        MergeStatus::RemoteSquashMerged => 4,
+        MergeStatus::LocalSquashMerged => 5,
+        MergeStatus::Unmerged => 6,
+        MergeStatus::Pending => 7,
     }
 }
 
@@ -93,8 +97,8 @@ pub fn merge_status_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
 pub fn merge_status_column<T: ViewItem>(name: &'static str) -> ColumnDef<T> {
     ColumnDef {
         name,
-        min_width: 4,
-        wide_width: Some(15),
+        min_width: 5,
+        wide_width: Some(16),
         hide_below_width: None,
         compare: Some(merge_status_cmp),
     }
@@ -309,8 +313,12 @@ mod tests {
     fn merge_status_rank_correct_values() {
         assert_eq!(merge_status_rank(&MergeStatus::Merged), 0);
         assert_eq!(merge_status_rank(&MergeStatus::SquashMerged), 1);
-        assert_eq!(merge_status_rank(&MergeStatus::Unmerged), 2);
-        assert_eq!(merge_status_rank(&MergeStatus::Pending), 3);
+        assert_eq!(merge_status_rank(&MergeStatus::RemoteMerged), 2);
+        assert_eq!(merge_status_rank(&MergeStatus::LocalMerged), 3);
+        assert_eq!(merge_status_rank(&MergeStatus::RemoteSquashMerged), 4);
+        assert_eq!(merge_status_rank(&MergeStatus::LocalSquashMerged), 5);
+        assert_eq!(merge_status_rank(&MergeStatus::Unmerged), 6);
+        assert_eq!(merge_status_rank(&MergeStatus::Pending), 7);
     }
 
     #[test]
@@ -335,8 +343,8 @@ mod tests {
     fn merge_status_column_has_correct_properties() {
         let col = merge_status_column::<BranchInfo>("Merge");
         assert_eq!(col.name, "Merge");
-        assert_eq!(col.min_width, 4);
-        assert_eq!(col.wide_width, Some(15));
+        assert_eq!(col.min_width, 5);
+        assert_eq!(col.wide_width, Some(16));
         assert_eq!(col.hide_below_width, None);
         assert!(col.compare.is_some());
     }
@@ -345,7 +353,7 @@ mod tests {
     fn merge_status_column_with_different_name() {
         let col = merge_status_column::<BranchInfo>("Merge");
         assert_eq!(col.name, "Merge");
-        assert_eq!(col.min_width, 4);
-        assert_eq!(col.wide_width, Some(15));
+        assert_eq!(col.min_width, 5);
+        assert_eq!(col.wide_width, Some(16));
     }
 }

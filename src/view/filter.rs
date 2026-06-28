@@ -30,6 +30,10 @@ impl FilterSet {
             match token {
                 "merge:merged" => fs.statuses.push(MergeStatus::Merged),
                 "merge:squash" => fs.statuses.push(MergeStatus::SquashMerged),
+                "merge:remote-merged" => fs.statuses.push(MergeStatus::RemoteMerged),
+                "merge:local-merged" => fs.statuses.push(MergeStatus::LocalMerged),
+                "merge:remote-squash" => fs.statuses.push(MergeStatus::RemoteSquashMerged),
+                "merge:local-squash" => fs.statuses.push(MergeStatus::LocalSquashMerged),
                 "merge:unmerged" => fs.statuses.push(MergeStatus::Unmerged),
                 "pr:yes" => fs.pr_yes = true,
                 "pr:no" => fs.pr_no = true,
@@ -103,6 +107,26 @@ pub fn merge_tokens() -> Vec<FilterTokenDef> {
             key: 's',
             label: "Squash-merged",
             token: "merge:squash",
+        },
+        FilterTokenDef {
+            key: 'r',
+            label: "Remote-merged",
+            token: "merge:remote-merged",
+        },
+        FilterTokenDef {
+            key: 'l',
+            label: "Local-merged",
+            token: "merge:local-merged",
+        },
+        FilterTokenDef {
+            key: 'R',
+            label: "Remote-squash",
+            token: "merge:remote-squash",
+        },
+        FilterTokenDef {
+            key: 'L',
+            label: "Local-squash",
+            token: "merge:local-squash",
         },
         FilterTokenDef {
             key: 'u',
@@ -215,6 +239,30 @@ mod tests {
     fn parse_status_unmerged() {
         let fs = FilterSet::parse("merge:unmerged");
         assert_eq!(fs.statuses, vec![MergeStatus::Unmerged]);
+    }
+
+    #[test]
+    fn parse_status_remote_merged() {
+        let fs = FilterSet::parse("merge:remote-merged");
+        assert_eq!(fs.statuses, vec![MergeStatus::RemoteMerged]);
+    }
+
+    #[test]
+    fn parse_status_local_merged() {
+        let fs = FilterSet::parse("merge:local-merged");
+        assert_eq!(fs.statuses, vec![MergeStatus::LocalMerged]);
+    }
+
+    #[test]
+    fn parse_status_remote_squash() {
+        let fs = FilterSet::parse("merge:remote-squash");
+        assert_eq!(fs.statuses, vec![MergeStatus::RemoteSquashMerged]);
+    }
+
+    #[test]
+    fn parse_status_local_squash() {
+        let fs = FilterSet::parse("merge:local-squash");
+        assert_eq!(fs.statuses, vec![MergeStatus::LocalSquashMerged]);
     }
 
     #[test]
@@ -341,6 +389,10 @@ mod tests {
             vec![
                 ('m', "Merged", "merge:merged"),
                 ('s', "Squash-merged", "merge:squash"),
+                ('r', "Remote-merged", "merge:remote-merged"),
+                ('l', "Local-merged", "merge:local-merged"),
+                ('R', "Remote-squash", "merge:remote-squash"),
+                ('L', "Local-squash", "merge:local-squash"),
                 ('u', "Unmerged", "merge:unmerged"),
             ]
         );
@@ -407,7 +459,15 @@ mod tests {
         assert_eq!(subset(&b, &kinds), subset(&w, &kinds));
         assert_eq!(
             subset(&b, &kinds),
-            vec!["merge:merged", "merge:squash", "merge:unmerged"]
+            vec![
+                "merge:merged",
+                "merge:squash",
+                "merge:remote-merged",
+                "merge:local-merged",
+                "merge:remote-squash",
+                "merge:local-squash",
+                "merge:unmerged",
+            ]
         );
     }
 

@@ -231,8 +231,8 @@ fn test_squash_merged_branch_detection() {
         .expect("feature-squashed branch not found");
     assert_eq!(
         feature.merge_status,
-        MergeStatus::SquashMerged,
-        "feature-squashed should be detected as SquashMerged"
+        MergeStatus::LocalSquashMerged,
+        "feature-squashed should be detected as LocalSquashMerged (no remote in test repo)"
     );
 }
 
@@ -837,11 +837,7 @@ fn test_remote_branch_squash_merge_detection() {
     let mut remotes = remotes;
     for result in rx {
         if let Some(&idx) = index_map.get(&result.branch_name) {
-            remotes[idx].merge_status = if result.is_squash_merged {
-                MergeStatus::SquashMerged
-            } else {
-                MergeStatus::Unmerged
-            };
+            remotes[idx].merge_status = result.status;
         }
     }
 
@@ -2320,7 +2316,7 @@ fn test_cache_audit_merge_base_not_false_positive() {
         branch::fill_merge_base_commits_cached(
             &repo,
             &mut branches,
-            &reachable,
+            &reachable.local,
             base_tip,
             &mut cache,
         );
@@ -2513,7 +2509,9 @@ fn test_worktree_merge_status_from_branches() {
             .merge_status
     };
     assert_eq!(branch_status("feat-merged"), MergeStatus::Merged);
-    assert_eq!(branch_status("feat-squashed"), MergeStatus::SquashMerged);
+    // No remote in this repo, so a squash-merge resolves to the local-only
+    // variant (matching test_squash_merged_branch_detection).
+    assert_eq!(branch_status("feat-squashed"), MergeStatus::LocalSquashMerged);
     assert_eq!(branch_status("feat-unmerged"), MergeStatus::Unmerged);
 
     let mut worktrees = worktree::list_worktrees(dir);
@@ -2534,7 +2532,7 @@ fn test_worktree_merge_status_from_branches() {
     );
     assert_eq!(
         wt_for("feat-squashed").merge_status,
-        MergeStatus::SquashMerged,
+        MergeStatus::LocalSquashMerged,
         "squash-merged worktree should match its branch"
     );
     assert_eq!(

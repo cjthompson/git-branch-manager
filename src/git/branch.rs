@@ -77,9 +77,9 @@ pub fn detect_base_branch(repo: &Repository, override_base: Option<&str>) -> Res
 pub fn list_branches_phase1(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
     let span = Span::current();
     let mut branches = collect_branch_metadata(repo, base_branch, false, true)?;
-    let reachable =
+    let base_reachable =
         super::merge_detection::detect_merged_branches(repo, base_branch, &mut branches)?;
-    fill_merge_base_commits(repo, &mut branches, &reachable);
+    fill_merge_base_commits(repo, &mut branches, &base_reachable.local);
 
     // Mark unmerged non-pinned branches as Pending (for squash check)
     info_span!(
@@ -426,12 +426,12 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
     let mut cache = super::cache::BranchCache::load(repo_path);
 
     let mut branches = collect_branch_metadata(repo, base_branch, false, true)?;
-    let reachable =
+    let base_reachable =
         super::merge_detection::detect_merged_branches(repo, base_branch, &mut branches)?;
 
     // Compute merge bases first so squash detection can reuse them (and skip
     // disjoint branches) instead of re-deriving the merge base per branch.
-    fill_merge_base_commits(repo, &mut branches, &reachable);
+    fill_merge_base_commits(repo, &mut branches, &base_reachable.local);
 
     for branch in branches.iter_mut() {
         if branch.merge_status != MergeStatus::Unmerged || branch.is_base || branch.is_current {
@@ -447,17 +447,37 @@ pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchI
         };
         if let Some(status) = cache.lookup(&branch.name, &commit_hash) {
             branch.merge_status = status;
-        } else if super::merge_detection::is_squash_merged(
-            repo_path,
-            base_branch,
-            &branch.name,
-            Some(&commit_hash),
-            Some(&merge_base),
-        ) {
-            branch.merge_status = MergeStatus::SquashMerged;
-            cache.insert(&branch.name, &MergeStatus::SquashMerged, &commit_hash);
         } else {
-            cache.insert(&branch.name, &MergeStatus::Unmerged, &commit_hash);
+            let local_squash = super::merge_detection::is_squash_merged(
+                repo_path,
+                base_branch,
+                &branch.name,
+                Some(&commit_hash),
+                Some(&merge_base),
+            );
+            // Only check remote if origin/<base> actually exists
+            let has_remote_base = repo
+                .find_branch(&format!("origin/{base_branch}"), git2::BranchType::Remote)
+                .is_ok();
+            let remote_squash = if has_remote_base {
+                super::merge_detection::is_squash_merged(
+                    repo_path,
+                    &format!("origin/{base_branch}"),
+                    &branch.name,
+                    Some(&commit_hash),
+                    None,
+                )
+            } else {
+                false
+            };
+            let status = match (local_squash, remote_squash) {
+                (true, true) => MergeStatus::SquashMerged,
+                (false, true) => MergeStatus::RemoteSquashMerged,
+                (true, false) => MergeStatus::LocalSquashMerged,
+                (false, false) => MergeStatus::Unmerged,
+            };
+            branch.merge_status = status;
+            cache.insert(&branch.name, &status, &commit_hash);
         }
     }
 

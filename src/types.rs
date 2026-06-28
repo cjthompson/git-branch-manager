@@ -9,6 +9,10 @@ use std::path::PathBuf;
 pub enum MergeStatus {
     Merged,
     SquashMerged,
+    LocalMerged,         // merged into local base, not yet in origin/<base>
+    RemoteMerged,        // merged into origin/<base>, local base not fast-forwarded
+    LocalSquashMerged,   // squash-merged into local base only
+    RemoteSquashMerged,  // squash-merged into origin/<base> only
     Unmerged,
     Pending,
 }
@@ -293,7 +297,7 @@ pub struct ProgressUpdate {
 #[derive(Debug, Clone)]
 pub struct SquashResult {
     pub branch_name: String,
-    pub is_squash_merged: bool,
+    pub status: MergeStatus,
 }
 
 #[derive(Debug, Clone)]

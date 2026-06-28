@@ -280,6 +280,10 @@ impl BranchCache {
         let status = match entry.merge_status.as_str() {
             "merged" => MergeStatus::Merged,
             "squash_merged" => MergeStatus::SquashMerged,
+            "local_merged" => MergeStatus::LocalMerged,
+            "remote_merged" => MergeStatus::RemoteMerged,
+            "local_squash_merged" => MergeStatus::LocalSquashMerged,
+            "remote_squash_merged" => MergeStatus::RemoteSquashMerged,
             "unmerged" => MergeStatus::Unmerged,
             _ => {
                 self.record_miss();
@@ -297,8 +301,12 @@ impl BranchCache {
                 span.record("result_state", "hit_permanent");
                 Some(status)
             }
-            // Unmerged is only valid if commit hasn't changed
-            MergeStatus::Unmerged => {
+            // Unmerged and local/remote variants are only valid if commit hasn't changed
+            MergeStatus::Unmerged
+            | MergeStatus::LocalMerged
+            | MergeStatus::RemoteMerged
+            | MergeStatus::LocalSquashMerged
+            | MergeStatus::RemoteSquashMerged => {
                 if entry.commit_hash == current_commit_hash {
                     self.record_hit();
                     span.record("hit", true);
@@ -361,6 +369,10 @@ impl BranchCache {
         let status_str = match status {
             MergeStatus::Merged => "merged",
             MergeStatus::SquashMerged => "squash_merged",
+            MergeStatus::LocalMerged => "local_merged",
+            MergeStatus::RemoteMerged => "remote_merged",
+            MergeStatus::LocalSquashMerged => "local_squash_merged",
+            MergeStatus::RemoteSquashMerged => "remote_squash_merged",
             MergeStatus::Unmerged => "unmerged",
             MergeStatus::Pending => {
                 span.record("inserted", false);

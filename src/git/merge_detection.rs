@@ -3,7 +3,70 @@ use git2::Repository;
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
-use tracing::{field, info_span, instrument, Span};
+use tracing::{field, instrument, Span};
+
+/// Holds the reachable sets for both the local base branch and its remote tracking ref.
+/// Used to determine whether a branch is merged, and if only into one side.
+pub struct BaseReachable {
+    pub local: HashSet<git2::Oid>,
+    pub remote: HashSet<git2::Oid>,
+}
+
+impl BaseReachable {
+    /// Returns the appropriate MergeStatus for a branch OID.
+    /// When no remote tracking ref exists, local is treated as authoritative (returns Merged).
+    pub fn regular_merge_status(&self, oid: git2::Oid) -> Option<MergeStatus> {
+        let in_local = self.local.contains(&oid);
+        let in_remote = self.remote.contains(&oid);
+        let has_remote = !self.remote.is_empty();
+        match (in_local, in_remote, has_remote) {
+            (true, true, _) => Some(MergeStatus::Merged),
+            (true, false, false) => Some(MergeStatus::Merged), // no remote — local is truth
+            (false, true, _) => Some(MergeStatus::RemoteMerged),
+            (true, false, true) => Some(MergeStatus::LocalMerged),
+            (false, false, _) => None,
+        }
+    }
+}
+
+fn build_reachable_from_ref(repo: &Repository, base_branch: &str) -> HashSet<git2::Oid> {
+    let oid = match repo
+        .find_branch(base_branch, git2::BranchType::Local)
+        .ok()
+        .and_then(|b| b.get().target())
+    {
+        Some(oid) => oid,
+        None => return HashSet::new(),
+    };
+    revwalk_from_oid(repo, oid)
+}
+
+fn build_reachable_from_remote_ref(repo: &Repository, base_branch: &str) -> HashSet<git2::Oid> {
+    let remote_name = format!("origin/{base_branch}");
+    let oid = match repo
+        .find_branch(&remote_name, git2::BranchType::Remote)
+        .ok()
+        .and_then(|b| b.get().target())
+    {
+        Some(oid) => oid,
+        None => return HashSet::new(),
+    };
+    revwalk_from_oid(repo, oid)
+}
+
+fn revwalk_from_oid(repo: &Repository, oid: git2::Oid) -> HashSet<git2::Oid> {
+    let mut revwalk = match repo.revwalk() {
+        Ok(r) => r,
+        Err(_) => return HashSet::new(),
+    };
+    let _ = revwalk.set_sorting(git2::Sort::NONE);
+    let _ = revwalk.push(oid);
+    let mut set = HashSet::new();
+    for oid in revwalk.flatten() {
+        set.insert(oid);
+    }
+    set
+}
 
 /// Detect which branches have been regular-merged into the base branch using git2.
 /// Modifies branch merge_status in place from Unmerged to Merged where applicable.
@@ -24,34 +87,27 @@ use tracing::{field, info_span, instrument, Span};
         unmerged_count = field::Empty,
     )
 )]
-/// Returns the set of all commit OIDs reachable from base, so callers can reuse it
-/// for merge-base computation without a second traversal.
+/// Returns a BaseReachable with reachable sets for both local and remote base,
+/// so callers can reuse it for merge-base computation and squash detection.
 pub fn detect_merged_branches(
     repo: &Repository,
     base_branch: &str,
     branches: &mut [BranchInfo],
-) -> anyhow::Result<HashSet<git2::Oid>> {
+) -> anyhow::Result<BaseReachable> {
     let span = Span::current();
-    let base_branch_ref = match info_span!("detect_merged_branches_base_lookup", base_branch)
-        .in_scope(|| repo.find_branch(base_branch, git2::BranchType::Local))
-    {
-        Ok(branch) => branch,
-        Err(err) => {
-            span.record("base_lookup_result", "find_branch_error");
-            return Err(err.into());
-        }
-    };
-    let base_ref = match base_branch_ref.get().target() {
-        Some(oid) => {
-            let base_oid = oid.to_string();
-            span.record("base_oid", base_oid.as_str());
-            span.record("base_lookup_result", "success");
-            oid
-        }
-        None => {
-            span.record("base_lookup_result", "missing_target");
-            return Err(anyhow::anyhow!("base branch has no target"));
-        }
+
+    let local_reachable = build_reachable_from_ref(repo, base_branch);
+    let remote_reachable = build_reachable_from_remote_ref(repo, base_branch);
+
+    if local_reachable.is_empty() && remote_reachable.is_empty() {
+        span.record("base_lookup_result", "find_branch_error");
+        return Err(anyhow::anyhow!("base branch not found: {base_branch}"));
+    }
+    span.record("base_lookup_result", "success");
+
+    let base_reachable = BaseReachable {
+        local: local_reachable,
+        remote: remote_reachable,
     };
 
     let candidates: Vec<(usize, git2::Oid)> = branches
@@ -89,38 +145,15 @@ pub fn detect_merged_branches(
         span.record("checked_count", 0u64);
         span.record("merged_count", 0u64);
         span.record("unmerged_count", 0u64);
-        return Ok(HashSet::new());
+        return Ok(base_reachable);
     }
-
-    // Build a set of all commits reachable from base in one revwalk pass.
-    // This replaces N calls to graph_descendant_of (each O(history)) with
-    // one O(history) traversal + N O(1) hash lookups.
-    let reachable = info_span!(
-        "detect_merged_revwalk",
-        base_oid = %base_ref,
-        reachable_count = field::Empty,
-    )
-    .in_scope(|| -> anyhow::Result<HashSet<git2::Oid>> {
-        let revwalk_span = Span::current();
-        let mut revwalk = repo.revwalk()?;
-        revwalk.set_sorting(git2::Sort::NONE)?;
-        revwalk.push(base_ref)?;
-        let mut set = HashSet::new();
-        for oid_result in &mut revwalk {
-            if let Ok(oid) = oid_result {
-                set.insert(oid);
-            }
-        }
-        revwalk_span.record("reachable_count", set.len() as u64);
-        Ok(set)
-    })?;
 
     let mut merged_count = 0usize;
     let mut unmerged_count = 0usize;
     for (i, branch_oid) in &candidates {
-        if reachable.contains(branch_oid) {
+        if let Some(status) = base_reachable.regular_merge_status(*branch_oid) {
             merged_count += 1;
-            branches[*i].merge_status = MergeStatus::Merged;
+            branches[*i].merge_status = status;
         } else {
             unmerged_count += 1;
         }
@@ -128,58 +161,43 @@ pub fn detect_merged_branches(
     span.record("checked_count", candidates.len() as u64);
     span.record("merged_count", merged_count);
     span.record("unmerged_count", unmerged_count);
-    Ok(reachable)
+    Ok(base_reachable)
 }
 
-/// Build the set of all commit OIDs reachable from base using an already-open repository.
+/// Build the reachable sets for both local and remote base using an already-open repository.
 /// Call this when you already have a repo handle on the current thread.
 #[instrument(skip(repo), fields(reachable_count = field::Empty))]
-pub fn build_reachable_set_from_repo(repo: &Repository, base_branch: &str) -> HashSet<git2::Oid> {
-    let span = Span::current();
-    let base_oid = match repo
-        .find_branch(base_branch, git2::BranchType::Local)
-        .ok()
-        .and_then(|b| b.get().target())
-    {
-        Some(oid) => oid,
-        None => return HashSet::new(),
-    };
-    let mut revwalk = match repo.revwalk() {
-        Ok(r) => r,
-        Err(_) => return HashSet::new(),
-    };
-    let _ = revwalk.set_sorting(git2::Sort::NONE);
-    let _ = revwalk.push(base_oid);
-    let mut set = HashSet::new();
-    for oid_result in &mut revwalk {
-        if let Ok(oid) = oid_result {
-            set.insert(oid);
-        }
-    }
-    span.record("reachable_count", set.len() as u64);
-    set
+pub fn build_reachable_set_from_repo(repo: &Repository, base_branch: &str) -> BaseReachable {
+    let local = build_reachable_from_ref(repo, base_branch);
+    let remote = build_reachable_from_remote_ref(repo, base_branch);
+    BaseReachable { local, remote }
 }
 
-/// Build the set of all commit OIDs reachable from base by opening a fresh Repository.
+/// Build the reachable sets for both local and remote base by opening a fresh Repository.
 /// Intended for background-thread use: Repository is !Send, so callers open their own handle
 /// rather than sharing the main thread's repo.
-pub fn build_reachable_set(repo_path: &Path, base_branch: &str) -> HashSet<git2::Oid> {
+pub fn build_reachable_set(repo_path: &Path, base_branch: &str) -> BaseReachable {
     let repo = match git2::Repository::open(repo_path) {
         Ok(r) => r,
-        Err(_) => return HashSet::new(),
+        Err(_) => {
+            return BaseReachable {
+                local: HashSet::new(),
+                remote: HashSet::new(),
+            }
+        }
     };
     build_reachable_set_from_repo(&repo, base_branch)
 }
 
-/// Apply merge statuses to branches using a prebuilt reachable set.
+/// Apply merge statuses to branches using a prebuilt BaseReachable.
 /// Used when the reachable set was built in a parallel thread via build_reachable_set,
 /// so we re-resolve each branch tip with the provided (main-thread) repo handle.
 pub fn apply_merge_statuses(
     repo: &Repository,
     branches: &mut [BranchInfo],
-    reachable: &HashSet<git2::Oid>,
+    base_reachable: &BaseReachable,
 ) {
-    if reachable.is_empty() {
+    if base_reachable.local.is_empty() && base_reachable.remote.is_empty() {
         return;
     }
     for branch in branches.iter_mut() {
@@ -188,8 +206,8 @@ pub fn apply_merge_statuses(
         }
         if let Ok(b) = repo.find_branch(&branch.name, git2::BranchType::Local) {
             if let Some(oid) = b.get().target() {
-                if reachable.contains(&oid) {
-                    branch.merge_status = MergeStatus::Merged;
+                if let Some(status) = base_reachable.regular_merge_status(oid) {
+                    branch.merge_status = status;
                 }
             }
         }

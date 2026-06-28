@@ -139,9 +139,9 @@ pub fn run(
                     remote_cache,
                 );
                 for res in squash_rx.iter() {
-                    if res.is_squash_merged {
+                    if !matches!(res.status, MergeStatus::Unmerged | MergeStatus::Pending) {
                         if let Some(r) = rows.iter_mut().find(|r| r.full_ref == res.branch_name) {
-                            r.merge_status = MergeStatus::SquashMerged;
+                            r.merge_status = res.status;
                         }
                     }
                 }
