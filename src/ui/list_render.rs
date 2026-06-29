@@ -2,6 +2,8 @@ use ratatui::prelude::*;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 use crate::symbols::SymbolSet;
 use crate::theme::Theme;
 use crate::view::column::ColumnDef;
@@ -147,7 +149,10 @@ pub fn render_list_view<T: ViewItem>(
 
     if display_indices.is_empty() && state.loading {
         let tab_title = tab_bar_line(params.active_view, theme);
-        let block = Block::default().title(tab_title).borders(Borders::ALL);
+        let block = Block::default()
+            .title(tab_title)
+            .title_top(Line::from(format!(" v{VERSION} ")).right_aligned())
+            .borders(Borders::ALL);
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let loading =
@@ -200,7 +205,10 @@ pub fn render_list_view<T: ViewItem>(
 
     // Build block with tab bar title
     let tab_title = tab_bar_line(params.active_view, theme);
-    let block = Block::default().title(tab_title).borders(Borders::ALL);
+    let block = Block::default()
+            .title(tab_title)
+            .title_top(Line::from(format!(" v{VERSION} ")).right_aligned())
+            .borders(Borders::ALL);
 
     // Store header column positions for mouse click sorting
     {

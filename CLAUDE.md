@@ -23,6 +23,29 @@ cargo clippy                         # lint
 
 If `cargo` is not on PATH, prefix with: `export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"`
 
+## Dev Version Bumping
+
+**Main agent only — subagents must NOT touch the version (parallel agents would conflict).**
+
+While iterating on code changes, keep the version in `Cargo.toml` as `X.Y.Z-devN` and increment `N` on every code change. Read the current version first, then bump only the dev counter:
+
+```sh
+# Read current version
+grep '^version' Cargo.toml
+
+# Example: if current is 0.1.0-dev3, set to 0.1.0-dev4
+sed -i '' 's/^version = "0\.1\.0-dev3"/version = "0.1.0-dev4"/' Cargo.toml
+```
+
+**When a task is accepted (committed):** bump the version — patch for fixes, minor for features — and drop the `-devN` suffix. Then immediately set `-dev1` to start the next cycle:
+
+```sh
+# Example: accepting a fix while on 0.1.0-dev4 → bump patch, start next cycle
+sed -i '' 's/^version = "0\.1\.0-dev4"/version = "0.1.1-dev1"/' Cargo.toml
+```
+
+After any version bump, run `cargo build` so the new version string is compiled into the binary and visible in the app.
+
 ## Architecture
 
 A rendered, auto-generated layered dependency diagram lives at

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-29
+
+### Fixes
+- Remote branches list now updates immediately after "delete local + remote" without requiring a fetch (#ui, #remotes)
+- Results and Confirm modals now resize dynamically to fit content — long messages and key hints no longer cut off (#ui, #modal)
+- Remote branches now inherit squash-merge status from local branch detection — squash-merged branches no longer show as unmerged in the Remotes view (#ui, #remotes, #merge-detection)
+
 ## 2026-06-23
 
 ### Fixes

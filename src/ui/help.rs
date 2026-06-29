@@ -39,6 +39,7 @@ const BRANCH_KEYS: &[(&str, &str)] = &[
     ("x", "Delete cursor branch"),
     ("d", "Delete local (selected)"),
     ("D", "Delete local + remote"),
+    ("p", "Push (sets upstream)"),
     ("f", "Fetch"),
     ("F", "Fetch + prune"),
     ("R", "Force recheck cache"),

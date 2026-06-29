@@ -116,6 +116,10 @@ pub struct App {
     // Operation cancellation
     pub cancel_flag: Option<Arc<AtomicBool>>,
 
+    // Track pending operation (action and targets) for post-operation cleanup
+    pub pending_action: Option<BranchAction>,
+    pub pending_targets: Vec<String>,
+
     // Terminal dimensions (for mouse handling)
     pub terminal_rows: u16,
 
@@ -126,6 +130,9 @@ pub struct App {
 
     // Whether remote fetch has been done this session
     pub remote_fetched: bool,
+
+    // Whether the repo has any remote configured (e.g. origin)
+    pub has_configured_remote: bool,
 
     // Fingerprint of the previous branch refresh inputs. Diagnostic spans use
     // this to show whether a full refresh recomputed identical branch tips.
@@ -218,6 +225,10 @@ impl App {
 
         let remote_fetched = config.auto_fetch == Some(true);
         let cache = cache::BranchCache::load(&repo_path);
+        let has_configured_remote = git2::Repository::open(&repo_path)
+            .and_then(|r| r.remotes())
+            .map(|r| !r.is_empty())
+            .unwrap_or(false);
 
         Self {
             repo_path,
@@ -261,10 +272,13 @@ impl App {
             cache,
             toast: None,
             cancel_flag: None,
+            pending_action: None,
+            pending_targets: Vec::new(),
             terminal_rows: 0,
             info_hit_regions: Vec::new(),
             info_copied_msg: None,
             remote_fetched,
+            has_configured_remote,
             last_branch_fingerprint: None,
         }
     }
@@ -478,10 +492,24 @@ impl App {
             {
                 b.merge_status = result.status;
             }
+            // Propagate squash-merge status to the matching remote branch. The remote
+            // enricher marks ahead>0 branches as Unmerged; squash detection on the local
+            // branch is authoritative for squash-merged remotes.
+            if !matches!(result.status, MergeStatus::Unmerged | MergeStatus::Pending) {
+                if let Some(r) = self
+                    .remotes
+                    .items_mut()
+                    .iter_mut()
+                    .find(|r| r.short_name == result.branch_name)
+                {
+                    r.merge_status = result.status;
+                }
+            }
         }
         if had_squash_results {
             // Squash detection just resolved branch statuses; re-correlate worktrees.
             self.refresh_worktree_merge_status();
+            self.remotes.rebuild_display_indices();
         }
 
         // Remote squash-merge results
@@ -594,6 +622,33 @@ impl App {
             self.progress_rx = None;
             self.progress = None;
             self.refresh_after_operation();
+
+            // When DeleteLocalAndRemote completes, immediately filter deleted branches
+            // from the in-memory remotes list so they don't appear until a fetch
+            if self.pending_action == Some(BranchAction::DeleteLocalAndRemote) {
+                let successfully_deleted: Vec<String> = results
+                    .iter()
+                    .filter(|r| r.success && r.action == BranchAction::DeleteLocal)
+                    .map(|r| r.branch_name.clone())
+                    .collect();
+
+                if !successfully_deleted.is_empty() {
+                    let deleted_set: std::collections::HashSet<_> =
+                        successfully_deleted.into_iter().collect();
+                    self.remotes.set_items(
+                        self.remotes
+                            .items()
+                            .iter()
+                            .filter(|remote| !deleted_set.contains(&remote.short_name))
+                            .cloned()
+                            .collect(),
+                    );
+                    self.remotes.rebuild_display_indices();
+                }
+            }
+
+            self.pending_action = None;
+            self.pending_targets.clear();
             self.overlay = Some(Overlay::Results { results });
         }
 
@@ -1649,10 +1704,10 @@ impl App {
             },
             MenuItem {
                 label: "Push".into(),
-                enabled: is_ahead,
-                reason: if !has_remote {
+                enabled: is_ahead || (!has_remote && self.has_configured_remote),
+                reason: if !self.has_configured_remote {
                     Some("no remote".into())
-                } else if !is_ahead {
+                } else if has_remote && !is_ahead {
                     Some("not ahead".into())
                 } else {
                     None
@@ -1987,6 +2042,8 @@ impl App {
         self.op_rx = Some(op_rx);
         self.progress_rx = Some(prog_rx);
         self.cancel_flag = Some(cancel);
+        self.pending_action = Some(action);
+        self.pending_targets = item_names.clone();
 
         std::thread::spawn(move || {
             let needs_stash = git2::Repository::open(&repo_path)
@@ -2217,6 +2274,8 @@ impl App {
         let Ok(repo) = git2::Repository::open(&repo_path) else {
             return;
         };
+
+        self.has_configured_remote = repo.remotes().map(|r| !r.is_empty()).unwrap_or(false);
 
         let fingerprint = branch_input_fingerprint(&repo, &base_branch);
         let inputs_changed = self.last_branch_fingerprint != Some(fingerprint);

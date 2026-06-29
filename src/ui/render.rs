@@ -308,7 +308,7 @@ fn default_status_text(ctx: &RenderContext) -> String {
         ViewId::Branches => format_branch_like(
             "branches",
             branch_like_summary(ctx.branches),
-            "[/]search [\\]filter [c]heckout [d]el [D]el+remote [f]etch [F2]diag [?]help [q]uit",
+            "[/]search [\\]filter [c]heckout [d]el [D]el+remote [p]ush [f]etch [F2]diag [?]help [q]uit",
         ),
         ViewId::Remotes => format_branch_like(
             "remote branches",

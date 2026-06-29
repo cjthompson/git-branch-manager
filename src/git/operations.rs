@@ -232,7 +232,7 @@ pub fn pull_branch(
 #[instrument(skip(repo_path, cancel))]
 pub fn push_branch(repo_path: &Path, branch_name: &str, cancel: &AtomicBool) -> OperationResult {
     match run_git_cancellable(
-        git_cmd(repo_path).args(["push", "origin", branch_name]),
+        git_cmd(repo_path).args(["push", "--set-upstream", "origin", branch_name]),
         cancel,
     ) {
         None => cancelled(branch_name, BranchAction::Push),

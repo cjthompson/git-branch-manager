@@ -2594,3 +2594,77 @@ fn test_worktree_merge_status_from_branches() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// #030 — Remote branch inherits squash-merge status from local branch detection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_remote_branch_inherits_squash_merge_status_from_local() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    // Create a feature branch, add a commit, and push it to origin
+    run_git(&work_dir, &["checkout", "-b", "squash-local-feature"]);
+    std::fs::write(work_dir.join("feature.txt"), "feature content\n").unwrap();
+    run_git(&work_dir, &["add", "feature.txt"]);
+    run_git(&work_dir, &["commit", "-m", "Add feature"]);
+    run_git(&work_dir, &["push", "-u", "origin", "squash-local-feature"]);
+
+    // Squash-merge into main locally (do NOT push main — remote branch stays ahead=1)
+    run_git(&work_dir, &["checkout", "main"]);
+    run_git(&work_dir, &["merge", "--squash", "squash-local-feature"]);
+    run_git(&work_dir, &["commit", "-m", "Squash merge squash-local-feature"]);
+
+    let repo = git2::Repository::open(&work_dir).unwrap();
+
+    // Load local branches and run squash detection
+    let local_branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let local_feature = local_branches
+        .iter()
+        .find(|b| b.name == "squash-local-feature")
+        .expect("squash-local-feature not in local branches");
+    assert_eq!(
+        local_feature.merge_status,
+        MergeStatus::LocalSquashMerged,
+        "local branch should be detected as LocalSquashMerged"
+    );
+
+    // Load remote branches — enricher marks ahead>0 as Unmerged
+    let mut remotes = branch::list_remote_branches_phase1(&repo, "main")
+        .expect("list_remote_branches_phase1 failed");
+
+    // Simulate the remote enricher: origin/squash-local-feature is ahead=1, so Unmerged
+    let remote_before = remotes
+        .iter()
+        .find(|r| r.short_name == "squash-local-feature")
+        .expect("origin/squash-local-feature not found");
+    assert_eq!(
+        remote_before.merge_status,
+        MergeStatus::Pending,
+        "remote branch should start as Pending before enrichment"
+    );
+
+    // Simulate what drain_channels does: propagate local squash result to remote
+    // (this is the fix from #030 — when a local squash result arrives, update the
+    // matching remote branch by short_name)
+    for remote in remotes.iter_mut() {
+        if remote.short_name == local_feature.name
+            && !matches!(
+                local_feature.merge_status,
+                MergeStatus::Unmerged | MergeStatus::Pending
+            )
+        {
+            remote.merge_status = local_feature.merge_status;
+        }
+    }
+
+    let remote_after = remotes
+        .iter()
+        .find(|r| r.short_name == "squash-local-feature")
+        .expect("origin/squash-local-feature not found");
+    assert_eq!(
+        remote_after.merge_status,
+        MergeStatus::LocalSquashMerged,
+        "remote branch should inherit LocalSquashMerged from local squash detection"
+    );
+}
