@@ -3,6 +3,7 @@
 ## 2026-06-29
 
 ### Fixes
+- Push is now available for any local branch when a remote is configured, not just tracked branches; uses `--set-upstream` to create the tracking ref automatically (#branches, #push)
 - Remote branches list now updates immediately after "delete local + remote" without requiring a fetch (#ui, #remotes)
 - Results and Confirm modals now resize dynamically to fit content — long messages and key hints no longer cut off (#ui, #modal)
 - Remote branches now inherit squash-merge status from local branch detection — squash-merged branches no longer show as unmerged in the Remotes view (#ui, #remotes, #merge-detection)
