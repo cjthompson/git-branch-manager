@@ -561,6 +561,7 @@ impl App {
         for items in drain_channel(&mut self.tag_load_rx, 1) {
             self.tags.set_items(items);
             self.tags.loading = false;
+            list_state::apply_sort(&mut self.tags, &self.tag_columns);
             self.clear_toast();
         }
 
@@ -602,6 +603,7 @@ impl App {
         for items in drain_channel(&mut self.worktree_load_rx, 1) {
             self.worktrees.set_items(items);
             self.worktrees.loading = false;
+            list_state::apply_sort(&mut self.worktrees, &self.worktree_columns);
             self.clear_toast();
 
             // Branches may already be loaded; correlate merge status now.
@@ -2344,18 +2346,16 @@ impl App {
                 self.active_view = ViewId::Branches;
             }
             ViewId::Remotes => {
-                // Reload remote branches
-                self.remotes = ListState::empty();
+                // Reload remote branches (spawn_remote_load sets loading=true;
+                // do not reset ListState here or sort_column/sort_ascending is lost)
                 self.spawn_remote_load();
                 self.active_view = ViewId::Remotes;
             }
             ViewId::Tags => {
-                self.tags = ListState::empty();
                 self.spawn_tag_load();
                 self.active_view = ViewId::Tags;
             }
             ViewId::Worktrees => {
-                self.worktrees = ListState::empty();
                 self.spawn_worktree_load();
                 self.active_view = ViewId::Worktrees;
             }
