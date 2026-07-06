@@ -379,6 +379,35 @@ pub fn select_merged<T: ViewItem>(state: &mut ListState<T>) {
 
 // --- Sorting free functions ---
 
+/// Sort a slice of items with pinned items always at the top (base first).
+/// Non-pinned items are sorted by the provided compare function.
+pub fn sort_items<T: ViewItem>(
+    items: &mut [T],
+    compare: fn(&T, &T) -> std::cmp::Ordering,
+    ascending: bool,
+) {
+    // Stable-partition: move all pinned items to the front (base first),
+    // then sort only the non-pinned tail.
+    items.sort_by(|a, b| {
+        match (a.is_pinned(), b.is_pinned()) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (true, true) => {
+                // Base branch always comes first among pinned items
+                b.is_base().cmp(&a.is_base())
+            }
+            (false, false) => {
+                let ord = compare(a, b);
+                if ascending {
+                    ord
+                } else {
+                    ord.reverse()
+                }
+            }
+        }
+    });
+}
+
 /// Apply sort based on current sort_column and sort_ascending.
 /// Pinned items always stay at the top, only non-pinned items are sorted.
 pub fn apply_sort<T: ViewItem>(state: &mut ListState<T>, columns: &[ColumnDef<T>]) {
@@ -394,26 +423,7 @@ pub fn apply_sort<T: ViewItem>(state: &mut ListState<T>, columns: &[ColumnDef<T>
 
     let asc = state.sort_ascending;
 
-    // Stable-partition: move all pinned items to the front (base first),
-    // then sort only the non-pinned tail.
-    state.items.sort_by(|a, b| {
-        match (a.is_pinned(), b.is_pinned()) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            (true, true) => {
-                // Base branch always comes first among pinned items
-                b.is_base().cmp(&a.is_base())
-            }
-            (false, false) => {
-                let ord = compare(a, b);
-                if asc {
-                    ord
-                } else {
-                    ord.reverse()
-                }
-            }
-        }
-    });
+    sort_items(&mut state.items, compare, asc);
 
     // Reset selection and cursor
     state.selected = vec![false; state.items.len()];

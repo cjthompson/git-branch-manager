@@ -203,15 +203,7 @@ impl App {
         let symbols = SymbolSet::from_name(config.symbols.as_deref().unwrap_or("auto"));
 
         // Init sort from config
-        let sort_col: Option<usize> = config.sort_column.as_deref().and_then(|s| match s {
-            "name" => Some(0),
-            "remote" => Some(1),
-            "ahead" => Some(2),
-            "pr" => Some(3),
-            "age" => Some(4),
-            "status" => Some(5),
-            _ => None,
-        });
+        let sort_col = config.sort_column_index();
         let sort_asc = config.sort_asc.unwrap_or(true);
 
         let branch_def = BranchesViewDef;
@@ -222,6 +214,9 @@ impl App {
         let mut branch_state = ListState::empty();
         branch_state.loading = true;
         branch_state.set_sort(sort_col, sort_asc);
+
+        let mut remote_state = ListState::empty();
+        remote_state.set_sort(sort_col, sort_asc);
 
         let remote_fetched = config.auto_fetch == Some(true);
         let cache = cache::BranchCache::load(&repo_path);
@@ -239,7 +234,7 @@ impl App {
             should_exit: false,
             active_view: ViewId::Branches,
             branches: branch_state,
-            remotes: ListState::empty(),
+            remotes: remote_state,
             tags: ListState::empty(),
             worktrees: ListState::empty(),
             branch_columns: branch_def.columns(),
@@ -573,6 +568,7 @@ impl App {
         for (remotes, candidates, remote_cache) in drain_channel(&mut self.remote_load_rx, 1) {
             self.remotes.set_items(remotes);
             self.remotes.loading = false;
+            list_state::apply_sort(&mut self.remotes, &self.remote_columns);
             self.clear_toast();
 
             // Spawn remote enrichment
@@ -643,7 +639,7 @@ impl App {
                             .cloned()
                             .collect(),
                     );
-                    self.remotes.rebuild_display_indices();
+                    list_state::apply_sort(&mut self.remotes, &self.remote_columns);
                 }
             }
 
@@ -1241,14 +1237,19 @@ impl App {
                         let sort_col = self.branches.sort_column();
                         let pos = SORT_CYCLE.iter().position(|&c| c == sort_col).unwrap_or(0);
                         let next_pos = (pos + 1) % SORT_CYCLE.len();
-                        self.branches
-                            .set_sort(SORT_CYCLE[next_pos], self.branches.sort_ascending());
+                        let new_sort_col = SORT_CYCLE[next_pos];
+                        let new_sort_asc = self.branches.sort_ascending();
+                        self.branches.set_sort(new_sort_col, new_sort_asc);
                         list_state::apply_sort(&mut self.branches, &self.branch_columns);
+                        self.remotes.set_sort(new_sort_col, new_sort_asc);
+                        list_state::apply_sort(&mut self.remotes, &self.remote_columns);
                     }
                     3 => {
                         let asc = !self.branches.sort_ascending();
                         self.branches.set_sort(self.branches.sort_column(), asc);
                         list_state::apply_sort(&mut self.branches, &self.branch_columns);
+                        self.remotes.set_sort(self.remotes.sort_column(), asc);
+                        list_state::apply_sort(&mut self.remotes, &self.remote_columns);
                     }
                     4 => {
                         self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
@@ -1279,14 +1280,19 @@ impl App {
                         let sort_col = self.branches.sort_column();
                         let pos = SORT_CYCLE.iter().position(|&c| c == sort_col).unwrap_or(0);
                         let next_pos = (pos + SORT_CYCLE.len() - 1) % SORT_CYCLE.len();
-                        self.branches
-                            .set_sort(SORT_CYCLE[next_pos], self.branches.sort_ascending());
+                        let new_sort_col = SORT_CYCLE[next_pos];
+                        let new_sort_asc = self.branches.sort_ascending();
+                        self.branches.set_sort(new_sort_col, new_sort_asc);
                         list_state::apply_sort(&mut self.branches, &self.branch_columns);
+                        self.remotes.set_sort(new_sort_col, new_sort_asc);
+                        list_state::apply_sort(&mut self.remotes, &self.remote_columns);
                     }
                     3 => {
                         let asc = !self.branches.sort_ascending();
                         self.branches.set_sort(self.branches.sort_column(), asc);
                         list_state::apply_sort(&mut self.branches, &self.branch_columns);
+                        self.remotes.set_sort(self.remotes.sort_column(), asc);
+                        list_state::apply_sort(&mut self.remotes, &self.remote_columns);
                     }
                     4 => {
                         self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
@@ -2460,18 +2466,7 @@ impl App {
 
     fn save_sort_config_only(&mut self) {
         let sort_col = self.branches.sort_column();
-        self.config.sort_column = sort_col.map(|c| {
-            match c {
-                0 => "name",
-                1 => "remote",
-                2 => "ahead",
-                3 => "pr",
-                4 => "age",
-                5 => "status",
-                _ => "name",
-            }
-            .to_string()
-        });
+        self.config.sort_column = sort_col.and_then(Config::sort_column_name).map(|s| s.to_string());
         self.config.sort_asc = Some(self.branches.sort_ascending());
     }
 

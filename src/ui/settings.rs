@@ -22,7 +22,6 @@ pub fn settings_rows(symbols: &SymbolSet, theme: &Theme, config: &Config) -> Vec
         Some("age") => "age",
         Some("ahead") => "ahead",
         Some("pr") => "pr",
-        Some("behind") => "behind",
         Some("status") => "status",
         _ => "none",
     }

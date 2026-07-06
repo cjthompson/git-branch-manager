@@ -16,6 +16,7 @@ use git_branch_manager::types::MergeStatus;
 use git_branch_manager::ui::dump_render::{render_table, DUMP_AREA_WIDTH};
 use git_branch_manager::ui::list_render::CellContext;
 use git_branch_manager::view::branches::BranchesViewDef;
+use git_branch_manager::view::list_state;
 use git_branch_manager::view::remotes::RemotesViewDef;
 use git_branch_manager::view::tags::TagsViewDef;
 use git_branch_manager::view::worktrees::WorktreesViewDef;
@@ -82,7 +83,18 @@ pub fn run(
             // by is_base keeps the rest (current branch, then date-ordered
             // non-pinned) in pin_first's order.
             rows.sort_by_key(|b| Reverse(b.is_base));
+
+            // Apply configured sort (if any) to non-pinned items
             let cols = BranchesViewDef.columns();
+            if let Some(col_idx) = config.sort_column_index() {
+                if let Some(column) = cols.get(col_idx) {
+                    if let Some(compare) = column.compare {
+                        let ascending = config.sort_asc.unwrap_or(true);
+                        list_state::sort_items(&mut rows, compare, ascending);
+                    }
+                }
+            }
+
             Ok(render_table(
                 Some(base),
                 &rows,
@@ -155,7 +167,18 @@ pub fn run(
                 r.pr = pr_map.get(&r.short_name).cloned();
             }
             pin_first(&mut rows);
+
+            // Apply configured sort (if any) to non-pinned items
             let cols = RemotesViewDef.columns();
+            if let Some(col_idx) = config.sort_column_index() {
+                if let Some(column) = cols.get(col_idx) {
+                    if let Some(compare) = column.compare {
+                        let ascending = config.sort_asc.unwrap_or(true);
+                        list_state::sort_items(&mut rows, compare, ascending);
+                    }
+                }
+            }
+
             Ok(render_table(
                 None,
                 &rows,

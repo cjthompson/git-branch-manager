@@ -38,6 +38,34 @@ impl Config {
         }
     }
 
+    /// Convert the configured sort column name to a column index (0-5).
+    /// Maps "name"(0), "remote"(1), "ahead"(2), "pr"(3), "age"(4), "status"(5).
+    pub fn sort_column_index(&self) -> Option<usize> {
+        self.sort_column.as_deref().and_then(|s| match s {
+            "name" => Some(0),
+            "remote" => Some(1),
+            "ahead" => Some(2),
+            "pr" => Some(3),
+            "age" => Some(4),
+            "status" => Some(5),
+            _ => None,
+        })
+    }
+
+    /// Convert a column index (0-5) to the sort column name string.
+    /// Maps 0→"name", 1→"remote", 2→"ahead", 3→"pr", 4→"age", 5→"status".
+    pub fn sort_column_name(idx: usize) -> Option<&'static str> {
+        match idx {
+            0 => Some("name"),
+            1 => Some("remote"),
+            2 => Some("ahead"),
+            3 => Some("pr"),
+            4 => Some("age"),
+            5 => Some("status"),
+            _ => None,
+        }
+    }
+
     fn config_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
