@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-06
+
+### Fixes
+- Default sort column/direction settings now take effect at runtime: applied at startup to both Branches and Remotes views, applied live when edited in the Settings overlay, and applied to the CLI dump path (`--branches`/`--remotes`). Audit of all six Settings rows confirmed Symbol set, Theme, Auto-fetch, and Load worktrees were already correctly wired (#settings, #sort, #branches)
+
 ## 2026-06-29
 
 ### Fixes
