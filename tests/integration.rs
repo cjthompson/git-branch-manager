@@ -237,6 +237,66 @@ fn test_squash_merged_branch_detection() {
 }
 
 #[test]
+fn test_in_sync_branch_detection() {
+    // A branch cut from main with no commits added has HEAD == main HEAD.
+    // That used to report as Merged, which is misleading — no integration
+    // event occurred. It should report as InSync instead.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // Cut two branches: one truly empty, one that adds a commit then resets
+    // back to main so its tip also equals main's tip.
+    run_git(dir, &["branch", "feature-fresh"]);
+
+    let repo = git2::Repository::open(dir).expect("failed to open repo");
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+
+    let fresh = branches
+        .iter()
+        .find(|b| b.name == "feature-fresh")
+        .expect("feature-fresh branch not found");
+    assert_eq!(
+        fresh.merge_status,
+        MergeStatus::InSync,
+        "fresh branch (tip == base tip) should be InSync, not Merged"
+    );
+}
+
+#[test]
+fn test_in_sync_does_not_swallow_real_merges() {
+    // Regression guard: an InSync check at the top of regular_merge_status
+    // must not cause branches with unique merged commits to also report InSync
+    // (they have a unique commit, so their tip differs from base tip and
+    // should still be Merged).
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature-merged"]);
+    std::fs::write(dir.join("f.txt"), "f").unwrap();
+    run_git(dir, &["add", "f.txt"]);
+    run_git(dir, &["commit", "-m", "add f"]);
+    run_git(dir, &["checkout", "main"]);
+    // Add a commit to main so merge can't fast-forward.
+    std::fs::write(dir.join("main-change.txt"), "m").unwrap();
+    run_git(dir, &["add", "main-change.txt"]);
+    run_git(dir, &["commit", "-m", "main change"]);
+    run_git(dir, &["merge", "feature-merged", "-m", "merge f"]);
+
+    let repo = git2::Repository::open(dir).expect("failed to re-open repo");
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+
+    let merged = branches
+        .iter()
+        .find(|b| b.name == "feature-merged")
+        .expect("feature-merged branch not found");
+    assert_eq!(
+        merged.merge_status,
+        MergeStatus::Merged,
+        "regular-merged branch must still report Merged, not InSync"
+    );
+}
+
+#[test]
 fn test_unmerged_branch_detection() {
     let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();

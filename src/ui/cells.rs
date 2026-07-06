@@ -52,6 +52,11 @@ pub(crate) fn merge_status_parts(
             format!("m {}", symbols.status_merged),
             theme.merged,
         ),
+        MergeStatus::InSync => (
+            format!("in-sync {}", symbols.status_in_sync),
+            format!("is {}", symbols.status_in_sync),
+            theme.in_sync,
+        ),
         MergeStatus::SquashMerged => (
             format!("squash-merged {}", symbols.status_squash_merged),
             format!("sm {}", symbols.status_squash_merged),
@@ -275,6 +280,7 @@ mod tests {
         // Column width 4 fits "sm ~"/"u -"/"m +" but not the full words.
         let w = Some(4);
         assert_eq!(merge_status_parts(&MergeStatus::Merged, &ctx, w).0, "m +");
+        assert_eq!(merge_status_parts(&MergeStatus::InSync, &ctx, w).0, "is =");
         assert_eq!(
             merge_status_parts(&MergeStatus::SquashMerged, &ctx, w).0,
             "sm ~"
@@ -301,6 +307,10 @@ mod tests {
         assert_eq!(
             merge_status_parts(&MergeStatus::Merged, &ctx, w).0,
             "merged +"
+        );
+        assert_eq!(
+            merge_status_parts(&MergeStatus::InSync, &ctx, w).0,
+            "in-sync ="
         );
         assert_eq!(
             merge_status_parts(&MergeStatus::SquashMerged, &ctx, w).0,

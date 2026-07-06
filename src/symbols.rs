@@ -8,6 +8,7 @@ pub struct SymbolSet {
     pub arrow_down: &'static str,
     pub current_branch: &'static str,
     pub status_merged: &'static str,
+    pub status_in_sync: &'static str,
     pub status_squash_merged: &'static str,
     pub status_unmerged: &'static str,
     pub status_local_suffix: &'static str,
@@ -29,6 +30,7 @@ impl SymbolSet {
             arrow_down: "-",
             current_branch: "*",
             status_merged: "+",
+            status_in_sync: "=",
             status_squash_merged: "~",
             status_unmerged: "-",
             status_local_suffix: "^",
@@ -47,6 +49,7 @@ impl SymbolSet {
             arrow_down: "\u{2193}",           // down arrow
             current_branch: "\u{25cf}",       // black circle
             status_merged: "\u{2714}",        // heavy check mark
+            status_in_sync: "\u{2261}",       // identical to (≡)
             status_squash_merged: "\u{2248}", // almost equal to
             status_unmerged: "\u{2718}",      // heavy ballot X
             status_local_suffix: "\u{2191}",  // ↑ upwards arrow
@@ -65,6 +68,7 @@ impl SymbolSet {
             arrow_down: "\u{f063}",           // nerd font arrow-down
             current_branch: "\u{e0a0}",       // powerline branch
             status_merged: "\u{f126}",        // nerd font code-fork (merged)
+            status_in_sync: "\u{f441}",       // nerd font nf-dev-equals
             status_squash_merged: "\u{25cf}", // solid circle (squash-merged)
             status_unmerged: "\u{f00d}",      // nerd font x-mark
             status_local_suffix: "\u{2191}",  // ↑ upwards arrow
@@ -168,5 +172,12 @@ mod tests {
         assert_eq!(SymbolSet::ascii().disjoint, "!=");
         assert_eq!(SymbolSet::unicode().disjoint, "\u{2260}");
         assert_eq!(SymbolSet::powerline().disjoint, "\u{2260}");
+    }
+
+    #[test]
+    fn every_set_defines_an_in_sync_marker() {
+        assert_eq!(SymbolSet::ascii().status_in_sync, "=");
+        assert_eq!(SymbolSet::unicode().status_in_sync, "\u{2261}");
+        assert_eq!(SymbolSet::powerline().status_in_sync, "\u{f441}");
     }
 }

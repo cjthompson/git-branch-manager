@@ -8,6 +8,11 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MergeStatus {
     Merged,
+    /// Branch tip OID is literally equal to the base branch tip OID — the branch
+    /// was cut from base with no unique commits, so no integration event has
+    /// occurred. Distinct from `Merged`, which now implies at least one unique
+    /// commit was regular-merged.
+    InSync,
     SquashMerged,
     LocalMerged,        // merged into local base, not yet in origin/<base>
     RemoteMerged,       // merged into origin/<base>, local base not fast-forwarded

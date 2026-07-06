@@ -7,15 +7,37 @@ use tracing::{field, instrument, Span};
 
 /// Holds the reachable sets for both the local base branch and its remote tracking ref.
 /// Used to determine whether a branch is merged, and if only into one side.
+///
+/// `local_tip` and `remote_tip` are the OIDs the reachable sets were built from
+/// — the tip commits of the local and remote base branches. They let
+/// [`Self::regular_merge_status`] distinguish a branch whose tip is *literally*
+/// the base tip (no integration ever occurred → `InSync`) from a branch whose
+/// tip is just an ancestor of base (`Merged`).
 pub struct BaseReachable {
     pub local: HashSet<git2::Oid>,
     pub remote: HashSet<git2::Oid>,
+    pub local_tip: Option<git2::Oid>,
+    pub remote_tip: Option<git2::Oid>,
 }
 
 impl BaseReachable {
     /// Returns the appropriate MergeStatus for a branch OID.
     /// When no remote tracking ref exists, local is treated as authoritative (returns Merged).
+    ///
+    /// A branch whose tip OID is *literally* the base tip is reported as
+    /// [`MergeStatus::InSync`] — the branch has no unique commits and no
+    /// integration event has occurred. This is checked before the reachable-set
+    /// match because a literal tip is trivially a member of the reachable set.
     pub fn regular_merge_status(&self, oid: git2::Oid) -> Option<MergeStatus> {
+        // In-sync: branch tip == base tip literally. No integration event — just identical.
+        if Some(oid) == self.local_tip {
+            return Some(MergeStatus::InSync);
+        }
+        // If local tip is missing (e.g. base has no local ref but the remote ref
+        // exists), an in-sync match against the remote tip is still meaningful.
+        if self.local_tip.is_none() && Some(oid) == self.remote_tip {
+            return Some(MergeStatus::InSync);
+        }
         let in_local = self.local.contains(&oid);
         let in_remote = self.remote.contains(&oid);
         let has_remote = !self.remote.is_empty();
@@ -29,19 +51,19 @@ impl BaseReachable {
     }
 }
 
-fn build_reachable_from_ref(repo: &Repository, base_branch: &str) -> HashSet<git2::Oid> {
+fn build_reachable_from_ref(repo: &Repository, base_branch: &str) -> (HashSet<git2::Oid>, Option<git2::Oid>) {
     let oid = match repo
         .find_branch(base_branch, git2::BranchType::Local)
         .ok()
         .and_then(|b| b.get().target())
     {
         Some(oid) => oid,
-        None => return HashSet::new(),
+        None => return (HashSet::new(), None),
     };
-    revwalk_from_oid(repo, oid)
+    (revwalk_from_oid(repo, oid), Some(oid))
 }
 
-fn build_reachable_from_remote_ref(repo: &Repository, base_branch: &str) -> HashSet<git2::Oid> {
+fn build_reachable_from_remote_ref(repo: &Repository, base_branch: &str) -> (HashSet<git2::Oid>, Option<git2::Oid>) {
     let remote_name = format!("origin/{base_branch}");
     let oid = match repo
         .find_branch(&remote_name, git2::BranchType::Remote)
@@ -49,9 +71,9 @@ fn build_reachable_from_remote_ref(repo: &Repository, base_branch: &str) -> Hash
         .and_then(|b| b.get().target())
     {
         Some(oid) => oid,
-        None => return HashSet::new(),
+        None => return (HashSet::new(), None),
     };
-    revwalk_from_oid(repo, oid)
+    (revwalk_from_oid(repo, oid), Some(oid))
 }
 
 fn revwalk_from_oid(repo: &Repository, oid: git2::Oid) -> HashSet<git2::Oid> {
@@ -96,8 +118,8 @@ pub fn detect_merged_branches(
 ) -> anyhow::Result<BaseReachable> {
     let span = Span::current();
 
-    let local_reachable = build_reachable_from_ref(repo, base_branch);
-    let remote_reachable = build_reachable_from_remote_ref(repo, base_branch);
+    let (local_reachable, local_tip) = build_reachable_from_ref(repo, base_branch);
+    let (remote_reachable, remote_tip) = build_reachable_from_remote_ref(repo, base_branch);
 
     if local_reachable.is_empty() && remote_reachable.is_empty() {
         span.record("base_lookup_result", "find_branch_error");
@@ -108,6 +130,8 @@ pub fn detect_merged_branches(
     let base_reachable = BaseReachable {
         local: local_reachable,
         remote: remote_reachable,
+        local_tip,
+        remote_tip,
     };
 
     let candidates: Vec<(usize, git2::Oid)> = branches
@@ -168,9 +192,14 @@ pub fn detect_merged_branches(
 /// Call this when you already have a repo handle on the current thread.
 #[instrument(skip(repo), fields(reachable_count = field::Empty))]
 pub fn build_reachable_set_from_repo(repo: &Repository, base_branch: &str) -> BaseReachable {
-    let local = build_reachable_from_ref(repo, base_branch);
-    let remote = build_reachable_from_remote_ref(repo, base_branch);
-    BaseReachable { local, remote }
+    let (local, local_tip) = build_reachable_from_ref(repo, base_branch);
+    let (remote, remote_tip) = build_reachable_from_remote_ref(repo, base_branch);
+    BaseReachable {
+        local,
+        remote,
+        local_tip,
+        remote_tip,
+    }
 }
 
 /// Build the reachable sets for both local and remote base by opening a fresh Repository.
@@ -183,6 +212,8 @@ pub fn build_reachable_set(repo_path: &Path, base_branch: &str) -> BaseReachable
             return BaseReachable {
                 local: HashSet::new(),
                 remote: HashSet::new(),
+                local_tip: None,
+                remote_tip: None,
             }
         }
     };

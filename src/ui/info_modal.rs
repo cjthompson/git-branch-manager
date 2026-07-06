@@ -346,6 +346,7 @@ fn worktree_fields(w: &WorktreeInfo) -> Vec<InfoField> {
 fn merge_status_str(status: &MergeStatus) -> &'static str {
     match status {
         MergeStatus::Merged => "Merged",
+        MergeStatus::InSync => "In Sync",
         MergeStatus::SquashMerged => "Squash Merged",
         MergeStatus::LocalMerged => "Local Merged",
         MergeStatus::RemoteMerged => "Remote Merged",

@@ -291,6 +291,7 @@ fn branch_and_upstream_oid(repo: &Repository, name: &str) -> Option<(Oid, Oid)> 
 fn status_label(status: MergeStatus) -> &'static str {
     match status {
         MergeStatus::Merged | MergeStatus::LocalMerged | MergeStatus::RemoteMerged => "merged",
+        MergeStatus::InSync => "in-sync",
         MergeStatus::SquashMerged
         | MergeStatus::LocalSquashMerged
         | MergeStatus::RemoteSquashMerged => "squash-merged",

@@ -279,6 +279,7 @@ impl BranchCache {
         span.record("cached_commit_hash", entry.commit_hash.as_str());
         let status = match entry.merge_status.as_str() {
             "merged" => MergeStatus::Merged,
+            "in_sync" => MergeStatus::InSync,
             "squash_merged" => MergeStatus::SquashMerged,
             "local_merged" => MergeStatus::LocalMerged,
             "remote_merged" => MergeStatus::RemoteMerged,
@@ -301,8 +302,10 @@ impl BranchCache {
                 span.record("result_state", "hit_permanent");
                 Some(status)
             }
-            // Unmerged and local/remote variants are only valid if commit hasn't changed
+            // Unmerged, in-sync, and local/remote variants are only valid if commit hasn't changed.
+            // InSync is inherently volatile — base moves, the in-sync state breaks.
             MergeStatus::Unmerged
+            | MergeStatus::InSync
             | MergeStatus::LocalMerged
             | MergeStatus::RemoteMerged
             | MergeStatus::LocalSquashMerged
@@ -368,6 +371,7 @@ impl BranchCache {
         let span = Span::current();
         let status_str = match status {
             MergeStatus::Merged => "merged",
+            MergeStatus::InSync => "in_sync",
             MergeStatus::SquashMerged => "squash_merged",
             MergeStatus::LocalMerged => "local_merged",
             MergeStatus::RemoteMerged => "remote_merged",

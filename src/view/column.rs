@@ -75,13 +75,14 @@ pub fn pr_column<T: ViewItem>() -> ColumnDef<T> {
 pub fn merge_status_rank(status: &MergeStatus) -> u8 {
     match status {
         MergeStatus::Merged => 0,
-        MergeStatus::SquashMerged => 1,
-        MergeStatus::RemoteMerged => 2,
-        MergeStatus::LocalMerged => 3,
-        MergeStatus::RemoteSquashMerged => 4,
-        MergeStatus::LocalSquashMerged => 5,
-        MergeStatus::Unmerged => 6,
-        MergeStatus::Pending => 7,
+        MergeStatus::InSync => 1,
+        MergeStatus::SquashMerged => 2,
+        MergeStatus::RemoteMerged => 3,
+        MergeStatus::LocalMerged => 4,
+        MergeStatus::RemoteSquashMerged => 5,
+        MergeStatus::LocalSquashMerged => 6,
+        MergeStatus::Unmerged => 7,
+        MergeStatus::Pending => 8,
     }
 }
 
@@ -312,13 +313,14 @@ mod tests {
     #[test]
     fn merge_status_rank_correct_values() {
         assert_eq!(merge_status_rank(&MergeStatus::Merged), 0);
-        assert_eq!(merge_status_rank(&MergeStatus::SquashMerged), 1);
-        assert_eq!(merge_status_rank(&MergeStatus::RemoteMerged), 2);
-        assert_eq!(merge_status_rank(&MergeStatus::LocalMerged), 3);
-        assert_eq!(merge_status_rank(&MergeStatus::RemoteSquashMerged), 4);
-        assert_eq!(merge_status_rank(&MergeStatus::LocalSquashMerged), 5);
-        assert_eq!(merge_status_rank(&MergeStatus::Unmerged), 6);
-        assert_eq!(merge_status_rank(&MergeStatus::Pending), 7);
+        assert_eq!(merge_status_rank(&MergeStatus::InSync), 1);
+        assert_eq!(merge_status_rank(&MergeStatus::SquashMerged), 2);
+        assert_eq!(merge_status_rank(&MergeStatus::RemoteMerged), 3);
+        assert_eq!(merge_status_rank(&MergeStatus::LocalMerged), 4);
+        assert_eq!(merge_status_rank(&MergeStatus::RemoteSquashMerged), 5);
+        assert_eq!(merge_status_rank(&MergeStatus::LocalSquashMerged), 6);
+        assert_eq!(merge_status_rank(&MergeStatus::Unmerged), 7);
+        assert_eq!(merge_status_rank(&MergeStatus::Pending), 8);
     }
 
     #[test]
