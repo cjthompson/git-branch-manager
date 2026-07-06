@@ -5,6 +5,7 @@
 ### Fixes
 - Default sort column/direction settings now take effect at runtime: applied at startup to both Branches and Remotes views, applied live when edited in the Settings overlay, and applied to the CLI dump path (`--branches`/`--remotes`). Audit of all six Settings rows confirmed Symbol set, Theme, Auto-fetch, and Load worktrees were already correctly wired (#settings, #sort, #branches)
 - Sort mode is preserved across post-operation reloads (fetch, delete, push, etc.) on Remotes/Tags/Worktrees views; previously `refresh_after_operation` rebuilt the `ListState` via `ListState::empty()` which discarded `sort_column`/`sort_ascending`. Branches was already correct (#fetch, #sort, #state)
+- Default sort now applies to all four views (Branches, Remotes, Tags, Worktrees), each tracked independently in both Config and runtime `ListState`. Settings overlay shows one merged sort row per view (e.g. "Branches sort: age (asc)"). Existing configs with the legacy top-level `sort_column`/`sort_asc` are migrated automatically to the Branches and Remotes per-view fields (#settings, #sort, #tags, #worktrees)
 
 ## 2026-06-29
 
