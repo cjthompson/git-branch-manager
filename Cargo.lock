@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "git-branch-manager"
-version = "0.1.2-dev4"
+version = "0.1.2-dev5"
 dependencies = [
  "anyhow",
  "arboard",

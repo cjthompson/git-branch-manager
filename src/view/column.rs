@@ -5,6 +5,7 @@ use std::cmp::Ordering;
 /// Defines a single column in a view's table layout.
 /// The compare function is used for sorting; None means not sortable.
 pub struct ColumnDef<T: ViewItem> {
+    pub key: &'static str,
     pub name: &'static str,
     pub min_width: u16,
     /// When Some(w), use width w instead of min_width when terminal width >= 70.
@@ -23,6 +24,7 @@ pub fn age_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
 /// Build a standard "Age" column definition for any view.
 pub fn age_column<T: ViewItem>() -> ColumnDef<T> {
     ColumnDef {
+        key: "age",
         name: "Age",
         min_width: 5,
         wide_width: Some(14),
@@ -42,6 +44,7 @@ pub fn ahead_behind_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
 /// Build a standard "A/B" column definition.
 pub fn ahead_behind_column<T: ViewItem>() -> ColumnDef<T> {
     ColumnDef {
+        key: "ahead_behind",
         name: "A/B",
         min_width: 8,
         wide_width: None,
@@ -63,6 +66,7 @@ pub fn pr_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
 /// Build a standard "PR" column definition.
 pub fn pr_column<T: ViewItem>() -> ColumnDef<T> {
     ColumnDef {
+        key: "pr",
         name: "PR",
         min_width: 5,
         wide_width: None,
@@ -97,6 +101,7 @@ pub fn merge_status_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
 /// parameter only so callers read explicitly; pass `"Merge"`.
 pub fn merge_status_column<T: ViewItem>(name: &'static str) -> ColumnDef<T> {
     ColumnDef {
+        key: "merge",
         name,
         min_width: 5,
         wide_width: Some(16),
@@ -121,6 +126,7 @@ pub fn wt_status_cmp(a: &WorktreeInfo, b: &WorktreeInfo) -> Ordering {
 /// letters when narrow (see `ui::cells::worktree_status_line`).
 pub fn worktree_status_column() -> ColumnDef<WorktreeInfo> {
     ColumnDef {
+        key: "status",
         name: "Status",
         min_width: 3,
         wide_width: Some(9),
@@ -173,6 +179,7 @@ mod tests {
         let a = sample_branch("alpha", 1);
         let b = sample_branch("beta", 1);
         let col = ColumnDef::<BranchInfo> {
+            key: "name",
             name: "Name",
             min_width: 10,
             wide_width: None,
@@ -188,6 +195,7 @@ mod tests {
         let older = sample_branch("old", 10);
         let newer = sample_branch("new", 1);
         let col = ColumnDef::<BranchInfo> {
+            key: "age",
             name: "Age",
             min_width: 5,
             wide_width: None,
@@ -201,6 +209,7 @@ mod tests {
     #[test]
     fn non_sortable_column() {
         let col = ColumnDef::<BranchInfo> {
+            key: "remote",
             name: "Remote",
             min_width: 8,
             wide_width: None,

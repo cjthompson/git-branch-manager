@@ -8,6 +8,7 @@ impl TagsViewDef {
     pub fn columns(&self) -> Vec<ColumnDef<TagInfo>> {
         vec![
             ColumnDef {
+                key: "name",
                 name: "Name",
                 min_width: 15,
                 wide_width: None,
@@ -15,6 +16,7 @@ impl TagsViewDef {
                 compare: Some(|a, b| a.name.cmp(&b.name)),
             },
             ColumnDef {
+                key: "hash",
                 name: "Hash",
                 min_width: 8,
                 wide_width: None,
@@ -23,6 +25,7 @@ impl TagsViewDef {
             },
             super::column::age_column(),
             ColumnDef {
+                key: "message",
                 name: "Message",
                 min_width: 10,
                 wide_width: None,

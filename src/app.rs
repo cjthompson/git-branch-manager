@@ -32,6 +32,7 @@ use git_branch_manager::view::column::ColumnDef;
 use git_branch_manager::view::filter::{FilterSet, FilterTokenDef};
 use git_branch_manager::view::list_state::{self, ListState};
 use git_branch_manager::view::remotes::RemotesViewDef;
+use git_branch_manager::view::sort_keys;
 use git_branch_manager::view::tags::TagsViewDef;
 use git_branch_manager::view::worktrees::WorktreesViewDef;
 use git_branch_manager::view::ViewId;
@@ -202,21 +203,41 @@ impl App {
         let theme = Theme::from_name(config.theme.as_deref().unwrap_or("dark"));
         let symbols = SymbolSet::from_name(config.symbols.as_deref().unwrap_or("auto"));
 
-        // Init sort from config
-        let sort_col = config.sort_column_index();
-        let sort_asc = config.sort_asc.unwrap_or(true);
-
         let branch_def = BranchesViewDef;
         let remote_def = RemotesViewDef;
         let tag_def = TagsViewDef;
         let worktree_def = WorktreesViewDef;
 
+        let branch_cols = branch_def.columns();
+        let remote_cols = remote_def.columns();
+        let tag_cols = tag_def.columns();
+        let worktree_cols = worktree_def.columns();
+
+        let branch_sort_col = config.sort_column_branches.as_deref()
+            .and_then(|k| sort_keys::index_for_key(&branch_cols, k));
+        let branch_sort_asc = config.sort_asc_branches.unwrap_or(true);
+        let remote_sort_col = config.sort_column_remotes.as_deref()
+            .and_then(|k| sort_keys::index_for_key(&remote_cols, k));
+        let remote_sort_asc = config.sort_asc_remotes.unwrap_or(true);
+        let tag_sort_col = config.sort_column_tags.as_deref()
+            .and_then(|k| sort_keys::index_for_key(&tag_cols, k));
+        let tag_sort_asc = config.sort_asc_tags.unwrap_or(true);
+        let worktree_sort_col = config.sort_column_worktrees.as_deref()
+            .and_then(|k| sort_keys::index_for_key(&worktree_cols, k));
+        let worktree_sort_asc = config.sort_asc_worktrees.unwrap_or(true);
+
         let mut branch_state = ListState::empty();
         branch_state.loading = true;
-        branch_state.set_sort(sort_col, sort_asc);
+        branch_state.set_sort(branch_sort_col, branch_sort_asc);
 
         let mut remote_state = ListState::empty();
-        remote_state.set_sort(sort_col, sort_asc);
+        remote_state.set_sort(remote_sort_col, remote_sort_asc);
+
+        let mut tag_state = ListState::empty();
+        tag_state.set_sort(tag_sort_col, tag_sort_asc);
+
+        let mut worktree_state = ListState::empty();
+        worktree_state.set_sort(worktree_sort_col, worktree_sort_asc);
 
         let remote_fetched = config.auto_fetch == Some(true);
         let cache = cache::BranchCache::load(&repo_path);
@@ -235,8 +256,8 @@ impl App {
             active_view: ViewId::Branches,
             branches: branch_state,
             remotes: remote_state,
-            tags: ListState::empty(),
-            worktrees: ListState::empty(),
+            tags: tag_state,
+            worktrees: worktree_state,
             branch_columns: branch_def.columns(),
             remote_columns: remote_def.columns(),
             tag_columns: tag_def.columns(),
@@ -1212,9 +1233,7 @@ impl App {
     }
 
     fn handle_settings_key(&mut self, key: KeyEvent, cursor: usize) {
-        const SORT_CYCLE: [Option<usize>; 7] =
-            [None, Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)];
-        const NUM_ROWS: usize = 6;
+        const NUM_ROWS: usize = 8;
 
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
@@ -1236,27 +1255,21 @@ impl App {
                         self.theme = self.theme.next();
                     }
                     2 => {
-                        let sort_col = self.branches.sort_column();
-                        let pos = SORT_CYCLE.iter().position(|&c| c == sort_col).unwrap_or(0);
-                        let next_pos = (pos + 1) % SORT_CYCLE.len();
-                        let new_sort_col = SORT_CYCLE[next_pos];
-                        let new_sort_asc = self.branches.sort_ascending();
-                        self.branches.set_sort(new_sort_col, new_sort_asc);
-                        list_state::apply_sort(&mut self.branches, &self.branch_columns);
-                        self.remotes.set_sort(new_sort_col, new_sort_asc);
-                        list_state::apply_sort(&mut self.remotes, &self.remote_columns);
+                        self.cycle_view_sort(ViewId::Branches, true);
                     }
                     3 => {
-                        let asc = !self.branches.sort_ascending();
-                        self.branches.set_sort(self.branches.sort_column(), asc);
-                        list_state::apply_sort(&mut self.branches, &self.branch_columns);
-                        self.remotes.set_sort(self.remotes.sort_column(), asc);
-                        list_state::apply_sort(&mut self.remotes, &self.remote_columns);
+                        self.cycle_view_sort(ViewId::Remotes, true);
                     }
                     4 => {
-                        self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
+                        self.cycle_view_sort(ViewId::Tags, true);
                     }
                     5 => {
+                        self.cycle_view_sort(ViewId::Worktrees, true);
+                    }
+                    6 => {
+                        self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
+                    }
+                    7 => {
                         self.config.load_worktrees_on_launch =
                             Some(self.config.load_worktrees_on_launch != Some(true));
                     }
@@ -1279,27 +1292,21 @@ impl App {
                         self.theme = self.theme.next();
                     }
                     2 => {
-                        let sort_col = self.branches.sort_column();
-                        let pos = SORT_CYCLE.iter().position(|&c| c == sort_col).unwrap_or(0);
-                        let next_pos = (pos + SORT_CYCLE.len() - 1) % SORT_CYCLE.len();
-                        let new_sort_col = SORT_CYCLE[next_pos];
-                        let new_sort_asc = self.branches.sort_ascending();
-                        self.branches.set_sort(new_sort_col, new_sort_asc);
-                        list_state::apply_sort(&mut self.branches, &self.branch_columns);
-                        self.remotes.set_sort(new_sort_col, new_sort_asc);
-                        list_state::apply_sort(&mut self.remotes, &self.remote_columns);
+                        self.cycle_view_sort(ViewId::Branches, false);
                     }
                     3 => {
-                        let asc = !self.branches.sort_ascending();
-                        self.branches.set_sort(self.branches.sort_column(), asc);
-                        list_state::apply_sort(&mut self.branches, &self.branch_columns);
-                        self.remotes.set_sort(self.remotes.sort_column(), asc);
-                        list_state::apply_sort(&mut self.remotes, &self.remote_columns);
+                        self.cycle_view_sort(ViewId::Remotes, false);
                     }
                     4 => {
-                        self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
+                        self.cycle_view_sort(ViewId::Tags, false);
                     }
                     5 => {
+                        self.cycle_view_sort(ViewId::Worktrees, false);
+                    }
+                    6 => {
+                        self.config.auto_fetch = Some(self.config.auto_fetch != Some(true));
+                    }
+                    7 => {
                         self.config.load_worktrees_on_launch =
                             Some(self.config.load_worktrees_on_launch != Some(true));
                     }
@@ -2465,9 +2472,81 @@ impl App {
     }
 
     fn save_sort_config_only(&mut self) {
-        let sort_col = self.branches.sort_column();
-        self.config.sort_column = sort_col.and_then(Config::sort_column_name).map(|s| s.to_string());
-        self.config.sort_asc = Some(self.branches.sort_ascending());
+        self.config.sort_column_branches = self.branches.sort_column()
+            .and_then(|i| sort_keys::key_for_index(&self.branch_columns, i)).map(str::to_string);
+        self.config.sort_asc_branches = Some(self.branches.sort_ascending());
+        self.config.sort_column_remotes = self.remotes.sort_column()
+            .and_then(|i| sort_keys::key_for_index(&self.remote_columns, i)).map(str::to_string);
+        self.config.sort_asc_remotes = Some(self.remotes.sort_ascending());
+        self.config.sort_column_tags = self.tags.sort_column()
+            .and_then(|i| sort_keys::key_for_index(&self.tag_columns, i)).map(str::to_string);
+        self.config.sort_asc_tags = Some(self.tags.sort_ascending());
+        self.config.sort_column_worktrees = self.worktrees.sort_column()
+            .and_then(|i| sort_keys::key_for_index(&self.worktree_columns, i)).map(str::to_string);
+        self.config.sort_asc_worktrees = Some(self.worktrees.sort_ascending());
+    }
+
+    /// Cycle the given view's sort through its cycle of states. `forward` selects
+    /// direction of the cycle (Right/Left in settings).
+    fn cycle_view_sort(&mut self, view: ViewId, forward: bool) {
+        match view {
+            ViewId::Branches => {
+                let pairs = sort_keys::sort_state_cycle(&self.branch_columns);
+                let current = (self.branches.sort_column(), self.branches.sort_ascending());
+                let cur_pos = pairs.iter().position(|&p| p == current).unwrap_or(0);
+                let len = pairs.len();
+                let next_pos = if forward {
+                    (cur_pos + 1) % len
+                } else {
+                    (cur_pos + len - 1) % len
+                };
+                let (col, asc) = pairs[next_pos];
+                self.branches.set_sort(col, asc);
+                list_state::apply_sort(&mut self.branches, &self.branch_columns);
+            }
+            ViewId::Remotes => {
+                let pairs = sort_keys::sort_state_cycle(&self.remote_columns);
+                let current = (self.remotes.sort_column(), self.remotes.sort_ascending());
+                let cur_pos = pairs.iter().position(|&p| p == current).unwrap_or(0);
+                let len = pairs.len();
+                let next_pos = if forward {
+                    (cur_pos + 1) % len
+                } else {
+                    (cur_pos + len - 1) % len
+                };
+                let (col, asc) = pairs[next_pos];
+                self.remotes.set_sort(col, asc);
+                list_state::apply_sort(&mut self.remotes, &self.remote_columns);
+            }
+            ViewId::Tags => {
+                let pairs = sort_keys::sort_state_cycle(&self.tag_columns);
+                let current = (self.tags.sort_column(), self.tags.sort_ascending());
+                let cur_pos = pairs.iter().position(|&p| p == current).unwrap_or(0);
+                let len = pairs.len();
+                let next_pos = if forward {
+                    (cur_pos + 1) % len
+                } else {
+                    (cur_pos + len - 1) % len
+                };
+                let (col, asc) = pairs[next_pos];
+                self.tags.set_sort(col, asc);
+                list_state::apply_sort(&mut self.tags, &self.tag_columns);
+            }
+            ViewId::Worktrees => {
+                let pairs = sort_keys::sort_state_cycle(&self.worktree_columns);
+                let current = (self.worktrees.sort_column(), self.worktrees.sort_ascending());
+                let cur_pos = pairs.iter().position(|&p| p == current).unwrap_or(0);
+                let len = pairs.len();
+                let next_pos = if forward {
+                    (cur_pos + 1) % len
+                } else {
+                    (cur_pos + len - 1) % len
+                };
+                let (col, asc) = pairs[next_pos];
+                self.worktrees.set_sort(col, asc);
+                list_state::apply_sort(&mut self.worktrees, &self.worktree_columns);
+            }
+        }
     }
 
     // ---- Filter helpers ----

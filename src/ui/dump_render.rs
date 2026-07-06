@@ -278,6 +278,7 @@ mod tests {
     fn dummy_cols() -> Vec<ColumnDef<Dummy>> {
         vec![
             ColumnDef {
+                key: "name",
                 name: "Name",
                 min_width: 6,
                 wide_width: None,
@@ -285,6 +286,7 @@ mod tests {
                 compare: None,
             },
             ColumnDef {
+                key: "age",
                 name: "Age",
                 min_width: 5,
                 wide_width: None,

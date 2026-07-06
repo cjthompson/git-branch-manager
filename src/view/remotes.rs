@@ -8,6 +8,7 @@ impl RemotesViewDef {
     pub fn columns(&self) -> Vec<ColumnDef<RemoteBranchInfo>> {
         vec![
             ColumnDef {
+                key: "name",
                 name: "Name",
                 min_width: 15,
                 wide_width: None,
@@ -15,6 +16,7 @@ impl RemotesViewDef {
                 compare: Some(|a, b| a.short_name.cmp(&b.short_name)),
             },
             ColumnDef {
+                key: "local",
                 name: "Local",
                 min_width: 6,
                 wide_width: None,

@@ -15,22 +15,15 @@ pub struct SettingsRow {
 }
 
 /// Build the settings rows from current configuration state.
-pub fn settings_rows(symbols: &SymbolSet, theme: &Theme, config: &Config) -> Vec<SettingsRow> {
-    let sort_col_display = match config.sort_column.as_deref() {
-        Some("name") => "name",
-        Some("remote") => "remote",
-        Some("age") => "age",
-        Some("ahead") => "ahead",
-        Some("pr") => "pr",
-        Some("status") => "status",
-        _ => "none",
-    }
-    .to_string();
-    let sort_dir_display = if config.sort_asc != Some(false) {
-        "ascending".to_string()
-    } else {
-        "descending".to_string()
-    };
+pub fn settings_rows(
+    symbols: &SymbolSet,
+    theme: &Theme,
+    config: &Config,
+    branch_sort_display: &str,
+    remote_sort_display: &str,
+    tag_sort_display: &str,
+    worktree_sort_display: &str,
+) -> Vec<SettingsRow> {
     let auto_fetch_display = if config.auto_fetch == Some(true) {
         "on".to_string()
     } else {
@@ -52,12 +45,20 @@ pub fn settings_rows(symbols: &SymbolSet, theme: &Theme, config: &Config) -> Vec
             value: theme.name.to_string(),
         },
         SettingsRow {
-            label: "Default sort column",
-            value: sort_col_display,
+            label: "Branches sort",
+            value: branch_sort_display.to_string(),
         },
         SettingsRow {
-            label: "Default sort direction",
-            value: sort_dir_display,
+            label: "Remotes sort",
+            value: remote_sort_display.to_string(),
+        },
+        SettingsRow {
+            label: "Tags sort",
+            value: tag_sort_display.to_string(),
+        },
+        SettingsRow {
+            label: "Worktrees sort",
+            value: worktree_sort_display.to_string(),
         },
         SettingsRow {
             label: "Auto-fetch on launch",

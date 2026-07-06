@@ -6,8 +6,16 @@ use std::path::PathBuf;
 pub struct Config {
     pub symbols: Option<String>,
     pub theme: Option<String>,
-    pub sort_column: Option<String>,
-    pub sort_asc: Option<bool>,
+    pub sort_column: Option<String>,       // legacy; kept only for migration
+    pub sort_asc: Option<bool>,            // legacy; kept only for migration
+    pub sort_column_branches: Option<String>,
+    pub sort_asc_branches: Option<bool>,
+    pub sort_column_remotes: Option<String>,
+    pub sort_asc_remotes: Option<bool>,
+    pub sort_column_tags: Option<String>,
+    pub sort_asc_tags: Option<bool>,
+    pub sort_column_worktrees: Option<String>,
+    pub sort_asc_worktrees: Option<bool>,
     pub auto_fetch: Option<bool>,
     pub load_worktrees_on_launch: Option<bool>,
 }
@@ -35,34 +43,6 @@ impl Config {
         }
         if let Ok(content) = toml::to_string(self) {
             let _ = fs::write(&path, content);
-        }
-    }
-
-    /// Convert the configured sort column name to a column index (0-5).
-    /// Maps "name"(0), "remote"(1), "ahead"(2), "pr"(3), "age"(4), "status"(5).
-    pub fn sort_column_index(&self) -> Option<usize> {
-        self.sort_column.as_deref().and_then(|s| match s {
-            "name" => Some(0),
-            "remote" => Some(1),
-            "ahead" => Some(2),
-            "pr" => Some(3),
-            "age" => Some(4),
-            "status" => Some(5),
-            _ => None,
-        })
-    }
-
-    /// Convert a column index (0-5) to the sort column name string.
-    /// Maps 0→"name", 1→"remote", 2→"ahead", 3→"pr", 4→"age", 5→"status".
-    pub fn sort_column_name(idx: usize) -> Option<&'static str> {
-        match idx {
-            0 => Some("name"),
-            1 => Some("remote"),
-            2 => Some("ahead"),
-            3 => Some("pr"),
-            4 => Some("age"),
-            5 => Some("status"),
-            _ => None,
         }
     }
 

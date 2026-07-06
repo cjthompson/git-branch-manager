@@ -18,6 +18,7 @@ use git_branch_manager::ui::list_render::CellContext;
 use git_branch_manager::view::branches::BranchesViewDef;
 use git_branch_manager::view::list_state;
 use git_branch_manager::view::remotes::RemotesViewDef;
+use git_branch_manager::view::sort_keys;
 use git_branch_manager::view::tags::TagsViewDef;
 use git_branch_manager::view::worktrees::WorktreesViewDef;
 use git_branch_manager::view::ViewItem;
@@ -86,10 +87,12 @@ pub fn run(
 
             // Apply configured sort (if any) to non-pinned items
             let cols = BranchesViewDef.columns();
-            if let Some(col_idx) = config.sort_column_index() {
+            if let Some(col_idx) = config.sort_column_branches.as_deref()
+                .and_then(|k| sort_keys::index_for_key(&cols, k))
+            {
                 if let Some(column) = cols.get(col_idx) {
                     if let Some(compare) = column.compare {
-                        let ascending = config.sort_asc.unwrap_or(true);
+                        let ascending = config.sort_asc_branches.unwrap_or(true);
                         list_state::sort_items(&mut rows, compare, ascending);
                     }
                 }
@@ -170,10 +173,12 @@ pub fn run(
 
             // Apply configured sort (if any) to non-pinned items
             let cols = RemotesViewDef.columns();
-            if let Some(col_idx) = config.sort_column_index() {
+            if let Some(col_idx) = config.sort_column_remotes.as_deref()
+                .and_then(|k| sort_keys::index_for_key(&cols, k))
+            {
                 if let Some(column) = cols.get(col_idx) {
                     if let Some(compare) = column.compare {
-                        let ascending = config.sort_asc.unwrap_or(true);
+                        let ascending = config.sort_asc_remotes.unwrap_or(true);
                         list_state::sort_items(&mut rows, compare, ascending);
                     }
                 }
@@ -192,6 +197,16 @@ pub fn run(
             let mut rows = tags::list_tags(repo);
             pin_first(&mut rows);
             let cols = TagsViewDef.columns();
+            if let Some(col_idx) = config.sort_column_tags.as_deref()
+                .and_then(|k| sort_keys::index_for_key(&cols, k))
+            {
+                if let Some(column) = cols.get(col_idx) {
+                    if let Some(compare) = column.compare {
+                        let ascending = config.sort_asc_tags.unwrap_or(true);
+                        list_state::sort_items(&mut rows, compare, ascending);
+                    }
+                }
+            }
             Ok(render_table(
                 None,
                 &rows,
@@ -219,6 +234,16 @@ pub fn run(
             }
             pin_first(&mut rows);
             let cols = WorktreesViewDef.columns();
+            if let Some(col_idx) = config.sort_column_worktrees.as_deref()
+                .and_then(|k| sort_keys::index_for_key(&cols, k))
+            {
+                if let Some(column) = cols.get(col_idx) {
+                    if let Some(compare) = column.compare {
+                        let ascending = config.sort_asc_worktrees.unwrap_or(true);
+                        list_state::sort_items(&mut rows, compare, ascending);
+                    }
+                }
+            }
             Ok(render_table(
                 None,
                 &rows,

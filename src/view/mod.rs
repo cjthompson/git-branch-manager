@@ -3,6 +3,7 @@ pub mod column;
 pub mod filter;
 pub mod list_state;
 pub mod remotes;
+pub mod sort_keys;
 pub mod tags;
 pub mod worktrees;
 

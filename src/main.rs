@@ -22,7 +22,8 @@ use tracing::{field, info_span, instrument, Span};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config = Config::load();
+    let mut config = Config::load();
+    git_branch_manager::view::sort_keys::migrate_legacy_config(&mut config);
 
     // Optional timing log, opt-in via GBM_TIMING_LOG so the same instrumentation
     // can be captured in debug and release builds.

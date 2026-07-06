@@ -603,6 +603,7 @@ mod tests {
 
     fn name_column() -> ColumnDef<BranchInfo> {
         ColumnDef::<BranchInfo> {
+            key: "name",
             name: "Name",
             min_width: 10,
             wide_width: None,
@@ -650,6 +651,7 @@ mod tests {
     #[test]
     fn sort_by_column_click_different_column_resets_to_ascending() {
         let age_col = ColumnDef::<BranchInfo> {
+            key: "age",
             name: "Age",
             min_width: 5,
             wide_width: None,
@@ -870,6 +872,7 @@ mod tests {
     #[test]
     fn sort_by_name_ascending() {
         let columns = vec![ColumnDef::<BranchInfo> {
+            key: "name",
             name: "Name",
             min_width: 10,
             wide_width: None,
@@ -888,6 +891,7 @@ mod tests {
     #[test]
     fn sort_by_name_descending() {
         let columns = vec![ColumnDef::<BranchInfo> {
+            key: "name",
             name: "Name",
             min_width: 10,
             wide_width: None,
@@ -908,6 +912,7 @@ mod tests {
         branches.rotate_left(1); // move main to the end
 
         let columns = vec![ColumnDef::<BranchInfo> {
+            key: "name",
             name: "Name",
             min_width: 10,
             wide_width: None,
@@ -923,6 +928,7 @@ mod tests {
     #[test]
     fn sort_descending_keeps_base_first() {
         let columns = vec![ColumnDef::<BranchInfo> {
+            key: "name",
             name: "Name",
             min_width: 10,
             wide_width: None,
@@ -941,6 +947,7 @@ mod tests {
     fn cycle_sort_column_works() {
         let columns = vec![
             ColumnDef::<BranchInfo> {
+                key: "name",
                 name: "Name",
                 min_width: 10,
                 wide_width: None,
@@ -948,6 +955,7 @@ mod tests {
                 compare: Some(|a, b| a.name.cmp(&b.name)),
             },
             ColumnDef::<BranchInfo> {
+                key: "unsortable",
                 name: "Unsortable",
                 min_width: 5,
                 wide_width: None,
@@ -955,6 +963,7 @@ mod tests {
                 compare: None,
             },
             ColumnDef::<BranchInfo> {
+                key: "age",
                 name: "Age",
                 min_width: 5,
                 wide_width: None,

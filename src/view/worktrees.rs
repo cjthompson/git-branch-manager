@@ -11,6 +11,7 @@ impl WorktreesViewDef {
                 // Path is the priority column: its floor stays above Branch's so it
                 // always receives at least as much width as Branch when both stretch
                 // (see the Worktrees Min-constraint handling in ui/list_render.rs).
+                key: "path",
                 name: "Path",
                 min_width: 25,
                 wide_width: Some(40),
@@ -18,6 +19,7 @@ impl WorktreesViewDef {
                 compare: Some(|a, b| a.path.cmp(&b.path)),
             },
             ColumnDef {
+                key: "branch",
                 name: "Branch",
                 min_width: 20,
                 wide_width: Some(32),

@@ -8,6 +8,7 @@ impl BranchesViewDef {
     pub fn columns(&self) -> Vec<ColumnDef<BranchInfo>> {
         vec![
             ColumnDef {
+                key: "name",
                 name: "Branch",
                 min_width: 15,
                 wide_width: None,
@@ -15,6 +16,7 @@ impl BranchesViewDef {
                 compare: Some(|a, b| a.name.cmp(&b.name)),
             },
             ColumnDef {
+                key: "remote",
                 name: "Remote",
                 min_width: 6,
                 wide_width: None,

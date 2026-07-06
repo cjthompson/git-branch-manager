@@ -269,7 +269,35 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 draw_results(frame, results, ctx.theme);
             }
             Overlay::Settings { cursor } => {
-                let rows = settings_rows(ctx.symbols, ctx.theme, ctx.config);
+                let branch_sort = crate::view::sort_keys::display_string(
+                    ctx.branch_columns,
+                    ctx.config.sort_column_branches.as_deref(),
+                    ctx.config.sort_asc_branches.unwrap_or(true),
+                );
+                let remote_sort = crate::view::sort_keys::display_string(
+                    ctx.remote_columns,
+                    ctx.config.sort_column_remotes.as_deref(),
+                    ctx.config.sort_asc_remotes.unwrap_or(true),
+                );
+                let tag_sort = crate::view::sort_keys::display_string(
+                    ctx.tag_columns,
+                    ctx.config.sort_column_tags.as_deref(),
+                    ctx.config.sort_asc_tags.unwrap_or(true),
+                );
+                let worktree_sort = crate::view::sort_keys::display_string(
+                    ctx.worktree_columns,
+                    ctx.config.sort_column_worktrees.as_deref(),
+                    ctx.config.sort_asc_worktrees.unwrap_or(true),
+                );
+                let rows = settings_rows(
+                    ctx.symbols,
+                    ctx.theme,
+                    ctx.config,
+                    &branch_sort,
+                    &remote_sort,
+                    &tag_sort,
+                    &worktree_sort,
+                );
                 draw_settings(frame, *cursor, &rows, ctx.theme);
             }
             Overlay::Filter => {
