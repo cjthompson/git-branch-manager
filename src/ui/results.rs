@@ -12,10 +12,10 @@ pub fn draw_results(frame: &mut Frame, results: &[OperationResult], theme: &Them
     let mut lines: Vec<Line> = results
         .iter()
         .map(|r| {
-            let (status, style) = if r.success {
-                (" OK ", theme.merged)
+            let (status, style, message_style) = if r.success {
+                (" OK ", theme.merged, theme.dim)
             } else {
-                ("FAIL", theme.error)
+                ("FAIL", theme.error, theme.error)
             };
 
             Line::from(vec![
@@ -26,7 +26,7 @@ pub fn draw_results(frame: &mut Frame, results: &[OperationResult], theme: &Them
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled(r.message.clone(), theme.dim),
+                Span::styled(r.message.clone(), message_style),
             ])
         })
         .collect();
