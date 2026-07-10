@@ -1,6 +1,6 @@
 [package]
 name = "git-branch-manager"
-version = "0.1.2-dev5"
+version = "0.2.0-dev1"
 edition = "2021"
 description = "A TUI tool for managing git branches with squash-merge detection"
 

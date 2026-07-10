@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-07-10
+
+### Fixes
+- Deleting multiple remote branches in the Remotes view now shows the same per-item progress bar as local branch deletion, via a shared delete_remotes_with_progress helper
+
+### Tasks
+- Details view: worktrees with modified or untracked files now show a "Changed Files" section listing each path with its modified/untracked kind
+- Parallelize squash-merge detection loop, capped at 4 worker threads pulling from a shared queue, with cache reads/writes retained by a single owner thread
+
+## 2026-07-07
+
+### Tasks
+- Change error text color in Results overlay from dark gray to a brighter color (e.g. red)
+
 ## 2026-07-06
 
 ### Fixes
