@@ -2747,15 +2747,9 @@ fn execute_action(
             }
         }
         BranchAction::DeleteRemoteBranch => {
-            let short_names: Vec<String> = item_names.to_vec();
-            results.extend(
-                operations::delete_remotes_batch(repo_path, &short_names, cancel_flag)
-                    .into_iter()
-                    .map(|mut r| {
-                        r.action = BranchAction::DeleteRemoteBranch;
-                        r
-                    }),
-            );
+            results.extend(operations::delete_remotes_with_progress(
+                repo_path, item_names, prog_tx, cancel_flag,
+            ));
         }
         BranchAction::DeleteRemoteAndLocal => {
             if let Some(name) = item_names.first() {
