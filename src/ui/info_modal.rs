@@ -340,6 +340,13 @@ fn worktree_fields(w: &WorktreeInfo) -> Vec<InfoField> {
         });
     }
 
+    for (i, file) in w.wt_status.changed_files.iter().enumerate() {
+        fields.push(InfoField {
+            label: if i == 0 { "Changed Files" } else { "" },
+            value: format!("{} ({})", file.path, file.kind.label()),
+        });
+    }
+
     fields
 }
 

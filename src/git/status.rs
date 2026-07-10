@@ -1,4 +1,4 @@
-use crate::types::WorkingTreeStatus;
+use crate::types::{ChangedFile, ChangedFileKind, WorkingTreeStatus};
 use git2::{Repository, StatusOptions};
 use tracing::instrument;
 
@@ -15,6 +15,7 @@ pub fn detect_working_tree_status(repo: &Repository) -> WorkingTreeStatus {
     let mut has_staged = false;
     let mut has_modified = false;
     let mut has_untracked = false;
+    let mut changed_files = Vec::new();
 
     for entry in statuses.iter() {
         let s = entry.status();
@@ -34,9 +35,21 @@ pub fn detect_working_tree_status(repo: &Repository) -> WorkingTreeStatus {
                 | git2::Status::WT_TYPECHANGE,
         ) {
             has_modified = true;
+            if let Some(path) = entry.path() {
+                changed_files.push(ChangedFile {
+                    path: path.to_string(),
+                    kind: ChangedFileKind::Modified,
+                });
+            }
         }
         if s.contains(git2::Status::WT_NEW) {
             has_untracked = true;
+            if let Some(path) = entry.path() {
+                changed_files.push(ChangedFile {
+                    path: path.to_string(),
+                    kind: ChangedFileKind::Untracked,
+                });
+            }
         }
     }
 
@@ -44,5 +57,6 @@ pub fn detect_working_tree_status(repo: &Repository) -> WorkingTreeStatus {
         has_staged,
         has_modified,
         has_untracked,
+        changed_files,
     }
 }

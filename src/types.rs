@@ -113,6 +113,31 @@ impl BranchAction {
 
 // --- Working Tree Status ---
 
+/// Category of a single changed file reported by `git status`: either a
+/// tracked file with working-tree changes, or a new untracked file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangedFileKind {
+    Modified,
+    Untracked,
+}
+
+impl ChangedFileKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Modified => "modified",
+            Self::Untracked => "untracked",
+        }
+    }
+}
+
+/// One file reported as modified or untracked in a worktree's working tree,
+/// for display in the Details view's "Changed Files" section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangedFile {
+    pub path: String,
+    pub kind: ChangedFileKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkingTreeStatus {
     pub has_staged: bool,
@@ -120,6 +145,10 @@ pub struct WorkingTreeStatus {
     /// match git's own "modified" wording in `git status`.
     pub has_modified: bool,
     pub has_untracked: bool,
+    /// Modified and untracked files (excludes staged-only files), for the
+    /// Details view's "Changed Files" section. Populated by
+    /// `git::status::detect_working_tree_status`.
+    pub changed_files: Vec<ChangedFile>,
 }
 
 impl WorkingTreeStatus {
@@ -128,6 +157,7 @@ impl WorkingTreeStatus {
             has_staged: false,
             has_modified: false,
             has_untracked: false,
+            changed_files: Vec::new(),
         }
     }
 
@@ -570,6 +600,7 @@ mod tests {
             has_staged: true,
             has_modified: false,
             has_untracked: false,
+            changed_files: Vec::new(),
         };
         assert!(!s.is_clean());
         assert_eq!(s.summary(), "staged");
@@ -581,6 +612,7 @@ mod tests {
             has_staged: true,
             has_modified: true,
             has_untracked: true,
+            changed_files: Vec::new(),
         };
         assert_eq!(s.summary(), "staged+modified+untracked");
     }
