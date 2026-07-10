@@ -405,6 +405,7 @@ mod tests {
             has_staged: true,
             has_modified: true,
             has_untracked: false,
+            changed_files: Vec::new(),
         };
         // Wide enough for the full label.
         assert_eq!(worktree_status_parts(&clean, &ctx, Some(9)).0, "clean");
