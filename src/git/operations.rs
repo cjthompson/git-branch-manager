@@ -1,7 +1,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-use crate::types::{BranchAction, OperationResult};
+use crate::types::{BranchAction, OperationResult, ProgressUpdate};
 use git2::Repository;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -22,6 +23,33 @@ fn cancelled(branch_name: &str, action: BranchAction) -> OperationResult {
         success: false,
         message: "Cancelled".into(),
     }
+}
+
+fn run_with_progress<F>(
+    item_names: &[String],
+    action: BranchAction,
+    prog_tx: &Sender<ProgressUpdate>,
+    cancel: &AtomicBool,
+    mut op: F,
+) -> Vec<OperationResult>
+where
+    F: FnMut(&str) -> OperationResult,
+{
+    let total = item_names.len();
+    let mut results = Vec::with_capacity(total);
+    for (i, name) in item_names.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            results.push(cancelled(name, action));
+            break;
+        }
+        let _ = prog_tx.send(ProgressUpdate {
+            completed: i,
+            total,
+            current_item: name.clone(),
+        });
+        results.push(op(name));
+    }
+    results
 }
 
 fn run_git_cancellable(
@@ -515,6 +543,33 @@ fn delete_remote(repo_path: &Path, branch_name: &str, cancel: &AtomicBool) -> Op
             message: e.to_string(),
         },
     }
+}
+
+pub fn delete_locals_with_progress(
+    repo: &Repository,
+    branch_names: &[String],
+    action: BranchAction,
+    prog_tx: &Sender<ProgressUpdate>,
+    cancel: &AtomicBool,
+) -> Vec<OperationResult> {
+    run_with_progress(branch_names, action, prog_tx, cancel, |name| {
+        delete_local(repo, name)
+    })
+}
+
+pub fn delete_remotes_with_progress(
+    repo_path: &Path,
+    branch_names: &[String],
+    prog_tx: &Sender<ProgressUpdate>,
+    cancel: &AtomicBool,
+) -> Vec<OperationResult> {
+    run_with_progress(
+        branch_names,
+        BranchAction::DeleteRemoteBranch,
+        prog_tx,
+        cancel,
+        |name| delete_remote(repo_path, name, cancel),
+    )
 }
 
 #[instrument(skip(repo_path, cancel))]
