@@ -15,7 +15,8 @@ pub struct Theme {
     pub cursor: Style,
     pub selected: Style,
     pub current_branch: Style,
-    pub ahead_behind: Style,
+    pub ahead: Style,
+    pub behind: Style,
     pub pinned_row: Style,
     pub checked_row: Style,
     pub error: Style,
@@ -47,7 +48,8 @@ impl Theme {
             cursor: Style::new().bg(Color::Indexed(24)),
             selected: Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
             current_branch: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            ahead_behind: Style::new().fg(Color::Cyan),
+            ahead: Style::new().fg(Color::Green),
+            behind: Style::new().fg(Color::Yellow),
             pinned_row: Style::new().add_modifier(Modifier::DIM),
             checked_row: Style::new().bg(Color::Indexed(236)),
             error: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
@@ -95,7 +97,8 @@ impl Theme {
                 .fg(Color::Indexed(28))
                 .add_modifier(Modifier::BOLD), // dark green
             current_branch: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
-            ahead_behind: Style::new().fg(Color::Blue),
+            ahead: Style::new().fg(Color::Indexed(28)),
+            behind: Style::new().fg(Color::Indexed(172)),
             pinned_row: Style::new().add_modifier(Modifier::DIM),
             checked_row: Style::new().bg(Color::Indexed(229)),
             error: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
@@ -146,7 +149,8 @@ impl Theme {
             cursor: Style::new().bg(Color::Indexed(236)),
             selected: Style::new().fg(green).add_modifier(Modifier::BOLD),
             current_branch: Style::new().fg(cyan).add_modifier(Modifier::BOLD),
-            ahead_behind: Style::new().fg(cyan),
+            ahead: Style::new().fg(green),
+            behind: Style::new().fg(yellow),
             pinned_row: Style::new().add_modifier(Modifier::DIM),
             checked_row: Style::new().bg(Color::Indexed(22)),
             error: Style::new().fg(red).add_modifier(Modifier::BOLD),
@@ -195,7 +199,8 @@ impl Theme {
             cursor: Style::new().bg(Color::Indexed(238)),
             selected: Style::new().fg(green).add_modifier(Modifier::BOLD),
             current_branch: Style::new().fg(cyan).add_modifier(Modifier::BOLD),
-            ahead_behind: Style::new().fg(cyan),
+            ahead: Style::new().fg(green),
+            behind: Style::new().fg(yellow),
             pinned_row: Style::new().add_modifier(Modifier::DIM),
             checked_row: Style::new().bg(Color::Indexed(22)),
             error: Style::new().fg(red).add_modifier(Modifier::BOLD),
@@ -295,11 +300,23 @@ mod tests {
         assert_eq!(t.merged.fg, Some(Color::Green));
         assert_eq!(t.unmerged.fg, Some(Color::Red));
         assert_eq!(t.current_branch.fg, Some(Color::Cyan));
+        assert_eq!(t.ahead.fg, Some(Color::Green));
+        assert_eq!(t.behind.fg, Some(Color::Yellow));
     }
 
     #[test]
     fn light_theme_has_expected_styles() {
         let t = Theme::light();
         assert_eq!(t.primary_text.fg, Some(Color::Black));
+    }
+
+    #[test]
+    fn ahead_and_behind_use_distinct_colors_in_every_theme() {
+        for theme in [Theme::dark(), Theme::light(), Theme::solarized(), Theme::dracula()] {
+            assert_ne!(
+                theme.ahead.fg, theme.behind.fg,
+                "{} theme should color ahead/behind differently", theme.name
+            );
+        }
     }
 }
