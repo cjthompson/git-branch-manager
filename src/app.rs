@@ -2941,7 +2941,11 @@ pub(crate) fn render_branch_row(
                 lines.push(ahead_behind_line(item.ahead, item.behind, ctx));
             }
             3 => {
-                lines.push(pr_line(item.pr.as_ref(), ctx));
+                lines.push(pr_line(
+                    item.pr.as_ref(),
+                    ctx,
+                    visible_data_col_width(visible_cols, ctx, col_idx),
+                ));
             }
             4 => {
                 let age = age_text_for_column(
@@ -3023,7 +3027,11 @@ pub(crate) fn render_remote_row(
                 }
             }
             3 => {
-                lines.push(pr_line(item.pr.as_ref(), ctx));
+                lines.push(pr_line(
+                    item.pr.as_ref(),
+                    ctx,
+                    visible_data_col_width(visible_cols, ctx, col_idx),
+                ));
             }
             4 => {
                 let age = age_text_for_column(

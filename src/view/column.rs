@@ -63,14 +63,17 @@ pub fn pr_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
     }
 }
 
-/// Build a standard "PR" column definition.
+/// Build a standard "PR" column definition. `min_width` fits the "PR" header
+/// and the icon-only compact form; `wide_width` fits `#` + up to 8 digits.
+/// Never hidden — narrow terminals fall back to the icon instead of hiding
+/// the column (see `ui::cells::pr_parts`).
 pub fn pr_column<T: ViewItem>() -> ColumnDef<T> {
     ColumnDef {
         key: "pr",
         name: "PR",
-        min_width: 5,
-        wide_width: None,
-        hide_below_width: Some(80),
+        min_width: 2,
+        wide_width: Some(9),
+        hide_below_width: None,
         compare: Some(pr_cmp),
     }
 }
@@ -348,6 +351,16 @@ mod tests {
         a.merge_status = MergeStatus::Unmerged;
         b.merge_status = MergeStatus::Pending;
         assert_eq!(merge_status_cmp(&a, &b), Ordering::Less);
+    }
+
+    #[test]
+    fn pr_column_has_correct_properties() {
+        let col = pr_column::<BranchInfo>();
+        assert_eq!(col.name, "PR");
+        assert_eq!(col.min_width, 2);
+        assert_eq!(col.wide_width, Some(9));
+        assert_eq!(col.hide_below_width, None);
+        assert!(col.compare.is_some());
     }
 
     #[test]

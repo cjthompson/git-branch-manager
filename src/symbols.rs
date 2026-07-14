@@ -17,6 +17,9 @@ pub struct SymbolSet {
     /// (no merge base); its ahead/behind counts would be the full, misleading
     /// history sizes, so we render this marker instead.
     pub disjoint: &'static str,
+    /// Compact stand-in for the PR number when the PR column is too narrow to
+    /// show digits; colored via `theme.pr_draft/open/merged/closed`.
+    pub pr_indicator: &'static str,
 }
 
 impl SymbolSet {
@@ -36,6 +39,7 @@ impl SymbolSet {
             status_local_suffix: "^",
             status_remote_suffix: "v",
             disjoint: "!=",
+            pr_indicator: "P",
         }
     }
 
@@ -55,6 +59,7 @@ impl SymbolSet {
             status_local_suffix: "\u{2191}",  // ↑ upwards arrow
             status_remote_suffix: "\u{2193}", // ↓ downwards arrow
             disjoint: "\u{2260}",             // not equal to (no shared history)
+            pr_indicator: "\u{21c4}",         // ⇄ rightwards arrow over leftwards arrow
         }
     }
 
@@ -74,6 +79,7 @@ impl SymbolSet {
             status_local_suffix: "\u{2191}",  // ↑ upwards arrow
             status_remote_suffix: "\u{2193}", // ↓ downwards arrow
             disjoint: "\u{2260}",             // not equal to (no shared history)
+            pr_indicator: "\u{f407}",         // nerd font oct-git-pull-request
         }
     }
 

@@ -146,8 +146,14 @@ pub(crate) fn worktree_status_parts(
     }
 }
 
-/// PR cell text + style. Empty when there is no PR.
-pub(crate) fn pr_parts(pr: Option<&PrInfo>, ctx: &CellContext) -> (String, Style) {
+/// PR cell text + style, fit to the resolved column width: the full `#<number>`
+/// when the column is wide enough, just the PR indicator icon when narrow.
+/// Empty when there is no PR.
+pub(crate) fn pr_parts(
+    pr: Option<&PrInfo>,
+    ctx: &CellContext,
+    col_width: Option<usize>,
+) -> (String, Style) {
     match pr {
         Some(pr) => {
             let style = match pr.status {
@@ -156,7 +162,9 @@ pub(crate) fn pr_parts(pr: Option<&PrInfo>, ctx: &CellContext) -> (String, Style
                 PrStatus::Merged => ctx.theme.pr_merged,
                 PrStatus::Closed => ctx.theme.pr_closed,
             };
-            (format!("#{}", pr.number), style)
+            let full = format!("#{}", pr.number);
+            let short = ctx.symbols.pr_indicator.to_string();
+            (fit_text(full, short, col_width, ctx.compact), style)
         }
         None => (String::new(), Style::default()),
     }
@@ -203,9 +211,10 @@ pub fn ahead_behind_line(
     Line::from(ahead_behind_spans(ahead, behind, ctx))
 }
 
-/// PR number line (branch and remote rows).
-pub fn pr_line(pr: Option<&PrInfo>, ctx: &CellContext) -> Line<'static> {
-    let (text, style) = pr_parts(pr, ctx);
+/// PR number line (branch and remote rows). `col_width` is the resolved
+/// column width, used to choose the full number vs the icon-only form.
+pub fn pr_line(pr: Option<&PrInfo>, ctx: &CellContext, col_width: Option<usize>) -> Line<'static> {
+    let (text, style) = pr_parts(pr, ctx, col_width);
     Line::from(Span::styled(text, style))
 }
 
@@ -454,7 +463,7 @@ mod tests {
             data_col_widths: Vec::new(),
             first_col_width: 80,
         };
-        let (text, style) = pr_parts(None, &ctx);
+        let (text, style) = pr_parts(None, &ctx, Some(9));
         assert_eq!(text, "");
         assert_eq!(style, Style::default());
     }
@@ -477,10 +486,48 @@ mod tests {
             (PrStatus::Closed, theme.pr_closed),
         ] {
             let pr = PrInfo { number: 42, status };
-            let (text, style) = pr_parts(Some(&pr), &ctx);
+            let (text, style) = pr_parts(Some(&pr), &ctx, Some(9));
             assert_eq!(text, "#42");
             assert_eq!(style, expected);
         }
+    }
+
+    #[test]
+    fn pr_wide_column_shows_full_number() {
+        let (theme, symbols) = theme_and_symbols();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: 80,
+            compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
+        };
+        let pr = PrInfo {
+            number: 357902,
+            status: PrStatus::Open,
+        };
+        let (text, _) = pr_parts(Some(&pr), &ctx, Some(9));
+        assert_eq!(text, "#357902");
+    }
+
+    #[test]
+    fn pr_narrow_column_shows_icon_only() {
+        let (theme, symbols) = theme_and_symbols();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: 60,
+            compact: true,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
+        };
+        let pr = PrInfo {
+            number: 357902,
+            status: PrStatus::Open,
+        };
+        let (text, _) = pr_parts(Some(&pr), &ctx, Some(2));
+        assert_eq!(text, symbols.pr_indicator);
     }
 
     // --- ahead_behind_spans: omit zero/None, separator for both non-zero ---
