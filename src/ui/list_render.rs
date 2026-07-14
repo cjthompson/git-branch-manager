@@ -111,19 +111,25 @@ pub fn render_list_view<T: ViewItem>(
         Layout::horizontal([Constraint::Length(highlight_width), Constraint::Fill(0)])
             .areas(Rect::new(0, 0, table_width, 1));
 
-    let is_stretchy = |i: usize, col: &ColumnDef<T>| -> bool {
-        i == 0 || (params.active_view == ViewId::Worktrees && col.name == "Branch")
+    // The stretchy (first, growable) column, identified by name rather than
+    // position: "Branch" (Branches' first column; also Worktrees' second
+    // stretchy column), "Name" (Remotes'/Tags' first column), and "Path"
+    // (Worktrees' first column). Matching by name — not column index — means
+    // moving another column ahead of the stretchy column won't silently
+    // change which column claims the priority width.
+    let is_stretchy = |col: &ColumnDef<T>| -> bool {
+        matches!(col.name, "Branch" | "Name" | "Path")
     };
 
     let build_widths = |wide: bool| -> Vec<Constraint> {
         let mut widths: Vec<Constraint> = vec![Constraint::Length(3)]; // checkbox
-        for (i, col) in visible_columns.iter().enumerate() {
+        for col in visible_columns.iter() {
             let col_width = if wide {
                 col.wide_width.unwrap_or(col.min_width)
             } else {
                 col.min_width
             };
-            if is_stretchy(i, col) {
+            if is_stretchy(col) {
                 widths.push(Constraint::Min(col_width));
             } else {
                 widths.push(Constraint::Length(col_width));
@@ -151,9 +157,9 @@ pub fn render_list_view<T: ViewItem>(
     // for this decision — they can spuriously say "wide fits" when it doesn't.
     let (stretchy_wide_floor, fixed_wide_total) = {
         let (mut stretchy, mut fixed) = (0u32, 0u32);
-        for (i, col) in visible_columns.iter().enumerate() {
+        for col in visible_columns.iter() {
             let w = col.wide_width.unwrap_or(col.min_width) as u32;
-            if is_stretchy(i, col) {
+            if is_stretchy(col) {
                 stretchy += w;
             } else {
                 fixed += w;

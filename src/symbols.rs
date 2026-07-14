@@ -20,6 +20,9 @@ pub struct SymbolSet {
     /// Compact stand-in for the PR number when the PR column is too narrow to
     /// show digits; colored via `theme.pr_draft/open/merged/closed`.
     pub pr_indicator: &'static str,
+    /// Shown when a tracking counterpart exists: Branches' upstream-exists
+    /// indicator and Remotes' local-branch-exists indicator.
+    pub tracking_link: &'static str,
 }
 
 impl SymbolSet {
@@ -40,6 +43,7 @@ impl SymbolSet {
             status_remote_suffix: "v",
             disjoint: "!=",
             pr_indicator: "P",
+            tracking_link: "<>",
         }
     }
 
@@ -60,6 +64,7 @@ impl SymbolSet {
             status_remote_suffix: "\u{2193}", // ↓ downwards arrow
             disjoint: "\u{2260}",             // not equal to (no shared history)
             pr_indicator: "\u{21c4}",         // ⇄ rightwards arrow over leftwards arrow
+            tracking_link: "\u{1f517}",       // 🔗 link
         }
     }
 
@@ -80,6 +85,7 @@ impl SymbolSet {
             status_remote_suffix: "\u{2193}", // ↓ downwards arrow
             disjoint: "\u{2260}",             // not equal to (no shared history)
             pr_indicator: "\u{f407}",         // nerd font oct-git-pull-request
+            tracking_link: "\u{f0c1}",        // nerd font link
         }
     }
 
