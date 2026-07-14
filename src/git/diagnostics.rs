@@ -60,7 +60,7 @@ pub fn audit_cache(
         current_branch: repo
             .head()
             .ok()
-            .and_then(|h| h.shorthand().map(|s| s.to_string()))
+            .and_then(|h| h.shorthand().ok().map(|s| s.to_string()))
             .unwrap_or_default(),
         base_oid: repo
             .find_branch(base_branch, git2::BranchType::Local)

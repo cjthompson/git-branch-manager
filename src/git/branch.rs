@@ -44,7 +44,7 @@ pub fn detect_base_branch(repo: &Repository, override_base: Option<&str>) -> Res
 
     // Try remote HEAD symref
     if let Ok(reference) = repo.find_reference("refs/remotes/origin/HEAD") {
-        if let Some(target) = reference.symbolic_target() {
+        if let Ok(Some(target)) = reference.symbolic_target() {
             if let Some(name) = target.strip_prefix("refs/remotes/origin/") {
                 if repo.find_branch(name, BranchType::Local).is_ok() {
                     return Ok(name.to_string());
@@ -722,7 +722,7 @@ fn collect_branch_metadata(
     let head = repo.head().ok();
     let current_branch = head
         .as_ref()
-        .and_then(|h| h.shorthand().map(|s| s.to_string()));
+        .and_then(|h| h.shorthand().ok().map(|s| s.to_string()));
     if let Some(current_branch) = &current_branch {
         span.record("current_branch", current_branch.as_str());
     }

@@ -1172,7 +1172,7 @@ fn test_merge_branch_success() {
     // The operation's contract is to leave HEAD on the base branch.
     let repo = git2::Repository::open(dir).expect("re-open repo");
     assert_eq!(
-        repo.head().unwrap().shorthand(),
+        repo.head().unwrap().shorthand().ok(),
         Some("main"),
         "HEAD should remain on the base branch after merge"
     );
@@ -1210,6 +1210,8 @@ fn test_merge_branch_squash_success() {
     assert!(
         head_commit
             .summary()
+            .ok()
+            .flatten()
             .is_some_and(|s| s.contains("Squash merge feature-squash")),
         "HEAD should be the squash merge commit, got: {:?}",
         head_commit.summary()
@@ -1258,7 +1260,7 @@ fn test_merge_branch_conflict_aborts() {
         "merge abort should leave no conflicts or staged leftovers"
     );
     assert_eq!(
-        repo.head().unwrap().shorthand(),
+        repo.head().unwrap().shorthand().ok(),
         Some("main"),
         "HEAD should be back on the base branch after abort"
     );
@@ -1369,7 +1371,7 @@ fn test_rebase_branch_conflict_aborts() {
         "rebase abort should leave no conflicted files"
     );
     assert_eq!(
-        repo.head().unwrap().shorthand(),
+        repo.head().unwrap().shorthand().ok(),
         Some("rebase-conflict"),
         "HEAD should be restored to the rebased branch after abort"
     );
@@ -1495,7 +1497,7 @@ fn test_pull_branch_non_current() {
         .id();
     let commit = repo.find_commit(branch_oid).unwrap();
     assert_eq!(
-        commit.summary().unwrap_or(""),
+        commit.summary().ok().flatten().unwrap_or(""),
         "Extra commit",
         "local branch should be updated to latest remote commit"
     );
@@ -1548,7 +1550,7 @@ fn test_fast_forward_branch() {
         .peel_to_commit()
         .unwrap();
     assert_eq!(
-        commit.summary().unwrap_or(""),
+        commit.summary().ok().flatten().unwrap_or(""),
         "FF commit 2",
         "local branch should be at the latest remote commit after fast-forward"
     );

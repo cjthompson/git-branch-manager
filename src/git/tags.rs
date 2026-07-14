@@ -18,6 +18,7 @@ pub fn list_tags(repo: &Repository) -> Vec<TagInfo> {
         .iter()
         .flatten()
         .filter_map(|name| {
+            let name = name?;
             let ref_name = format!("refs/tags/{name}");
             let reference = repo.find_reference(&ref_name).ok()?;
 
@@ -30,7 +31,7 @@ pub fn list_tags(repo: &Repository) -> Vec<TagInfo> {
                 if target_obj.kind() == Some(ObjectType::Tag) {
                     // Annotated tag
                     let tag = repo.find_tag(target_oid).ok()?;
-                    let msg = tag.message().map(|m| m.trim().to_string());
+                    let msg = tag.message().ok().flatten().map(|m| m.trim().to_string());
                     let commit_obj = reference.peel(ObjectType::Commit).ok()?;
                     let commit = commit_obj.as_commit()?;
                     let time = commit.committer().when();
