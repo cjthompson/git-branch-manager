@@ -120,6 +120,23 @@ fn resolve_ladder_level(columns: &[LadderColumn], area_width: u16, available: u3
     level
 }
 
+/// Decide whether a header label should render right-aligned, given whether
+/// right alignment is wanted at all (Age / the last column, to match their
+/// data cells) and the column's actual resolved width.
+///
+/// Right alignment truncates overflow by dropping *leading* characters
+/// (ratatui preserves the tail), which reads as garbage — e.g. "Merge"
+/// becomes "erge" — when a narrow terminal forces the column below its
+/// label's width. Falling back to left alignment in that case truncates the
+/// tail instead, producing a legible partial word (e.g. "Merg").
+fn header_alignment(wants_right: bool, label_len: usize, resolved_width: u16) -> Alignment {
+    if wants_right && resolved_width as usize >= label_len {
+        Alignment::Right
+    } else {
+        Alignment::Left
+    }
+}
+
 /// Renders any list view generically.
 ///
 /// The checkbox cell is automatically prepended; the `render_row` callback should
@@ -151,32 +168,12 @@ pub fn render_list_view<T: ViewItem>(
     let visible_columns: Vec<&ColumnDef<T>> =
         visible_col_indices.iter().map(|&i| &columns[i]).collect();
 
-    // Build header row
+    // Sort-direction arrow appended to the active sort column's header label.
     let sort_arrow = if state.sort_ascending() {
         "\u{25b2}"
     } else {
         "\u{25bc}"
     };
-
-    let mut header_cells: Vec<Cell> = vec![Cell::from("")]; // checkbox header (empty)
-
-    for &col_idx in &visible_col_indices {
-        let col = &columns[col_idx];
-        let label = if state.sort_column() == Some(col_idx) && col.compare.is_some() {
-            format!("{}{}", col.name, sort_arrow)
-        } else {
-            col.name.to_string()
-        };
-        // Right-align Age and last column (Status/Merge)
-        let cell = if col.name == "Age" || col_idx == columns.len() - 1 {
-            Cell::from(Line::from(label).alignment(Alignment::Right))
-        } else {
-            Cell::from(label)
-        };
-        header_cells.push(cell.style(theme.header));
-    }
-
-    let header = Row::new(header_cells).height(1);
 
     // Build column widths: checkbox + visible columns.
     // Branches/remotes/tags keep the original shape: first data column stretches,
@@ -240,6 +237,31 @@ pub fn render_list_view<T: ViewItem>(
     // resolved[0] is the checkbox; resolved[1] is the first data column.
     let data_col_widths: Vec<u16> = resolved.iter().skip(1).map(|r| r.width).collect();
     let first_col_width = data_col_widths.first().copied().unwrap_or(0);
+
+    // Build header row. Computed after `data_col_widths` (rather than up front)
+    // so alignment can check each column's actual resolved width.
+    let mut header_cells: Vec<Cell> = vec![Cell::from("")]; // checkbox header (empty)
+
+    for (pos, &col_idx) in visible_col_indices.iter().enumerate() {
+        let col = &columns[col_idx];
+        let label = if state.sort_column() == Some(col_idx) && col.compare.is_some() {
+            format!("{}{}", col.name, sort_arrow)
+        } else {
+            col.name.to_string()
+        };
+        let wants_right = col.name == "Age" || col_idx == columns.len() - 1;
+        let resolved_width = data_col_widths.get(pos).copied().unwrap_or(0);
+        let cell = if header_alignment(wants_right, label.chars().count(), resolved_width)
+            == Alignment::Right
+        {
+            Cell::from(Line::from(label).alignment(Alignment::Right))
+        } else {
+            Cell::from(label)
+        };
+        header_cells.push(cell.style(theme.header));
+    }
+
+    let header = Row::new(header_cells).height(1);
 
     let ctx = CellContext {
         theme,
@@ -434,6 +456,25 @@ mod tests {
         let columns = branches_like_columns();
         let level = resolve_ladder_level(&columns, 100, 100);
         assert_eq!(level, 1);
+    }
+
+    #[test]
+    fn header_right_aligns_when_label_fits() {
+        assert_eq!(header_alignment(true, 5, 5), Alignment::Right);
+        assert_eq!(header_alignment(true, 5, 16), Alignment::Right);
+    }
+
+    #[test]
+    fn header_falls_back_to_left_when_too_narrow_for_label() {
+        // Regression: at resolved width 4, right-aligning "Merge" (len 5)
+        // used to drop the leading "M", rendering "erge".
+        assert_eq!(header_alignment(true, 5, 4), Alignment::Left);
+        assert_eq!(header_alignment(true, 5, 0), Alignment::Left);
+    }
+
+    #[test]
+    fn header_never_right_aligns_when_not_wanted() {
+        assert_eq!(header_alignment(false, 5, 16), Alignment::Left);
     }
 
     #[test]
