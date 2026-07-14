@@ -105,31 +105,58 @@ pub fn render_list_view<T: ViewItem>(
     // Branches/remotes/tags keep the original shape: first data column stretches,
     // later columns are fixed. Worktrees also lets Branch stretch because Path
     // would otherwise take all spare width and squeeze branch names.
-    let short_status = area.width < 70;
-    let mut widths: Vec<Constraint> = vec![Constraint::Length(3)]; // checkbox
-    for (i, col) in visible_columns.iter().enumerate() {
-        let col_width = if !short_status {
-            col.wide_width.unwrap_or(col.min_width)
-        } else {
-            col.min_width
-        };
-        if i == 0 {
-            widths.push(Constraint::Min(col_width));
-        } else if params.active_view == ViewId::Worktrees && col.name == "Branch" {
-            widths.push(Constraint::Min(col_width));
-        } else {
-            widths.push(Constraint::Length(col_width));
-        }
-    }
-
-    // Resolve the constraint widths once so row renderers can fit text to real
-    // cells. This mirrors ratatui Table's width calculation: the table first
-    // reserves highlight-symbol space, then applies column spacing.
     let highlight_width = symbols.cursor_prefix.len() as u16 + 1;
     let table_width = area.width.saturating_sub(2);
     let [_highlight_area, columns_area] =
         Layout::horizontal([Constraint::Length(highlight_width), Constraint::Fill(0)])
             .areas(Rect::new(0, 0, table_width, 1));
+
+    let build_widths = |wide: bool| -> Vec<Constraint> {
+        let mut widths: Vec<Constraint> = vec![Constraint::Length(3)]; // checkbox
+        for (i, col) in visible_columns.iter().enumerate() {
+            let col_width = if wide {
+                col.wide_width.unwrap_or(col.min_width)
+            } else {
+                col.min_width
+            };
+            if i == 0 || (params.active_view == ViewId::Worktrees && col.name == "Branch") {
+                widths.push(Constraint::Min(col_width));
+            } else {
+                widths.push(Constraint::Length(col_width));
+            }
+        }
+        widths
+    };
+
+    // ratatui's layout solver honors `Length` constraints over `Min`, so the
+    // fixed columns always render at their full requested width even when that
+    // leaves the stretchy (branch/name) column a minority sliver of the row.
+    // Give the stretchy column priority: if the fixed columns' wide widths would
+    // claim at least as much space as the stretchy column, fall back to compact
+    // (min_width) sizing for every column instead, so the stretchy column gets
+    // the majority of the row and the fixed columns show their abbreviated
+    // forms — triggered by actual leftover space, not just a flat terminal-width
+    // threshold.
+    let wide_leaves_room = {
+        let widths = build_widths(true);
+        let resolved = Layout::horizontal(&widths).spacing(1).split(columns_area);
+        let mut stretchy_total: u32 = 0;
+        let mut other_total: u32 = 0;
+        for (i, (col, rect)) in visible_columns.iter().zip(resolved.iter().skip(1)).enumerate() {
+            if i == 0 || (params.active_view == ViewId::Worktrees && col.name == "Branch") {
+                stretchy_total += rect.width as u32;
+            } else {
+                other_total += rect.width as u32;
+            }
+        }
+        stretchy_total >= other_total
+    };
+    let short_status = area.width < 70 || !wide_leaves_room;
+    let widths = build_widths(!short_status);
+
+    // Resolve the constraint widths once so row renderers can fit text to real
+    // cells. This mirrors ratatui Table's width calculation: the table first
+    // reserves highlight-symbol space, then applies column spacing.
     let resolved = Layout::horizontal(&widths).spacing(1).split(columns_area);
     // resolved[0] is the checkbox; resolved[1] is the first data column.
     let data_col_widths: Vec<u16> = resolved.iter().skip(1).map(|r| r.width).collect();
