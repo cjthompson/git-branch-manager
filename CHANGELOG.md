@@ -4,6 +4,7 @@
 
 ### Tasks
 - Stretchy-column priority in the responsive table layout is now matched by column name ("Branch"/"Name"/"Path") instead of position, so a future column reorder can't silently break which column gets priority width; also adds a tracking-link symbol to SymbolSet for a follow-up task (#ui)
+- A/B column now colors ahead and behind counts differently (green/yellow) instead of a single shared color, across all four themes (#ui)
 
 ## 2026-07-10
 
