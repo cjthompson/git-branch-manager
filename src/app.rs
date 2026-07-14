@@ -2938,7 +2938,12 @@ pub(crate) fn render_branch_row(
                 lines.push(Line::from(Span::styled(text, style)));
             }
             2 => {
-                lines.push(ahead_behind_line(item.ahead, item.behind, ctx));
+                lines.push(ahead_behind_line(
+                    item.ahead,
+                    item.behind,
+                    ctx,
+                    visible_data_col_width(visible_cols, ctx, col_idx),
+                ));
             }
             3 => {
                 lines.push(pr_line(
@@ -3023,7 +3028,12 @@ pub(crate) fn render_remote_row(
                         theme.secondary_text,
                     )));
                 } else {
-                    lines.push(ahead_behind_line(item.ahead, item.behind, ctx));
+                    lines.push(ahead_behind_line(
+                        item.ahead,
+                        item.behind,
+                        ctx,
+                        visible_data_col_width(visible_cols, ctx, col_idx),
+                    ));
                 }
             }
             3 => {

@@ -170,45 +170,50 @@ pub(crate) fn pr_parts(
     }
 }
 
-/// Ahead/behind spans. Zero and `None` counts are omitted; both non-zero counts
-/// render with a space separator.
-pub(crate) fn ahead_behind_spans(
+/// Ahead/behind text + style, fit to the resolved column width. Zero and
+/// `None` counts are omitted. Full form shows counts (`↑1 ↓164`); the compact
+/// form drops the numbers and shows only the direction arrows (`↑↓`).
+pub(crate) fn ahead_behind_parts(
     ahead: Option<u32>,
     behind: Option<u32>,
     ctx: &CellContext,
-) -> Vec<Span<'static>> {
-    let mut parts: Vec<Span<'static>> = Vec::new();
-    if let Some(a) = ahead {
-        if a > 0 {
-            parts.push(Span::styled(
-                format!("{}{a}", ctx.symbols.arrow_up),
-                ctx.theme.ahead_behind,
-            ));
-        }
-    }
-    if let Some(b) = behind {
-        if b > 0 {
-            if !parts.is_empty() {
-                parts.push(Span::raw(" "));
-            }
-            parts.push(Span::styled(
-                format!("{}{b}", ctx.symbols.arrow_down),
-                ctx.theme.ahead_behind,
-            ));
-        }
-    }
-    parts
+    col_width: Option<usize>,
+) -> (String, Style) {
+    let a = ahead.filter(|&a| a > 0);
+    let b = behind.filter(|&b| b > 0);
+    let (full, short) = match (a, b) {
+        (Some(a), Some(b)) => (
+            format!("{}{a} {}{b}", ctx.symbols.arrow_up, ctx.symbols.arrow_down),
+            format!("{}{}", ctx.symbols.arrow_up, ctx.symbols.arrow_down),
+        ),
+        (Some(a), None) => (
+            format!("{}{a}", ctx.symbols.arrow_up),
+            ctx.symbols.arrow_up.to_string(),
+        ),
+        (None, Some(b)) => (
+            format!("{}{b}", ctx.symbols.arrow_down),
+            ctx.symbols.arrow_down.to_string(),
+        ),
+        (None, None) => return (String::new(), Style::default()),
+    };
+    (
+        fit_text(full, short, col_width, ctx.compact),
+        ctx.theme.ahead_behind,
+    )
 }
 
 // ── Public Line builders ────────────────────────────────────────────────────
 
-/// Ahead/behind line (branch and remote rows).
+/// Ahead/behind line (branch and remote rows). `col_width` is the resolved
+/// column width, used to choose counts vs arrows-only.
 pub fn ahead_behind_line(
     ahead: Option<u32>,
     behind: Option<u32>,
     ctx: &CellContext,
+    col_width: Option<usize>,
 ) -> Line<'static> {
-    Line::from(ahead_behind_spans(ahead, behind, ctx))
+    let (text, style) = ahead_behind_parts(ahead, behind, ctx, col_width);
+    Line::from(Span::styled(text, style))
 }
 
 /// PR number line (branch and remote rows). `col_width` is the resolved
@@ -530,7 +535,7 @@ mod tests {
         assert_eq!(text, symbols.pr_indicator);
     }
 
-    // --- ahead_behind_spans: omit zero/None, separator for both non-zero ---
+    // --- ahead_behind_parts: omit zero/None, wide shows counts, narrow shows arrows only ---
 
     #[test]
     fn ahead_behind_omits_zero_and_none() {
@@ -543,12 +548,12 @@ mod tests {
             data_col_widths: Vec::new(),
             first_col_width: 80,
         };
-        assert!(ahead_behind_spans(Some(0), Some(0), &ctx).is_empty());
-        assert!(ahead_behind_spans(None, None, &ctx).is_empty());
+        assert_eq!(ahead_behind_parts(Some(0), Some(0), &ctx, Some(8)).0, "");
+        assert_eq!(ahead_behind_parts(None, None, &ctx, Some(8)).0, "");
     }
 
     #[test]
-    fn ahead_behind_single_side() {
+    fn ahead_behind_single_side_wide() {
         let (theme, symbols) = theme_and_symbols();
         let ctx = CellContext {
             theme: &theme,
@@ -558,17 +563,12 @@ mod tests {
             data_col_widths: Vec::new(),
             first_col_width: 80,
         };
-        let ahead = ahead_behind_spans(Some(3), Some(0), &ctx);
-        assert_eq!(ahead.len(), 1);
-        assert_eq!(ahead[0].content.as_ref(), "+3");
-
-        let behind = ahead_behind_spans(None, Some(2), &ctx);
-        assert_eq!(behind.len(), 1);
-        assert_eq!(behind[0].content.as_ref(), "-2");
+        assert_eq!(ahead_behind_parts(Some(3), Some(0), &ctx, Some(8)).0, "+3");
+        assert_eq!(ahead_behind_parts(None, Some(2), &ctx, Some(8)).0, "-2");
     }
 
     #[test]
-    fn ahead_behind_both_nonzero_has_separator() {
+    fn ahead_behind_both_nonzero_wide_has_counts() {
         let (theme, symbols) = theme_and_symbols();
         let ctx = CellContext {
             theme: &theme,
@@ -578,10 +578,22 @@ mod tests {
             data_col_widths: Vec::new(),
             first_col_width: 80,
         };
-        let spans = ahead_behind_spans(Some(1), Some(2), &ctx);
-        assert_eq!(spans.len(), 3);
-        assert_eq!(spans[0].content.as_ref(), "+1");
-        assert_eq!(spans[1].content.as_ref(), " ");
-        assert_eq!(spans[2].content.as_ref(), "-2");
+        assert_eq!(ahead_behind_parts(Some(1), Some(2), &ctx, Some(8)).0, "+1 -2");
+    }
+
+    #[test]
+    fn ahead_behind_narrow_column_drops_counts() {
+        let (theme, symbols) = theme_and_symbols();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: 60,
+            compact: true,
+            data_col_widths: Vec::new(),
+            first_col_width: 80,
+        };
+        assert_eq!(ahead_behind_parts(Some(1), Some(164), &ctx, Some(2)).0, "+-");
+        assert_eq!(ahead_behind_parts(Some(1), None, &ctx, Some(0)).0, "+");
+        assert_eq!(ahead_behind_parts(None, Some(164), &ctx, Some(0)).0, "-");
     }
 }

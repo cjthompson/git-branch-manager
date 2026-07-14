@@ -41,13 +41,15 @@ pub fn ahead_behind_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
         .then(a.behind().unwrap_or(0).cmp(&b.behind().unwrap_or(0)))
 }
 
-/// Build a standard "A/B" column definition.
+/// Build a standard "A/B" column definition. `wide_width` fits full counts
+/// (e.g. `↑1 ↓164`); `min_width` fits just the "A/B" header / arrows-only
+/// compact form (see `ui::cells::ahead_behind_parts`).
 pub fn ahead_behind_column<T: ViewItem>() -> ColumnDef<T> {
     ColumnDef {
         key: "ahead_behind",
         name: "A/B",
-        min_width: 8,
-        wide_width: None,
+        min_width: 3,
+        wide_width: Some(8),
         hide_below_width: Some(80),
         compare: Some(ahead_behind_cmp),
     }
@@ -351,6 +353,16 @@ mod tests {
         a.merge_status = MergeStatus::Unmerged;
         b.merge_status = MergeStatus::Pending;
         assert_eq!(merge_status_cmp(&a, &b), Ordering::Less);
+    }
+
+    #[test]
+    fn ahead_behind_column_has_correct_properties() {
+        let col = ahead_behind_column::<BranchInfo>();
+        assert_eq!(col.name, "A/B");
+        assert_eq!(col.min_width, 3);
+        assert_eq!(col.wide_width, Some(8));
+        assert_eq!(col.hide_below_width, Some(80));
+        assert!(col.compare.is_some());
     }
 
     #[test]
