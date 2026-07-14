@@ -178,7 +178,7 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
 
 // ---- Generic channel drain helper ----
 
-fn drain_channel<T>(rx: &mut Option<Receiver<T>>, max_per_tick: usize) -> Vec<T> {
+fn drain_channel<T>(rx: &mut Option<Receiver<T>>, max_per_tick: usize, dirty: &mut bool) -> Vec<T> {
     let Some(receiver) = rx.as_ref() else {
         return vec![];
     };
@@ -195,6 +195,9 @@ fn drain_channel<T>(rx: &mut Option<Receiver<T>>, max_per_tick: usize) -> Vec<T>
         }
     }
 
+    if !results.is_empty() {
+        *dirty = true;
+    }
     results
 }
 
@@ -332,15 +335,22 @@ impl App {
             });
         }
 
+        let mut needs_redraw = true;
+
         loop {
             tick_ms.store(now_ms(), Ordering::Relaxed);
-            self.drain_channels();
+            if self.drain_channels() {
+                needs_redraw = true;
+            }
 
-            terminal.draw(|frame| {
-                self.terminal_rows = frame.area().height;
-                let mut ctx = self.build_render_context();
-                git_branch_manager::ui::render::draw(frame, &mut ctx);
-            })?;
+            if needs_redraw {
+                terminal.draw(|frame| {
+                    self.terminal_rows = frame.area().height;
+                    let mut ctx = self.build_render_context();
+                    git_branch_manager::ui::render::draw(frame, &mut ctx);
+                })?;
+                needs_redraw = false;
+            }
 
             if self.should_exit {
                 return Ok(());
@@ -348,6 +358,7 @@ impl App {
 
             if event::poll(Duration::from_millis(50))? {
                 let ev = event::read()?;
+                needs_redraw = true;
                 self.handle_event(ev);
             }
         }
@@ -388,9 +399,11 @@ impl App {
 
     // ---- Channel Draining ----
 
-    fn drain_channels(&mut self) {
+    fn drain_channels(&mut self) -> bool {
+        let mut dirty = false;
+
         // Phase-1 messages (fast metadata first, merge statuses second)
-        for msg in drain_channel(&mut self.phase1_rx, 2) {
+        for msg in drain_channel(&mut self.phase1_rx, 2, &mut dirty) {
             match msg {
                 Phase1Msg::Fast(branches, cache_for_app, _cache_for_squash) => {
                     self.cache = cache_for_app;
@@ -496,7 +509,7 @@ impl App {
         }
 
         // Squash-merge results (cap 32 per tick)
-        let squash_results = drain_channel(&mut self.squash_rx, 32);
+        let squash_results = drain_channel(&mut self.squash_rx, 32, &mut dirty);
         let had_squash_results = !squash_results.is_empty();
         for result in squash_results {
             self.squash_checked += 1;
@@ -529,7 +542,7 @@ impl App {
         }
 
         // Remote squash-merge results
-        for result in drain_channel(&mut self.remote_squash_rx, 32) {
+        for result in drain_channel(&mut self.remote_squash_rx, 32, &mut dirty) {
             if let Some(b) = self
                 .remotes
                 .items_mut()
@@ -541,7 +554,7 @@ impl App {
         }
 
         // Remote enrichment
-        for result in drain_channel(&mut self.remote_enrich_rx, 32) {
+        for result in drain_channel(&mut self.remote_enrich_rx, 32, &mut dirty) {
             if let Some(b) = self
                 .remotes
                 .items_mut()
@@ -556,7 +569,7 @@ impl App {
         }
 
         // Worktree enrichment
-        for result in drain_channel(&mut self.worktree_enrich_rx, 32) {
+        for result in drain_channel(&mut self.worktree_enrich_rx, 32, &mut dirty) {
             if let Some(wt) = self.worktrees.items_mut().get_mut(result.index) {
                 wt.wt_status = result.wt_status;
                 wt.age_date = result.age_date;
@@ -564,7 +577,7 @@ impl App {
         }
 
         // PR map (one-shot)
-        for map in drain_channel(&mut self.pr_rx, 1) {
+        for map in drain_channel(&mut self.pr_rx, 1, &mut dirty) {
             self.pr_map = map;
             // Push PR data into branch items
             for branch in self.branches.items_mut() {
@@ -579,7 +592,7 @@ impl App {
         }
 
         // Tag loading (one-shot)
-        for items in drain_channel(&mut self.tag_load_rx, 1) {
+        for items in drain_channel(&mut self.tag_load_rx, 1, &mut dirty) {
             self.tags.set_items(items);
             self.tags.loading = false;
             list_state::apply_sort(&mut self.tags, &self.tag_columns);
@@ -587,7 +600,9 @@ impl App {
         }
 
         // Remote loading (one-shot)
-        for (remotes, candidates, remote_cache) in drain_channel(&mut self.remote_load_rx, 1) {
+        for (remotes, candidates, remote_cache) in
+            drain_channel(&mut self.remote_load_rx, 1, &mut dirty)
+        {
             self.remotes.set_items(remotes);
             self.remotes.loading = false;
             list_state::apply_sort(&mut self.remotes, &self.remote_columns);
@@ -621,7 +636,7 @@ impl App {
         }
 
         // Worktree loading (one-shot)
-        for items in drain_channel(&mut self.worktree_load_rx, 1) {
+        for items in drain_channel(&mut self.worktree_load_rx, 1, &mut dirty) {
             self.worktrees.set_items(items);
             self.worktrees.loading = false;
             list_state::apply_sort(&mut self.worktrees, &self.worktree_columns);
@@ -636,7 +651,7 @@ impl App {
         }
 
         // Operation results (one-shot)
-        for results in drain_channel(&mut self.op_rx, 1) {
+        for results in drain_channel(&mut self.op_rx, 1, &mut dirty) {
             self.cancel_flag = None;
             self.progress_rx = None;
             self.progress = None;
@@ -672,7 +687,7 @@ impl App {
         }
 
         // Cache-audit result (one-shot)
-        for audit in drain_channel(&mut self.diag_rx, 1) {
+        for audit in drain_channel(&mut self.diag_rx, 1, &mut dirty) {
             self.cancel_flag = None;
             self.progress_rx = None;
             self.progress = None;
@@ -680,7 +695,7 @@ impl App {
         }
 
         // Progress updates
-        for update in drain_channel(&mut self.progress_rx, 32) {
+        for update in drain_channel(&mut self.progress_rx, 32, &mut dirty) {
             self.progress = Some(update.clone());
             if let Some(Overlay::Executing { progress, .. }) = &mut self.overlay {
                 *progress = Some(update);
@@ -688,7 +703,7 @@ impl App {
         }
 
         // Remote fetch completion
-        for success in drain_channel(&mut self.remote_fetch_rx, 1) {
+        for success in drain_channel(&mut self.remote_fetch_rx, 1, &mut dirty) {
             if success {
                 self.remote_fetched = true;
                 // Reload remote branches if we're on that view
@@ -703,8 +718,11 @@ impl App {
         if let Some(ref toast) = self.toast {
             if toast.is_expired() {
                 self.toast = None;
+                dirty = true;
             }
         }
+
+        dirty
     }
 
     // ---- Event Dispatch ----
