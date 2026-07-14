@@ -2079,9 +2079,7 @@ impl App {
         self.pending_targets = item_names.clone();
 
         std::thread::spawn(move || {
-            let needs_stash = git2::Repository::open(&repo_path)
-                .map(|r| !crate::git::status::detect_working_tree_status(&r).is_clean())
-                .unwrap_or(false);
+            let needs_stash = !crate::git::status::detect_working_tree_status(&repo_path).is_clean();
             let results = execute_action(
                 action,
                 &item_names,

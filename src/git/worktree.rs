@@ -269,12 +269,7 @@ fn build_worktree(
 
 #[instrument(skip(dir), fields(path = ?dir))]
 fn status_and_age(dir: &Path) -> (WorkingTreeStatus, DateTime<Utc>) {
-    // Use git2's structured status rather than parsing `git status --porcelain`
-    // text: the porcelain X/Y columns are position-significant whitespace, and
-    // trimming the output shifts an unstaged change into the staged column.
-    let status = git2::Repository::open(dir)
-        .map(|repo| super::status::detect_working_tree_status(&repo))
-        .unwrap_or_else(|_| WorkingTreeStatus::clean());
+    let status = super::status::detect_working_tree_status(dir);
     let age = head_commit_date(dir);
     (status, age)
 }

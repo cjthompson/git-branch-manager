@@ -965,21 +965,21 @@ fn test_remote_disjoint_branch_detected() {
 
 #[test]
 fn test_wt_status_clean() {
-    let (_tmpdir, repo) = setup_test_repo();
-    let s = status::detect_working_tree_status(&repo);
+    let (tmpdir, _repo) = setup_test_repo();
+    let s = status::detect_working_tree_status(tmpdir.path());
     assert!(s.is_clean(), "fresh repo should be clean");
 }
 
 #[test]
 fn test_wt_status_staged_only() {
-    let (tmpdir, repo) = setup_test_repo();
+    let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();
 
     // Add a new file to the index without committing
     std::fs::write(dir.join("new.txt"), "content\n").unwrap();
     run_git(dir, &["add", "new.txt"]);
 
-    let s = status::detect_working_tree_status(&repo);
+    let s = status::detect_working_tree_status(dir);
     assert!(s.has_staged, "should detect staged file");
     assert!(!s.has_modified, "should not detect modified changes");
     assert!(!s.has_untracked, "should not detect untracked files");
@@ -990,13 +990,13 @@ fn test_wt_status_staged_only() {
 
 #[test]
 fn test_wt_status_unstaged_only() {
-    let (tmpdir, repo) = setup_test_repo();
+    let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();
 
     // Modify a tracked file without staging
     std::fs::write(dir.join("README.md"), "# Modified\n").unwrap();
 
-    let s = status::detect_working_tree_status(&repo);
+    let s = status::detect_working_tree_status(dir);
     assert!(!s.has_staged, "should not detect staged changes");
     assert!(s.has_modified, "should detect modified file");
     assert!(!s.has_untracked, "should not detect untracked files");
@@ -1007,13 +1007,13 @@ fn test_wt_status_unstaged_only() {
 
 #[test]
 fn test_wt_status_untracked_only() {
-    let (tmpdir, repo) = setup_test_repo();
+    let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();
 
     // Create a file that is not tracked by git
     std::fs::write(dir.join("untracked.txt"), "not tracked\n").unwrap();
 
-    let s = status::detect_working_tree_status(&repo);
+    let s = status::detect_working_tree_status(dir);
     assert!(!s.has_staged, "should not detect staged changes");
     assert!(!s.has_modified, "should not detect modified changes");
     assert!(s.has_untracked, "should detect untracked file");
@@ -1024,7 +1024,7 @@ fn test_wt_status_untracked_only() {
 
 #[test]
 fn test_wt_status_all_three() {
-    let (tmpdir, repo) = setup_test_repo();
+    let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();
 
     // Staged: add a new file to index
@@ -1037,7 +1037,7 @@ fn test_wt_status_all_three() {
     // Untracked: a new file not added to index
     std::fs::write(dir.join("untracked.txt"), "not tracked\n").unwrap();
 
-    let s = status::detect_working_tree_status(&repo);
+    let s = status::detect_working_tree_status(dir);
     assert!(s.has_staged, "should detect staged file");
     assert!(s.has_modified, "should detect modified file");
     assert!(s.has_untracked, "should detect untracked file");
@@ -1059,7 +1059,7 @@ fn test_wt_status_all_three() {
 
 #[test]
 fn test_wt_status_staged_then_further_edited() {
-    let (tmpdir, repo) = setup_test_repo();
+    let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();
 
     // Stage a modification to a tracked file, then modify it again without
@@ -1071,7 +1071,7 @@ fn test_wt_status_staged_then_further_edited() {
     run_git(dir, &["add", "README.md"]);
     std::fs::write(dir.join("README.md"), "# Staged edit, then further edited\n").unwrap();
 
-    let s = status::detect_working_tree_status(&repo);
+    let s = status::detect_working_tree_status(dir);
     assert!(s.has_staged, "should detect staged change");
     assert!(s.has_modified, "should detect further unstaged edit");
     assert_eq!(
