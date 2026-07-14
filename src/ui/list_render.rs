@@ -43,6 +43,83 @@ pub struct ListRenderParams<'a, T: ViewItem> {
     pub symbols: &'a SymbolSet,
 }
 
+/// One column's sizing inputs for the responsive compaction-ladder decision
+/// (BL-022 stage 1). Deliberately independent of `ColumnDef<T>`'s `T: ViewItem`
+/// generic so the ladder algorithm — and its tests — don't need a concrete
+/// row type.
+struct LadderColumn {
+    key: &'static str,
+    min_width: u16,
+    wide_width: Option<u16>,
+    is_stretchy: bool,
+}
+
+impl LadderColumn {
+    fn wide_or_min(&self) -> u16 {
+        self.wide_width.unwrap_or(self.min_width)
+    }
+}
+
+/// The ladder's last rung: every column compact, including ones with no
+/// named tier (e.g. worktree Status, stretchy wide floors). This matches the
+/// pre-ladder behavior's single "short" state, kept as the ultimate fallback
+/// when even demoting every named tier doesn't leave the stretchy column
+/// enough room.
+const FULLY_COMPACT_LEVEL: u8 = 3;
+
+/// Whether the column identified by `key` should render in its compact form
+/// at the given ladder `level`. Follows BL-022's priority order as directed
+/// for this task: Age is demoted first (level 1), then Merge (level 2), then
+/// everything else together — including A/B and PR, which BL-022's own text
+/// lists together as one "least important" tier — at `FULLY_COMPACT_LEVEL`
+/// (level 3).
+fn demoted_at_level(key: &str, level: u8) -> bool {
+    match level {
+        0 => false,
+        1 => key == "age",
+        2 => matches!(key, "age" | "merge"),
+        _ => true,
+    }
+}
+
+/// Resolve the compaction ladder level (`0..=FULLY_COMPACT_LEVEL`) for a set
+/// of visible columns at a given width.
+///
+/// Walks the ladder from level 0 (nothing compact) upward, stopping at the
+/// first level where the stretchy (Branch/Path) column gets at least its own
+/// wide floor and at least as much space as the fixed columns combined —
+/// the same ">=" room check the old binary toggle used, now re-evaluated one
+/// level at a time instead of once. `area_width` is the raw outer terminal
+/// width (for the flat `< 70` floor, same as before); `available` is the row
+/// width left after the border/highlight-symbol columns are removed (i.e.
+/// `columns_area.width`), used for the arithmetic itself.
+fn resolve_ladder_level(columns: &[LadderColumn], area_width: u16, available: u32) -> u8 {
+    let gaps = columns.len() as u32; // N+1 segments (checkbox + N columns) -> N gaps
+    let mut level = 0u8;
+    while level < FULLY_COMPACT_LEVEL {
+        let (mut stretchy_wide_floor, mut fixed_total) = (0u32, 0u32);
+        for col in columns {
+            let w = if demoted_at_level(col.key, level) {
+                col.min_width
+            } else {
+                col.wide_or_min()
+            } as u32;
+            if col.is_stretchy {
+                stretchy_wide_floor += w;
+            } else {
+                fixed_total += w;
+            }
+        }
+        let stretchy_actual = available.saturating_sub(3 + gaps + fixed_total); // 3 = checkbox
+        let room_ok = stretchy_actual >= stretchy_wide_floor && stretchy_actual >= fixed_total;
+        if room_ok && area_width >= 70 {
+            break;
+        }
+        level += 1;
+    }
+    level
+}
+
 /// Renders any list view generically.
 ///
 /// The checkbox cell is automatically prepended; the `render_row` callback should
@@ -121,59 +198,40 @@ pub fn render_list_view<T: ViewItem>(
         matches!(col.name, "Branch" | "Name" | "Path")
     };
 
-    let build_widths = |wide: bool| -> Vec<Constraint> {
-        let mut widths: Vec<Constraint> = vec![Constraint::Length(3)]; // checkbox
-        for col in visible_columns.iter() {
-            let col_width = if wide {
-                col.wide_width.unwrap_or(col.min_width)
-            } else {
-                col.min_width
-            };
-            if is_stretchy(col) {
-                widths.push(Constraint::Min(col_width));
-            } else {
-                widths.push(Constraint::Length(col_width));
-            }
-        }
-        widths
-    };
-
-    // ratatui's layout solver honors `Length` constraints over `Min`, so the
-    // fixed columns always render at their full requested width even when that
-    // leaves the stretchy (branch/name) column a minority sliver of the row.
-    // Give the stretchy column priority: if the fixed columns' wide widths would
-    // claim at least as much space as the stretchy column, fall back to compact
-    // (min_width) sizing for every column instead, so the stretchy column gets
-    // the majority of the row and the fixed columns show their abbreviated
-    // forms — triggered by actual leftover space, not just a flat terminal-width
-    // threshold.
-    //
-    // This is computed by direct arithmetic rather than by resolving a trial
-    // `Layout` and reading back its widths: when the "wide" hypothesis is
-    // itself infeasible (total demand exceeds the available row width — e.g.
-    // Worktrees' two stretchy columns, Path and Branch, both wanting their
-    // wide floor at once), ratatui's solver has to violate constraints to
-    // produce *some* answer, and those violated numbers are unreliable input
-    // for this decision — they can spuriously say "wide fits" when it doesn't.
-    let (stretchy_wide_floor, fixed_wide_total) = {
-        let (mut stretchy, mut fixed) = (0u32, 0u32);
-        for col in visible_columns.iter() {
-            let w = col.wide_width.unwrap_or(col.min_width) as u32;
-            if is_stretchy(col) {
-                stretchy += w;
-            } else {
-                fixed += w;
-            }
-        }
-        (stretchy, fixed)
-    };
-    let gaps = visible_columns.len() as u32; // N+1 segments (checkbox + N columns) -> N gaps
+    // Give the stretchy column priority via a staged compaction ladder
+    // (BL-022 stage 1) instead of flipping every fixed column between wide
+    // and compact at once: demote one priority tier at a time (Age, then
+    // Merge, then A/B+PR together with everything else) until the stretchy
+    // column gets at least as much space as it needs and at least as much
+    // as the fixed columns combined. See `resolve_ladder_level` /
+    // `demoted_at_level` above for the algorithm and the rationale for using
+    // direct arithmetic instead of resolving a trial `Layout`.
+    let ladder_columns: Vec<LadderColumn> = visible_columns
+        .iter()
+        .enumerate()
+        .map(|(_i, col)| LadderColumn {
+            key: col.key,
+            min_width: col.min_width,
+            wide_width: col.wide_width,
+            is_stretchy: is_stretchy(col),
+        })
+        .collect();
     let available = columns_area.width as u32;
-    let stretchy_actual_wide = available.saturating_sub(3 + gaps + fixed_wide_total); // 3 = checkbox
-    let wide_leaves_room =
-        stretchy_actual_wide >= stretchy_wide_floor && stretchy_actual_wide >= fixed_wide_total;
-    let short_status = area.width < 70 || !wide_leaves_room;
-    let widths = build_widths(!short_status);
+    let level = resolve_ladder_level(&ladder_columns, area.width, available);
+
+    let mut widths: Vec<Constraint> = vec![Constraint::Length(3)]; // checkbox
+    for (_i, col) in visible_columns.iter().enumerate() {
+        let col_width = if demoted_at_level(col.key, level) {
+            col.min_width
+        } else {
+            col.wide_width.unwrap_or(col.min_width)
+        };
+        if is_stretchy(col) {
+            widths.push(Constraint::Min(col_width));
+        } else {
+            widths.push(Constraint::Length(col_width));
+        }
+    }
 
     // Resolve the constraint widths once so row renderers can fit text to real
     // cells. This mirrors ratatui Table's width calculation: the table first
@@ -296,4 +354,106 @@ pub fn render_list_view<T: ViewItem>(
         .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
 
     frame.render_stateful_widget(table, inner_area, state.table_state_mut());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn col(
+        key: &'static str,
+        min_width: u16,
+        wide_width: Option<u16>,
+        is_stretchy: bool,
+    ) -> LadderColumn {
+        LadderColumn {
+            key,
+            min_width,
+            wide_width,
+            is_stretchy,
+        }
+    }
+
+    // A Branches-shaped column set mirroring `view::branches::BranchesViewDef`:
+    // Branch (stretchy) + Up (no compact form) + A/B + PR + Age + Merge.
+    fn branches_like_columns() -> Vec<LadderColumn> {
+        vec![
+            col("name", 15, None, true),           // Branch (stretchy)
+            col("remote", 4, None, false),          // Up (no wide form)
+            col("ahead_behind", 3, Some(8), false), // A/B
+            col("pr", 2, Some(9), false),           // PR
+            col("age", 5, Some(14), false),         // Age
+            col("merge", 5, Some(16), false),       // Merge
+        ]
+    }
+
+    #[test]
+    fn demoted_at_level_matches_bl_022_priority_order() {
+        assert!(!demoted_at_level("age", 0));
+        assert!(!demoted_at_level("merge", 0));
+        assert!(!demoted_at_level("ahead_behind", 0));
+        assert!(!demoted_at_level("pr", 0));
+
+        assert!(demoted_at_level("age", 1));
+        assert!(!demoted_at_level("merge", 1));
+        assert!(!demoted_at_level("ahead_behind", 1));
+        assert!(!demoted_at_level("pr", 1));
+
+        assert!(demoted_at_level("age", 2));
+        assert!(demoted_at_level("merge", 2));
+        assert!(!demoted_at_level("ahead_behind", 2));
+        assert!(!demoted_at_level("pr", 2));
+
+        // A/B and PR are demoted together, only at the final level.
+        assert!(demoted_at_level("age", 3));
+        assert!(demoted_at_level("merge", 3));
+        assert!(demoted_at_level("ahead_behind", 3));
+        assert!(demoted_at_level("pr", 3));
+        // FULLY_COMPACT_LEVEL also demotes columns with no named tier.
+        assert!(demoted_at_level("remote", 3));
+        assert!(demoted_at_level("status", 3));
+    }
+
+    #[test]
+    fn stretchy_column_not_demoted_until_final_level() {
+        for level in 0..FULLY_COMPACT_LEVEL {
+            assert!(!demoted_at_level("name", level));
+        }
+        assert!(demoted_at_level("name", FULLY_COMPACT_LEVEL));
+    }
+
+    #[test]
+    fn wide_terminal_keeps_everything_wide() {
+        let columns = branches_like_columns();
+        let level = resolve_ladder_level(&columns, 160, 160);
+        assert_eq!(level, 0);
+    }
+
+    #[test]
+    fn narrow_width_only_age_compacts() {
+        let columns = branches_like_columns();
+        let level = resolve_ladder_level(&columns, 100, 100);
+        assert_eq!(level, 1);
+    }
+
+    #[test]
+    fn narrower_width_age_and_merge_compact() {
+        let columns = branches_like_columns();
+        let level = resolve_ladder_level(&columns, 80, 80);
+        assert_eq!(level, 2);
+    }
+
+    #[test]
+    fn very_narrow_width_compacts_age_merge_and_ab_pr() {
+        let columns = branches_like_columns();
+        let level = resolve_ladder_level(&columns, 100, 50);
+        assert_eq!(level, FULLY_COMPACT_LEVEL);
+    }
+
+    #[test]
+    fn flat_width_below_70_forces_fully_compact_even_with_room() {
+        let columns = branches_like_columns();
+        let level = resolve_ladder_level(&columns, 69, 500);
+        assert_eq!(level, FULLY_COMPACT_LEVEL);
+    }
 }
