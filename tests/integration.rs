@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 use git_branch_manager::git::{
     branch, cache, diagnostics, merge_detection, operations, squash_loader, status, tags, worktree,
 };
-use git_branch_manager::types::{DiagKind, MergeStatus};
+use git_branch_manager::types::{ChangedFileKind, DiagKind, MergeStatus};
 
 /// A temp directory for tests. Deletes itself on drop, EXCEPT when the
 /// `GBM_KEEP_TEST_REPOS` env var is set — then it leaks the directory and prints
@@ -983,6 +983,9 @@ fn test_wt_status_staged_only() {
     assert!(s.has_staged, "should detect staged file");
     assert!(!s.has_modified, "should not detect modified changes");
     assert!(!s.has_untracked, "should not detect untracked files");
+    assert_eq!(s.changed_files.len(), 1, "one staged file should be itemized");
+    assert_eq!(s.changed_files[0].path, "new.txt");
+    assert_eq!(s.changed_files[0].kind, ChangedFileKind::Staged);
 }
 
 #[test]
@@ -997,6 +1000,9 @@ fn test_wt_status_unstaged_only() {
     assert!(!s.has_staged, "should not detect staged changes");
     assert!(s.has_modified, "should detect modified file");
     assert!(!s.has_untracked, "should not detect untracked files");
+    assert_eq!(s.changed_files.len(), 1);
+    assert_eq!(s.changed_files[0].path, "README.md");
+    assert_eq!(s.changed_files[0].kind, ChangedFileKind::Modified);
 }
 
 #[test]
@@ -1011,6 +1017,9 @@ fn test_wt_status_untracked_only() {
     assert!(!s.has_staged, "should not detect staged changes");
     assert!(!s.has_modified, "should not detect modified changes");
     assert!(s.has_untracked, "should detect untracked file");
+    assert_eq!(s.changed_files.len(), 1);
+    assert_eq!(s.changed_files[0].path, "untracked.txt");
+    assert_eq!(s.changed_files[0].kind, ChangedFileKind::Untracked);
 }
 
 #[test]
@@ -1033,6 +1042,51 @@ fn test_wt_status_all_three() {
     assert!(s.has_modified, "should detect modified file");
     assert!(s.has_untracked, "should detect untracked file");
     assert!(!s.is_clean());
+    assert_eq!(s.changed_files.len(), 3, "one entry per changed file");
+    assert!(s
+        .changed_files
+        .iter()
+        .any(|f| f.path == "staged.txt" && f.kind == ChangedFileKind::Staged));
+    assert!(s
+        .changed_files
+        .iter()
+        .any(|f| f.path == "README.md" && f.kind == ChangedFileKind::Modified));
+    assert!(s
+        .changed_files
+        .iter()
+        .any(|f| f.path == "untracked.txt" && f.kind == ChangedFileKind::Untracked));
+}
+
+#[test]
+fn test_wt_status_staged_then_further_edited() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // Stage a modification to a tracked file, then modify it again without
+    // staging — git2 reports this single path with both an INDEX_* and a
+    // WT_* flag. It must surface as two separate ChangedFile entries: one
+    // Staged (the staged version) and one Modified (the further unstaged
+    // edit), not a merged/combined kind.
+    std::fs::write(dir.join("README.md"), "# Staged edit\n").unwrap();
+    run_git(dir, &["add", "README.md"]);
+    std::fs::write(dir.join("README.md"), "# Staged edit, then further edited\n").unwrap();
+
+    let s = status::detect_working_tree_status(&repo);
+    assert!(s.has_staged, "should detect staged change");
+    assert!(s.has_modified, "should detect further unstaged edit");
+    assert_eq!(
+        s.changed_files.len(),
+        2,
+        "path with both staged and unstaged changes should appear as two entries"
+    );
+    assert!(s
+        .changed_files
+        .iter()
+        .any(|f| f.path == "README.md" && f.kind == ChangedFileKind::Staged));
+    assert!(s
+        .changed_files
+        .iter()
+        .any(|f| f.path == "README.md" && f.kind == ChangedFileKind::Modified));
 }
 
 #[test]

@@ -117,6 +117,7 @@ impl BranchAction {
 /// tracked file with working-tree changes, or a new untracked file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangedFileKind {
+    Staged,
     Modified,
     Untracked,
 }
@@ -124,6 +125,7 @@ pub enum ChangedFileKind {
 impl ChangedFileKind {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Staged => "staged",
             Self::Modified => "modified",
             Self::Untracked => "untracked",
         }
