@@ -16,9 +16,12 @@ impl BranchesViewDef {
                 compare: Some(|a, b| a.name.cmp(&b.name)),
             },
             ColumnDef {
+                // Name is "Up" (has an upstream?) rather than "Remote" so the column's
+                // floor is set by its longest value ("gone", 4 chars) instead of by the
+                // header word itself.
                 key: "remote",
-                name: "Remote",
-                min_width: 6,
+                name: "Up",
+                min_width: 4,
                 wide_width: None,
                 hide_below_width: Some(80),
                 compare: Some(|a, b| {
