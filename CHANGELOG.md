@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-14
+
+### Tasks
+- Stretchy-column priority in the responsive table layout is now matched by column name ("Branch"/"Name"/"Path") instead of position, so a future column reorder can't silently break which column gets priority width; also adds a tracking-link symbol to SymbolSet for a follow-up task (#ui)
+
 ## 2026-07-10
 
 ### Fixes
