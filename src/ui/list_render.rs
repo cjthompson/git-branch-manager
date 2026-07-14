@@ -111,6 +111,10 @@ pub fn render_list_view<T: ViewItem>(
         Layout::horizontal([Constraint::Length(highlight_width), Constraint::Fill(0)])
             .areas(Rect::new(0, 0, table_width, 1));
 
+    let is_stretchy = |i: usize, col: &ColumnDef<T>| -> bool {
+        i == 0 || (params.active_view == ViewId::Worktrees && col.name == "Branch")
+    };
+
     let build_widths = |wide: bool| -> Vec<Constraint> {
         let mut widths: Vec<Constraint> = vec![Constraint::Length(3)]; // checkbox
         for (i, col) in visible_columns.iter().enumerate() {
@@ -119,7 +123,7 @@ pub fn render_list_view<T: ViewItem>(
             } else {
                 col.min_width
             };
-            if i == 0 || (params.active_view == ViewId::Worktrees && col.name == "Branch") {
+            if is_stretchy(i, col) {
                 widths.push(Constraint::Min(col_width));
             } else {
                 widths.push(Constraint::Length(col_width));
@@ -137,20 +141,31 @@ pub fn render_list_view<T: ViewItem>(
     // the majority of the row and the fixed columns show their abbreviated
     // forms — triggered by actual leftover space, not just a flat terminal-width
     // threshold.
-    let wide_leaves_room = {
-        let widths = build_widths(true);
-        let resolved = Layout::horizontal(&widths).spacing(1).split(columns_area);
-        let mut stretchy_total: u32 = 0;
-        let mut other_total: u32 = 0;
-        for (i, (col, rect)) in visible_columns.iter().zip(resolved.iter().skip(1)).enumerate() {
-            if i == 0 || (params.active_view == ViewId::Worktrees && col.name == "Branch") {
-                stretchy_total += rect.width as u32;
+    //
+    // This is computed by direct arithmetic rather than by resolving a trial
+    // `Layout` and reading back its widths: when the "wide" hypothesis is
+    // itself infeasible (total demand exceeds the available row width — e.g.
+    // Worktrees' two stretchy columns, Path and Branch, both wanting their
+    // wide floor at once), ratatui's solver has to violate constraints to
+    // produce *some* answer, and those violated numbers are unreliable input
+    // for this decision — they can spuriously say "wide fits" when it doesn't.
+    let (stretchy_wide_floor, fixed_wide_total) = {
+        let (mut stretchy, mut fixed) = (0u32, 0u32);
+        for (i, col) in visible_columns.iter().enumerate() {
+            let w = col.wide_width.unwrap_or(col.min_width) as u32;
+            if is_stretchy(i, col) {
+                stretchy += w;
             } else {
-                other_total += rect.width as u32;
+                fixed += w;
             }
         }
-        stretchy_total >= other_total
+        (stretchy, fixed)
     };
+    let gaps = visible_columns.len() as u32; // N+1 segments (checkbox + N columns) -> N gaps
+    let available = columns_area.width as u32;
+    let stretchy_actual_wide = available.saturating_sub(3 + gaps + fixed_wide_total); // 3 = checkbox
+    let wide_leaves_room =
+        stretchy_actual_wide >= stretchy_wide_floor && stretchy_actual_wide >= fixed_wide_total;
     let short_status = area.width < 70 || !wide_leaves_room;
     let widths = build_widths(!short_status);
 

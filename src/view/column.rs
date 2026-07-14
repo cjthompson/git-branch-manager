@@ -133,7 +133,9 @@ pub fn worktree_status_column() -> ColumnDef<WorktreeInfo> {
     ColumnDef {
         key: "status",
         name: "Status",
-        min_width: 3,
+        // min_width must be >= "Status".len() (6) so the header itself never
+        // gets clipped; the compact single-letter values (c/s/u/t) fit easily.
+        min_width: 6,
         wide_width: Some(9),
         hide_below_width: Some(80),
         compare: Some(wt_status_cmp),
