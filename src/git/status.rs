@@ -27,6 +27,12 @@ pub fn detect_working_tree_status(repo: &Repository) -> WorkingTreeStatus {
                 | git2::Status::INDEX_TYPECHANGE,
         ) {
             has_staged = true;
+            if let Some(path) = entry.path() {
+                changed_files.push(ChangedFile {
+                    path: path.to_string(),
+                    kind: ChangedFileKind::Staged,
+                });
+            }
         }
         if s.intersects(
             git2::Status::WT_MODIFIED
