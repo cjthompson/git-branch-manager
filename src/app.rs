@@ -2067,6 +2067,29 @@ impl App {
         };
         let is_main = wt.is_main;
         let is_dirty = !wt.wt_status.is_clean();
+        let is_detached = wt.branch.is_none();
+        let is_base = wt.is_base;
+        let can_delete_branch = !is_main && !is_dirty && !is_detached && !is_base;
+        let delete_branch_reason = if is_main {
+            Some("main worktree".into())
+        } else if is_dirty {
+            Some("dirty".into())
+        } else if is_detached {
+            Some("detached HEAD".into())
+        } else if is_base {
+            Some("base branch".into())
+        } else {
+            None
+        };
+        let has_remote = wt.branch.as_deref().is_some_and(|name| {
+            self.branches.items().iter().any(|b| {
+                b.name == name && matches!(b.tracking, TrackingStatus::Tracked { gone: false, .. })
+            })
+        });
+        let can_delete_branch_remote = can_delete_branch && has_remote;
+        let delete_branch_remote_reason = delete_branch_reason
+            .clone()
+            .or((!has_remote).then(|| "no remote".into()));
 
         vec![
             MenuItem {
@@ -2092,6 +2115,20 @@ impl App {
                 },
                 shortcut: Some('D'),
                 action: BranchAction::WorktreeForceRemove,
+            },
+            MenuItem {
+                label: "Remove worktree + branch".into(),
+                enabled: can_delete_branch,
+                reason: delete_branch_reason.clone(),
+                shortcut: Some('b'),
+                action: BranchAction::WorktreeRemoveAndDeleteBranch,
+            },
+            MenuItem {
+                label: "Remove worktree + branch (local + remote)".into(),
+                enabled: can_delete_branch_remote,
+                reason: delete_branch_remote_reason,
+                shortcut: Some('B'),
+                action: BranchAction::WorktreeRemoveAndDeleteBranchRemote,
             },
         ]
     }
@@ -3023,6 +3060,84 @@ fn execute_action(
                 results.push(result);
             }
         }
+        BranchAction::WorktreeRemoveAndDeleteBranch
+        | BranchAction::WorktreeRemoveAndDeleteBranchRemote => {
+            let repo = match git2::Repository::open(repo_path) {
+                Ok(r) => r,
+                Err(e) => {
+                    return vec![OperationResult {
+                        branch_name: String::new(),
+                        action,
+                        success: false,
+                        message: format!("Failed to open repo: {e}"),
+                    }];
+                }
+            };
+            let mut locally_deleted = Vec::new();
+            for (i, path_str) in item_names.iter().enumerate() {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    results.push(OperationResult {
+                        branch_name: String::new(),
+                        action,
+                        success: false,
+                        message: "Cancelled by user".into(),
+                    });
+                    break;
+                }
+                let _ = prog_tx.send(ProgressUpdate {
+                    completed: i,
+                    total,
+                    current_item: path_str.clone(),
+                });
+
+                let wt_path = PathBuf::from(path_str);
+                let canonical_wt_path = std::fs::canonicalize(&wt_path).ok();
+
+                // Look up the branch checked out in this worktree BEFORE removing
+                // it -- removal deregisters the worktree, so `git worktree list`
+                // can no longer tell us what branch it held.
+                let all_wts = worktree::list_worktrees(repo_path);
+                let branch_name = all_wts
+                    .into_iter()
+                    .find(|w| {
+                        if let Ok(wt_canonical) = std::fs::canonicalize(&w.path) {
+                            if let Some(ref cwp) = canonical_wt_path {
+                                return wt_canonical == *cwp;
+                            }
+                        }
+                        w.path == wt_path
+                    })
+                    .and_then(|w| w.branch);
+
+                let remove_result = operations::remove_worktree(repo_path, &wt_path);
+                let removed = remove_result.success;
+                results.push(remove_result);
+
+                if removed {
+                    if let Some(name) = branch_name {
+                        let delete_result = operations::delete_local(&repo, &name);
+                        if delete_result.success {
+                            locally_deleted.push(name);
+                        }
+                        results.push(delete_result);
+                    }
+                }
+            }
+            if action == BranchAction::WorktreeRemoveAndDeleteBranchRemote
+                && !locally_deleted.is_empty()
+            {
+                let _ = prog_tx.send(ProgressUpdate {
+                    completed: locally_deleted.len(),
+                    total,
+                    current_item: "Deleting remote branches...".into(),
+                });
+                results.extend(operations::delete_remotes_batch(
+                    repo_path,
+                    &locally_deleted,
+                    cancel_flag,
+                ));
+            }
+        }
         BranchAction::Fetch | BranchAction::FetchPrune => {
             let result = if action == BranchAction::FetchPrune {
                 operations::fetch_prune(repo_path, cancel_flag)
@@ -3840,5 +3955,271 @@ mod tests {
 
         assert_eq!(cell_text(&rows[0]), "feature/very-long-branch-name");
         assert_eq!(rows[0].alignment, None);
+    }
+
+    #[test]
+    fn worktree_menu_delete_branch_enabled_when_clean() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.worktrees.set_items(vec![worktree("feature/clean")]);
+        app.branches.set_items(vec![BranchInfo {
+            name: "feature/clean".into(),
+            is_current: false,
+            is_base: false,
+            tracking: TrackingStatus::Tracked {
+                remote_ref: "origin/feature/clean".into(),
+                gone: false,
+            },
+            ahead: None,
+            behind: None,
+            last_commit_date: Utc::now(),
+            merge_status: MergeStatus::Unmerged,
+            base_branch: "main".into(),
+            merge_base_commit: None,
+            pr: None,
+        }]);
+
+        let items = app.build_worktree_menu();
+        let solo = items
+            .iter()
+            .find(|mi| mi.label == "Remove worktree + branch")
+            .unwrap();
+        let combo = items
+            .iter()
+            .find(|mi| mi.label == "Remove worktree + branch (local + remote)")
+            .unwrap();
+        assert!(solo.enabled && solo.reason.is_none());
+        assert!(combo.enabled && combo.reason.is_none());
+    }
+
+    #[test]
+    fn worktree_menu_delete_branch_remote_disabled_when_no_remote() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.worktrees.set_items(vec![worktree("feature/no-remote")]);
+        app.branches.set_items(vec![BranchInfo {
+            name: "feature/no-remote".into(),
+            is_current: false,
+            is_base: false,
+            tracking: TrackingStatus::Local,
+            ahead: None,
+            behind: None,
+            last_commit_date: Utc::now(),
+            merge_status: MergeStatus::Unmerged,
+            base_branch: "main".into(),
+            merge_base_commit: None,
+            pr: None,
+        }]);
+
+        let items = app.build_worktree_menu();
+        let solo = items
+            .iter()
+            .find(|mi| mi.label == "Remove worktree + branch")
+            .unwrap();
+        let combo = items
+            .iter()
+            .find(|mi| mi.label == "Remove worktree + branch (local + remote)")
+            .unwrap();
+        assert!(solo.enabled && solo.reason.is_none());
+        assert!(!combo.enabled);
+        assert_eq!(combo.reason.as_deref(), Some("no remote"));
+    }
+
+    #[test]
+    fn worktree_menu_delete_branch_disabled_when_dirty() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut wt = worktree("feature/dirty");
+        wt.wt_status = WorkingTreeStatus {
+            has_staged: false,
+            has_modified: true,
+            has_untracked: false,
+            changed_files: Vec::new(),
+        };
+        app.worktrees.set_items(vec![wt]);
+
+        let solo = app
+            .build_worktree_menu()
+            .into_iter()
+            .find(|mi| mi.label == "Remove worktree + branch")
+            .unwrap();
+        assert!(!solo.enabled);
+        assert_eq!(solo.reason.as_deref(), Some("dirty"));
+    }
+
+    #[test]
+    fn worktree_menu_delete_branch_disabled_when_detached() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut wt = worktree("feature/detached");
+        wt.branch = None;
+        app.worktrees.set_items(vec![wt]);
+
+        let solo = app
+            .build_worktree_menu()
+            .into_iter()
+            .find(|mi| mi.label == "Remove worktree + branch")
+            .unwrap();
+        assert!(!solo.enabled);
+        assert_eq!(solo.reason.as_deref(), Some("detached HEAD"));
+    }
+
+    #[test]
+    fn worktree_menu_delete_branch_disabled_when_base() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut wt = worktree("main");
+        wt.is_base = true;
+        app.worktrees.set_items(vec![wt]);
+
+        let combo = app
+            .build_worktree_menu()
+            .into_iter()
+            .find(|mi| mi.label == "Remove worktree + branch (local + remote)")
+            .unwrap();
+        assert!(!combo.enabled);
+        assert_eq!(combo.reason.as_deref(), Some("base branch"));
+    }
+
+    #[test]
+    fn execute_action_worktree_remove_and_delete_branch_local_only() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("README.md"), "base\n").unwrap();
+        run_git(dir, &["add", "README.md"]);
+        run_git(dir, &["commit", "-m", "initial"]);
+
+        run_git(dir, &["branch", "wt-branch-delete"]);
+        run_git(
+            dir,
+            &[
+                "worktree",
+                "add",
+                ".worktrees/wt-branch-delete",
+                "wt-branch-delete",
+            ],
+        );
+        let wt_path = dir.join(".worktrees").join("wt-branch-delete");
+        assert!(wt_path.exists());
+
+        let (prog_tx, _prog_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let results = execute_action(
+            BranchAction::WorktreeRemoveAndDeleteBranch,
+            &[wt_path.to_string_lossy().to_string()],
+            dir,
+            "main",
+            false,
+            &prog_tx,
+            &cancel,
+        );
+
+        assert!(results
+            .iter()
+            .any(|r| r.action == BranchAction::WorktreeRemove && r.success));
+        assert!(results
+            .iter()
+            .any(|r| r.action == BranchAction::DeleteLocal && r.success));
+        assert!(!wt_path.exists());
+
+        let repo = git2::Repository::open(dir).unwrap();
+        assert!(repo
+            .find_branch("wt-branch-delete", git2::BranchType::Local)
+            .is_err());
+    }
+
+    #[test]
+    fn execute_action_worktree_remove_and_delete_branch_remote() {
+        let base_tmp = tempfile::tempdir().expect("temp base dir");
+        let base_dir = base_tmp.path();
+
+        let remote_dir = base_dir.join("remote.git");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        run_git(&remote_dir, &["init", "--bare", "-b", "main"]);
+
+        run_git(base_dir, &["clone", remote_dir.to_str().unwrap(), "work"]);
+        let work_dir = base_dir.join("work");
+        run_git(&work_dir, &["config", "user.name", "Test User"]);
+        run_git(&work_dir, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(work_dir.join("README.md"), "# Test\n").unwrap();
+        run_git(&work_dir, &["add", "."]);
+        run_git(&work_dir, &["commit", "-m", "Initial commit"]);
+        run_git(&work_dir, &["push", "-u", "origin", "main"]);
+
+        run_git(&work_dir, &["checkout", "-b", "wt-remote-branch"]);
+        std::fs::write(work_dir.join("feature.txt"), "content\n").unwrap();
+        run_git(&work_dir, &["add", "feature.txt"]);
+        run_git(&work_dir, &["commit", "-m", "feature commit"]);
+        run_git(&work_dir, &["push", "-u", "origin", "wt-remote-branch"]);
+        run_git(&work_dir, &["checkout", "main"]);
+
+        run_git(
+            &work_dir,
+            &[
+                "worktree",
+                "add",
+                ".worktrees/wt-remote-branch",
+                "wt-remote-branch",
+            ],
+        );
+        let wt_path = work_dir.join(".worktrees").join("wt-remote-branch");
+        assert!(wt_path.exists());
+
+        let (prog_tx, _prog_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let results = execute_action(
+            BranchAction::WorktreeRemoveAndDeleteBranchRemote,
+            &[wt_path.to_string_lossy().to_string()],
+            &work_dir,
+            "main",
+            false,
+            &prog_tx,
+            &cancel,
+        );
+
+        assert!(results
+            .iter()
+            .any(|r| r.action == BranchAction::WorktreeRemove && r.success));
+        assert!(results
+            .iter()
+            .any(|r| r.action == BranchAction::DeleteLocal && r.success));
+        assert!(results
+            .iter()
+            .any(|r| r.action == BranchAction::DeleteRemoteBranch && r.success));
+        assert!(!wt_path.exists());
+
+        let repo = git2::Repository::open(&work_dir).unwrap();
+        assert!(repo
+            .find_branch("wt-remote-branch", git2::BranchType::Local)
+            .is_err());
+
+        run_git(&work_dir, &["fetch", "--prune"]);
+        assert!(repo
+            .find_branch("origin/wt-remote-branch", git2::BranchType::Remote)
+            .is_err());
     }
 }

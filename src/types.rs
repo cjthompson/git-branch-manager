@@ -76,6 +76,8 @@ pub enum BranchAction {
     // Worktree actions
     WorktreeRemove,
     WorktreeForceRemove,
+    WorktreeRemoveAndDeleteBranch,
+    WorktreeRemoveAndDeleteBranchRemote,
 }
 
 impl BranchAction {
@@ -107,6 +109,10 @@ impl BranchAction {
             Self::ViewRemotePR => "Open PR in browser",
             Self::WorktreeRemove => "Remove worktree",
             Self::WorktreeForceRemove => "Force remove worktree",
+            Self::WorktreeRemoveAndDeleteBranch => "Remove worktree + branch",
+            Self::WorktreeRemoveAndDeleteBranchRemote => {
+                "Remove worktree + branch (local + remote)"
+            }
         }
     }
 }

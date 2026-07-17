@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-17
+
+### Tasks
+- Worktrees action menu: add option to delete worktree + checked-out branch (local, or local + remote) (#worktrees)
+
 ## 2026-07-14
 
 ### Tasks
