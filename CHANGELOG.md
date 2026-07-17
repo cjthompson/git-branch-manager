@@ -23,6 +23,11 @@
 - Info modal: tab to switch focus between INFO and ACTIONS; arrow keys navigate INFO items; enter/y copies value to clipboard (#ui, #modal, #keyboard)
 - Add 'in sync' status for branches that exactly match base (#ui, #merge-detection)
 
+## 2026-07-17
+
+### Tasks
+- Worktrees action menu: add option to delete worktree + checked-out branch (local, or local + remote) (#worktrees)
+
 ## 2026-07-14
 
 ### Tasks
