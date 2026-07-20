@@ -10,9 +10,11 @@
 //! it against what the cache would serve, producing a [`CacheAudit`].
 //! [`apply_fix`] writes the freshly-computed truth back and removes orphan rows.
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 
 use git2::{Oid, Repository};
 
@@ -21,10 +23,14 @@ use crate::git::cache::BranchCache;
 use crate::git::merge_detection::{build_reachable_set_from_repo, is_squash_merged, BaseReachable};
 use crate::types::{CacheAudit, CacheFix, DiagKind, Discrepancy, MergeStatus};
 
+/// Number of worker threads used to run `is_squash_merged` concurrently
+/// during an audit. Mirrors `squash_loader::SQUASH_WORKER_COUNT` — bound by
+/// subprocess fork/exec overhead, not CPU parallelism.
+const AUDIT_SQUASH_WORKER_COUNT: usize = 4;
+
 /// Shared read-only context for one audit pass.
 struct AuditCtx<'a> {
     repo: &'a Repository,
-    repo_path: &'a Path,
     base_branch: &'a str,
     current_branch: String,
     reachable: BaseReachable,
@@ -55,7 +61,6 @@ pub fn audit_cache(
     // Base tip + the set of commits reachable from base, computed once.
     let ctx = AuditCtx {
         repo,
-        repo_path,
         base_branch,
         current_branch: repo
             .head()
@@ -70,33 +75,160 @@ pub fn audit_cache(
         cache,
     };
 
-    // Enumerate local branches with their current tips.
+    // Enumerate local branches with their current tips. Remote branches are
+    // only needed for the orphan sweep below (cached squash results for
+    // remote branches are keyed by their full "origin/<branch>" ref).
     let locals = local_branches(repo);
-    let live: HashSet<&str> = locals.iter().map(|(name, _)| name.as_str()).collect();
+    let live_local: HashSet<&str> = locals.iter().map(|(name, _)| name.as_str()).collect();
+    let live_remote = remote_branch_names(repo);
     let total = locals.len();
 
+    // Phase 1 (sequential, cheap): ahead/behind and merge-base checks are
+    // git2-native, not subprocess-based, so they stay on this thread. Merge
+    // status resolves immediately for regularly-merged branches; anything
+    // else needs a squash check and is queued for phase 2.
+    let mut squash_candidates = Vec::new();
     for (i, (name, tip)) in locals.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return audit;
         }
         progress(i, total, name);
 
-        verify_merge_status(&ctx, name, *tip, &mut audit);
         verify_ahead_behind(&ctx, name, &mut audit);
         if let Some(base_oid) = ctx.base_oid {
             verify_merge_base(&ctx, name, *tip, base_oid, &mut audit);
         }
+
+        match ctx.reachable.regular_merge_status(*tip) {
+            Some(status) => record_merge_status(&ctx, name, *tip, status, &mut audit),
+            None => squash_candidates.push(SquashCandidate {
+                name: name.clone(),
+                tip: *tip,
+                merge_base: ctx
+                    .base_oid
+                    .and_then(|b| ctx.repo.merge_base(*tip, b).ok())
+                    .map(|o| o.to_string()),
+            }),
+        }
     }
 
-    // Orphans: cached merge-status rows whose branch no longer exists.
+    // Phase 2 (parallel): squash-merge truth requires shelling out to `git`
+    // twice per branch (local base + remote base) — the dominant cost of an
+    // audit. Farm it out to a worker pool exactly like `squash_loader` does,
+    // since `is_squash_merged` needs only `repo_path`/strings, not a
+    // `Repository` handle.
+    if !cancel.load(Ordering::Relaxed) {
+        for result in run_squash_candidates(repo_path, base_branch, squash_candidates) {
+            record_merge_status(&ctx, &result.name, result.tip, result.status, &mut audit);
+        }
+    }
+
+    // Orphans: cached merge-status rows whose branch (local or remote) no
+    // longer exists.
     for cached_name in cache.cached_branch_names() {
-        if !live.contains(cached_name.as_str()) {
+        if !live_local.contains(cached_name.as_str()) && !live_remote.contains(&cached_name) {
             audit.orphans.push(cached_name);
         }
     }
     audit.orphans.sort();
 
     audit
+}
+
+/// All remote branch names (e.g. `"origin/feature-x"`) — the same short form
+/// used as the cache key for remote-branch squash-merge results.
+fn remote_branch_names(repo: &Repository) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if let Ok(branches) = repo.branches(Some(git2::BranchType::Remote)) {
+        for (branch, _) in branches.flatten() {
+            if let Ok(Some(name)) = branch.name() {
+                out.insert(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+struct SquashCandidate {
+    name: String,
+    tip: Oid,
+    merge_base: Option<String>,
+}
+
+struct SquashCandidateResult {
+    name: String,
+    tip: Oid,
+    status: MergeStatus,
+}
+
+/// Resolve squash-merge truth for every candidate using a fixed worker pool,
+/// mirroring `squash_loader::spawn_squash_checker`'s queue-based dispatch.
+fn run_squash_candidates(
+    repo_path: &Path,
+    base_branch: &str,
+    candidates: Vec<SquashCandidate>,
+) -> Vec<SquashCandidateResult> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let queue: Arc<Mutex<VecDeque<SquashCandidate>>> =
+        Arc::new(Mutex::new(VecDeque::from(candidates)));
+    let (tx, rx): (_, Receiver<SquashCandidateResult>) = mpsc::channel();
+    let repo_path: PathBuf = repo_path.to_path_buf();
+
+    let mut handles = Vec::with_capacity(AUDIT_SQUASH_WORKER_COUNT);
+    for _ in 0..AUDIT_SQUASH_WORKER_COUNT {
+        let queue = Arc::clone(&queue);
+        let tx = tx.clone();
+        let repo_path = repo_path.clone();
+        let base_branch = base_branch.to_string();
+        handles.push(std::thread::spawn(move || loop {
+            let next = queue.lock().unwrap().pop_front();
+            let Some(candidate) = next else { break };
+
+            let tip_str = candidate.tip.to_string();
+            let local_squash = is_squash_merged(
+                &repo_path,
+                &base_branch,
+                &candidate.name,
+                Some(&tip_str),
+                candidate.merge_base.as_deref(),
+            );
+            let remote_base = format!("origin/{base_branch}");
+            let remote_squash = is_squash_merged(
+                &repo_path,
+                &remote_base,
+                &candidate.name,
+                Some(&tip_str),
+                None,
+            );
+            let status = match (local_squash, remote_squash) {
+                (true, true) => MergeStatus::SquashMerged,
+                (false, true) => MergeStatus::RemoteSquashMerged,
+                (true, false) => MergeStatus::LocalSquashMerged,
+                (false, false) => MergeStatus::Unmerged,
+            };
+
+            if tx
+                .send(SquashCandidateResult {
+                    name: candidate.name,
+                    tip: candidate.tip,
+                    status,
+                })
+                .is_err()
+            {
+                break;
+            }
+        }));
+    }
+    drop(tx);
+
+    let results: Vec<SquashCandidateResult> = rx.iter().collect();
+    for handle in handles {
+        let _ = handle.join();
+    }
+    results
 }
 
 /// Apply the corrections from a [`CacheAudit`] to `cache` and persist them.
@@ -138,6 +270,40 @@ pub fn apply_fix(cache: &mut BranchCache, audit: &CacheAudit) {
     cache.save();
 }
 
+/// Run a silent, automatic cache audit-and-fix pass in the background, for
+/// launch-time verification. Unlike the manual F2 flow, there is no review
+/// step: any discrepancies/orphans found are applied and persisted before the
+/// resulting [`CacheAudit`] is sent, purely so the caller can patch live UI
+/// state. Opens its own `Repository`/`BranchCache` handles, matching every
+/// other launch-time background thread (neither type is `Send`).
+pub fn spawn_cache_verifier(repo_path: PathBuf, base_branch: String) -> Receiver<CacheAudit> {
+    let (tx, rx) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        let Ok(repo) = Repository::open(&repo_path) else {
+            return;
+        };
+        let mut cache = BranchCache::load(&repo_path);
+        let cancel = AtomicBool::new(false);
+        let audit = audit_cache(
+            &repo,
+            &repo_path,
+            &base_branch,
+            &cache,
+            &cancel,
+            |_, _, _| {},
+        );
+
+        if !audit.is_clean() {
+            apply_fix(&mut cache, &audit);
+        }
+
+        let _ = tx.send(audit);
+    });
+
+    rx
+}
+
 /// All local branches with their current tip OIDs.
 fn local_branches(repo: &Repository) -> Vec<(String, Oid)> {
     let mut out = Vec::new();
@@ -151,12 +317,17 @@ fn local_branches(repo: &Repository) -> Vec<(String, Oid)> {
     out
 }
 
-fn verify_merge_status(ctx: &AuditCtx, name: &str, tip: Oid, audit: &mut CacheAudit) {
+/// Compare a freshly-computed merge-status truth against what the cache
+/// serves for `name`, recording a verified/mismatched/skipped tally and — on
+/// mismatch — a [`Discrepancy`] carrying the typed fix.
+fn record_merge_status(
+    ctx: &AuditCtx,
+    name: &str,
+    tip: Oid,
+    truth: MergeStatus,
+    audit: &mut CacheAudit,
+) {
     let commit_hash = tip.to_string();
-
-    // Always compute truth so the squash check genuinely runs for every
-    // non-reachable branch, proportional to branch count.
-    let truth = truth_merge_status(ctx, name, tip);
 
     match ctx.cache.lookup(name, &commit_hash) {
         Some(cached) => {
@@ -190,36 +361,6 @@ fn verify_merge_status(ctx: &AuditCtx, name: &str, tip: Oid, audit: &mut CacheAu
             audit.merge_status.skipped += 1;
             audit.merge_status.skip_reasons.push(reason);
         }
-    }
-}
-
-/// Recompute a branch's merge status from scratch, mirroring the detection
-/// pipeline: regular-merge via the reachable set, then squash-merge, else unmerged.
-fn truth_merge_status(ctx: &AuditCtx, name: &str, tip: Oid) -> MergeStatus {
-    // Check regular merge first (covers Merged / LocalMerged / RemoteMerged).
-    if let Some(status) = ctx.reachable.regular_merge_status(tip) {
-        return status;
-    }
-    // Not regularly merged — check squash-merge against local base.
-    let merge_base = ctx
-        .base_oid
-        .and_then(|b| ctx.repo.merge_base(tip, b).ok())
-        .map(|o| o.to_string());
-    let tip_str = tip.to_string();
-    let local_squash = is_squash_merged(
-        ctx.repo_path,
-        ctx.base_branch,
-        name,
-        Some(&tip_str),
-        merge_base.as_deref(),
-    );
-    let remote_base = format!("origin/{}", ctx.base_branch);
-    let remote_squash = is_squash_merged(ctx.repo_path, &remote_base, name, Some(&tip_str), None);
-    match (local_squash, remote_squash) {
-        (true, true) => MergeStatus::SquashMerged,
-        (false, true) => MergeStatus::RemoteSquashMerged,
-        (true, false) => MergeStatus::LocalSquashMerged,
-        (false, false) => MergeStatus::Unmerged,
     }
 }
 

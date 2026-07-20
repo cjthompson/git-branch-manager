@@ -15,7 +15,7 @@ use std::io;
 
 use git_branch_manager::cli::Cli;
 use git_branch_manager::config::Config;
-use git_branch_manager::git::{self, branch, cache, graph, merge_detection, operations, worktree};
+use git_branch_manager::git::{self, branch, cache, diagnostics, graph, merge_detection, operations, worktree};
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::types::MergeStatus;
 use tracing::{field, info_span, instrument, Span};
@@ -264,8 +264,17 @@ fn main() -> Result<()> {
     let mut app = app::App::new(repo_path.clone(), base_branch.clone(), config);
     app.phase1_rx = Some(phase1_rx);
 
-    // Apply CLI symbol override before starting the graph loader so its line
-    // style matches the symbols used for the rest of the UI.
+    // Silently verify (and correct) the cache in the background unless disabled.
+    // No dependency on phase-1: audit_cache enumerates branches from its own
+    // Repository handle, so it doesn't need to wait for anything above.
+    if app.config.verify_cache_on_launch != Some(false) {
+        app.cache_verify_rx = Some(diagnostics::spawn_cache_verifier(
+            repo_path.clone(),
+            base_branch.clone(),
+        ));
+    }
+
+    // Apply CLI symbol override
     if let Some(ref sym) = cli.symbols {
         app.symbols = SymbolSet::from_name(sym);
     }

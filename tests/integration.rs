@@ -3461,6 +3461,125 @@ fn test_cache_audit_skipped_counts_for_uncached_branches() {
     );
 }
 
+#[test]
+fn test_cache_audit_remote_squash_entry_not_orphaned() {
+    // Regression: remote-branch squash-merge results are cached under keys
+    // like "origin/some-branch" (the same short form squash_loader uses for
+    // remote candidates), but the orphan sweep used to compare only against
+    // local branch names — misclassifying every remote-squash cache row as an
+    // orphan. audit_cache must also treat live remote branch names as "live".
+    let tmpdir = tempfile::tempdir().expect("failed to create tmpdir");
+    let base_dir = tmpdir.path();
+
+    let remote_dir = base_dir.join("remote.git");
+    std::fs::create_dir_all(&remote_dir).unwrap();
+    run_git(&remote_dir, &["init", "--bare", "-b", "main"]);
+
+    let work_dir = base_dir.join("work");
+    run_git(base_dir, &["clone", remote_dir.to_str().unwrap(), "work"]);
+    run_git(&work_dir, &["config", "user.name", "Test User"]);
+    run_git(&work_dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(work_dir.join("README.md"), "# Test\n").unwrap();
+    run_git(&work_dir, &["add", "."]);
+    run_git(&work_dir, &["commit", "-m", "Initial commit"]);
+    run_git(&work_dir, &["push", "-u", "origin", "main"]);
+
+    // A remote-only branch (no local counterpart) so its cache key exercises
+    // exactly the collision this test guards against.
+    run_git(&work_dir, &["checkout", "-b", "remote-only"]);
+    std::fs::write(work_dir.join("r.txt"), "r\n").unwrap();
+    run_git(&work_dir, &["add", "."]);
+    run_git(&work_dir, &["commit", "-m", "remote-only commit"]);
+    run_git(&work_dir, &["push", "-u", "origin", "remote-only"]);
+    run_git(&work_dir, &["checkout", "main"]);
+    run_git(&work_dir, &["branch", "-D", "remote-only"]);
+
+    let repo = git2::Repository::open(&work_dir).expect("re-open repo");
+    let cache_path = work_dir.join("remote-orphan-test.sqlite3");
+    {
+        let mut c = cache::BranchCache::load_from_path(cache_path.clone());
+        c.insert(
+            "origin/remote-only",
+            &MergeStatus::RemoteSquashMerged,
+            "deadbeef",
+        );
+        c.save();
+    }
+
+    let cache = cache::BranchCache::load_from_path(cache_path);
+    let cancel = AtomicBool::new(false);
+    let audit = diagnostics::audit_cache(&repo, &work_dir, "main", &cache, &cancel, |_, _, _| {});
+
+    assert!(
+        !audit.orphans.contains(&"origin/remote-only".to_string()),
+        "remote-squash cache row must not be misclassified as orphan: {:?}",
+        audit.orphans
+    );
+}
+
+#[test]
+fn test_spawn_cache_verifier_applies_fix_and_persists() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/wip"]);
+    std::fs::write(dir.join("wip.txt"), "work in progress\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "WIP commit"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let repo = git2::Repository::open(dir).expect("re-open repo");
+    let tip = repo
+        .find_branch("feature/wip", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .target()
+        .unwrap()
+        .to_string();
+
+    // Poison the cache at the same OS-cache-dir path `spawn_cache_verifier`
+    // will load from internally (`BranchCache::load(repo_path)`, not a caller-
+    // supplied path — unlike the other audit_cache tests above, which pass an
+    // explicit `load_from_path` cache the caller controls directly).
+    {
+        let mut c = cache::BranchCache::load(dir);
+        c.insert("feature/wip", &MergeStatus::SquashMerged, &tip);
+        c.insert("feature/ghost", &MergeStatus::Merged, "deadbeef");
+        c.save();
+    }
+
+    let rx = diagnostics::spawn_cache_verifier(dir.to_path_buf(), "main".to_string());
+    let audit = rx.recv().expect("verifier should send a result");
+
+    assert!(
+        audit
+            .discrepancies
+            .iter()
+            .any(|d| d.branch == "feature/wip"),
+        "expected the stale status to be reported: {:?}",
+        audit.discrepancies
+    );
+    assert!(
+        audit.orphans.contains(&"feature/ghost".to_string()),
+        "expected feature/ghost orphan: {:?}",
+        audit.orphans
+    );
+
+    // The verifier applies + persists the fix itself, with no separate
+    // apply_fix call from the caller.
+    let fixed = cache::BranchCache::load(dir);
+    assert_eq!(
+        fixed.lookup("feature/wip", &tip),
+        Some(MergeStatus::Unmerged),
+        "stale status should already be corrected on disk"
+    );
+    assert_eq!(
+        fixed.lookup("feature/ghost", "deadbeef"),
+        None,
+        "orphan entry should already be removed on disk"
+    );
+}
+
 /// Live, end-to-end test: build one repo containing every merge scenario, give
 /// each feature branch its own worktree, and assert that a worktree's Merge
 /// status matches its branch's. Also covers clean vs dirty working trees. The
