@@ -18,6 +18,12 @@ pub struct Config {
     pub sort_asc_worktrees: Option<bool>,
     pub auto_fetch: Option<bool>,
     pub load_worktrees_on_launch: Option<bool>,
+    /// Silently verify and correct the cache in the background on launch.
+    /// Defaults to enabled (`None`/absent means on) — unlike `auto_fetch`, it
+    /// has no visible cost in the common case (no network I/O, no toast, no
+    /// overlay). Set to `false` to disable on very large repos where the
+    /// per-launch squash-merge recomputation is undesirable.
+    pub verify_cache_on_launch: Option<bool>,
 }
 
 impl Config {
