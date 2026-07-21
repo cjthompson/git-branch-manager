@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-21
+
+### Tasks
+- Add src/git/worktree_delete.rs: count_files, delete_recursive, find_worktree_for_path, prune_admin (#worktrees, #progress-bar)
+
 ## 2026-07-17
 
 ### Tasks
