@@ -3521,6 +3521,7 @@ mod tests {
             op_rx,
             prog_rx,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
         );
         op_tx
             .send(vec![OperationResult {
