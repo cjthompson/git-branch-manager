@@ -26,17 +26,24 @@ impl Toast {
     }
 }
 
-/// Renders a toast notification in the bottom-right corner of the area.
-/// No-op if the toast is None.
+/// Renders a toast notification in the bottom-right corner of the area,
+/// floating just above whatever rows are currently reserved at the bottom
+/// (the status bar, plus the job-status area when it's visible).
 ///
-/// `area` should typically be the full terminal area (frame.area()).
-pub fn draw_toast(frame: &mut Frame, toast: &Toast, theme: &Theme) {
+/// `bottom_reserved` is the total row count reserved at the bottom of the
+/// screen (e.g. `1` for just the status bar, `3` when the job-status area is
+/// also showing).
+pub fn draw_toast(frame: &mut Frame, toast: &Toast, theme: &Theme, bottom_reserved: u16) {
     let area = frame.area();
     let toast_width = toast.message.len() as u16 + 4; // +4 for borders and padding
     let toast_height: u16 = 3;
 
     let x = area.width.saturating_sub(toast_width).saturating_sub(1);
-    let y = area.height.saturating_sub(toast_height).saturating_sub(2); // above status bar
+    let y = area
+        .height
+        .saturating_sub(toast_height)
+        .saturating_sub(bottom_reserved)
+        .saturating_sub(1); // gap above the reserved rows
 
     let toast_area = Rect::new(x, y, toast_width.min(area.width), toast_height);
 

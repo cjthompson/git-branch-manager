@@ -122,6 +122,32 @@ pub fn centered_rect_pct(width_pct: u16, height: u16, area: Rect) -> Rect {
     centered_rect(width, height, area)
 }
 
+/// Renders a `[====>   ] completed/total` progress bar string sized to fit
+/// within `inner_width` characters. Shared by the `Executing` modal (used by
+/// fetch/cache-audit) and the non-modal job-status area (used by confirmed
+/// actions), so both draw identical bars.
+pub fn render_progress_bar(inner_width: usize, completed: usize, total: usize) -> String {
+    let count_text = format!(" {completed}/{total}");
+    let bar_width = inner_width
+        .saturating_sub(count_text.len())
+        .saturating_sub(2); // -2 for []
+
+    let fraction = if total > 0 {
+        completed as f64 / total as f64
+    } else {
+        0.0
+    };
+    let filled = (fraction * bar_width as f64) as usize;
+    let empty = bar_width.saturating_sub(filled);
+
+    format!(
+        "[{}{}]{}",
+        "=".repeat(filled),
+        " ".repeat(empty),
+        count_text
+    )
+}
+
 /// Returns a centered rectangle with absolute width and height within the provided area.
 pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let w = width.min(area.width);
@@ -321,5 +347,27 @@ mod tests {
         let r = centered_rect_pct(50, 10, area);
         assert_eq!(r.width, 50);
         assert_eq!(r.x, 25);
+    }
+
+    #[test]
+    fn render_progress_bar_empty() {
+        let bar = render_progress_bar(20, 0, 10);
+        assert!(bar.starts_with('['));
+        assert!(bar.ends_with(" 0/10"));
+    }
+
+    #[test]
+    fn render_progress_bar_full() {
+        let bar = render_progress_bar(20, 10, 10);
+        assert!(bar.ends_with(" 10/10"));
+        // Fully filled: no spaces between the last '=' and the closing ']'.
+        let inside = bar.split(']').next().unwrap();
+        assert!(!inside.contains(' '));
+    }
+
+    #[test]
+    fn render_progress_bar_zero_total_does_not_panic() {
+        let bar = render_progress_bar(20, 0, 0);
+        assert!(bar.ends_with(" 0/0"));
     }
 }

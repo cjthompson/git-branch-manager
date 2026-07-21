@@ -17,6 +17,8 @@ use crate::view::list_state::ListState;
 use crate::view::ViewId;
 use crate::view::ViewItem;
 
+use crate::job_queue::JobStatusView;
+
 use super::confirm::draw_confirm;
 use super::diagnostics::{draw_diagnostics_menu, draw_diagnostics_report};
 use super::executing::draw_executing;
@@ -24,6 +26,7 @@ use super::filter_ui::draw_filter;
 use super::graph_render::{draw_graph_options, render_graph_view};
 use super::help::draw_help;
 use super::info_modal::{draw_info_modal, InfoHitRegion, InfoModalRow};
+use super::job_status::render_job_status;
 use super::list_render::{ListRenderParams, RowRenderer};
 use super::menu::{draw_menu, MenuItem};
 use super::results::draw_results;
@@ -87,6 +90,8 @@ pub struct RenderContext<'a> {
     // Info modal: confirmation message + recorded click-to-copy hit regions
     pub info_copied_msg: Option<&'a str>,
     pub info_hit_regions: &'a mut Vec<InfoHitRegion>,
+    // Non-modal status area for the confirmed-action job queue
+    pub job_status: JobStatusView<'a>,
     // List states
     pub branches: &'a mut ListState<BranchInfo>,
     pub remotes: &'a mut ListState<RemoteBranchInfo>,
@@ -112,14 +117,21 @@ pub struct RenderContext<'a> {
 pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
     let area = frame.area();
 
-    // Layout: main area + status bar
+    // Layout: main area + non-modal job-status area (only while a confirmed
+    // action is running/queued/lingering) + status bar
+    let job_rows: u16 = if ctx.job_status.visible { 2 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(job_rows),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     let main_area = chunks[0];
-    let status_area = chunks[1];
+    let job_area = chunks[1];
+    let status_area = chunks[2];
 
     // Render active view's list
     match ctx.active_view {
@@ -170,6 +182,11 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
             };
             super::list_render::render_list_view(frame, main_area, &mut params);
         }
+    }
+
+    // Render the non-modal job-status area, if visible
+    if ctx.job_status.visible {
+        render_job_status(frame, job_area, &ctx.job_status, ctx.theme);
     }
 
     // Render status bar (search, filter indicator, or normal)
@@ -347,9 +364,10 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
         }
     }
 
-    // Render toast if present
+    // Render toast if present -- positioned above whatever's reserved at the
+    // bottom (status bar, plus the job-status area when it's showing).
     if let Some(toast) = ctx.toast {
-        draw_toast(frame, toast, ctx.theme);
+        draw_toast(frame, toast, ctx.theme, 1 + job_rows);
     }
 }
 

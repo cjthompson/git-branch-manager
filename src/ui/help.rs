@@ -29,6 +29,8 @@ const COMMON_KEYS: &[(&str, &str)] = &[
     ("Y", "Cycle symbols"),
     (",", "Settings"),
     ("F2", "Diagnostics"),
+    ("x", "Cancel running job"),
+    ("X", "Clear queued jobs"),
     ("?", "Toggle help"),
     ("q", "Quit"),
 ];
@@ -36,7 +38,6 @@ const COMMON_KEYS: &[(&str, &str)] = &[
 /// Branch-view-specific keys.
 const BRANCH_KEYS: &[(&str, &str)] = &[
     ("c", "Checkout"),
-    ("x", "Delete cursor branch"),
     ("d", "Delete local (selected)"),
     ("D", "Delete local + remote"),
     ("p", "Push (sets upstream)"),

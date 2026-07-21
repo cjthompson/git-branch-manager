@@ -4,7 +4,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use crate::theme::Theme;
 use crate::types::ProgressUpdate;
 
-use super::shared::centered_rect;
+use super::shared::{centered_rect, render_progress_bar};
 
 /// Renders the executing/progress overlay.
 ///
@@ -44,25 +44,7 @@ pub fn draw_executing(
         lines.push(Line::from(Span::styled(display_label, theme.dim)));
 
         // Line 2: progress bar  [========>          ] 3/10
-        let count_text = format!(" {}/{}", progress.completed, progress.total);
-        let bar_width = inner_width
-            .saturating_sub(count_text.len())
-            .saturating_sub(2); // -2 for []
-
-        let fraction = if progress.total > 0 {
-            progress.completed as f64 / progress.total as f64
-        } else {
-            0.0
-        };
-        let filled = (fraction * bar_width as f64) as usize;
-        let empty = bar_width.saturating_sub(filled);
-
-        let bar = format!(
-            "[{}{}]{}",
-            "=".repeat(filled),
-            " ".repeat(empty),
-            count_text,
-        );
+        let bar = render_progress_bar(inner_width, progress.completed, progress.total);
         lines.push(Line::from(Span::styled(bar, theme.primary_text)));
 
         // Line 3: current item name
