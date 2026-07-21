@@ -38,6 +38,7 @@ struct RunningJob {
     op_rx: Receiver<Vec<OperationResult>>,
     progress_rx: Receiver<ProgressUpdate>,
     cancel_flag: Arc<AtomicBool>,
+    partial_delete_risk: Arc<AtomicBool>,
     latest_progress: Option<ProgressUpdate>,
 }
 
@@ -77,14 +78,14 @@ impl CompletionSummary {
         let success_count = results
             .iter()
             .filter(|r| {
-                r.success
-                    || matches!(&r.failure, Some(crate::types::FailureCause::BranchNotFound))
+                r.success || matches!(&r.failure, Some(crate::types::FailureCause::BranchNotFound))
             })
             .count();
         let failures: Vec<OperationResult> = results
             .iter()
             .filter(|r| {
-                !r.success && !matches!(&r.failure, Some(crate::types::FailureCause::BranchNotFound))
+                !r.success
+                    && !matches!(&r.failure, Some(crate::types::FailureCause::BranchNotFound))
             })
             .cloned()
             .collect();
@@ -216,6 +217,8 @@ impl ActionJobQueue {
         let (prog_tx, prog_rx) = mpsc::channel();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_clone = Arc::clone(&cancel_flag);
+        let partial_delete_risk = Arc::new(AtomicBool::new(false));
+        let partial_delete_risk_clone = Arc::clone(&partial_delete_risk);
 
         std::thread::spawn(move || {
             let needs_stash =
@@ -229,6 +232,7 @@ impl ActionJobQueue {
                 remote.as_deref(),
                 &prog_tx,
                 &cancel_clone,
+                &partial_delete_risk_clone,
             );
             let _ = op_tx.send(results);
         });
@@ -238,6 +242,7 @@ impl ActionJobQueue {
             op_rx,
             progress_rx: prog_rx,
             cancel_flag,
+            partial_delete_risk,
             latest_progress: None,
         });
     }
@@ -416,12 +421,14 @@ impl ActionJobQueue {
         op_rx: Receiver<Vec<OperationResult>>,
         progress_rx: Receiver<ProgressUpdate>,
         cancel_flag: Arc<AtomicBool>,
+        partial_delete_risk: Arc<AtomicBool>,
     ) {
         self.current = Some(RunningJob {
             job,
             op_rx,
             progress_rx,
             cancel_flag,
+            partial_delete_risk,
             latest_progress: None,
         });
     }
@@ -438,7 +445,7 @@ impl ActionJobQueue {
         self.queued.len()
     }
 
-    pub fn current_action_for_test(&self) -> Option<BranchAction> {
+    pub fn current_action(&self) -> Option<BranchAction> {
         self.current.as_ref().map(|r| r.job.action)
     }
 
@@ -446,6 +453,12 @@ impl ActionJobQueue {
         self.current
             .as_ref()
             .map(|running| running.job.targets.as_slice())
+    }
+
+    pub fn current_partial_delete_risk(&self) -> bool {
+        self.current
+            .as_ref()
+            .is_some_and(|r| r.partial_delete_risk.load(Ordering::Relaxed))
     }
 }
 
@@ -598,6 +611,7 @@ fn execute_action_with_remote(
     remote: Option<&str>,
     prog_tx: &Sender<ProgressUpdate>,
     cancel_flag: &Arc<AtomicBool>,
+    partial_delete_risk: &Arc<AtomicBool>,
 ) -> Vec<OperationResult> {
     let total = item_names.len();
     let mut results = Vec::new();
@@ -855,7 +869,6 @@ fn execute_action_with_remote(
                     break;
                 }
                 let wt_path = PathBuf::from(path_str);
-                let partial_delete_risk = AtomicBool::new(false);
                 let result = if force {
                     operations::force_remove_worktree(
                         repo_path,
@@ -863,7 +876,7 @@ fn execute_action_with_remote(
                         (i, total),
                         prog_tx,
                         cancel_flag,
-                        &partial_delete_risk,
+                        partial_delete_risk,
                     )
                 } else {
                     operations::remove_worktree(
@@ -872,7 +885,7 @@ fn execute_action_with_remote(
                         (i, total),
                         prog_tx,
                         cancel_flag,
-                        &partial_delete_risk,
+                        partial_delete_risk,
                     )
                 };
                 results.push(result);
@@ -924,14 +937,13 @@ fn execute_action_with_remote(
                     })
                     .and_then(|w| w.branch);
 
-                let partial_delete_risk = AtomicBool::new(false);
                 let remove_result = operations::remove_worktree(
                     repo_path,
                     &wt_path,
                     (i, total),
                     prog_tx,
                     cancel_flag,
-                    &partial_delete_risk,
+                    partial_delete_risk,
                 );
                 let removed = remove_result.success;
                 results.push(remove_result);
@@ -967,16 +979,14 @@ fn execute_action_with_remote(
             results.extend(match action {
                 BranchAction::DeleteBranchAndRemoveWorktree
                 | BranchAction::DeleteBranchAndRemoveWorktreeForce
-                | BranchAction::DeleteBranchAndRemoveWorktreeRemote => {
-                    execute_branch_name_cascade(
-                        action,
-                        item_names,
-                        repo_path,
-                        remote,
-                        prog_tx,
-                        cancel_flag,
-                    )
-                }
+                | BranchAction::DeleteBranchAndRemoveWorktreeRemote => execute_branch_name_cascade(
+                    action,
+                    item_names,
+                    repo_path,
+                    remote,
+                    prog_tx,
+                    cancel_flag,
+                ),
                 _ => unreachable!("matched new delete action"),
             });
         }
@@ -1034,7 +1044,13 @@ mod tests {
         let (op_tx, op_rx) = mpsc::channel();
         let (prog_tx, prog_rx) = mpsc::channel();
         let cancel_flag = Arc::new(AtomicBool::new(false));
-        q.inject_running_for_test(j, op_rx, prog_rx, Arc::clone(&cancel_flag));
+        q.inject_running_for_test(
+            j,
+            op_rx,
+            prog_rx,
+            Arc::clone(&cancel_flag),
+            Arc::new(AtomicBool::new(false)),
+        );
         (op_tx, prog_tx, cancel_flag)
     }
 
@@ -1073,7 +1089,7 @@ mod tests {
         let _channels = inject(&mut q, job(BranchAction::DeleteLocal, &["a"]));
         q.enqueue_or_start(BranchAction::Push, vec!["b".into()], ViewId::Branches);
         assert_eq!(q.queued_len_for_test(), 1);
-        assert_eq!(q.current_action_for_test(), Some(BranchAction::DeleteLocal));
+        assert_eq!(q.current_action(), Some(BranchAction::DeleteLocal));
     }
 
     #[test]
@@ -1095,7 +1111,7 @@ mod tests {
         assert!(poll.event.is_some());
         assert_eq!(poll.event.unwrap().action, BranchAction::DeleteLocal);
         assert_eq!(q.queued_len_for_test(), 0);
-        assert_eq!(q.current_action_for_test(), Some(BranchAction::Push));
+        assert_eq!(q.current_action(), Some(BranchAction::Push));
     }
 
     #[test]
@@ -1135,7 +1151,7 @@ mod tests {
             !q.is_draining_for_test()
         }));
         assert_eq!(q.queued_len_for_test(), 0);
-        assert_eq!(q.current_action_for_test(), Some(BranchAction::Push));
+        assert_eq!(q.current_action(), Some(BranchAction::Push));
     }
 
     #[test]
@@ -1175,7 +1191,7 @@ mod tests {
         assert_eq!(event.action, BranchAction::DeleteLocal);
         assert_eq!(event.results.iter().filter(|r| r.success).count(), 2);
         assert!(!q.is_draining_for_test());
-        assert_eq!(q.current_action_for_test(), Some(BranchAction::Push));
+        assert_eq!(q.current_action(), Some(BranchAction::Push));
 
         // The cancelled job's full target count (not just the successful
         // ones) folds into the aggregate counter, same as a normal
@@ -1196,7 +1212,7 @@ mod tests {
 
         assert_eq!(q.queued_len_for_test(), 0);
         assert!(q.is_running_for_test());
-        assert_eq!(q.current_action_for_test(), Some(BranchAction::DeleteLocal));
+        assert_eq!(q.current_action(), Some(BranchAction::DeleteLocal));
     }
 
     #[test]
@@ -1300,6 +1316,7 @@ mod tests {
 
         let (prog_tx, _prog_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
+        let partial_delete_risk = Arc::new(AtomicBool::new(false));
         let results = execute_action_with_remote(
             BranchAction::WorktreeRemoveAndDeleteBranch,
             &[wt_path.to_string_lossy().to_string()],
@@ -1309,6 +1326,7 @@ mod tests {
             None,
             &prog_tx,
             &cancel,
+            &partial_delete_risk,
         );
 
         assert!(results
@@ -1376,7 +1394,12 @@ mod tests {
         run_git(dir, &["branch", "cascade-clean"]);
         run_git(
             dir,
-            &["worktree", "add", ".worktrees/cascade-clean", "cascade-clean"],
+            &[
+                "worktree",
+                "add",
+                ".worktrees/cascade-clean",
+                "cascade-clean",
+            ],
         );
         let wt_path = dir.join(".worktrees/cascade-clean");
 
@@ -1393,14 +1416,16 @@ mod tests {
             &cancel,
         );
 
-        assert!(results
-            .iter()
-            .any(|r| r.action == BranchAction::WorktreeRemove && r.success),
+        assert!(
+            results
+                .iter()
+                .any(|r| r.action == BranchAction::WorktreeRemove && r.success),
             "{results:?}"
         );
-        assert!(results
-            .iter()
-            .any(|r| r.action == BranchAction::DeleteLocal && r.success),
+        assert!(
+            results
+                .iter()
+                .any(|r| r.action == BranchAction::DeleteLocal && r.success),
             "{results:?}"
         );
         assert!(!wt_path.exists());
@@ -1423,7 +1448,12 @@ mod tests {
         run_git(dir, &["branch", "cascade-dirty"]);
         run_git(
             dir,
-            &["worktree", "add", ".worktrees/cascade-dirty", "cascade-dirty"],
+            &[
+                "worktree",
+                "add",
+                ".worktrees/cascade-dirty",
+                "cascade-dirty",
+            ],
         );
         let wt_path = dir.join(".worktrees/cascade-dirty");
         std::fs::write(wt_path.join("untracked.txt"), "discard me\n").unwrap();
@@ -1441,14 +1471,16 @@ mod tests {
             &cancel,
         );
 
-        assert!(results
-            .iter()
-            .any(|r| r.action == BranchAction::WorktreeForceRemove && r.success),
+        assert!(
+            results
+                .iter()
+                .any(|r| r.action == BranchAction::WorktreeForceRemove && r.success),
             "{results:?}"
         );
-        assert!(results
-            .iter()
-            .any(|r| r.action == BranchAction::DeleteLocalForce && r.success),
+        assert!(
+            results
+                .iter()
+                .any(|r| r.action == BranchAction::DeleteLocalForce && r.success),
             "{results:?}"
         );
         assert!(!wt_path.exists());
@@ -1528,6 +1560,7 @@ mod tests {
 
         let (prog_tx, _prog_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
+        let partial_delete_risk = Arc::new(AtomicBool::new(false));
         let results = execute_action_with_remote(
             BranchAction::WorktreeRemoveAndDeleteBranchRemote,
             &[wt_path.to_string_lossy().to_string()],
@@ -1537,6 +1570,7 @@ mod tests {
             None,
             &prog_tx,
             &cancel,
+            &partial_delete_risk,
         );
 
         assert!(results
@@ -1556,7 +1590,7 @@ mod tests {
             .is_err());
 
         run_git(&work_dir, &["fetch", "--prune"]);
-    assert!(repo
+        assert!(repo
             .find_branch("origin/wt-remote-branch", git2::BranchType::Remote)
             .is_err());
     }
@@ -1660,6 +1694,7 @@ mod tests {
 
         let (prog_tx, _prog_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
+        let partial_delete_risk = Arc::new(AtomicBool::new(false));
         let results = execute_action_with_remote(
             BranchAction::CheckoutRemote,
             &["remote-checkout".into()],
@@ -1669,6 +1704,7 @@ mod tests {
             Some("upstream"),
             &prog_tx,
             &cancel,
+            &partial_delete_risk,
         );
 
         assert!(results.iter().any(|result| result.success), "{results:?}");
@@ -1687,6 +1723,7 @@ mod tests {
             Some("upstream"),
             &prog_tx,
             &cancel,
+            &partial_delete_risk,
         );
         assert!(
             deletion_results

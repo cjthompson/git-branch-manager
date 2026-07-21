@@ -5612,6 +5612,7 @@ mod tests {
             op_rx,
             prog_rx,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
         );
         op_tx
             .send(vec![OperationResult::success(
@@ -5665,6 +5666,7 @@ mod tests {
             },
             op_rx,
             prog_rx,
+            Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
         );
         op_tx
@@ -5720,6 +5722,7 @@ mod tests {
             },
             op_rx,
             prog_rx,
+            Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
         );
         op_tx
@@ -5853,6 +5856,7 @@ mod tests {
             op_rx,
             prog_rx,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
         );
         op_tx
             .send(vec![
@@ -5903,6 +5907,7 @@ mod tests {
             },
             op_rx,
             prog_rx,
+            Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
         );
         op_tx
@@ -6147,6 +6152,7 @@ mod tests {
             },
             op_rx,
             prog_rx,
+            Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
         );
         op_tx
