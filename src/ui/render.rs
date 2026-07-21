@@ -19,7 +19,9 @@ use crate::view::ViewItem;
 
 use crate::job_queue::JobStatusView;
 
-use super::confirm::{draw_confirm, ConfirmChoice, ConfirmStage, DeletePreflight};
+use super::confirm::{
+    draw_confirm, draw_confirm_cancel, ConfirmChoice, ConfirmStage, DeletePreflight,
+};
 use super::diagnostics::{draw_diagnostics_menu, draw_diagnostics_report};
 use super::executing::draw_executing;
 use super::filter_ui::{draw_filter, draw_filter_selected};
@@ -58,6 +60,12 @@ pub enum Overlay {
         selected: usize,
         body_scroll: ModalScroll,
         stage: ConfirmStage,
+    },
+    /// Secondary confirmation for cancelling a job that risks a partial
+    /// worktree deletion. Not tied to a `BranchAction`/target list like
+    /// `Confirm` -- just a plain message.
+    ConfirmCancelJob {
+        message: String,
     },
     Executing {
         label: String,
@@ -333,6 +341,9 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 stage,
                 ctx.theme,
             ),
+            Overlay::ConfirmCancelJob { message } => {
+                draw_confirm_cancel(frame, message, ctx.theme);
+            }
             Overlay::Executing { label, progress } => {
                 draw_executing(frame, label, progress.as_ref(), ctx.theme);
             }

@@ -384,3 +384,30 @@ fn data_loss_text(action: BranchAction) -> &'static str {
 fn branch_style(_name: &str, theme: &Theme) -> Style {
     theme.modal_branch
 }
+
+/// Renders a plain yes/no confirmation overlay -- unlike [`draw_confirm`],
+/// not tied to a `BranchAction`/target list. Used for secondary
+/// confirmations layered on top of an already-running job (e.g. "cancelling
+/// now may leave the worktree partially deleted").
+pub fn draw_confirm_cancel(frame: &mut Frame, message: &str, theme: &Theme) {
+    let mut lines: Vec<Line> = message.lines().map(Line::from).collect();
+    if lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+
+    let area = frame.area();
+    let preferred_width = (area.width * 60 / 100).clamp(40, 80);
+    let max_height = (area.height * 60 / 100).max(8).min(area.height);
+    let areas = draw_modal_shell(
+        frame,
+        &ModalSpec::new(
+            "Cancel running job?",
+            ModalFooter::hints(&[("y/Enter", "Yes"), ("n/Esc", "No")]),
+            preferred_width,
+            max_height,
+        ),
+        theme,
+    );
+
+    frame.render_widget(Paragraph::new(lines), areas.body);
+}
