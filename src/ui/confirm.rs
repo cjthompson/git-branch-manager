@@ -112,3 +112,71 @@ pub fn draw_confirm(
     frame.render_widget(Clear, rect);
     frame.render_widget(paragraph, rect);
 }
+
+/// Renders a plain yes/no confirmation overlay -- unlike [`draw_confirm`],
+/// not tied to a `BranchAction`/target list. Used for secondary
+/// confirmations layered on top of an already-running job (e.g. "cancelling
+/// now may leave the worktree partially deleted").
+pub fn draw_confirm_cancel(frame: &mut Frame, message: &str, theme: &Theme) {
+    let mut lines: Vec<Line> = message.lines().map(Line::from).collect();
+    if lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(""));
+    let key_style = Style::default().fg(theme.accent_fg());
+    lines.push(Line::from(vec![
+        Span::styled("[", theme.dim),
+        Span::styled("y", key_style),
+        Span::styled("]es  [", theme.dim),
+        Span::styled("n", key_style),
+        Span::styled("]o", theme.dim),
+    ]));
+
+    // Calculate overlay size (mirrors draw_confirm, minus the item-list
+    // truncation logic -- this message is always small).
+    let area = frame.area();
+    let max_height = (area.height * 60 / 100).max(8);
+
+    let content_max_width = lines
+        .iter()
+        .map(|l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0) as u16;
+    let width = (content_max_width + 4)
+        .max(40)
+        .min(area.width.saturating_sub(2));
+
+    let inner_width = width.saturating_sub(2) as usize;
+    let wrapped_height: usize = lines
+        .iter()
+        .map(|l| {
+            let chars: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
+            if chars == 0 {
+                1
+            } else {
+                chars.div_ceil(inner_width.max(1))
+            }
+        })
+        .sum();
+    let content_height = (wrapped_height as u16) + 2; // +2 for borders
+    let height = content_height.min(max_height).min(area.height);
+
+    let rect = centered_rect(width, height, area);
+
+    let block = Block::default()
+        .title("Cancel running job?")
+        .title_style(theme.title)
+        .borders(Borders::ALL);
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(Clear, rect);
+    frame.render_widget(paragraph, rect);
+}

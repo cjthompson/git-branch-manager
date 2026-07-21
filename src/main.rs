@@ -16,7 +16,7 @@ use std::io;
 use git_branch_manager::cli::Cli;
 use git_branch_manager::config::Config;
 use git_branch_manager::git::{
-    self, branch, cache, diagnostics, graph, merge_detection, operations, worktree,
+    branch, cache, diagnostics, graph, merge_detection, operations, worktree,
 };
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::types::MergeStatus;
