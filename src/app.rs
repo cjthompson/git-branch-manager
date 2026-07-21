@@ -1,6 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -14,6 +15,7 @@ use git_branch_manager::config::Config;
 use git_branch_manager::git::{
     branch, cache, diagnostics, graph, operations, pr_loader, squash_loader, tags, worktree,
 };
+use git_branch_manager::job_queue::{ActionJobQueue, JobEvent};
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::theme::Theme;
 use git_branch_manager::types::*;
@@ -100,6 +102,15 @@ pub struct App {
     pub progress: Option<ProgressUpdate>,
     /// Result channel for the background cache-accuracy audit.
     pub diag_rx: Option<Receiver<CacheAudit>>,
+    /// Result channel for the silent, automatic launch-time cache verifier.
+    /// Separate from `diag_rx`: receiving here must never open the manual
+    /// Diagnostics review overlay.
+    pub cache_verify_rx: Option<Receiver<CacheAudit>>,
+    /// Branch names the launch-time verifier has already corrected in
+    /// `self.branches` this session. Consulted by the `Phase1Msg::MergeStatuses`
+    /// handler so a late-arriving stale cached status can't silently overwrite
+    /// a verified correction, regardless of which one lands first.
+    pub verified_branches: HashSet<String>,
     pub remote_fetch_rx: Option<Receiver<bool>>,
     pub tag_load_rx: Option<Receiver<Vec<TagInfo>>>,
     pub worktree_load_rx: Option<Receiver<Vec<WorktreeInfo>>>,
@@ -121,12 +132,11 @@ pub struct App {
     // Toast
     pub toast: Option<Toast>,
 
-    // Operation cancellation
+    // Operation cancellation (fetch / cache-audit only; confirmed actions use job_queue)
     pub cancel_flag: Option<Arc<AtomicBool>>,
 
-    // Track pending operation (action and targets) for post-operation cleanup
-    pub pending_action: Option<BranchAction>,
-    pub pending_targets: Vec<String>,
+    // Sequential background queue for confirmed actions (delete, push, merge, ...)
+    pub job_queue: ActionJobQueue,
 
     // Terminal dimensions (for mouse handling)
     pub terminal_rows: u16,
@@ -264,6 +274,7 @@ impl App {
             .and_then(|r| r.remotes())
             .map(|r| !r.is_empty())
             .unwrap_or(false);
+        let job_queue = ActionJobQueue::new(repo_path.clone(), base_branch.clone());
 
         Self {
             repo_path,
@@ -304,6 +315,8 @@ impl App {
             progress_rx: None,
             progress: None,
             diag_rx: None,
+            cache_verify_rx: None,
+            verified_branches: HashSet::new(),
             remote_fetch_rx: None,
             tag_load_rx: None,
             worktree_load_rx: None,
@@ -313,8 +326,7 @@ impl App {
             cache,
             toast: None,
             cancel_flag: None,
-            pending_action: None,
-            pending_targets: Vec::new(),
+            job_queue,
             terminal_rows: 0,
             info_hit_regions: Vec::new(),
             info_copied_msg: None,
@@ -405,6 +417,7 @@ impl App {
             info_copied_msg: self.info_copied_msg.as_deref(),
             info_hit_regions: &mut self.info_hit_regions,
             graph: &mut self.graph,
+            job_status: self.job_queue.render_data(),
             branches: &mut self.branches,
             remotes: &mut self.remotes,
             tags: &mut self.tags,
@@ -445,6 +458,14 @@ impl App {
                     let update_map: std::collections::HashMap<String, MergeStatus> =
                         updates.into_iter().collect();
                     for b in self.branches.items_mut() {
+                        // A branch the launch-time cache verifier already corrected
+                        // wins regardless of arrival order — this restore path can
+                        // otherwise reintroduce the exact stale status the verifier
+                        // just fixed (it restores from cache, which is why the
+                        // verifier exists in the first place).
+                        if self.verified_branches.contains(&b.name) {
+                            continue;
+                        }
                         if let Some(&new_status) = update_map.get(&b.name) {
                             b.merge_status = new_status;
                         }
@@ -679,16 +700,33 @@ impl App {
             self.worktree_enrich_rx = Some(rx);
         }
 
-        // Operation results (one-shot)
+        // Operation results (one-shot) -- fetch only; confirmed-action jobs
+        // are handled by self.job_queue below, non-modally.
         for results in drain_channel(&mut self.op_rx, 1, &mut dirty) {
             self.cancel_flag = None;
             self.progress_rx = None;
             self.progress = None;
             self.refresh_after_operation();
+            self.overlay = Some(Overlay::Results { results });
+        }
+
+        // Confirmed-action job queue (delete, push, merge, worktree ops, ...)
+        let job_poll = self.job_queue.poll();
+        if job_poll.dirty {
+            dirty = true;
+        }
+        if let Some(JobEvent {
+            action,
+            results,
+            return_view,
+            ..
+        }) = job_poll.event
+        {
+            self.refresh_view_data(return_view);
 
             // When DeleteLocalAndRemote completes, immediately filter deleted branches
             // from the in-memory remotes list so they don't appear until a fetch
-            if self.pending_action == Some(BranchAction::DeleteLocalAndRemote) {
+            if action == BranchAction::DeleteLocalAndRemote {
                 let successfully_deleted: Vec<String> = results
                     .iter()
                     .filter(|r| r.success && r.action == BranchAction::DeleteLocal)
@@ -709,10 +747,6 @@ impl App {
                     list_state::apply_sort(&mut self.remotes, &self.remote_columns);
                 }
             }
-
-            self.pending_action = None;
-            self.pending_targets.clear();
-            self.overlay = Some(Overlay::Results { results });
         }
 
         // Cache-audit result (one-shot)
@@ -721,6 +755,39 @@ impl App {
             self.progress_rx = None;
             self.progress = None;
             self.overlay = Some(Overlay::DiagnosticsReport { audit, scroll: 0 });
+        }
+
+        // Silent, automatic launch-time cache verification (one-shot). The
+        // audit has already been applied to disk by `spawn_cache_verifier`;
+        // this only patches live state. No overlay, no toast — fully silent.
+        for audit in drain_channel(&mut self.cache_verify_rx, 1, &mut dirty) {
+            if audit.is_clean() {
+                continue;
+            }
+            for d in &audit.discrepancies {
+                if let Some(b) = self
+                    .branches
+                    .items_mut()
+                    .iter_mut()
+                    .find(|b| b.name == d.branch)
+                {
+                    match &d.fix {
+                        CacheFix::Status { status, .. } => {
+                            b.merge_status = *status;
+                            self.verified_branches.insert(d.branch.clone());
+                        }
+                        CacheFix::AheadBehind { ahead, behind, .. } => {
+                            b.ahead = Some(*ahead);
+                            b.behind = Some(*behind);
+                        }
+                        CacheFix::MergeBase { merge_base, .. } => {
+                            b.merge_base_commit = merge_base.clone();
+                        }
+                    }
+                }
+            }
+            self.branches.rebuild_display_indices();
+            self.refresh_worktree_merge_status();
         }
 
         // Progress updates
@@ -835,6 +902,14 @@ impl App {
             KeyCode::F(2) => {
                 self.return_view = self.active_view;
                 self.overlay = Some(Overlay::Diagnostics { cursor: 0 });
+                return;
+            }
+            KeyCode::Char('x') => {
+                self.job_queue.cancel_current();
+                return;
+            }
+            KeyCode::Char('X') => {
+                self.job_queue.clear_queued();
                 return;
             }
             _ => {}
@@ -1052,7 +1127,8 @@ impl App {
             }
             Some(Overlay::Confirm { action, targets }) => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
-                    self.execute_confirmed_action(action, targets);
+                    self.job_queue
+                        .enqueue_or_start(action, targets, self.return_view);
                 }
                 KeyCode::Char('n') | KeyCode::Esc => {
                     // Cancel -- don't put overlay back
@@ -2289,44 +2365,6 @@ impl App {
         }
     }
 
-    // ---- Action Execution ----
-
-    fn execute_confirmed_action(&mut self, action: BranchAction, item_names: Vec<String>) {
-        let label = format!("{}...", action.label());
-        let repo_path = self.repo_path.clone();
-        let base_branch = self.base_branch.clone();
-
-        let (op_tx, op_rx) = mpsc::channel();
-        let (prog_tx, prog_rx) = mpsc::channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_clone = cancel.clone();
-
-        self.overlay = Some(Overlay::Executing {
-            label,
-            progress: None,
-        });
-        self.op_rx = Some(op_rx);
-        self.progress_rx = Some(prog_rx);
-        self.cancel_flag = Some(cancel);
-        self.pending_action = Some(action);
-        self.pending_targets = item_names.clone();
-
-        std::thread::spawn(move || {
-            let needs_stash =
-                !crate::git::status::detect_working_tree_status(&repo_path).is_clean();
-            let results = execute_action(
-                action,
-                &item_names,
-                &repo_path,
-                &base_branch,
-                needs_stash,
-                &prog_tx,
-                &cancel_clone,
-            );
-            let _ = op_tx.send(results);
-        });
-    }
-
     // ---- View-level action helpers ----
 
     fn delete_selected_branches(&mut self, include_remote: bool) {
@@ -2678,6 +2716,22 @@ impl App {
         }
     }
 
+    /// Like `refresh_after_operation`, but does not snap `active_view` back to
+    /// the completed job's originating view. Since job-queue execution is
+    /// non-modal, the user may have navigated elsewhere while it ran, and
+    /// forcing them back to `view` when it finishes would be a jarring
+    /// regression (this is safe for `refresh_after_operation`'s other callers
+    /// only because those flows are still fully modal).
+    fn refresh_view_data(&mut self, view: ViewId) {
+        match view {
+            ViewId::Graph => self.reload_graph(),
+            ViewId::Branches => self.refresh_branches("post_operation"),
+            ViewId::Remotes => self.spawn_remote_load(),
+            ViewId::Tags => self.spawn_tag_load(),
+            ViewId::Worktrees => self.spawn_worktree_load(),
+        }
+    }
+
     fn start_fetch(&mut self, prune: bool) {
         let repo_path = self.repo_path.clone();
         let (tx, rx) = mpsc::channel();
@@ -2900,363 +2954,6 @@ impl App {
     fn clear_toast(&mut self) {
         self.toast = None;
     }
-}
-
-// ---- Action Execution (runs on background thread) ----
-
-fn execute_action(
-    action: BranchAction,
-    item_names: &[String],
-    repo_path: &Path,
-    base_branch: &str,
-    needs_stash: bool,
-    prog_tx: &Sender<ProgressUpdate>,
-    cancel_flag: &Arc<AtomicBool>,
-) -> Vec<OperationResult> {
-    let total = item_names.len();
-    let mut results = Vec::new();
-
-    match action {
-        BranchAction::DeleteLocal | BranchAction::DeleteLocalAndRemote => {
-            let repo = match git2::Repository::open(repo_path) {
-                Ok(r) => r,
-                Err(e) => {
-                    return vec![OperationResult {
-                        branch_name: String::new(),
-                        action,
-                        success: false,
-                        message: format!("Failed to open repo: {e}"),
-                    }];
-                }
-            };
-            let mut locally_deleted = Vec::new();
-            for (i, name) in item_names.iter().enumerate() {
-                if cancel_flag.load(Ordering::Relaxed) {
-                    results.push(OperationResult {
-                        branch_name: String::new(),
-                        action,
-                        success: false,
-                        message: "Cancelled by user".into(),
-                    });
-                    break;
-                }
-                let _ = prog_tx.send(ProgressUpdate {
-                    completed: i,
-                    total,
-                    current_item: name.clone(),
-                });
-                let result = operations::delete_local(&repo, name);
-                if result.success {
-                    locally_deleted.push(name.clone());
-                }
-                results.push(result);
-            }
-            if action == BranchAction::DeleteLocalAndRemote && !locally_deleted.is_empty() {
-                let _ = prog_tx.send(ProgressUpdate {
-                    completed: locally_deleted.len(),
-                    total,
-                    current_item: "Deleting remote branches...".into(),
-                });
-                results.extend(operations::delete_remotes_batch(
-                    repo_path,
-                    &locally_deleted,
-                    cancel_flag,
-                ));
-            }
-        }
-        BranchAction::Checkout => {
-            if let Some(name) = item_names.first() {
-                let repo = match git2::Repository::open(repo_path) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        return vec![OperationResult {
-                            branch_name: name.clone(),
-                            action,
-                            success: false,
-                            message: format!("Failed to open repo: {e}"),
-                        }];
-                    }
-                };
-                results.push(operations::checkout_branch(
-                    &repo,
-                    repo_path,
-                    name,
-                    needs_stash,
-                ));
-            }
-        }
-        BranchAction::FastForward => {
-            if let Some(name) = item_names.first() {
-                results.push(operations::fast_forward(repo_path, name, cancel_flag));
-            }
-        }
-        BranchAction::Push => {
-            for (i, name) in item_names.iter().enumerate() {
-                if cancel_flag.load(Ordering::Relaxed) {
-                    break;
-                }
-                let _ = prog_tx.send(ProgressUpdate {
-                    completed: i,
-                    total,
-                    current_item: name.clone(),
-                });
-                results.push(operations::push_branch(repo_path, name, cancel_flag));
-            }
-        }
-        BranchAction::ForcePush => {
-            if let Some(name) = item_names.first() {
-                results.push(operations::force_push_branch(repo_path, name, cancel_flag));
-            }
-        }
-        BranchAction::Pull => {
-            if let Some(name) = item_names.first() {
-                // Assume not current for context menu; pull_branch handles it
-                results.push(operations::pull_branch(repo_path, name, false, cancel_flag));
-            }
-        }
-        BranchAction::Merge | BranchAction::SquashMerge => {
-            if let Some(name) = item_names.first() {
-                let squash = action == BranchAction::SquashMerge;
-                results.extend(operations::merge_branch(
-                    repo_path,
-                    name,
-                    base_branch,
-                    squash,
-                    needs_stash,
-                ));
-            }
-        }
-        BranchAction::Rebase => {
-            if let Some(name) = item_names.first() {
-                results.extend(operations::rebase_branch(
-                    repo_path,
-                    name,
-                    base_branch,
-                    needs_stash,
-                ));
-            }
-        }
-        BranchAction::Worktree => {
-            if let Some(name) = item_names.first() {
-                results.push(operations::create_worktree(repo_path, name));
-            }
-        }
-        BranchAction::DeleteTag | BranchAction::DeleteTagAndRemote => {
-            let repo = match git2::Repository::open(repo_path) {
-                Ok(r) => r,
-                Err(e) => {
-                    return vec![OperationResult {
-                        branch_name: String::new(),
-                        action,
-                        success: false,
-                        message: format!("Failed to open repo: {e}"),
-                    }];
-                }
-            };
-            let tag_names: Vec<String> = item_names.to_vec();
-            results.extend(tags::delete_tags_batch(&repo, &tag_names));
-            if action == BranchAction::DeleteTagAndRemote {
-                let successfully_deleted: Vec<String> = results
-                    .iter()
-                    .filter(|r| r.success)
-                    .map(|r| r.branch_name.clone())
-                    .collect();
-                if !successfully_deleted.is_empty() {
-                    results.extend(tags::delete_remote_tags_batch(
-                        repo_path,
-                        &successfully_deleted,
-                    ));
-                }
-            }
-        }
-        BranchAction::PushTag => {
-            for name in item_names {
-                results.push(tags::push_tag(repo_path, name));
-            }
-        }
-        BranchAction::DeleteRemoteBranch => {
-            results.extend(operations::delete_remotes_with_progress(
-                repo_path,
-                item_names,
-                prog_tx,
-                cancel_flag,
-            ));
-        }
-        BranchAction::DeleteRemoteAndLocal => {
-            if let Some(name) = item_names.first() {
-                let remote_results = operations::delete_remotes_batch(
-                    repo_path,
-                    std::slice::from_ref(name),
-                    cancel_flag,
-                );
-                results.extend(remote_results.into_iter().map(|mut r| {
-                    r.action = BranchAction::DeleteRemoteAndLocal;
-                    r
-                }));
-                if let Ok(repo) = git2::Repository::open(repo_path) {
-                    let local_result = operations::delete_local(&repo, name);
-                    results.push(OperationResult {
-                        action: BranchAction::DeleteRemoteAndLocal,
-                        ..local_result
-                    });
-                }
-            }
-        }
-        BranchAction::CheckoutRemote => {
-            if let Some(name) = item_names.first() {
-                results.push(operations::checkout_remote_branch(
-                    repo_path, "origin", name,
-                ));
-            }
-        }
-        BranchAction::FetchRemote => {
-            if let Some(name) = item_names.first() {
-                results.extend(operations::fetch_remote(repo_path, name, cancel_flag));
-            }
-        }
-        BranchAction::PullRemote => {
-            if let Some(name) = item_names.first() {
-                results.extend(operations::pull_remote(
-                    repo_path,
-                    "origin",
-                    name,
-                    cancel_flag,
-                ));
-            }
-        }
-        BranchAction::MergeRemoteIntoCurrent => {
-            if let Some(name) = item_names.first() {
-                let full_ref = format!("origin/{name}");
-                results.extend(operations::merge_remote_into_current(
-                    repo_path, &full_ref, name,
-                ));
-            }
-        }
-        BranchAction::CherryPickRemote => {
-            if let Some(name) = item_names.first() {
-                let full_ref = format!("origin/{name}");
-                results.extend(operations::cherry_pick_remote(repo_path, &full_ref, name));
-            }
-        }
-        BranchAction::WorktreeRemove | BranchAction::WorktreeForceRemove => {
-            let force = action == BranchAction::WorktreeForceRemove;
-            for (i, path_str) in item_names.iter().enumerate() {
-                if cancel_flag.load(Ordering::Relaxed) {
-                    break;
-                }
-                let _ = prog_tx.send(ProgressUpdate {
-                    completed: i,
-                    total,
-                    current_item: path_str.clone(),
-                });
-                let wt_path = PathBuf::from(path_str);
-                let result = if force {
-                    operations::force_remove_worktree(repo_path, &wt_path)
-                } else {
-                    operations::remove_worktree(repo_path, &wt_path)
-                };
-                results.push(result);
-            }
-        }
-        BranchAction::WorktreeRemoveAndDeleteBranch
-        | BranchAction::WorktreeRemoveAndDeleteBranchRemote => {
-            let repo = match git2::Repository::open(repo_path) {
-                Ok(r) => r,
-                Err(e) => {
-                    return vec![OperationResult {
-                        branch_name: String::new(),
-                        action,
-                        success: false,
-                        message: format!("Failed to open repo: {e}"),
-                    }];
-                }
-            };
-            let mut locally_deleted = Vec::new();
-            for (i, path_str) in item_names.iter().enumerate() {
-                if cancel_flag.load(Ordering::Relaxed) {
-                    results.push(OperationResult {
-                        branch_name: String::new(),
-                        action,
-                        success: false,
-                        message: "Cancelled by user".into(),
-                    });
-                    break;
-                }
-                let _ = prog_tx.send(ProgressUpdate {
-                    completed: i,
-                    total,
-                    current_item: path_str.clone(),
-                });
-
-                let wt_path = PathBuf::from(path_str);
-                let canonical_wt_path = std::fs::canonicalize(&wt_path).ok();
-
-                // Look up the branch checked out in this worktree BEFORE removing
-                // it -- removal deregisters the worktree, so `git worktree list`
-                // can no longer tell us what branch it held.
-                let all_wts = worktree::list_worktrees(repo_path);
-                let branch_name = all_wts
-                    .into_iter()
-                    .find(|w| {
-                        if let Ok(wt_canonical) = std::fs::canonicalize(&w.path) {
-                            if let Some(ref cwp) = canonical_wt_path {
-                                return wt_canonical == *cwp;
-                            }
-                        }
-                        w.path == wt_path
-                    })
-                    .and_then(|w| w.branch);
-
-                let remove_result = operations::remove_worktree(repo_path, &wt_path);
-                let removed = remove_result.success;
-                results.push(remove_result);
-
-                if removed {
-                    if let Some(name) = branch_name {
-                        let delete_result = operations::delete_local(&repo, &name);
-                        if delete_result.success {
-                            locally_deleted.push(name);
-                        }
-                        results.push(delete_result);
-                    }
-                }
-            }
-            if action == BranchAction::WorktreeRemoveAndDeleteBranchRemote
-                && !locally_deleted.is_empty()
-            {
-                let _ = prog_tx.send(ProgressUpdate {
-                    completed: locally_deleted.len(),
-                    total,
-                    current_item: "Deleting remote branches...".into(),
-                });
-                results.extend(operations::delete_remotes_batch(
-                    repo_path,
-                    &locally_deleted,
-                    cancel_flag,
-                ));
-            }
-        }
-        BranchAction::Fetch | BranchAction::FetchPrune => {
-            let result = if action == BranchAction::FetchPrune {
-                operations::fetch_prune(repo_path, cancel_flag)
-            } else {
-                operations::fetch(repo_path, cancel_flag)
-            };
-            results.push(result);
-        }
-        BranchAction::ViewRemotePR => {
-            // Handled in execute_menu_action, shouldn't reach here
-        }
-    }
-
-    // Send final progress
-    let _ = prog_tx.send(ProgressUpdate {
-        completed: results.iter().filter(|r| r.success).count().min(total),
-        total,
-        current_item: "Done".to_string(),
-    });
-
-    results
 }
 
 /// Get branch prefix style: extract prefix before first '/' and look up color.
@@ -3848,7 +3545,7 @@ mod tests {
         assert_eq!(app.graph.commit_cursor(), 1);
     }
 
-    fn run_git(dir: &Path, args: &[&str]) {
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
         let output = Command::new("git")
             .args(args)
             .current_dir(dir)
@@ -3864,7 +3561,7 @@ mod tests {
         }
     }
 
-    fn run_git_with_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) {
+    fn run_git_with_env(dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]) {
         let output = Command::new("git")
             .args(args)
             .envs(env.iter().copied())
@@ -3945,15 +3642,30 @@ mod tests {
             ],
         );
 
-        let (tx, rx) = mpsc::channel();
-        app.op_rx = Some(rx);
-        tx.send(vec![OperationResult {
-            branch_name: branch_name.into(),
-            action: BranchAction::Rebase,
-            success: true,
-            message: "Rebased feature/rebase-refresh onto main".into(),
-        }])
-        .unwrap();
+        // Simulate having navigated to a different view while the job ran in
+        // the background -- completing it must not snap the user back.
+        app.active_view = ViewId::Worktrees;
+
+        let (op_tx, op_rx) = mpsc::channel();
+        let (_prog_tx, prog_rx) = mpsc::channel();
+        app.job_queue.inject_running_for_test(
+            git_branch_manager::job_queue::ActionJob {
+                action: BranchAction::Rebase,
+                targets: vec![branch_name.to_string()],
+                return_view: ViewId::Branches,
+            },
+            op_rx,
+            prog_rx,
+            Arc::new(AtomicBool::new(false)),
+        );
+        op_tx
+            .send(vec![OperationResult {
+                branch_name: branch_name.into(),
+                action: BranchAction::Rebase,
+                success: true,
+                message: "Rebased feature/rebase-refresh onto main".into(),
+            }])
+            .unwrap();
 
         app.drain_channels();
 
@@ -3968,7 +3680,15 @@ mod tests {
             Utc.with_ymd_and_hms(2001, 1, 3, 0, 0, 0).unwrap(),
             "branch metadata should refresh as soon as operation results arrive"
         );
-        assert!(matches!(app.overlay, Some(Overlay::Results { .. })));
+        assert_eq!(
+            app.active_view,
+            ViewId::Worktrees,
+            "completing a background job must not snap the user back to its view"
+        );
+        assert!(
+            app.overlay.is_none(),
+            "confirmed-action completion is non-modal"
+        );
     }
 
     #[test]
@@ -4306,125 +4026,7 @@ mod tests {
         assert_eq!(combo.reason.as_deref(), Some("base branch"));
     }
 
-    #[test]
-    fn execute_action_worktree_remove_and_delete_branch_local_only() {
-        let tmpdir = tempfile::tempdir().expect("temp repo");
-        let dir = tmpdir.path();
-        run_git(dir, &["init", "-b", "main"]);
-        run_git(dir, &["config", "user.email", "test@example.com"]);
-        run_git(dir, &["config", "user.name", "Test User"]);
-        std::fs::write(dir.join("README.md"), "base\n").unwrap();
-        run_git(dir, &["add", "README.md"]);
-        run_git(dir, &["commit", "-m", "initial"]);
-
-        run_git(dir, &["branch", "wt-branch-delete"]);
-        run_git(
-            dir,
-            &[
-                "worktree",
-                "add",
-                ".worktrees/wt-branch-delete",
-                "wt-branch-delete",
-            ],
-        );
-        let wt_path = dir.join(".worktrees").join("wt-branch-delete");
-        assert!(wt_path.exists());
-
-        let (prog_tx, _prog_rx) = mpsc::channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let results = execute_action(
-            BranchAction::WorktreeRemoveAndDeleteBranch,
-            &[wt_path.to_string_lossy().to_string()],
-            dir,
-            "main",
-            false,
-            &prog_tx,
-            &cancel,
-        );
-
-        assert!(results
-            .iter()
-            .any(|r| r.action == BranchAction::WorktreeRemove && r.success));
-        assert!(results
-            .iter()
-            .any(|r| r.action == BranchAction::DeleteLocal && r.success));
-        assert!(!wt_path.exists());
-
-        let repo = git2::Repository::open(dir).unwrap();
-        assert!(repo
-            .find_branch("wt-branch-delete", git2::BranchType::Local)
-            .is_err());
-    }
-
-    #[test]
-    fn execute_action_worktree_remove_and_delete_branch_remote() {
-        let base_tmp = tempfile::tempdir().expect("temp base dir");
-        let base_dir = base_tmp.path();
-
-        let remote_dir = base_dir.join("remote.git");
-        std::fs::create_dir_all(&remote_dir).unwrap();
-        run_git(&remote_dir, &["init", "--bare", "-b", "main"]);
-
-        run_git(base_dir, &["clone", remote_dir.to_str().unwrap(), "work"]);
-        let work_dir = base_dir.join("work");
-        run_git(&work_dir, &["config", "user.name", "Test User"]);
-        run_git(&work_dir, &["config", "user.email", "test@example.com"]);
-
-        std::fs::write(work_dir.join("README.md"), "# Test\n").unwrap();
-        run_git(&work_dir, &["add", "."]);
-        run_git(&work_dir, &["commit", "-m", "Initial commit"]);
-        run_git(&work_dir, &["push", "-u", "origin", "main"]);
-
-        run_git(&work_dir, &["checkout", "-b", "wt-remote-branch"]);
-        std::fs::write(work_dir.join("feature.txt"), "content\n").unwrap();
-        run_git(&work_dir, &["add", "feature.txt"]);
-        run_git(&work_dir, &["commit", "-m", "feature commit"]);
-        run_git(&work_dir, &["push", "-u", "origin", "wt-remote-branch"]);
-        run_git(&work_dir, &["checkout", "main"]);
-
-        run_git(
-            &work_dir,
-            &[
-                "worktree",
-                "add",
-                ".worktrees/wt-remote-branch",
-                "wt-remote-branch",
-            ],
-        );
-        let wt_path = work_dir.join(".worktrees").join("wt-remote-branch");
-        assert!(wt_path.exists());
-
-        let (prog_tx, _prog_rx) = mpsc::channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let results = execute_action(
-            BranchAction::WorktreeRemoveAndDeleteBranchRemote,
-            &[wt_path.to_string_lossy().to_string()],
-            &work_dir,
-            "main",
-            false,
-            &prog_tx,
-            &cancel,
-        );
-
-        assert!(results
-            .iter()
-            .any(|r| r.action == BranchAction::WorktreeRemove && r.success));
-        assert!(results
-            .iter()
-            .any(|r| r.action == BranchAction::DeleteLocal && r.success));
-        assert!(results
-            .iter()
-            .any(|r| r.action == BranchAction::DeleteRemoteBranch && r.success));
-        assert!(!wt_path.exists());
-
-        let repo = git2::Repository::open(&work_dir).unwrap();
-        assert!(repo
-            .find_branch("wt-remote-branch", git2::BranchType::Local)
-            .is_err());
-
-        run_git(&work_dir, &["fetch", "--prune"]);
-        assert!(repo
-            .find_branch("origin/wt-remote-branch", git2::BranchType::Remote)
-            .is_err());
-    }
+    // `execute_action`'s worktree-remove-and-delete-branch coverage moved to
+    // `job_queue.rs`'s own test module, since that's where the (now private)
+    // function lives.
 }

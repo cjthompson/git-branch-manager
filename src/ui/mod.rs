@@ -7,6 +7,7 @@ pub mod filter_ui;
 pub mod graph_render;
 pub mod help;
 pub mod info_modal;
+pub mod job_status;
 pub mod list_render;
 pub mod menu;
 pub mod render;
