@@ -854,16 +854,26 @@ fn execute_action_with_remote(
                 if cancel_flag.load(Ordering::Relaxed) {
                     break;
                 }
-                let _ = prog_tx.send(ProgressUpdate {
-                    completed: i,
-                    total,
-                    current_item: path_str.clone(),
-                });
                 let wt_path = PathBuf::from(path_str);
+                let partial_delete_risk = AtomicBool::new(false);
                 let result = if force {
-                    operations::force_remove_worktree(repo_path, &wt_path)
+                    operations::force_remove_worktree(
+                        repo_path,
+                        &wt_path,
+                        (i, total),
+                        prog_tx,
+                        cancel_flag,
+                        &partial_delete_risk,
+                    )
                 } else {
-                    operations::remove_worktree(repo_path, &wt_path)
+                    operations::remove_worktree(
+                        repo_path,
+                        &wt_path,
+                        (i, total),
+                        prog_tx,
+                        cancel_flag,
+                        &partial_delete_risk,
+                    )
                 };
                 results.push(result);
             }
@@ -894,11 +904,6 @@ fn execute_action_with_remote(
                     });
                     break;
                 }
-                let _ = prog_tx.send(ProgressUpdate {
-                    completed: i,
-                    total,
-                    current_item: path_str.clone(),
-                });
 
                 let wt_path = PathBuf::from(path_str);
                 let canonical_wt_path = std::fs::canonicalize(&wt_path).ok();
@@ -919,7 +924,15 @@ fn execute_action_with_remote(
                     })
                     .and_then(|w| w.branch);
 
-                let remove_result = operations::remove_worktree(repo_path, &wt_path);
+                let partial_delete_risk = AtomicBool::new(false);
+                let remove_result = operations::remove_worktree(
+                    repo_path,
+                    &wt_path,
+                    (i, total),
+                    prog_tx,
+                    cancel_flag,
+                    &partial_delete_risk,
+                );
                 let removed = remove_result.success;
                 results.push(remove_result);
 

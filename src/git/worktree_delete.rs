@@ -1,11 +1,10 @@
 //! Standalone helpers for deleting a worktree's files on disk and cleaning up
 //! git's admin metadata for it afterward.
 //!
-//! This module is intentionally *not* wired into `git::operations` or
-//! `git::mod` yet -- it's groundwork for a later task that will use it to
-//! give worktree deletion real progress reporting and cancellation (unlike
-//! today's `git worktree remove [--force]`, which is a single opaque git
-//! CLI call with no per-file feedback).
+//! Used by `git::operations::remove_worktree`/`force_remove_worktree`, which
+//! orchestrate these primitives to give worktree deletion real progress
+//! reporting and cancellation (unlike `git worktree remove [--force]`, which
+//! is a single opaque git CLI call with no per-file feedback).
 //!
 //! ## Why not `std::fs::remove_dir_all`?
 //!
