@@ -139,6 +139,11 @@
 - Info modal: tab to switch focus between INFO and ACTIONS; arrow keys navigate INFO items; enter/y copies value to clipboard (#ui, #modal, #keyboard)
 - Add 'in sync' status for branches that exactly match base (#ui, #merge-detection)
 
+## 2026-07-21
+
+### Tasks
+- Add src/git/worktree_delete.rs: count_files, delete_recursive, find_worktree_for_path, prune_admin (#worktrees, #progress-bar)
+
 ## 2026-07-17
 
 ### Tasks
