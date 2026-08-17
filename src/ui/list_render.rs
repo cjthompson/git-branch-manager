@@ -191,9 +191,8 @@ pub fn render_list_view<T: ViewItem>(
     // (Worktrees' first column). Matching by name — not column index — means
     // moving another column ahead of the stretchy column won't silently
     // change which column claims the priority width.
-    let is_stretchy = |col: &ColumnDef<T>| -> bool {
-        matches!(col.name, "Branch" | "Name" | "Path")
-    };
+    let is_stretchy =
+        |col: &ColumnDef<T>| -> bool { matches!(col.name, "Branch" | "Name" | "Path") };
 
     // Give the stretchy column priority via a staged compaction ladder
     // (BL-022 stage 1) instead of flipping every fixed column between wide
@@ -205,8 +204,7 @@ pub fn render_list_view<T: ViewItem>(
     // direct arithmetic instead of resolving a trial `Layout`.
     let ladder_columns: Vec<LadderColumn> = visible_columns
         .iter()
-        .enumerate()
-        .map(|(_i, col)| LadderColumn {
+        .map(|col| LadderColumn {
             key: col.key,
             min_width: col.min_width,
             wide_width: col.wide_width,
@@ -217,7 +215,7 @@ pub fn render_list_view<T: ViewItem>(
     let level = resolve_ladder_level(&ladder_columns, area.width, available);
 
     let mut widths: Vec<Constraint> = vec![Constraint::Length(3)]; // checkbox
-    for (_i, col) in visible_columns.iter().enumerate() {
+    for col in visible_columns.iter() {
         let col_width = if demoted_at_level(col.key, level) {
             col.min_width
         } else {
@@ -334,9 +332,9 @@ pub fn render_list_view<T: ViewItem>(
     // Build block with tab bar title
     let tab_title = tab_bar_line(params.active_view, theme);
     let block = Block::default()
-            .title(tab_title)
-            .title_top(Line::from(format!(" v{VERSION} ")).right_aligned())
-            .borders(Borders::ALL);
+        .title(tab_title)
+        .title_top(Line::from(format!(" v{VERSION} ")).right_aligned())
+        .borders(Borders::ALL);
 
     // Store header column positions for mouse click sorting
     {
@@ -400,7 +398,7 @@ mod tests {
     // Branch (stretchy) + Up (no compact form) + A/B + PR + Age + Merge.
     fn branches_like_columns() -> Vec<LadderColumn> {
         vec![
-            col("name", 15, None, true),           // Branch (stretchy)
+            col("name", 15, None, true),            // Branch (stretchy)
             col("remote", 4, None, false),          // Up (no wide form)
             col("ahead_behind", 3, Some(8), false), // A/B
             col("pr", 2, Some(9), false),           // PR

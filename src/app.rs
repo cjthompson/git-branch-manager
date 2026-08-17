@@ -12,7 +12,7 @@ use ratatui::Terminal;
 
 use git_branch_manager::config::Config;
 use git_branch_manager::git::{
-    branch, cache, diagnostics, operations, pr_loader, squash_loader, tags, worktree,
+    branch, cache, diagnostics, graph, operations, pr_loader, squash_loader, tags, worktree,
 };
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::theme::Theme;
@@ -30,6 +30,7 @@ use git_branch_manager::ui::toast::Toast;
 use git_branch_manager::view::branches::BranchesViewDef;
 use git_branch_manager::view::column::ColumnDef;
 use git_branch_manager::view::filter::{FilterSet, FilterTokenDef};
+use git_branch_manager::view::graph::GraphState;
 use git_branch_manager::view::list_state::{self, ListState};
 use git_branch_manager::view::remotes::RemotesViewDef;
 use git_branch_manager::view::sort_keys;
@@ -40,7 +41,11 @@ use git_branch_manager::view::ViewId;
 /// Messages sent by the background phase-1 thread.
 pub enum Phase1Msg {
     /// Fast path: branch list + caches. Sent before merge detection.
-    Fast(Vec<BranchInfo>, cache::BranchCache, cache::BranchCache),
+    Fast(
+        Vec<BranchInfo>,
+        Box<cache::BranchCache>,
+        Box<cache::BranchCache>,
+    ),
     /// Slow path: per-branch merge status updates, sent after detect_merged_branches.
     MergeStatuses(Vec<(String, MergeStatus)>),
     /// Ahead/behind counts for tracked non-gone branches, sent after Fast.
@@ -58,8 +63,9 @@ pub struct App {
     pub symbols: SymbolSet,
     pub should_exit: bool,
 
-    // View state -- 4 peers
+    // View state -- 5 peers
     pub active_view: ViewId,
+    pub graph: GraphState,
     pub branches: ListState<BranchInfo>,
     pub remotes: ListState<RemoteBranchInfo>,
     pub tags: ListState<TagInfo>,
@@ -106,6 +112,7 @@ pub struct App {
         )>,
     >,
     pub phase1_rx: Option<Receiver<Phase1Msg>>,
+    pub graph_rx: Option<Receiver<Result<graph::GraphSnapshot, graph::GraphLoadError>>>,
 
     // Cache (used for R-key cache clearing)
     #[allow(dead_code)]
@@ -216,16 +223,24 @@ impl App {
         let tag_cols = tag_def.columns();
         let worktree_cols = worktree_def.columns();
 
-        let branch_sort_col = config.sort_column_branches.as_deref()
+        let branch_sort_col = config
+            .sort_column_branches
+            .as_deref()
             .and_then(|k| sort_keys::index_for_key(&branch_cols, k));
         let branch_sort_asc = config.sort_asc_branches.unwrap_or(true);
-        let remote_sort_col = config.sort_column_remotes.as_deref()
+        let remote_sort_col = config
+            .sort_column_remotes
+            .as_deref()
             .and_then(|k| sort_keys::index_for_key(&remote_cols, k));
         let remote_sort_asc = config.sort_asc_remotes.unwrap_or(true);
-        let tag_sort_col = config.sort_column_tags.as_deref()
+        let tag_sort_col = config
+            .sort_column_tags
+            .as_deref()
             .and_then(|k| sort_keys::index_for_key(&tag_cols, k));
         let tag_sort_asc = config.sort_asc_tags.unwrap_or(true);
-        let worktree_sort_col = config.sort_column_worktrees.as_deref()
+        let worktree_sort_col = config
+            .sort_column_worktrees
+            .as_deref()
             .and_then(|k| sort_keys::index_for_key(&worktree_cols, k));
         let worktree_sort_asc = config.sort_asc_worktrees.unwrap_or(true);
 
@@ -256,7 +271,8 @@ impl App {
             theme,
             symbols,
             should_exit: false,
-            active_view: ViewId::Branches,
+            active_view: ViewId::Graph,
+            graph: GraphState::new(),
             branches: branch_state,
             remotes: remote_state,
             tags: tag_state,
@@ -288,6 +304,7 @@ impl App {
             worktree_load_rx: None,
             remote_load_rx: None,
             phase1_rx: None,
+            graph_rx: None,
             cache,
             toast: None,
             cancel_flag: None,
@@ -366,6 +383,7 @@ impl App {
 
     fn build_render_context(&mut self) -> RenderContext<'_> {
         let active_filter_tokens: &[FilterTokenDef] = match self.active_view {
+            ViewId::Graph => &[],
             ViewId::Branches => &self.branch_filter_tokens,
             ViewId::Remotes => &self.remote_filter_tokens,
             ViewId::Tags => &self.tag_filter_tokens,
@@ -381,6 +399,7 @@ impl App {
             config: &self.config,
             info_copied_msg: self.info_copied_msg.as_deref(),
             info_hit_regions: &mut self.info_hit_regions,
+            graph: &mut self.graph,
             branches: &mut self.branches,
             remotes: &mut self.remotes,
             tags: &mut self.tags,
@@ -402,11 +421,16 @@ impl App {
     fn drain_channels(&mut self) -> bool {
         let mut dirty = false;
 
+        for result in drain_channel(&mut self.graph_rx, 1, &mut dirty) {
+            self.graph.apply_result(result);
+            self.clear_toast();
+        }
+
         // Phase-1 messages (fast metadata first, merge statuses second)
         for msg in drain_channel(&mut self.phase1_rx, 2, &mut dirty) {
             match msg {
                 Phase1Msg::Fast(branches, cache_for_app, _cache_for_squash) => {
-                    self.cache = cache_for_app;
+                    self.cache = *cache_for_app;
                     self.branches.set_items(branches);
                     self.branches.loading = false;
                     list_state::apply_sort(&mut self.branches, &self.branch_columns);
@@ -774,6 +798,7 @@ impl App {
             }
             KeyCode::Char('Y') => {
                 self.symbols = self.symbols.next();
+                self.reload_graph_for_symbol_change();
                 self.save_config();
                 return;
             }
@@ -810,6 +835,11 @@ impl App {
             _ => {}
         }
 
+        if self.active_view == ViewId::Graph {
+            self.handle_graph_key(key);
+            return;
+        }
+
         // Common navigation/selection keys (work in every view)
         if self.handle_common_list_key(key) {
             return;
@@ -817,6 +847,9 @@ impl App {
 
         // View-specific keys
         match self.active_view {
+            ViewId::Graph => {
+                self.handle_graph_key(key);
+            }
             ViewId::Branches => self.handle_branches_key(key),
             ViewId::Remotes => self.handle_remotes_key(key),
             ViewId::Tags => self.handle_tags_key(key),
@@ -834,6 +867,7 @@ impl App {
                     ViewId::Remotes => $op(&mut self.remotes),
                     ViewId::Tags => $op(&mut self.tags),
                     ViewId::Worktrees => $op(&mut self.worktrees),
+                    ViewId::Graph => {}
                 }
             };
         }
@@ -921,6 +955,23 @@ impl App {
                 self.active_view = ViewId::Worktrees;
                 self.ensure_view_loaded();
             }
+            _ => {}
+        }
+    }
+
+    fn handle_graph_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('h') | KeyCode::Left => self.graph.focus_left(),
+            KeyCode::Char('l') | KeyCode::Right => self.graph.focus_right(),
+            KeyCode::Char('j') | KeyCode::Down => self.graph.move_down(),
+            KeyCode::Char('k') | KeyCode::Up => self.graph.move_up(),
+            KeyCode::PageDown => self.graph.page_down(),
+            KeyCode::PageUp => self.graph.page_up(),
+            KeyCode::Home | KeyCode::Char('g') => self.graph.home(),
+            KeyCode::End | KeyCode::Char('G') => self.graph.end(),
+            KeyCode::Char('L') => self.load_older_graph(),
+            KeyCode::Char('o') => self.open_graph_options(),
+            KeyCode::Char('r') => self.reload_graph(),
             _ => {}
         }
     }
@@ -1199,6 +1250,44 @@ impl App {
             Some(Overlay::Filter) => {
                 self.handle_filter_key(key);
             }
+            Some(Overlay::GraphOptions {
+                cursor,
+                include_remotes,
+            }) => match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.overlay = Some(Overlay::GraphOptions {
+                        cursor: (cursor + 1).min(1),
+                        include_remotes,
+                    });
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.overlay = Some(Overlay::GraphOptions {
+                        cursor: cursor.saturating_sub(1),
+                        include_remotes,
+                    });
+                }
+                KeyCode::Char(' ') => {
+                    self.overlay = Some(Overlay::GraphOptions {
+                        cursor,
+                        include_remotes: !include_remotes,
+                    });
+                }
+                KeyCode::Enter => {
+                    if cursor == 0 {
+                        self.reload_graph_with_remotes(include_remotes);
+                    } else {
+                        self.graph.set_include_remotes(include_remotes);
+                        self.load_older_graph();
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {}
+                _ => {
+                    self.overlay = Some(Overlay::GraphOptions {
+                        cursor,
+                        include_remotes,
+                    });
+                }
+            },
             Some(Overlay::Diagnostics { cursor }) => {
                 let count = DiagnosticAction::ALL.len();
                 match key.code {
@@ -1268,6 +1357,7 @@ impl App {
                 match cursor {
                     0 => {
                         self.symbols = self.symbols.next();
+                        self.reload_graph_for_symbol_change();
                     }
                     1 => {
                         self.theme = self.theme.next();
@@ -1302,6 +1392,7 @@ impl App {
                         // backward = next() twice (3-cycle)
                         self.symbols = self.symbols.next();
                         self.symbols = self.symbols.next();
+                        self.reload_graph_for_symbol_change();
                     }
                     1 => {
                         // backward = next() 3 times (4-cycle)
@@ -1344,6 +1435,7 @@ impl App {
 
     fn handle_filter_key(&mut self, key: KeyEvent) {
         let active_tokens = match self.active_view {
+            ViewId::Graph => &[] as &[FilterTokenDef],
             ViewId::Branches => &self.branch_filter_tokens,
             ViewId::Remotes => &self.remote_filter_tokens,
             ViewId::Tags => &self.tag_filter_tokens,
@@ -1379,6 +1471,7 @@ impl App {
 
     fn is_search_active(&self) -> bool {
         match self.active_view {
+            ViewId::Graph => false,
             ViewId::Branches => self.branches.search_active(),
             ViewId::Remotes => self.remotes.search_active(),
             ViewId::Tags => self.tags.search_active(),
@@ -1388,6 +1481,7 @@ impl App {
 
     fn toggle_search(&mut self) {
         match self.active_view {
+            ViewId::Graph => {}
             ViewId::Branches => self.branches.set_search_active(true),
             ViewId::Remotes => self.remotes.set_search_active(true),
             ViewId::Tags => self.tags.set_search_active(true),
@@ -1421,6 +1515,7 @@ impl App {
             };
         }
         match self.active_view {
+            ViewId::Graph => {}
             ViewId::Branches => with_state!(self.branches, key.code),
             ViewId::Remotes => with_state!(self.remotes, key.code),
             ViewId::Tags => with_state!(self.tags, key.code),
@@ -1449,6 +1544,7 @@ impl App {
                 macro_rules! with_state {
                     ($op:expr) => {
                         match self.active_view {
+                            ViewId::Graph => self.graph.move_down(),
                             ViewId::Branches => $op(&mut self.branches),
                             ViewId::Remotes => $op(&mut self.remotes),
                             ViewId::Tags => $op(&mut self.tags),
@@ -1462,6 +1558,7 @@ impl App {
                 macro_rules! with_state {
                     ($op:expr) => {
                         match self.active_view {
+                            ViewId::Graph => self.graph.move_up(),
                             ViewId::Branches => $op(&mut self.branches),
                             ViewId::Remotes => $op(&mut self.remotes),
                             ViewId::Tags => $op(&mut self.tags),
@@ -1509,6 +1606,7 @@ impl App {
             let clicked_col = self.find_header_click(x);
             if let Some(col) = clicked_col {
                 match self.active_view {
+                    ViewId::Graph => {}
                     ViewId::Branches => list_state::sort_by_column_click(
                         &mut self.branches,
                         &self.branch_columns,
@@ -1532,6 +1630,7 @@ impl App {
         } else if self.terminal_rows > 0 && y == self.terminal_rows - 1 {
             // Status bar click
             let items = match self.active_view {
+                ViewId::Graph => Vec::new(),
                 ViewId::Branches => self.branches.status_bar_items.clone(),
                 ViewId::Remotes => self.remotes.status_bar_items.clone(),
                 ViewId::Tags => self.tags.status_bar_items.clone(),
@@ -1556,6 +1655,7 @@ impl App {
                 }};
             }
             match self.active_view {
+                ViewId::Graph => {}
                 ViewId::Branches => click_row!(self.branches),
                 ViewId::Remotes => click_row!(self.remotes),
                 ViewId::Tags => click_row!(self.tags),
@@ -1566,6 +1666,7 @@ impl App {
 
     fn find_header_click(&self, x: u16) -> Option<usize> {
         let header_columns = match self.active_view {
+            ViewId::Graph => &[] as &[(u16, usize)],
             ViewId::Branches => &self.branches.header_columns,
             ViewId::Remotes => &self.remotes.header_columns,
             ViewId::Tags => &self.tags.header_columns,
@@ -1607,6 +1708,7 @@ impl App {
         }
 
         let moved = match self.active_view {
+            ViewId::Graph => false,
             ViewId::Branches => move_cursor!(self.branches),
             ViewId::Remotes => move_cursor!(self.remotes),
             ViewId::Tags => move_cursor!(self.tags),
@@ -1642,6 +1744,7 @@ impl App {
 
     fn build_menu_items(&self) -> Vec<MenuItem> {
         match self.active_view {
+            ViewId::Graph => vec![],
             ViewId::Branches => self.build_branch_menu(),
             ViewId::Remotes => self.build_remote_menu(),
             ViewId::Tags => self.build_tag_menu(),
@@ -1651,6 +1754,7 @@ impl App {
 
     fn build_info_modal_row(&self) -> Option<InfoModalRow> {
         match self.active_view {
+            ViewId::Graph => None,
             ViewId::Branches => self
                 .branches
                 .cursor_item()
@@ -2033,6 +2137,11 @@ impl App {
     /// Get target name(s) for a single-item action from the context menu
     fn get_cursor_targets(&self, _action: BranchAction) -> Vec<String> {
         match self.active_view {
+            ViewId::Graph => self
+                .graph
+                .selected_sidebar_ref()
+                .map(|(reference, _)| vec![reference.name.clone()])
+                .unwrap_or_default(),
             ViewId::Branches => self
                 .branches
                 .cursor_item()
@@ -2079,7 +2188,8 @@ impl App {
         self.pending_targets = item_names.clone();
 
         std::thread::spawn(move || {
-            let needs_stash = !crate::git::status::detect_working_tree_status(&repo_path).is_clean();
+            let needs_stash =
+                !crate::git::status::detect_working_tree_status(&repo_path).is_clean();
             let results = execute_action(
                 action,
                 &item_names,
@@ -2163,6 +2273,7 @@ impl App {
 
     fn cycle_sort(&mut self) {
         match self.active_view {
+            ViewId::Graph => {}
             ViewId::Branches => {
                 list_state::cycle_sort_and_apply(&mut self.branches, &self.branch_columns)
             }
@@ -2179,6 +2290,7 @@ impl App {
 
     fn toggle_sort_direction(&mut self) {
         match self.active_view {
+            ViewId::Graph => {}
             ViewId::Branches => list_state::toggle_sort_direction_and_apply(
                 &mut self.branches,
                 &self.branch_columns,
@@ -2201,6 +2313,9 @@ impl App {
 
     fn ensure_view_loaded(&mut self) {
         match self.active_view {
+            ViewId::Graph if self.graph.snapshot().is_none() && !self.graph.is_loading() => {
+                self.spawn_graph_load(self.graph.max_count(), self.graph.includes_remotes());
+            }
             ViewId::Tags if self.tags.items().is_empty() && !self.tags.loading => {
                 self.spawn_tag_load();
             }
@@ -2216,6 +2331,46 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn spawn_graph_load(&mut self, max_count: usize, include_remotes: bool) {
+        self.graph.begin_load(max_count, include_remotes);
+        self.graph_rx = Some(graph::spawn_graph_loader(
+            self.repo_path.clone(),
+            graph::GraphLoadOptions {
+                max_count,
+                include_remotes,
+                line_style: graph::GraphLineStyle::from_symbol_name(self.symbols.name),
+            },
+        ));
+        self.toast = Some(Toast::new("Loading graph...".into(), 300));
+    }
+
+    fn reload_graph_for_symbol_change(&mut self) {
+        if self.graph.snapshot().is_some() || self.graph.is_loading() {
+            self.spawn_graph_load(self.graph.max_count(), self.graph.includes_remotes());
+        }
+    }
+
+    fn reload_graph(&mut self) {
+        self.spawn_graph_load(self.graph.max_count(), self.graph.includes_remotes());
+    }
+
+    fn reload_graph_with_remotes(&mut self, include_remotes: bool) {
+        self.spawn_graph_load(self.graph.max_count(), include_remotes);
+    }
+
+    fn load_older_graph(&mut self) {
+        let max_count = self.graph.load_older_history();
+        self.spawn_graph_load(max_count, self.graph.includes_remotes());
+    }
+
+    fn open_graph_options(&mut self) {
+        self.return_view = ViewId::Graph;
+        self.overlay = Some(Overlay::GraphOptions {
+            cursor: 0,
+            include_remotes: self.graph.includes_remotes(),
+        });
     }
 
     fn spawn_tag_load(&mut self) {
@@ -2364,6 +2519,10 @@ impl App {
 
     fn refresh_after_operation(&mut self) {
         match self.return_view {
+            ViewId::Graph => {
+                self.reload_graph();
+                self.active_view = ViewId::Graph;
+            }
             ViewId::Branches => {
                 self.refresh_branches("post_operation");
                 self.active_view = ViewId::Branches;
@@ -2488,17 +2647,29 @@ impl App {
     }
 
     fn save_sort_config_only(&mut self) {
-        self.config.sort_column_branches = self.branches.sort_column()
-            .and_then(|i| sort_keys::key_for_index(&self.branch_columns, i)).map(str::to_string);
+        self.config.sort_column_branches = self
+            .branches
+            .sort_column()
+            .and_then(|i| sort_keys::key_for_index(&self.branch_columns, i))
+            .map(str::to_string);
         self.config.sort_asc_branches = Some(self.branches.sort_ascending());
-        self.config.sort_column_remotes = self.remotes.sort_column()
-            .and_then(|i| sort_keys::key_for_index(&self.remote_columns, i)).map(str::to_string);
+        self.config.sort_column_remotes = self
+            .remotes
+            .sort_column()
+            .and_then(|i| sort_keys::key_for_index(&self.remote_columns, i))
+            .map(str::to_string);
         self.config.sort_asc_remotes = Some(self.remotes.sort_ascending());
-        self.config.sort_column_tags = self.tags.sort_column()
-            .and_then(|i| sort_keys::key_for_index(&self.tag_columns, i)).map(str::to_string);
+        self.config.sort_column_tags = self
+            .tags
+            .sort_column()
+            .and_then(|i| sort_keys::key_for_index(&self.tag_columns, i))
+            .map(str::to_string);
         self.config.sort_asc_tags = Some(self.tags.sort_ascending());
-        self.config.sort_column_worktrees = self.worktrees.sort_column()
-            .and_then(|i| sort_keys::key_for_index(&self.worktree_columns, i)).map(str::to_string);
+        self.config.sort_column_worktrees = self
+            .worktrees
+            .sort_column()
+            .and_then(|i| sort_keys::key_for_index(&self.worktree_columns, i))
+            .map(str::to_string);
         self.config.sort_asc_worktrees = Some(self.worktrees.sort_ascending());
     }
 
@@ -2506,6 +2677,7 @@ impl App {
     /// direction of the cycle (Right/Left in settings).
     fn cycle_view_sort(&mut self, view: ViewId, forward: bool) {
         match view {
+            ViewId::Graph => {}
             ViewId::Branches => {
                 let pairs = sort_keys::sort_state_cycle(&self.branch_columns);
                 let current = (self.branches.sort_column(), self.branches.sort_ascending());
@@ -2550,7 +2722,10 @@ impl App {
             }
             ViewId::Worktrees => {
                 let pairs = sort_keys::sort_state_cycle(&self.worktree_columns);
-                let current = (self.worktrees.sort_column(), self.worktrees.sort_ascending());
+                let current = (
+                    self.worktrees.sort_column(),
+                    self.worktrees.sort_ascending(),
+                );
                 let cur_pos = pairs.iter().position(|&p| p == current).unwrap_or(0);
                 let len = pairs.len();
                 let next_pos = if forward {
@@ -2569,6 +2744,7 @@ impl App {
 
     fn active_filter_query(&self) -> String {
         match self.active_view {
+            ViewId::Graph => String::new(),
             ViewId::Branches => self.branches.filter_query().to_string(),
             ViewId::Remotes => self.remotes.filter_query().to_string(),
             ViewId::Tags => self.tags.filter_query().to_string(),
@@ -2578,6 +2754,7 @@ impl App {
 
     fn set_active_filter(&mut self, query: String) {
         match self.active_view {
+            ViewId::Graph => {}
             ViewId::Branches => self.branches.set_filter_query(query),
             ViewId::Remotes => self.remotes.set_filter_query(query),
             ViewId::Tags => self.tags.set_filter_query(query),
@@ -2764,7 +2941,10 @@ fn execute_action(
         }
         BranchAction::DeleteRemoteBranch => {
             results.extend(operations::delete_remotes_with_progress(
-                repo_path, item_names, prog_tx, cancel_flag,
+                repo_path,
+                item_names,
+                prog_tx,
+                cancel_flag,
             ));
         }
         BranchAction::DeleteRemoteAndLocal => {
@@ -3262,6 +3442,159 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    #[test]
+    fn graph_options_overlay_applies_remote_refs() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.active_view = ViewId::Graph;
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('o'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::GraphOptions {
+                cursor: 0,
+                include_remotes: false
+            })
+        ));
+
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Char(' '),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(app.graph.includes_remotes());
+        assert!(app.graph.is_loading());
+        assert!(app.graph_rx.is_some());
+    }
+
+    #[test]
+    fn app_starts_on_graph_tab() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+
+        assert_eq!(app.active_view, ViewId::Graph);
+    }
+
+    #[test]
+    fn graph_load_older_control_reloads_with_next_page() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.active_view = ViewId::Graph;
+        assert_eq!(app.graph.max_count(), 500);
+
+        app.handle_graph_key(KeyEvent::new(
+            KeyCode::Char('L'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.graph.max_count(), 1000);
+        assert!(app.graph.is_loading());
+        assert!(app.graph_rx.is_some());
+    }
+
+    #[test]
+    fn graph_result_clears_loading_toast() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.graph.begin_load(500, false);
+        app.toast = Some(Toast::new("Loading graph...".into(), 300));
+
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(graph::GraphSnapshot {
+            source: graph::GraphSource::Gleisbau,
+            commits: vec![],
+            lines: vec![],
+            sidebar: graph::GraphSidebar::default(),
+            max_count: 500,
+            includes_remotes: false,
+        }))
+        .expect("send graph result");
+        app.graph_rx = Some(rx);
+
+        app.drain_channels();
+
+        assert!(!app.graph.is_loading());
+        assert!(app.toast.is_none());
+    }
+
+    #[test]
+    fn graph_navigation_keys_bypass_generic_table_handler() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.active_view = ViewId::Graph;
+        app.graph.apply_result(Ok(graph::GraphSnapshot {
+            source: graph::GraphSource::Gleisbau,
+            commits: vec![
+                graph::GraphCommit {
+                    oid: "1111111111111111111111111111111111111111".into(),
+                    summary: "first".into(),
+                    parents: vec![],
+                    lane: Some(0),
+                    refs: vec![],
+                },
+                graph::GraphCommit {
+                    oid: "2222222222222222222222222222222222222222".into(),
+                    summary: "second".into(),
+                    parents: vec![],
+                    lane: Some(0),
+                    refs: vec![],
+                },
+            ],
+            lines: vec![
+                graph::GraphLine {
+                    graph: "*".into(),
+                    commit_index: Some(0),
+                },
+                graph::GraphLine {
+                    graph: "*".into(),
+                    commit_index: Some(1),
+                },
+            ],
+            sidebar: graph::GraphSidebar::default(),
+            max_count: 500,
+            includes_remotes: false,
+        }));
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.graph.commit_cursor(), 1);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('l'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(
+            app.graph.focus(),
+            git_branch_manager::view::graph::GraphPane::Sidebar
+        );
     }
 
     fn run_git(dir: &Path, args: &[&str]) {

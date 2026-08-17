@@ -2,6 +2,7 @@ pub mod branch;
 pub mod cache;
 pub mod diagnostics;
 pub mod github;
+pub mod graph;
 pub mod merge_detection;
 pub mod operations;
 pub mod pr_loader;

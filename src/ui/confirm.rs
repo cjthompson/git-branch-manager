@@ -69,10 +69,17 @@ pub fn draw_confirm(
     // Expand width to fit the longest content line, avoiding mid-word wraps.
     let content_max_width = lines
         .iter()
-        .map(|l: &Line| l.spans.iter().map(|s| s.content.chars().count()).sum::<usize>())
+        .map(|l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum::<usize>()
+        })
         .max()
         .unwrap_or(0) as u16;
-    let width = (content_max_width + 4).max(40).min(area.width.saturating_sub(2));
+    let width = (content_max_width + 4)
+        .max(40)
+        .min(area.width.saturating_sub(2));
 
     // Simulate wrapping at the actual inner width so the height accounts for
     // any lines that still wrap (e.g. very long paths in narrow terminals).
@@ -81,7 +88,11 @@ pub fn draw_confirm(
         .iter()
         .map(|l| {
             let chars: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
-            if chars == 0 { 1 } else { chars.div_ceil(inner_width.max(1)) }
+            if chars == 0 {
+                1
+            } else {
+                chars.div_ceil(inner_width.max(1))
+            }
         })
         .sum();
     let content_height = (wrapped_height as u16) + 2; // +2 for borders

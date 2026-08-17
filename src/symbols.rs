@@ -7,6 +7,14 @@ pub struct SymbolSet {
     pub arrow_up: &'static str,
     pub arrow_down: &'static str,
     pub current_branch: &'static str,
+    /// Marker for an ordinary commit in the Graph tab.
+    pub graph_commit: &'static str,
+    /// Marker for a merge commit in the Graph tab.
+    pub graph_merge: &'static str,
+    /// Left-facing merge connector used by the Powerline graph renderer.
+    pub graph_arrow_left: &'static str,
+    /// Right-facing merge connector used by the graph renderer.
+    pub graph_arrow_right: &'static str,
     pub status_merged: &'static str,
     pub status_in_sync: &'static str,
     pub status_squash_merged: &'static str,
@@ -35,6 +43,10 @@ impl SymbolSet {
             arrow_up: "+",
             arrow_down: "-",
             current_branch: "*",
+            graph_commit: "o",
+            graph_merge: "+",
+            graph_arrow_left: "<",
+            graph_arrow_right: ">",
             status_merged: "+",
             status_in_sync: "=",
             status_squash_merged: "~",
@@ -56,6 +68,10 @@ impl SymbolSet {
             arrow_up: "\u{2191}",             // up arrow
             arrow_down: "\u{2193}",           // down arrow
             current_branch: "\u{25cf}",       // black circle
+            graph_commit: "\u{25cf}",         // black circle
+            graph_merge: "\u{25cb}",          // white circle
+            graph_arrow_left: "\u{25c0}",     // black left-pointing triangle
+            graph_arrow_right: "\u{25b6}",    // black right-pointing triangle
             status_merged: "\u{2714}",        // heavy check mark
             status_in_sync: "\u{2261}",       // identical to (≡)
             status_squash_merged: "\u{2248}", // almost equal to
@@ -77,6 +93,10 @@ impl SymbolSet {
             arrow_up: "\u{f062}",             // nerd font arrow-up
             arrow_down: "\u{f063}",           // nerd font arrow-down
             current_branch: "\u{e0a0}",       // powerline branch
+            graph_commit: "\u{25cf}",         // medium filled circle
+            graph_merge: "\u{f407}",          // nerd font git-merge
+            graph_arrow_left: "\u{25c0}",     // black left-pointing triangle
+            graph_arrow_right: "\u{25b6}",    // black right-pointing triangle
             status_merged: "\u{f126}",        // nerd font code-fork (merged)
             status_in_sync: "\u{f441}",       // nerd font nf-dev-equals
             status_squash_merged: "\u{25cf}", // solid circle (squash-merged)
@@ -154,6 +174,13 @@ mod tests {
     fn from_name_powerline() {
         let s = SymbolSet::from_name("powerline");
         assert_eq!(s.name, "powerline");
+    }
+
+    #[test]
+    fn powerline_graph_commit_is_a_compact_filled_circle() {
+        let s = SymbolSet::powerline();
+        assert_eq!(s.graph_commit, "\u{25cf}");
+        assert_eq!(s.graph_merge, "\u{f407}");
     }
 
     #[test]

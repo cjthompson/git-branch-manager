@@ -12,6 +12,7 @@ use crate::theme::Theme;
 use crate::types::*;
 use crate::view::column::ColumnDef;
 use crate::view::filter::FilterTokenDef;
+use crate::view::graph::GraphState;
 use crate::view::list_state::ListState;
 use crate::view::ViewId;
 use crate::view::ViewItem;
@@ -20,6 +21,7 @@ use super::confirm::draw_confirm;
 use super::diagnostics::{draw_diagnostics_menu, draw_diagnostics_report};
 use super::executing::draw_executing;
 use super::filter_ui::draw_filter;
+use super::graph_render::{draw_graph_options, render_graph_view};
 use super::help::draw_help;
 use super::info_modal::{draw_info_modal, InfoHitRegion, InfoModalRow};
 use super::list_render::{ListRenderParams, RowRenderer};
@@ -58,6 +60,10 @@ pub enum Overlay {
         cursor: usize,
     },
     Filter,
+    GraphOptions {
+        cursor: usize,
+        include_remotes: bool,
+    },
     /// Diagnostics menu: pick a debugging tool to run.
     Diagnostics {
         cursor: usize,
@@ -86,6 +92,7 @@ pub struct RenderContext<'a> {
     pub remotes: &'a mut ListState<RemoteBranchInfo>,
     pub tags: &'a mut ListState<TagInfo>,
     pub worktrees: &'a mut ListState<WorktreeInfo>,
+    pub graph: &'a mut GraphState,
     // Column definitions
     pub branch_columns: &'a [ColumnDef<BranchInfo>],
     pub remote_columns: &'a [ColumnDef<RemoteBranchInfo>],
@@ -116,6 +123,9 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
 
     // Render active view's list
     match ctx.active_view {
+        ViewId::Graph => {
+            render_graph_view(frame, main_area, ctx.graph, ctx.theme, ctx.symbols);
+        }
         ViewId::Branches => {
             let mut params = ListRenderParams {
                 state: ctx.branches,
@@ -164,18 +174,21 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
 
     // Render status bar (search, filter indicator, or normal)
     let search_active = match ctx.active_view {
+        ViewId::Graph => false,
         ViewId::Branches => ctx.branches.search_active(),
         ViewId::Remotes => ctx.remotes.search_active(),
         ViewId::Tags => ctx.tags.search_active(),
         ViewId::Worktrees => ctx.worktrees.search_active(),
     };
     let search_query = match ctx.active_view {
+        ViewId::Graph => String::new(),
         ViewId::Branches => ctx.branches.search_query().to_string(),
         ViewId::Remotes => ctx.remotes.search_query().to_string(),
         ViewId::Tags => ctx.tags.search_query().to_string(),
         ViewId::Worktrees => ctx.worktrees.search_query().to_string(),
     };
     let filter_query = match ctx.active_view {
+        ViewId::Graph => String::new(),
         ViewId::Branches => ctx.branches.filter_query().to_string(),
         ViewId::Remotes => ctx.remotes.filter_query().to_string(),
         ViewId::Tags => ctx.tags.filter_query().to_string(),
@@ -186,6 +199,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
         status_bar::render_search_bar(frame, status_area, &search_query, ctx.theme);
     } else if !filter_query.is_empty() {
         let (visible, total) = match ctx.active_view {
+            ViewId::Graph => (0, 0),
             ViewId::Branches => (
                 ctx.branches.display_indices().len(),
                 ctx.branches.items().len(),
@@ -215,6 +229,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
         let converted: Vec<(u16, u16, crossterm::event::KeyCode)> =
             items.iter().map(|i| (i.x_start, i.x_end, i.key)).collect();
         match ctx.active_view {
+            ViewId::Graph => {}
             ViewId::Branches => ctx.branches.status_bar_items = converted,
             ViewId::Remotes => ctx.remotes.status_bar_items = converted,
             ViewId::Tags => ctx.tags.status_bar_items = converted,
@@ -230,6 +245,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
             }
             Overlay::Menu { items, cursor } => {
                 let anchor = match ctx.active_view {
+                    ViewId::Graph => 2,
                     ViewId::Branches => {
                         ctx.branches.table_state().selected().unwrap_or(0) as u16 + 2
                     }
@@ -302,6 +318,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
             }
             Overlay::Filter => {
                 let title = match ctx.active_view {
+                    ViewId::Graph => "Graph Filters",
                     ViewId::Branches => "Filters",
                     ViewId::Remotes => "Remote Filters",
                     ViewId::Tags => "Tag Filters",
@@ -314,6 +331,12 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                     title,
                     ctx.theme,
                 );
+            }
+            Overlay::GraphOptions {
+                cursor,
+                include_remotes,
+            } => {
+                draw_graph_options(frame, *cursor, *include_remotes, ctx.theme);
             }
             Overlay::Diagnostics { cursor } => {
                 draw_diagnostics_menu(frame, *cursor, ctx.theme);
@@ -333,6 +356,22 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
 /// Build default status bar text based on the active view.
 fn default_status_text(ctx: &RenderContext) -> String {
     match ctx.active_view {
+        ViewId::Graph => {
+            let commits = ctx.graph.snapshot().map(|snapshot| snapshot.commits.len()).unwrap_or(0);
+            let local = ctx
+                .graph
+                .snapshot()
+                .map(|snapshot| snapshot.sidebar.local_branches.len())
+                .unwrap_or(0);
+            let remote = ctx
+                .graph
+                .snapshot()
+                .map(|snapshot| snapshot.sidebar.remote_branches.len())
+                .unwrap_or(0);
+            format!(
+                " {commits} commits | {local} local refs | {remote} remote refs — [j/k]move [h/l]focus [o]refs [L]older [r]eload [?]help [q]uit"
+            )
+        }
         ViewId::Branches => format_branch_like(
             "branches",
             branch_like_summary(ctx.branches),

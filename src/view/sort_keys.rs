@@ -45,19 +45,15 @@ pub fn migrate_legacy_config(config: &mut Config) {
 
     let branch_cols = crate::view::branches::BranchesViewDef.columns();
     let remote_cols = crate::view::remotes::RemotesViewDef.columns();
-    config.sort_column_branches =
-        key_for_index(&branch_cols, idx).map(|s| s.to_string());
-    config.sort_column_remotes =
-        key_for_index(&remote_cols, idx).map(|s| s.to_string());
+    config.sort_column_branches = key_for_index(&branch_cols, idx).map(|s| s.to_string());
+    config.sort_column_remotes = key_for_index(&remote_cols, idx).map(|s| s.to_string());
     config.sort_asc_branches = config.sort_asc;
     config.sort_asc_remotes = config.sort_asc;
 }
 
 /// All (column, ascending) states reachable by cycling, in order, plus
 /// `(None, true)` as the "no sort" state at the start of the cycle.
-pub fn sort_state_cycle<T: ViewItem>(
-    columns: &[ColumnDef<T>],
-) -> Vec<(Option<usize>, bool)> {
+pub fn sort_state_cycle<T: ViewItem>(columns: &[ColumnDef<T>]) -> Vec<(Option<usize>, bool)> {
     let mut v = vec![(None, true)];
     for (i, col) in columns.iter().enumerate() {
         if col.compare.is_some() {
@@ -198,7 +194,7 @@ mod tests {
 
         // Then alternating asc/desc for each sortable column
         // Branches: name, remote, ahead_behind, pr, age, merge (all sortable)
-        assert!(cycle.len() > 0);
+        assert!(!cycle.is_empty());
         assert!(cycle.iter().any(|&(col, asc)| col == Some(0) && asc)); // name asc
         assert!(cycle.iter().any(|&(col, asc)| col == Some(0) && !asc)); // name desc
     }

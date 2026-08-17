@@ -45,6 +45,7 @@ mod tests {
         let theme = Theme::dark();
         let line = tab_bar_line(ViewId::Branches, &theme);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("Graph"));
         assert!(text.contains("Branches"));
         assert!(text.contains("Remote"));
         assert!(text.contains("Tags"));

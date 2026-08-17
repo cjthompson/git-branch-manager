@@ -15,7 +15,7 @@ use std::io;
 
 use git_branch_manager::cli::Cli;
 use git_branch_manager::config::Config;
-use git_branch_manager::git::{self, branch, cache, merge_detection, operations, worktree};
+use git_branch_manager::git::{self, branch, cache, graph, merge_detection, operations, worktree};
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::types::MergeStatus;
 use tracing::{field, info_span, instrument, Span};
@@ -112,8 +112,8 @@ fn main() -> Result<()> {
             if phase1_tx
                 .send(app::Phase1Msg::Fast(
                     branches.clone(),
-                    cache_for_app,
-                    cache_for_squash,
+                    Box::new(cache_for_app),
+                    Box::new(cache_for_squash),
                 ))
                 .is_err()
             {
@@ -264,10 +264,20 @@ fn main() -> Result<()> {
     let mut app = app::App::new(repo_path.clone(), base_branch.clone(), config);
     app.phase1_rx = Some(phase1_rx);
 
-    // Apply CLI symbol override
+    // Apply CLI symbol override before starting the graph loader so its line
+    // style matches the symbols used for the rest of the UI.
     if let Some(ref sym) = cli.symbols {
         app.symbols = SymbolSet::from_name(sym);
     }
+
+    app.graph.begin_load(500, false);
+    app.graph_rx = Some(graph::spawn_graph_loader(
+        repo_path.clone(),
+        graph::GraphLoadOptions {
+            line_style: graph::GraphLineStyle::from_symbol_name(app.symbols.name),
+            ..graph::GraphLoadOptions::default()
+        },
+    ));
 
     // Auto-fetch if configured
     if app.config.auto_fetch == Some(true) {

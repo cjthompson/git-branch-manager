@@ -2,9 +2,9 @@ use ratatui::prelude::*;
 use ratatui::style::Modifier;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
+use super::shared::centered_rect;
 use crate::theme::Theme;
 use crate::types::OperationResult;
-use super::shared::centered_rect;
 
 pub fn draw_results(frame: &mut Frame, results: &[OperationResult], theme: &Theme) {
     let area = frame.area();
@@ -44,10 +44,17 @@ pub fn draw_results(frame: &mut Frame, results: &[OperationResult], theme: &Them
     // Calculate dynamic width based on maximum content width
     let content_max_width: usize = lines
         .iter()
-        .map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum::<usize>())
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum::<usize>()
+        })
         .max()
         .unwrap_or(0);
-    let width = (content_max_width as u16 + 4).max(50).min(area.width.saturating_sub(2));
+    let width = (content_max_width as u16 + 4)
+        .max(50)
+        .min(area.width.saturating_sub(2));
 
     // Calculate height accounting for text wrapping
     let inner_width = width.saturating_sub(2) as usize;
@@ -56,7 +63,7 @@ pub fn draw_results(frame: &mut Frame, results: &[OperationResult], theme: &Them
         .map(|l| {
             let char_count: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
             if char_count == 0 {
-                1  // empty line still takes 1 row
+                1 // empty line still takes 1 row
             } else {
                 char_count.div_ceil(inner_width.max(1))
             }

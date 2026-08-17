@@ -1,6 +1,7 @@
 pub mod branches;
 pub mod column;
 pub mod filter;
+pub mod graph;
 pub mod list_state;
 pub mod remotes;
 pub mod sort_keys;
@@ -13,6 +14,7 @@ use chrono::{DateTime, Utc};
 /// Identifies which primary view is active
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewId {
+    Graph,
     Branches,
     Remotes,
     Tags,
@@ -20,19 +22,21 @@ pub enum ViewId {
 }
 
 impl ViewId {
-    /// Fixed tab cycle order: Branches -> Remotes -> Tags -> Worktrees
+    /// Fixed tab cycle order: Graph -> Branches -> Remotes -> Tags -> Worktrees
     pub fn next(self) -> Self {
         match self {
+            Self::Graph => Self::Branches,
             Self::Branches => Self::Remotes,
             Self::Remotes => Self::Tags,
             Self::Tags => Self::Worktrees,
-            Self::Worktrees => Self::Branches,
+            Self::Worktrees => Self::Graph,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Self::Branches => Self::Worktrees,
+            Self::Graph => Self::Worktrees,
+            Self::Branches => Self::Graph,
             Self::Remotes => Self::Branches,
             Self::Tags => Self::Remotes,
             Self::Worktrees => Self::Tags,
@@ -41,6 +45,7 @@ impl ViewId {
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Graph => "Graph",
             Self::Branches => "Branches",
             Self::Remotes => "Remote",
             Self::Tags => "Tags",
@@ -48,8 +53,14 @@ impl ViewId {
         }
     }
 
-    /// All 4 views in tab order
-    pub const ALL: [ViewId; 4] = [Self::Branches, Self::Remotes, Self::Tags, Self::Worktrees];
+    /// All 5 views in tab order
+    pub const ALL: [ViewId; 5] = [
+        Self::Graph,
+        Self::Branches,
+        Self::Remotes,
+        Self::Tags,
+        Self::Worktrees,
+    ];
 }
 
 /// Trait implemented by every list item type (BranchInfo, RemoteBranchInfo, etc.)
@@ -179,15 +190,17 @@ mod tests {
 
     #[test]
     fn view_id_next_cycle() {
+        assert_eq!(ViewId::Graph.next(), ViewId::Branches);
         assert_eq!(ViewId::Branches.next(), ViewId::Remotes);
         assert_eq!(ViewId::Remotes.next(), ViewId::Tags);
         assert_eq!(ViewId::Tags.next(), ViewId::Worktrees);
-        assert_eq!(ViewId::Worktrees.next(), ViewId::Branches);
+        assert_eq!(ViewId::Worktrees.next(), ViewId::Graph);
     }
 
     #[test]
     fn view_id_prev_cycle() {
-        assert_eq!(ViewId::Branches.prev(), ViewId::Worktrees);
+        assert_eq!(ViewId::Graph.prev(), ViewId::Worktrees);
+        assert_eq!(ViewId::Branches.prev(), ViewId::Graph);
         assert_eq!(ViewId::Worktrees.prev(), ViewId::Tags);
         assert_eq!(ViewId::Tags.prev(), ViewId::Remotes);
         assert_eq!(ViewId::Remotes.prev(), ViewId::Branches);
@@ -195,6 +208,7 @@ mod tests {
 
     #[test]
     fn view_id_labels() {
+        assert_eq!(ViewId::Graph.label(), "Graph");
         assert_eq!(ViewId::Branches.label(), "Branches");
         assert_eq!(ViewId::Remotes.label(), "Remote");
         assert_eq!(ViewId::Tags.label(), "Tags");
@@ -206,6 +220,7 @@ mod tests {
         assert_eq!(
             ViewId::ALL,
             [
+                ViewId::Graph,
                 ViewId::Branches,
                 ViewId::Remotes,
                 ViewId::Tags,

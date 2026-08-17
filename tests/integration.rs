@@ -2,7 +2,8 @@ use std::process::Command;
 use std::sync::atomic::AtomicBool;
 
 use git_branch_manager::git::{
-    branch, cache, diagnostics, merge_detection, operations, squash_loader, status, tags, worktree,
+    branch, cache, diagnostics, graph, merge_detection, operations, squash_loader, status, tags,
+    worktree,
 };
 use git_branch_manager::types::{ChangedFileKind, DiagKind, MergeStatus};
 
@@ -110,6 +111,189 @@ fn test_detect_base_branch_main() {
 
     let base = branch::detect_base_branch(&repo, None).expect("detect_base_branch failed");
     assert_eq!(base, "main");
+}
+
+#[test]
+fn test_load_graph_preserves_merge_lanes_refs_and_local_sidebar() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/graph"]);
+    std::fs::write(dir.join("feature.txt"), "feature\n").unwrap();
+    run_git(dir, &["add", "feature.txt"]);
+    run_git(dir, &["commit", "-m", "feature commit"]);
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("main.txt"), "main\n").unwrap();
+    run_git(dir, &["add", "main.txt"]);
+    run_git(dir, &["commit", "-m", "main commit"]);
+    run_git(
+        dir,
+        &[
+            "merge",
+            "--no-ff",
+            "feature/graph",
+            "-m",
+            "merge feature graph",
+        ],
+    );
+
+    let snapshot = graph::load_graph(dir, graph::GraphLoadOptions::default())
+        .expect("graph loader should handle an ordinary merged local branch");
+
+    assert!(matches!(snapshot.source, graph::GraphSource::Gleisbau));
+    assert!(snapshot
+        .commits
+        .iter()
+        .any(|commit| commit.parents.len() == 2));
+    assert!(snapshot.commits.iter().any(|commit| {
+        commit
+            .refs
+            .iter()
+            .any(|reference| reference.name == "feature/graph")
+    }));
+    assert!(snapshot
+        .sidebar
+        .local_branches
+        .iter()
+        .any(|branch| branch.name == "feature/graph"));
+    assert!(snapshot.commits.iter().any(|commit| commit.lane.is_some()));
+
+    fn assert_send<T: Send>() {}
+    assert_send::<graph::GraphSnapshot>();
+}
+
+#[test]
+fn test_load_graph_includes_remote_refs_only_when_requested() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    run_git(&work_dir, &["checkout", "-b", "remote-only"]);
+    std::fs::write(work_dir.join("remote-only.txt"), "remote\n").unwrap();
+    run_git(&work_dir, &["add", "remote-only.txt"]);
+    run_git(&work_dir, &["commit", "-m", "remote-only commit"]);
+    run_git(&work_dir, &["push", "-u", "origin", "remote-only"]);
+    run_git(&work_dir, &["checkout", "main"]);
+    run_git(&work_dir, &["branch", "-D", "remote-only"]);
+
+    let local_only = graph::load_graph(&work_dir, graph::GraphLoadOptions::default())
+        .expect("local graph load should succeed");
+    assert!(!local_only
+        .sidebar
+        .remote_branches
+        .iter()
+        .any(|branch| branch.name == "origin/remote-only"));
+
+    let with_remotes = graph::load_graph(
+        &work_dir,
+        graph::GraphLoadOptions {
+            include_remotes: true,
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("remote graph load should succeed");
+    assert!(with_remotes
+        .sidebar
+        .remote_branches
+        .iter()
+        .any(|branch| branch.name == "origin/remote-only"));
+    assert!(with_remotes.commits.iter().any(|commit| {
+        commit
+            .refs
+            .iter()
+            .any(|reference| reference.name == "origin/remote-only")
+    }));
+}
+
+#[test]
+fn test_load_graph_caps_history_at_five_hundred_commits() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    for index in 0..501 {
+        let message = format!("history commit {index}");
+        run_git(dir, &["commit", "--allow-empty", "-m", &message]);
+    }
+
+    let snapshot = graph::load_graph(dir, graph::GraphLoadOptions::default())
+        .expect("bounded graph load should succeed");
+    assert_eq!(snapshot.commits.len(), 500);
+    assert_eq!(snapshot.max_count, 500);
+}
+
+#[test]
+fn test_load_graph_uses_cli_fallback_for_shallow_repository() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    let head = repo.head().unwrap().target().unwrap();
+    std::fs::write(dir.join(".git/shallow"), format!("{head}\n")).unwrap();
+
+    let snapshot = graph::load_graph(dir, graph::GraphLoadOptions::default())
+        .expect("git CLI fallback should handle a shallow repository");
+
+    assert!(matches!(
+        snapshot.source,
+        graph::GraphSource::GitCliFallback { ref cause } if cause.contains("shallow")
+    ));
+    assert_eq!(snapshot.commits.len(), 1);
+    assert!(snapshot
+        .lines
+        .iter()
+        .any(|line| line.commit_index.is_some()));
+}
+
+#[test]
+fn test_load_graph_fallback_with_remotes_includes_tag_only_history() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    run_git(&work_dir, &["checkout", "-b", "remote-only"]);
+    std::fs::write(work_dir.join("remote-only.txt"), "remote\n").unwrap();
+    run_git(&work_dir, &["add", "remote-only.txt"]);
+    run_git(&work_dir, &["commit", "-m", "remote-only commit"]);
+    run_git(&work_dir, &["push", "-u", "origin", "remote-only"]);
+    run_git(&work_dir, &["checkout", "main"]);
+    run_git(&work_dir, &["branch", "-D", "remote-only"]);
+
+    run_git(&work_dir, &["checkout", "--orphan", "tag-only"]);
+    run_git(&work_dir, &["rm", "-rf", "."]);
+    std::fs::write(work_dir.join("tag-only.txt"), "tag\n").unwrap();
+    run_git(&work_dir, &["add", "tag-only.txt"]);
+    run_git(&work_dir, &["commit", "-m", "tag-only commit"]);
+    run_git(&work_dir, &["tag", "tag-only"]);
+    run_git(&work_dir, &["checkout", "main"]);
+    run_git(&work_dir, &["branch", "-D", "tag-only"]);
+
+    let repo = git2::Repository::open(&work_dir).unwrap();
+    let head = repo.head().unwrap().target().unwrap();
+    std::fs::write(work_dir.join(".git/shallow"), format!("{head}\n")).unwrap();
+
+    let snapshot = graph::load_graph(
+        &work_dir,
+        graph::GraphLoadOptions {
+            include_remotes: true,
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("git CLI fallback should retain the remote and tag-only ref range");
+
+    assert!(matches!(
+        snapshot.source,
+        graph::GraphSource::GitCliFallback { ref cause } if cause.contains("shallow")
+    ));
+    assert!(snapshot
+        .sidebar
+        .remote_branches
+        .iter()
+        .any(|branch| branch.name == "origin/remote-only"));
+    assert!(snapshot.commits.iter().any(|commit| {
+        commit.refs.iter().any(|reference| {
+            reference.name == "origin/remote-only"
+                && reference.kind == graph::GraphRefKind::RemoteBranch
+        })
+    }));
+    assert!(snapshot.commits.iter().any(|commit| {
+        commit.refs.iter().any(|reference| {
+            reference.name == "tag-only" && reference.kind == graph::GraphRefKind::Tag
+        })
+    }));
 }
 
 #[test]
@@ -983,7 +1167,11 @@ fn test_wt_status_staged_only() {
     assert!(s.has_staged, "should detect staged file");
     assert!(!s.has_modified, "should not detect modified changes");
     assert!(!s.has_untracked, "should not detect untracked files");
-    assert_eq!(s.changed_files.len(), 1, "one staged file should be itemized");
+    assert_eq!(
+        s.changed_files.len(),
+        1,
+        "one staged file should be itemized"
+    );
     assert_eq!(s.changed_files[0].path, "new.txt");
     assert_eq!(s.changed_files[0].kind, ChangedFileKind::Staged);
 }
@@ -1069,7 +1257,11 @@ fn test_wt_status_staged_then_further_edited() {
     // edit), not a merged/combined kind.
     std::fs::write(dir.join("README.md"), "# Staged edit\n").unwrap();
     run_git(dir, &["add", "README.md"]);
-    std::fs::write(dir.join("README.md"), "# Staged edit, then further edited\n").unwrap();
+    std::fs::write(
+        dir.join("README.md"),
+        "# Staged edit, then further edited\n",
+    )
+    .unwrap();
 
     let s = status::detect_working_tree_status(dir);
     assert!(s.has_staged, "should detect staged change");
@@ -2729,7 +2921,10 @@ fn test_remote_branch_inherits_squash_merge_status_from_local() {
     // Squash-merge into main locally (do NOT push main — remote branch stays ahead=1)
     run_git(&work_dir, &["checkout", "main"]);
     run_git(&work_dir, &["merge", "--squash", "squash-local-feature"]);
-    run_git(&work_dir, &["commit", "-m", "Squash merge squash-local-feature"]);
+    run_git(
+        &work_dir,
+        &["commit", "-m", "Squash merge squash-local-feature"],
+    );
 
     let repo = git2::Repository::open(&work_dir).unwrap();
 

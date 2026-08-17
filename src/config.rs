@@ -6,8 +6,8 @@ use std::path::PathBuf;
 pub struct Config {
     pub symbols: Option<String>,
     pub theme: Option<String>,
-    pub sort_column: Option<String>,       // legacy; kept only for migration
-    pub sort_asc: Option<bool>,            // legacy; kept only for migration
+    pub sort_column: Option<String>, // legacy; kept only for migration
+    pub sort_asc: Option<bool>,      // legacy; kept only for migration
     pub sort_column_branches: Option<String>,
     pub sort_asc_branches: Option<bool>,
     pub sort_column_remotes: Option<String>,

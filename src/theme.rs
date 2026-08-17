@@ -41,7 +41,9 @@ impl Theme {
             name: "dark",
             merged: Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
             squash_merged: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            in_sync: Style::new().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            in_sync: Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
             unmerged: Style::new().fg(Color::Red),
             primary_text: Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
             secondary_text: Style::new().fg(Color::DarkGray),
@@ -192,7 +194,9 @@ impl Theme {
             name: "dracula",
             merged: Style::new().fg(green).add_modifier(Modifier::BOLD),
             squash_merged: Style::new().fg(yellow).add_modifier(Modifier::BOLD),
-            in_sync: Style::new().fg(Color::Indexed(245)).add_modifier(Modifier::ITALIC),
+            in_sync: Style::new()
+                .fg(Color::Indexed(245))
+                .add_modifier(Modifier::ITALIC),
             unmerged: Style::new().fg(red),
             primary_text: Style::new().fg(fg).add_modifier(Modifier::BOLD),
             secondary_text: Style::new().fg(Color::Indexed(245)),
@@ -312,10 +316,16 @@ mod tests {
 
     #[test]
     fn ahead_and_behind_use_distinct_colors_in_every_theme() {
-        for theme in [Theme::dark(), Theme::light(), Theme::solarized(), Theme::dracula()] {
+        for theme in [
+            Theme::dark(),
+            Theme::light(),
+            Theme::solarized(),
+            Theme::dracula(),
+        ] {
             assert_ne!(
                 theme.ahead.fg, theme.behind.fg,
-                "{} theme should color ahead/behind differently", theme.name
+                "{} theme should color ahead/behind differently",
+                theme.name
             );
         }
     }

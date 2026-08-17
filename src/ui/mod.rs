@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod dump_render;
 pub mod executing;
 pub mod filter_ui;
+pub mod graph_render;
 pub mod help;
 pub mod info_modal;
 pub mod list_render;

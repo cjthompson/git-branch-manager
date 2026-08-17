@@ -70,6 +70,14 @@ const WORKTREE_KEYS: &[(&str, &str)] = &[
     ("F", "Fetch + prune"),
 ];
 
+/// Graph-view-specific keys.
+const GRAPH_KEYS: &[(&str, &str)] = &[
+    ("h/l", "Focus graph / refs"),
+    ("o", "Graph options"),
+    ("L", "Load 500 older commits"),
+    ("r", "Reload graph"),
+];
+
 /// Renders the help overlay on top of the current view.
 pub fn draw_help(frame: &mut Frame, active_view: ViewId, theme: &Theme) {
     let area = frame.area();
@@ -80,6 +88,7 @@ pub fn draw_help(frame: &mut Frame, active_view: ViewId, theme: &Theme) {
 
     // Choose view-specific keys
     let view_keys: &[(&str, &str)] = match active_view {
+        ViewId::Graph => GRAPH_KEYS,
         ViewId::Branches => BRANCH_KEYS,
         ViewId::Remotes => REMOTE_KEYS,
         ViewId::Tags => TAG_KEYS,

@@ -51,7 +51,10 @@ impl BaseReachable {
     }
 }
 
-fn build_reachable_from_ref(repo: &Repository, base_branch: &str) -> (HashSet<git2::Oid>, Option<git2::Oid>) {
+fn build_reachable_from_ref(
+    repo: &Repository,
+    base_branch: &str,
+) -> (HashSet<git2::Oid>, Option<git2::Oid>) {
     let oid = match repo
         .find_branch(base_branch, git2::BranchType::Local)
         .ok()
@@ -63,7 +66,10 @@ fn build_reachable_from_ref(repo: &Repository, base_branch: &str) -> (HashSet<gi
     (revwalk_from_oid(repo, oid), Some(oid))
 }
 
-fn build_reachable_from_remote_ref(repo: &Repository, base_branch: &str) -> (HashSet<git2::Oid>, Option<git2::Oid>) {
+fn build_reachable_from_remote_ref(
+    repo: &Repository,
+    base_branch: &str,
+) -> (HashSet<git2::Oid>, Option<git2::Oid>) {
     let remote_name = format!("origin/{base_branch}");
     let oid = match repo
         .find_branch(&remote_name, git2::BranchType::Remote)

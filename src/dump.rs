@@ -87,7 +87,9 @@ pub fn run(
 
             // Apply configured sort (if any) to non-pinned items
             let cols = BranchesViewDef.columns();
-            if let Some(col_idx) = config.sort_column_branches.as_deref()
+            if let Some(col_idx) = config
+                .sort_column_branches
+                .as_deref()
                 .and_then(|k| sort_keys::index_for_key(&cols, k))
             {
                 if let Some(column) = cols.get(col_idx) {
@@ -173,7 +175,9 @@ pub fn run(
 
             // Apply configured sort (if any) to non-pinned items
             let cols = RemotesViewDef.columns();
-            if let Some(col_idx) = config.sort_column_remotes.as_deref()
+            if let Some(col_idx) = config
+                .sort_column_remotes
+                .as_deref()
                 .and_then(|k| sort_keys::index_for_key(&cols, k))
             {
                 if let Some(column) = cols.get(col_idx) {
@@ -197,7 +201,9 @@ pub fn run(
             let mut rows = tags::list_tags(repo);
             pin_first(&mut rows);
             let cols = TagsViewDef.columns();
-            if let Some(col_idx) = config.sort_column_tags.as_deref()
+            if let Some(col_idx) = config
+                .sort_column_tags
+                .as_deref()
                 .and_then(|k| sort_keys::index_for_key(&cols, k))
             {
                 if let Some(column) = cols.get(col_idx) {
@@ -234,7 +240,9 @@ pub fn run(
             }
             pin_first(&mut rows);
             let cols = WorktreesViewDef.columns();
-            if let Some(col_idx) = config.sort_column_worktrees.as_deref()
+            if let Some(col_idx) = config
+                .sort_column_worktrees
+                .as_deref()
                 .and_then(|k| sort_keys::index_for_key(&cols, k))
             {
                 if let Some(column) = cols.get(col_idx) {
