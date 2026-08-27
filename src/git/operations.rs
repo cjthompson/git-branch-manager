@@ -1021,7 +1021,7 @@ fn remove_worktree_impl(
     let outcome =
         worktree_delete::delete_recursive(worktree_path, cancel, partial_delete_risk, |rel_path| {
             done += 1;
-            if done % batch_size == 0 || done == file_total {
+            if done.is_multiple_of(batch_size) || done == file_total {
                 let _ = prog_tx.send(ProgressUpdate {
                     completed: outer_completed,
                     total: outer_total,
