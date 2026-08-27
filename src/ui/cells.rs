@@ -128,16 +128,6 @@ pub(crate) fn merge_status_parts(
     (fit_text(full, short, col_width, ctx.compact), style)
 }
 
-/// Compact merge-status text + style shared by space-constrained views.
-pub(crate) fn compact_merge_status_parts(
-    status: &MergeStatus,
-    theme: &Theme,
-    symbols: &SymbolSet,
-) -> (String, Style) {
-    let (_, short, style) = merge_status_labels(status, theme, symbols);
-    (short, style)
-}
-
 /// Worktree working-tree-status text + style, fit to the resolved column width:
 /// full words (`clean`/`staged`/`unstaged`/…) when wide, abbreviations
 /// (`c`/`s`/`u`/`t`) when narrow.

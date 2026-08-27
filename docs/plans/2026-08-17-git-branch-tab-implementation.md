@@ -2,11 +2,11 @@
 
 ## Status
 
-The initial Graph tab was committed as `827fd5e` (`feat: add graph tab`). This checkout also contains subsequent uncommitted Graph refinements; check the working tree before relying on a commit description as the complete implementation.
+The initial Graph tab was committed as `827fd5e` (`feat: add graph tab`), and the LRT pseudo-pane shipped in `c77a9e3`. Check the working tree before relying on history.
 
 ## Goal and user-visible behavior
 
-The Graph tab is the first tab and the default view when the TUI opens. It shows the repository's commit DAG, commit summaries, abbreviated object IDs, and inline ref decorations in a stable right-hand column. The existing Branches, Remote, Tags, and Worktrees tabs remain in the cycle after Graph.
+The Graph tab is the first tab and the default view when the TUI opens. It shows the repository's commit DAG, commit summaries, abbreviated object IDs, and a responsive right pseudo-pane: `LRT │ State │ Refs` at full pane width, `LRT│State` at pane widths 9–14, and `LRT` only at widths 0–8. The pane width is `min(content_width - 1, max(content_width / 3, 3))`. Commit text is truncated at the fixed graph/pane divider; there is no horizontal scrolling. The existing Branches, Remote, Tags, and Worktrees tabs remain in the cycle after Graph.
 
 The Graph tab is deliberately a separate view model rather than another sortable `ListState`: graph rows contain non-commit connector lines, and each graph/ref row shares one cursor and scroll offset.
 
@@ -46,10 +46,13 @@ The loader collects local branches and tags by default. Remote branches are coll
 
 `src/ui/graph_render.rs` renders a bordered Graph view as one synchronized row stream:
 
-- `Commits`: graph topology, short OID, and summary.
-- `Refs`: inline local/remote/tag markers, lane numbers, status badges, and branch names on the matching commit row.
+- `LRT` is three one-cell markers: local/current-branch, remote, and tag.
+- `State` uses the alphabetically first tracked local ref: an in-sync marker, ahead/behind counts below 10, bare arrows at 10+, `RB` for both directions, plus `WT` when any local direct ref has a linked worktree.
+- Direct refs sort local, remote, tag, then name.
+- `origin/foo` is suppressed in the `Refs` names only if a local `foo` is on that same commit; its remote LRT marker is preserved.
+- When a commit has no direct refs, its inferred branch context is rendered dimly in `Refs` with blank LRT/State.
 
-The ref column has a stable width and a visual separator, so commit summaries cannot displace refs. Loading, error, and Gleisbau-fallback states are rendered inside the Graph block. The fallback state includes a retry hint.
+Loading, error, fallback, synchronized scrolling, and lane-color guidance remain. The fallback state includes a retry hint.
 
 Graph lanes use the active `Theme` palette (`title`, `ahead`, `behind`, and `remote_title`, cycling by lane). Merge connector spans use the origin lane's color, so a merge's incoming line remains visually tied to the source commit rather than changing color at the merge point.
 
@@ -64,6 +67,16 @@ Graph symbols are part of `SymbolSet`; do not hard-code them in the renderer:
 | Powerline | `●` | `` | `◀` | `▶` | rounded Unicode |
 
 The Powerline merge marker is intentionally one cell wide, and the renderer preserves each source graph column so merge connectors remain aligned with following rows.
+
+LRT glyphs are owned by `SymbolSet`:
+
+| Symbol set | Local/current-branch | Remote | Tag |
+| --- | --- | --- | --- |
+| ASCII | `*` | `@` | `#` |
+| Unicode | `●` | `☁` | `⌑` |
+| Powerline | `\u{e0a0}` | `\u{f0c2}` | `\u{f02b}` |
+
+All LRT markers, as well as the Powerline merge marker, must remain one terminal cell wide.
 
 Changing the global symbol set with `Y` reloads the graph. The selected symbol set also determines whether the loader asks Gleisbau for rounded or thin line characters.
 
@@ -88,28 +101,30 @@ Graph does not use the generic list selection, sorting, filtering, or operations
 
 | File | Responsibility |
 | --- | --- |
-| `src/git/graph.rs` | Graph snapshot types, compact ref counts, Gleisbau loader, git CLI fallback, ref collection, line-style selection, loader tests |
+| `src/git/graph.rs` | Reduced `GraphRef { name, kind, has_linked_worktree, tracking }`, tracking counts, linked-worktree enrichment, branch context, loaders |
 | `src/view/graph.rs` | Graph state, shared cursor/scroll offset, history/remote options |
-| `src/ui/graph_render.rs` | Synchronized graph/ref rows, line rendering, lane colors, symbol translation, options overlay, rendering tests |
+| `src/ui/graph_render.rs` | Responsive LRT pseudo-pane and fixed State cell, line rendering, lane colors, symbol translation, options overlay, rendering tests |
 | `src/view/mod.rs` | `ViewId::Graph`, tab order, labels, cycle tests |
 | `src/ui/render.rs` | Graph dispatch, Graph overlay dispatch, Graph status-bar text |
 | `src/app.rs` | Graph state/channel ownership, startup load, channel draining, key handling, reload/options actions |
 | `src/main.rs` | Initial worker startup and symbol-aware loader options |
-| `src/symbols.rs` | Graph commit/merge/connector glyphs for each symbol set |
+| `src/symbols.rs` | Graph topology plus remote/tag LRT glyphs for each symbol set |
 | `src/ui/help.rs` | Graph-specific help entries |
-| `tests/integration.rs` | Real temporary-repository graph loader coverage and fallback cases |
+| `tests/integration.rs` | Linked-worktree, remote-tip retention, and tracking-count coverage |
 | `Cargo.toml` / `Cargo.lock` | `git2 = 0.21` and pinned Gleisbau dependency |
 
 ## Verification completed
 
-The implementation was verified on the committed tree with:
+The implementation was verified with:
 
 ```text
-cargo test                 266 library + 11 binary + 80 integration tests passed
-cargo build                passed
-cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
-git diff --check
+cargo test -- --test-threads=1
+cargo build
+cargo clippy --all-targets -- -D warnings
+git diff --check -- docs/plans/2026-08-17-git-branch-tab-implementation.md
+git status --short
+git diff -- docs/plans/2026-08-17-git-branch-tab-implementation.md
 ```
 
 The graph-specific coverage includes:
@@ -120,7 +135,10 @@ The graph-specific coverage includes:
 - History pagination capped at the requested 500-commit page size.
 - Theme lane colors and origin-lane merge connector colors.
 - Unicode/Powerline commit markers and directional connector symbols.
-- Powerline marker width preservation.
+- LRT modes and State states.
+- Matching-remote suppression and inferred branch context.
+- Responsive divider placement and one-cell glyph safety.
+- Linked-worktree metadata, remote-tip retention, and tracking counts.
 - Loading-toast clearing after a graph result arrives.
 - Default Graph tab, Graph options, navigation, and older-history reload behavior.
 
