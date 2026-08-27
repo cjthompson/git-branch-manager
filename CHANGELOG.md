@@ -3,6 +3,7 @@
 ## 2026-08-26
 
 ### Fixes
+- Remote column should show full remote ref and base branch info (#ui, #branches)
 - Remote view: show full remote branch name in separate column (#ui, #remote)
 
 ## 2026-07-14
