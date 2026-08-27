@@ -31,9 +31,8 @@ pub struct GraphCommit {
     pub summary: String,
     pub parents: Vec<String>,
     pub lane: Option<usize>,
-    /// The live branch whose visual track owns this commit. This is derived
-    /// from the graph layout, not from generic reachability, so a merged side
-    /// branch does not get mislabeled as the base branch.
+    /// The live branch whose first-parent history owns this commit. The base
+    /// branch claims its chain first so retained merged refs cannot relabel it.
     pub branch: Option<GraphBranchLabel>,
     pub refs: Vec<GraphRef>,
 }
@@ -42,6 +41,7 @@ pub struct GraphCommit {
 pub struct GraphBranchLabel {
     pub name: String,
     pub target_oid: String,
+    pub kind: GraphRefKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,26 +189,6 @@ fn load_with_gleisbau(
         .with_settings(Rc::clone(&settings))
         .with_max_count(options.max_count)
         .build()?;
-    let mut local_branch_labels = ref_data
-        .local_branch_labels
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
-    local_branch_labels.sort_by(|left, right| left.name.cmp(&right.name));
-    let mut branch_labels_by_trace = HashMap::new();
-    for label in local_branch_labels {
-        let Some(trace) = graph
-            .tracks
-            .commits
-            .iter()
-            .find(|info| info.oid.to_string() == label.target_oid)
-            .and_then(|info| info.branch_trace)
-        else {
-            continue;
-        };
-        branch_labels_by_trace.entry(trace).or_insert(label);
-    }
-
     let heights = vec![1; graph.layout.commit_count()];
     let rendered = gleisbau::print::unicode::print_graph_terminal(
         &settings,
@@ -243,21 +223,21 @@ fn load_with_gleisbau(
                 .and_then(|trace| graph.layout.track_visual(trace))
                 .and_then(|visual| visual.column);
 
-            let branch = info
-                .branch_trace
-                .and_then(|trace| branch_labels_by_trace.get(&trace).cloned());
-
             Ok(GraphCommit {
                 oid: oid.clone(),
                 summary,
                 parents: info.parents.iter().map(ToString::to_string).collect(),
                 lane,
-                branch,
+                branch: None,
                 refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    assign_graph_branch_labels(&mut commits, &ref_data.branch_labels);
+    assign_graph_branch_labels(
+        &mut commits,
+        &ref_data.branch_labels,
+        ref_data.base_branch.as_deref(),
+    );
     Ok(GraphSnapshot {
         source: GraphSource::Gleisbau,
         commits,
@@ -350,7 +330,11 @@ fn load_with_git_cli(
             commit_index: Some(commit_index),
         });
     }
-    assign_graph_branch_labels(&mut commits, &ref_data.branch_labels);
+    assign_graph_branch_labels(
+        &mut commits,
+        &ref_data.branch_labels,
+        ref_data.base_branch.as_deref(),
+    );
     Ok(GraphSnapshot {
         source: GraphSource::GitCliFallback { cause },
         commits,
@@ -396,7 +380,7 @@ struct RefData {
     refs_by_oid: HashMap<String, Vec<GraphRef>>,
     ref_counts: GraphRefCounts,
     branch_labels: HashMap<String, GraphBranchLabel>,
-    local_branch_labels: HashMap<String, GraphBranchLabel>,
+    base_branch: Option<String>,
 }
 
 fn collect_ref_data(
@@ -410,6 +394,7 @@ fn collect_ref_data(
     let base_branch = requested_base
         .map(str::to_string)
         .or_else(|| crate::git::branch::detect_base_branch(&repository, None).ok());
+    data.base_branch = base_branch.clone();
     let local_statuses = base_branch
         .as_deref()
         .and_then(|base| crate::git::branch::list_branches(&repository, base).ok())
@@ -446,9 +431,9 @@ fn collect_ref_data(
         let label = GraphBranchLabel {
             name: name.clone(),
             target_oid: target_oid.clone(),
+            kind: GraphRefKind::LocalBranch,
         };
-        data.branch_labels.insert(name.clone(), label.clone());
-        data.local_branch_labels.insert(name.clone(), label);
+        data.branch_labels.insert(name.clone(), label);
     }
 
     for branch in repository
@@ -478,6 +463,7 @@ fn collect_ref_data(
                 GraphBranchLabel {
                     name: name.clone(),
                     target_oid: target_oid.clone(),
+                    kind: GraphRefKind::RemoteBranch,
                 },
             );
         }
@@ -612,14 +598,16 @@ fn remote_short_name(name: &str) -> &str {
 fn assign_graph_branch_labels(
     commits: &mut [GraphCommit],
     branch_labels: &HashMap<String, GraphBranchLabel>,
+    base_branch: Option<&str>,
 ) {
-    assign_first_parent_branch_labels(commits, branch_labels);
+    assign_first_parent_branch_labels(commits, branch_labels, base_branch);
     assign_merge_subject_branch_labels(commits);
 }
 
 fn assign_first_parent_branch_labels(
     commits: &mut [GraphCommit],
     branch_labels: &HashMap<String, GraphBranchLabel>,
+    base_branch: Option<&str>,
 ) {
     let index_by_oid = commits
         .iter()
@@ -627,7 +615,22 @@ fn assign_first_parent_branch_labels(
         .map(|(index, commit)| (commit.oid.clone(), index))
         .collect::<HashMap<_, _>>();
     let mut labels = branch_labels.values().cloned().collect::<Vec<_>>();
-    labels.sort_by(|left, right| left.name.cmp(&right.name));
+    labels.sort_by(|left, right| {
+        let priority = |label: &GraphBranchLabel| {
+            if label.kind == GraphRefKind::LocalBranch && Some(label.name.as_str()) == base_branch {
+                0
+            } else {
+                match label.kind {
+                    GraphRefKind::LocalBranch => 1,
+                    GraphRefKind::RemoteBranch => 2,
+                    GraphRefKind::Tag => 3,
+                }
+            }
+        };
+        priority(left)
+            .cmp(&priority(right))
+            .then_with(|| left.name.cmp(&right.name))
+    });
     for label in labels {
         let mut oid = label.target_oid.clone();
         let mut visited = HashSet::new();
@@ -668,6 +671,7 @@ fn assign_merge_subject_branch_labels(commits: &mut [GraphCommit]) {
         let label = GraphBranchLabel {
             name: branch_name,
             target_oid: second_parent.clone(),
+            kind: GraphRefKind::LocalBranch,
         };
         let mut oid = second_parent.clone();
         let mut visited = HashSet::new();

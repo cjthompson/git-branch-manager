@@ -344,13 +344,18 @@ fn graph_ref_spans(
     }
     if spans.is_empty() {
         if let Some(branch) = commit.branch.as_ref() {
+            let scope = match branch.kind {
+                GraphRefKind::LocalBranch => "L",
+                GraphRefKind::RemoteBranch => "R",
+                GraphRefKind::Tag => "T",
+            };
             let style = if branch.target_oid == commit.oid {
-                theme.primary_text
+                ref_style(branch.kind, theme)
             } else {
                 theme.secondary_text
             };
             spans.push(Span::styled(
-                format!(" L - {}", branch.name),
+                format!(" {scope} - {}", branch.name),
                 selected_style(style, selected, theme),
             ));
         }

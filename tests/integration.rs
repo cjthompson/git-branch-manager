@@ -306,6 +306,106 @@ fn test_graph_branch_labels_follow_visual_branch_tracks() {
 }
 
 #[test]
+fn test_graph_base_branch_owns_first_parent_chain_with_retained_merged_ref() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    let initial_oid = repo.head().unwrap().target().unwrap();
+
+    run_git(dir, &["checkout", "-b", "feat/retained"]);
+    run_git(
+        dir,
+        &["commit", "--allow-empty", "-m", "retained feature tip"],
+    );
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--ff-only", "feat/retained"]);
+    run_git(
+        dir,
+        &["commit", "--allow-empty", "-m", "main inferred commit"],
+    );
+    run_git(dir, &["commit", "--allow-empty", "-m", "main tip"]);
+
+    fn assert_main_owns_first_parent_chain(snapshot: &graph::GraphSnapshot) {
+        for summary in ["main inferred commit", "retained feature tip"] {
+            let commit = snapshot
+                .commits
+                .iter()
+                .find(|commit| commit.summary == summary)
+                .expect("expected commit should be in graph");
+            assert_eq!(
+                commit.branch.as_ref().map(|branch| branch.name.as_str()),
+                Some("main"),
+                "{summary} should remain on the base branch's inferred track"
+            );
+            if summary == "main inferred commit" {
+                assert!(
+                    commit.refs.is_empty(),
+                    "the regression row must exercise inferred Refs text"
+                );
+            }
+        }
+    }
+
+    let options = graph::GraphLoadOptions {
+        base_branch: Some("main".into()),
+        ..graph::GraphLoadOptions::default()
+    };
+    let snapshot = graph::load_graph(dir, options.clone())
+        .expect("Gleisbau should preserve base-branch ownership");
+    assert!(matches!(snapshot.source, graph::GraphSource::Gleisbau));
+    assert_main_owns_first_parent_chain(&snapshot);
+
+    std::fs::write(dir.join(".git/shallow"), format!("{initial_oid}\n")).unwrap();
+    let fallback = graph::load_graph(dir, options)
+        .expect("Git CLI fallback should preserve base-branch ownership");
+    assert!(matches!(
+        fallback.source,
+        graph::GraphSource::GitCliFallback { .. }
+    ));
+    assert_main_owns_first_parent_chain(&fallback);
+}
+
+#[test]
+fn test_graph_local_branch_owns_track_before_matching_remote() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    run_git(&work_dir, &["checkout", "-b", "release/0.3"]);
+    run_git(
+        &work_dir,
+        &["commit", "--allow-empty", "-m", "release inferred commit"],
+    );
+    run_git(
+        &work_dir,
+        &["commit", "--allow-empty", "-m", "release remote tip"],
+    );
+    run_git(&work_dir, &["push", "-u", "origin", "release/0.3"]);
+    run_git(
+        &work_dir,
+        &["commit", "--allow-empty", "-m", "release local tip"],
+    );
+
+    let snapshot = graph::load_graph(
+        &work_dir,
+        graph::GraphLoadOptions {
+            include_remotes: true,
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph loader should preserve local ownership with remotes enabled");
+    let inferred = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "release inferred commit")
+        .expect("inferred release commit should be in graph");
+
+    assert!(inferred.refs.is_empty());
+    assert_eq!(
+        inferred.branch.as_ref().map(|branch| branch.name.as_str()),
+        Some("release/0.3")
+    );
+}
+
+#[test]
 fn test_graph_does_not_expose_a_deleted_merge_branch_as_a_live_ref() {
     let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();
