@@ -10,6 +10,10 @@
 - Remote column should show full remote ref and base branch info (#ui, #branches)
 - Remote view: show full remote branch name in separate column (#ui, #remote)
 
+### Tasks
+- Info modal: tab to switch focus between INFO and ACTIONS; arrow keys navigate INFO items; enter/y copies value to clipboard (#ui, #modal, #keyboard)
+- Add 'in sync' status for branches that exactly match base (#ui, #merge-detection)
+
 ## 2026-07-14
 
 ### Tasks
