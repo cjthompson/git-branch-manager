@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-26
+
+### Fixes
+- Remote view: show full remote branch name in separate column (#ui, #remote)
+
 ## 2026-07-14
 
 ### Tasks
