@@ -16,26 +16,22 @@ impl BranchesViewDef {
                 compare: Some(|a, b| a.name.cmp(&b.name)),
             },
             ColumnDef {
-                // Name is "Up" (has an upstream?) rather than "Remote" so the column's
-                // floor is set by its longest value ("gone", 4 chars) instead of by the
-                // header word itself.
                 key: "remote",
-                name: "Up",
-                min_width: 4,
-                wide_width: None,
+                name: "Remote",
+                min_width: 18,
+                wide_width: Some(28),
                 hide_below_width: Some(80),
                 compare: Some(|a, b| {
-                    // Sort by presence: local-only (0) < gone (1) < tracked (2).
-                    let key = |item: &BranchInfo| -> u8 {
+                    let key = |item: &BranchInfo| -> String {
                         match &item.tracking {
-                            crate::types::TrackingStatus::Tracked { gone, .. } => {
+                            crate::types::TrackingStatus::Tracked { remote_ref, gone } => {
                                 if *gone {
-                                    1
+                                    "gone".to_string()
                                 } else {
-                                    2
+                                    remote_ref.clone()
                                 }
                             }
-                            crate::types::TrackingStatus::Local => 0,
+                            crate::types::TrackingStatus::Local => "local".to_string(),
                         }
                     };
                     key(a).cmp(&key(b))
@@ -79,6 +75,9 @@ mod tests {
         let view = BranchesViewDef;
         let remote_col = &view.columns()[1];
         assert!(remote_col.compare.is_some());
+        assert_eq!(remote_col.name, "Remote");
+        assert_eq!(remote_col.min_width, 18);
+        assert_eq!(remote_col.wide_width, Some(28));
     }
 
     #[test]

@@ -3105,30 +3105,25 @@ pub(crate) fn render_branch_row(
                 // For non-base branches, append base info
                 let suffix = if item.is_base {
                     " [base]".to_string()
-                } else if !item.is_current {
+                } else {
                     match &item.merge_base_commit {
                         Some(hash) => format!(" ({} - {})", item.base_branch, hash),
                         None => String::new(),
                     }
-                } else {
-                    String::new()
                 };
                 let name = format!("{prefix}{}{suffix}", item.name);
                 lines.push(Line::from(Span::styled(name, style)));
             }
             1 => {
-                // Remote indicator: symbol when a remote-tracking branch exists,
-                // "gone" when the upstream was deleted, "-" when local-only.
-                // Mirrors the Remotes view's "Local" column.
                 let (text, style) = match &item.tracking {
-                    TrackingStatus::Tracked { gone, .. } => {
+                    TrackingStatus::Tracked { remote_ref, gone } => {
                         if *gone {
                             ("gone".to_string(), theme.secondary_text)
                         } else {
-                            (symbols.status_merged.to_string(), theme.merged)
+                            (remote_ref.clone(), theme.secondary_text)
                         }
                     }
-                    TrackingStatus::Local => ("-".to_string(), theme.secondary_text),
+                    TrackingStatus::Local => ("local".to_string(), theme.secondary_text),
                 };
                 lines.push(Line::from(Span::styled(text, style)));
             }
@@ -3441,6 +3436,41 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    #[test]
+    fn branch_row_renders_base_info_and_full_remote_ref() {
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: 120,
+            compact: false,
+            data_col_widths: vec![40, 28],
+            first_col_width: 40,
+        };
+        let item = BranchInfo {
+            name: "feature/test".into(),
+            is_current: false,
+            is_base: false,
+            tracking: TrackingStatus::Tracked {
+                remote_ref: "origin/feature/test".into(),
+                gone: false,
+            },
+            ahead: None,
+            behind: None,
+            last_commit_date: Utc::now(),
+            merge_status: MergeStatus::Unmerged,
+            base_branch: "main".into(),
+            merge_base_commit: Some("ac13ef04".into()),
+            pr: None,
+        };
+
+        let rows = render_branch_row(&item, 0, false, false, &[0, 1], &ctx);
+
+        assert_eq!(cell_text(&rows[0]), "feature/test (main - ac13ef04)");
+        assert_eq!(cell_text(&rows[1]), "origin/feature/test");
     }
 
     #[test]
