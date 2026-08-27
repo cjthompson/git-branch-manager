@@ -141,7 +141,7 @@ fn render_graph_rows(
     area: Rect,
     graph_width: u16,
     ref_width: u16,
-    state: &GraphState,
+    state: &mut GraphState,
     theme: &Theme,
     symbols: &SymbolSet,
 ) {
@@ -156,70 +156,91 @@ fn render_graph_rows(
         .map(|commit| (commit.oid.as_str(), commit.lane))
         .collect();
     let mut pending_merge_lane = None;
-    let lines: Vec<Line<'static>> = snapshot
-        .lines
-        .iter()
-        .enumerate()
-        .map(|(line_index, graph_line)| {
-            let selected = selected_line == Some(line_index);
-            let commit = graph_line
-                .commit_index
-                .and_then(|commit_index| snapshot.commits.get(commit_index));
-            let is_merge = commit.is_some_and(|commit| commit.parents.len() > 1)
-                || graph_line
-                    .graph
-                    .chars()
-                    .any(|character| matches!(character, 'o' | '○'));
-            let merge_origin_lane = merge_origin_lane(commit, &lanes_by_oid);
-            let connector_lane = merge_origin_lane.or(pending_merge_lane);
-            let mut left_spans = graph_spans(
-                &graph_line.graph,
-                is_merge,
-                connector_lane,
-                selected,
-                theme,
-                symbols,
-            );
-            if !is_merge && commit.is_some_and(|commit| commit.is_possible_squash_merge) {
-                if let Some(marker_index) = graph_line
-                    .graph
-                    .chars()
-                    .position(|character| matches!(character, '*' | '●' | 'o' | '○'))
-                {
-                    left_spans[marker_index] = Span::styled(
-                        symbols.graph_squash_commit,
-                        selected_style(theme.squash_merged, selected, theme),
-                    );
-                }
-            }
-            if let Some(commit) = commit {
-                left_spans.push(Span::raw(" "));
-                left_spans.push(Span::styled(
-                    short_oid(&commit.oid),
-                    selected_style(theme.squash_merged, selected, theme),
-                ));
-                left_spans.push(Span::styled(
-                    format!(" {}", commit.summary),
-                    selected_style(commit_summary_style(commit, theme), selected, theme),
-                ));
-            }
-
-            if merge_origin_lane.is_some() {
-                pending_merge_lane = merge_origin_lane;
-            } else if commit.is_none()
-                && pending_merge_lane.is_some()
-                && graph_contains_merge_connector(&graph_line.graph)
+    let mut rows = Vec::new();
+    for (line_index, graph_line) in snapshot.lines.iter().enumerate() {
+        let selected = selected_line == Some(line_index);
+        let commit = graph_line
+            .commit_index
+            .and_then(|commit_index| snapshot.commits.get(commit_index));
+        let is_merge = commit.is_some_and(|commit| commit.parents.len() > 1)
+            || graph_line
+                .graph
+                .chars()
+                .any(|character| matches!(character, 'o' | '○'));
+        let merge_origin_lane = merge_origin_lane(commit, &lanes_by_oid);
+        let connector_lane = merge_origin_lane.or(pending_merge_lane);
+        let mut dag = graph_spans(
+            &graph_line.graph,
+            is_merge,
+            connector_lane,
+            selected,
+            theme,
+            symbols,
+        );
+        if !is_merge && commit.is_some_and(|commit| commit.is_possible_squash_merge) {
+            if let Some(marker_index) = graph_line
+                .graph
+                .chars()
+                .position(|character| matches!(character, '*' | '●' | 'o' | '○'))
             {
-                pending_merge_lane = None;
+                dag[marker_index] = Span::styled(
+                    symbols.graph_squash_commit,
+                    selected_style(theme.squash_merged, selected, theme),
+                );
             }
-            let right_spans = commit
-                .map(|commit| ref_pane_spans(commit, ref_width, selected, theme, symbols))
-                .unwrap_or_default();
-            compose_row(
-                left_spans,
-                right_spans,
+        }
+        let mut detail = Vec::new();
+        if let Some(commit) = commit {
+            detail.push(Span::raw(" "));
+            detail.push(Span::styled(
+                short_oid(&commit.oid),
+                selected_style(theme.squash_merged, selected, theme),
+            ));
+            detail.push(Span::styled(
+                format!(" {}", commit.summary),
+                selected_style(commit_summary_style(commit, theme), selected, theme),
+            ));
+        }
+
+        if merge_origin_lane.is_some() {
+            pending_merge_lane = merge_origin_lane;
+        } else if commit.is_none()
+            && pending_merge_lane.is_some()
+            && graph_contains_merge_connector(&graph_line.graph)
+        {
+            pending_merge_lane = None;
+        }
+        let (fixed_right, refs) = commit
+            .map(|commit| ref_pane_parts(commit, ref_width, selected, theme, symbols))
+            .unwrap_or_default();
+        rows.push((selected, dag, detail, fixed_right, refs));
+    }
+
+    let max_offset = rows
+        .iter()
+        .map(|(_selected, dag, detail, fixed_right, refs)| {
+            let detail_width = (graph_width as usize).saturating_sub(spans_width(dag));
+            let refs_width = (ref_width as usize).saturating_sub(spans_width(fixed_right));
+            spans_width(detail)
+                .saturating_sub(detail_width)
+                .max(max_ref_scroll_offset(refs, refs_width))
+        })
+        .max()
+        .unwrap_or(0);
+    state.clamp_horizontal_offset(max_offset);
+    let horizontal_offset = state.horizontal_offset();
+    let lines: Vec<Line<'static>> = rows
+        .into_iter()
+        .map(|(selected, dag, detail, fixed_right, refs)| {
+            compose_scrolled_row(
+                selected,
+                dag,
+                detail,
+                fixed_right,
+                refs,
                 graph_width,
                 ref_width,
+                horizontal_offset,
                 theme,
                 symbols,
             )
@@ -230,6 +251,36 @@ fn render_graph_rows(
         Paragraph::new(lines).scroll((state.commit_offset() as u16, 0)),
         area,
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compose_scrolled_row(
+    selected: bool,
+    dag: Vec<Span<'static>>,
+    detail: Vec<Span<'static>>,
+    fixed_right: Vec<Span<'static>>,
+    refs: Vec<Span<'static>>,
+    graph_width: u16,
+    ref_width: u16,
+    offset: usize,
+    theme: &Theme,
+    symbols: &SymbolSet,
+) -> Line<'static> {
+    let dag = truncate_spans(dag, graph_width as usize);
+    let detail_width = (graph_width as usize).saturating_sub(spans_width(&dag));
+    let refs_width = (ref_width as usize).saturating_sub(spans_width(&fixed_right));
+    let detail = truncate_spans(skip_spans(detail, offset), detail_width);
+    let refs = render_ref_names(refs, refs_width, offset, selected, theme);
+    let mut spans = dag;
+    spans.extend(detail);
+    let used = spans_width(&spans);
+    spans.push(Span::raw(
+        " ".repeat((graph_width as usize).saturating_sub(used)),
+    ));
+    spans.push(Span::styled(graph_separator(symbols), theme.secondary_text));
+    spans.extend(fixed_right);
+    spans.extend(refs);
+    Line::from(spans)
 }
 
 fn compose_row(
@@ -284,6 +335,36 @@ fn truncate_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>>
     truncated
 }
 
+fn skip_spans(spans: Vec<Span<'static>>, mut offset: usize) -> Vec<Span<'static>> {
+    let mut skipped = Vec::new();
+    for span in spans {
+        if offset == 0 {
+            skipped.push(span);
+            continue;
+        }
+        let span_width = span.width();
+        if offset >= span_width {
+            offset -= span_width;
+            continue;
+        }
+        let mut content = String::new();
+        let mut remaining = offset;
+        for character in span.content.chars() {
+            let width = character_width(character);
+            if remaining >= width {
+                remaining -= width;
+            } else {
+                content.push(character);
+            }
+        }
+        if !content.is_empty() {
+            skipped.push(Span::styled(content, span.style));
+        }
+        offset = 0;
+    }
+    skipped
+}
+
 fn spans_width(spans: &[Span<'static>]) -> usize {
     spans.iter().map(Span::width).sum()
 }
@@ -300,6 +381,72 @@ fn graph_separator(symbols: &SymbolSet) -> &'static str {
     }
 }
 
+fn render_ref_names(
+    refs: Vec<Span<'static>>,
+    width: usize,
+    offset: usize,
+    selected: bool,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let mut rendered = Vec::new();
+    let mut remaining = width;
+
+    for (index, reference) in refs.into_iter().enumerate() {
+        let separator_width = if index == 0 { 0 } else { 2 };
+        if remaining < separator_width {
+            break;
+        }
+
+        let available = remaining - separator_width;
+        if available == 0 {
+            break;
+        }
+
+        if separator_width > 0 {
+            rendered.push(ref_pane_space(separator_width, selected, theme));
+        }
+
+        let reference_width = reference.width();
+        if reference_width <= available {
+            rendered.push(reference);
+            remaining = available - reference_width;
+            continue;
+        }
+
+        let skip = offset.min(reference_width - available);
+        rendered.extend(truncate_spans(skip_spans(vec![reference], skip), available));
+        break;
+    }
+
+    rendered
+}
+
+fn max_ref_scroll_offset(refs: &[Span<'static>], width: usize) -> usize {
+    let mut remaining = width;
+
+    for (index, reference) in refs.iter().enumerate() {
+        let separator_width = if index == 0 { 0 } else { 2 };
+        if remaining < separator_width {
+            break;
+        }
+
+        let available = remaining - separator_width;
+        if available == 0 {
+            break;
+        }
+
+        let reference_width = reference.width();
+        if reference_width > available {
+            return reference_width - available;
+        }
+
+        remaining = available - reference_width;
+    }
+
+    0
+}
+
+#[cfg(test)]
 fn ref_pane_spans(
     commit: &GraphCommit,
     ref_width: u16,
@@ -307,8 +454,26 @@ fn ref_pane_spans(
     theme: &Theme,
     symbols: &SymbolSet,
 ) -> Vec<Span<'static>> {
+    let (fixed, refs) = ref_pane_parts(commit, ref_width, selected, theme, symbols);
+    let mut spans = fixed;
+    for (index, reference) in refs.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(ref_pane_space(2, selected, theme));
+        }
+        spans.push(reference);
+    }
+    spans
+}
+
+fn ref_pane_parts(
+    commit: &GraphCommit,
+    ref_width: u16,
+    selected: bool,
+    theme: &Theme,
+    symbols: &SymbolSet,
+) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     if ref_width == 0 {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
     let mut refs: Vec<&GraphRef> = commit.refs.iter().collect();
@@ -351,7 +516,7 @@ fn ref_pane_spans(
     ];
 
     if ref_width <= 8 {
-        return spans;
+        return (spans, Vec::new());
     }
 
     let state = ref_pane_state_spans(&refs, selected, theme, symbols);
@@ -361,7 +526,7 @@ fn ref_pane_spans(
             selected_style(theme.secondary_text, selected, theme),
         ));
         spans.extend(state);
-        return spans;
+        return (spans, Vec::new());
     }
 
     spans.push(ref_pane_space(1, selected, theme));
@@ -379,13 +544,13 @@ fn ref_pane_spans(
     spans.push(ref_pane_space(1, selected, theme));
 
     if refs.is_empty() {
-        if let Some(branch) = commit.branch.as_ref() {
-            spans.push(Span::styled(
+        let branch = commit.branch.as_ref().map(|branch| {
+            Span::styled(
                 branch.name.clone(),
                 selected_style(theme.dim, selected, theme),
-            ));
-        }
-        return spans;
+            )
+        });
+        return (spans, branch.into_iter().collect());
     }
 
     let local_names: HashSet<&str> = refs
@@ -393,7 +558,7 @@ fn ref_pane_spans(
         .filter(|r| r.kind == GraphRefKind::LocalBranch)
         .map(|r| r.name.as_str())
         .collect();
-    let mut shown = 0;
+    let mut ref_spans = Vec::new();
     for reference in refs {
         if reference.kind == GraphRefKind::RemoteBranch
             && reference
@@ -403,16 +568,12 @@ fn ref_pane_spans(
         {
             continue;
         }
-        if shown > 0 {
-            spans.push(ref_pane_space(2, selected, theme));
-        }
-        spans.push(Span::styled(
+        ref_spans.push(Span::styled(
             reference.name.clone(),
             selected_style(ref_style(reference.kind, theme), selected, theme),
         ));
-        shown += 1;
     }
-    spans
+    (spans, ref_spans)
 }
 
 const STATE_WIDTH: usize = 5;
@@ -822,6 +983,150 @@ mod tests {
         assert!(sha < separator);
         assert!(ref_name > separator);
         assert!(!row.contains("(main)"));
+    }
+
+    #[test]
+    fn graph_horizontal_scroll_pins_dag_lrt_and_state_and_shifts_text_together() {
+        let backend = TestBackend::new(100, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = GraphState::new();
+        state.apply_result(Ok(crate::git::graph::GraphSnapshot {
+            source: GraphSource::Gleisbau,
+            commits: vec![GraphCommit {
+                oid: "1234567890abcdef".into(),
+                summary: "long commit summary that continues beyond the visible commit region"
+                    .into(),
+                parents: vec![],
+                lane: Some(0),
+                branch: None,
+                refs: vec![GraphRef {
+                    name: "long-reference-name-that-continues".into(),
+                    kind: crate::git::graph::GraphRefKind::LocalBranch,
+                    has_linked_worktree: false,
+                    tracking: Some(crate::git::graph::GraphRefTracking {
+                        ahead: 1,
+                        behind: 0,
+                    }),
+                }],
+                is_possible_squash_merge: false,
+            }],
+            lines: vec![GraphLine {
+                graph: "*".into(),
+                commit_index: Some(0),
+            }],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+        }));
+
+        let render = |terminal: &mut Terminal<TestBackend>, state: &mut GraphState| {
+            terminal
+                .draw(|frame| {
+                    render_graph_view(
+                        frame,
+                        frame.area(),
+                        state,
+                        &Theme::dark(),
+                        &SymbolSet::ascii(),
+                    )
+                })
+                .unwrap();
+            terminal.backend().buffer().content()[200..300]
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        let before = render(&mut terminal, &mut state);
+        state.scroll_right();
+        state.scroll_right();
+        let after = render(&mut terminal, &mut state);
+
+        assert_eq!(before.as_bytes()[0], after.as_bytes()[0]);
+        assert_eq!(before.find('|'), after.find('|'));
+        assert_eq!(before.find("+1"), after.find("+1"));
+        assert_ne!(before, after);
+        assert!(before.contains("long commit summary"));
+        assert!(after.contains("ng commit summary"));
+        assert!(before.contains("long-reference"));
+        assert!(after.contains("ng-reference"));
+    }
+
+    #[test]
+    fn graph_horizontal_scroll_only_moves_truncated_refs() {
+        let backend = TestBackend::new(80, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = GraphState::new();
+        state.apply_result(Ok(crate::git::graph::GraphSnapshot {
+            source: GraphSource::Gleisbau,
+            commits: vec![GraphCommit {
+                oid: "1234567890abcdef".into(),
+                summary: "visible commit".into(),
+                parents: vec![],
+                lane: Some(0),
+                branch: None,
+                refs: vec![
+                    GraphRef {
+                        name: "main".into(),
+                        kind: crate::git::graph::GraphRefKind::LocalBranch,
+                        has_linked_worktree: false,
+                        tracking: None,
+                    },
+                    GraphRef {
+                        name: "worktree-agent-68eec8ed8aa".into(),
+                        kind: crate::git::graph::GraphRefKind::LocalBranch,
+                        has_linked_worktree: false,
+                        tracking: None,
+                    },
+                ],
+                is_possible_squash_merge: false,
+            }],
+            lines: vec![GraphLine {
+                graph: "*".into(),
+                commit_index: Some(0),
+            }],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+        }));
+
+        let render_row = |terminal: &mut Terminal<TestBackend>, state: &mut GraphState| {
+            terminal
+                .draw(|frame| {
+                    render_graph_view(
+                        frame,
+                        frame.area(),
+                        state,
+                        &Theme::dark(),
+                        &SymbolSet::ascii(),
+                    )
+                })
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .chunks(80)
+                .nth(2)
+                .unwrap()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+
+        let before = render_row(&mut terminal, &mut state);
+        state.scroll_right();
+        state.scroll_right();
+        let after = render_row(&mut terminal, &mut state);
+
+        let separator = before.find('|').expect("graph/ref separator");
+        let refs_start = separator + 1 + 14;
+        let before_refs = &before[refs_start..];
+        let after_refs = &after[refs_start..];
+        assert!(before_refs.starts_with("main"));
+        assert!(after_refs.starts_with("main"));
+        assert!(before_refs.contains("worktr"));
+        assert!(after_refs.contains("rktree"));
+        assert!(!after_refs.contains("worktr"));
     }
 
     #[test]

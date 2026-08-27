@@ -73,6 +73,7 @@ const WORKTREE_KEYS: &[(&str, &str)] = &[
 
 /// Graph-view-specific keys.
 const GRAPH_KEYS: &[(&str, &str)] = &[
+    ("h/l or ←/→", "Scroll commit text and refs"),
     ("o", "Graph options"),
     ("L", "Load 500 older commits"),
     ("r", "Reload graph"),

@@ -1045,6 +1045,8 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.graph.move_up(),
             KeyCode::PageDown => self.graph.page_down(),
             KeyCode::PageUp => self.graph.page_up(),
+            KeyCode::Char('h') | KeyCode::Left => self.graph.scroll_left(),
+            KeyCode::Char('l') | KeyCode::Right => self.graph.scroll_right(),
             KeyCode::Home | KeyCode::Char('g') => self.graph.home(),
             KeyCode::End | KeyCode::Char('G') => self.graph.end(),
             KeyCode::Char('L') => self.load_older_graph(),
@@ -3488,7 +3490,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_navigation_keys_bypass_generic_table_handler() {
+    fn graph_navigation_and_horizontal_scroll_keys_bypass_generic_table_handler() {
         let tmpdir = tempfile::tempdir().expect("temp repo");
         let mut app = App::new(
             tmpdir.path().to_path_buf(),
@@ -3543,6 +3545,23 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert_eq!(app.graph.commit_cursor(), 1);
+        assert_eq!(app.graph.horizontal_offset(), 1);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Left,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.graph.horizontal_offset(), 0);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Right,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.graph.horizontal_offset(), 1);
+        assert_eq!(app.graph.commit_cursor(), 1);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.active_view, ViewId::Branches);
     }
 
     fn run_git(dir: &std::path::Path, args: &[&str]) {

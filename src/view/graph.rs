@@ -16,6 +16,7 @@ pub struct GraphState {
     include_remotes: bool,
     cursor: usize,
     offset: usize,
+    horizontal_offset: usize,
 }
 
 impl Default for GraphState {
@@ -34,6 +35,7 @@ impl GraphState {
             include_remotes: false,
             cursor: 0,
             offset: 0,
+            horizontal_offset: 0,
         }
     }
 
@@ -65,6 +67,22 @@ impl GraphState {
         self.cursor
     }
 
+    pub fn horizontal_offset(&self) -> usize {
+        self.horizontal_offset
+    }
+
+    pub fn scroll_left(&mut self) {
+        self.horizontal_offset = self.horizontal_offset.saturating_sub(1);
+    }
+
+    pub fn scroll_right(&mut self) {
+        self.horizontal_offset = self.horizontal_offset.saturating_add(1);
+    }
+
+    pub fn clamp_horizontal_offset(&mut self, max_offset: usize) {
+        self.horizontal_offset = self.horizontal_offset.min(max_offset);
+    }
+
     pub fn begin_load(&mut self, max_count: usize, include_remotes: bool) {
         self.max_count = max_count.max(1);
         self.include_remotes = include_remotes;
@@ -82,12 +100,14 @@ impl GraphState {
                 self.error = None;
                 self.cursor = 0;
                 self.offset = 0;
+                self.horizontal_offset = 0;
             }
             Err(error) => {
                 self.snapshot = None;
                 self.error = Some(error.to_string());
                 self.cursor = 0;
                 self.offset = 0;
+                self.horizontal_offset = 0;
             }
         }
     }
@@ -273,5 +293,33 @@ mod tests {
         state.ensure_visible(3);
 
         assert_eq!(state.commit_offset(), 2);
+    }
+
+    #[test]
+    fn graph_horizontal_scroll_is_independent_and_resets_on_result() {
+        let mut state = GraphState::new();
+        state.apply_result(Ok(snapshot()));
+        state.move_down();
+        state.scroll_right();
+        state.scroll_right();
+
+        assert_eq!(state.commit_cursor(), 1);
+        assert_eq!(state.horizontal_offset(), 2);
+
+        state.scroll_left();
+        state.scroll_left();
+        state.scroll_left();
+        assert_eq!(state.horizontal_offset(), 0);
+
+        state.scroll_right();
+        state.apply_result(Ok(snapshot()));
+        assert_eq!(state.horizontal_offset(), 0);
+
+        state.scroll_right();
+        state.apply_result(Err(GraphLoadError::Both {
+            gleisbau: "failed".into(),
+            fallback: "failed".into(),
+        }));
+        assert_eq!(state.horizontal_offset(), 0);
     }
 }
