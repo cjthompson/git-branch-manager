@@ -21,7 +21,7 @@ use git_branch_manager::ui::cells::{
     age_line, ahead_behind_line, fit_text, merge_status_line, merge_status_line_for_branch,
     pr_line, worktree_status_line,
 };
-use git_branch_manager::ui::info_modal::{InfoHitRegion, InfoModalRow};
+use git_branch_manager::ui::info_modal::{InfoHitRegion, InfoModalFocus, InfoModalRow};
 use git_branch_manager::ui::list_render::CellContext;
 use git_branch_manager::ui::menu::MenuItem;
 use git_branch_manager::ui::render::{Overlay, RenderContext};
@@ -1114,11 +1114,27 @@ impl App {
             },
             Some(Overlay::InfoModal {
                 cursor,
+                info_cursor,
+                focus,
                 items,
                 row,
                 scroll_offset,
             }) => match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.overlay = Some(Overlay::InfoModal {
+                        cursor,
+                        info_cursor,
+                        focus: if focus == InfoModalFocus::Info {
+                            InfoModalFocus::Actions
+                        } else {
+                            InfoModalFocus::Info
+                        },
+                        items,
+                        row,
+                        scroll_offset,
+                    });
+                }
+                KeyCode::Char('j') | KeyCode::Down if focus == InfoModalFocus::Actions => {
                     let mut new_cursor = cursor + 1;
                     while new_cursor < items.len() && !items[new_cursor].enabled {
                         new_cursor += 1;
@@ -1126,6 +1142,8 @@ impl App {
                     if new_cursor < items.len() {
                         self.overlay = Some(Overlay::InfoModal {
                             cursor: new_cursor,
+                            info_cursor,
+                            focus,
                             items,
                             row,
                             scroll_offset,
@@ -1133,13 +1151,15 @@ impl App {
                     } else {
                         self.overlay = Some(Overlay::InfoModal {
                             cursor,
+                            info_cursor,
+                            focus,
                             items,
                             row,
                             scroll_offset,
                         });
                     }
                 }
-                KeyCode::Char('k') | KeyCode::Up => {
+                KeyCode::Char('k') | KeyCode::Up if focus == InfoModalFocus::Actions => {
                     let mut new_cursor = cursor;
                     loop {
                         if new_cursor == 0 {
@@ -1152,6 +1172,8 @@ impl App {
                     }
                     self.overlay = Some(Overlay::InfoModal {
                         cursor: new_cursor,
+                        info_cursor,
+                        focus,
                         items,
                         row,
                         scroll_offset,
@@ -1161,6 +1183,8 @@ impl App {
                     let new_offset = scroll_offset.saturating_sub(5);
                     self.overlay = Some(Overlay::InfoModal {
                         cursor,
+                        info_cursor,
+                        focus,
                         items,
                         row,
                         scroll_offset: new_offset,
@@ -1170,18 +1194,72 @@ impl App {
                     let new_offset = scroll_offset.saturating_add(5);
                     self.overlay = Some(Overlay::InfoModal {
                         cursor,
+                        info_cursor,
+                        focus,
                         items,
                         row,
                         scroll_offset: new_offset,
                     });
                 }
-                KeyCode::Enter => {
+                KeyCode::Down if focus == InfoModalFocus::Info => {
+                    let info_cursor = info_cursor
+                        .saturating_add(1)
+                        .min(row.info_field_count().saturating_sub(1));
+                    self.overlay = Some(Overlay::InfoModal {
+                        cursor,
+                        info_cursor,
+                        focus,
+                        items,
+                        row,
+                        scroll_offset,
+                    });
+                }
+                KeyCode::Up if focus == InfoModalFocus::Info => {
+                    let info_cursor = info_cursor.saturating_sub(1);
+                    self.overlay = Some(Overlay::InfoModal {
+                        cursor,
+                        info_cursor,
+                        focus,
+                        items,
+                        row,
+                        scroll_offset,
+                    });
+                }
+                KeyCode::Enter if focus == InfoModalFocus::Info => {
+                    if let Some((label, value)) = row.info_field(info_cursor) {
+                        self.copy_info_value(label, value);
+                    }
+                    self.overlay = Some(Overlay::InfoModal {
+                        cursor,
+                        info_cursor,
+                        focus,
+                        items,
+                        row,
+                        scroll_offset,
+                    });
+                }
+                KeyCode::Char('y') if focus == InfoModalFocus::Info => {
+                    if let Some((label, value)) = row.info_field(info_cursor) {
+                        self.copy_info_value(label, value);
+                    }
+                    self.overlay = Some(Overlay::InfoModal {
+                        cursor,
+                        info_cursor,
+                        focus,
+                        items,
+                        row,
+                        scroll_offset,
+                    });
+                }
+                KeyCode::Enter if focus == InfoModalFocus::Actions => {
                     if let Some(item) = items.get(cursor) {
                         if item.enabled {
                             self.execute_menu_action(item.action);
                         } else {
                             self.overlay = Some(Overlay::InfoModal {
                                 cursor,
+                                info_cursor,
+                                focus,
                                 items,
                                 row,
                                 scroll_offset,
@@ -1190,7 +1268,7 @@ impl App {
                     }
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {} // close
-                KeyCode::Char(c) => {
+                KeyCode::Char(c) if focus == InfoModalFocus::Actions => {
                     if let Some((_, item)) = items
                         .iter()
                         .enumerate()
@@ -1200,6 +1278,8 @@ impl App {
                     } else {
                         self.overlay = Some(Overlay::InfoModal {
                             cursor,
+                            info_cursor,
+                            focus,
                             items,
                             row,
                             scroll_offset,
@@ -1209,6 +1289,8 @@ impl App {
                 _ => {
                     self.overlay = Some(Overlay::InfoModal {
                         cursor,
+                        info_cursor,
+                        focus,
                         items,
                         row,
                         scroll_offset,
@@ -1591,11 +1673,15 @@ impl App {
             .map(|r| (r.label.clone(), r.value.clone()));
 
         if let Some((label, value)) = hit {
-            self.info_copied_msg = Some(match copy_to_clipboard(&value) {
-                Ok(()) => format!("{label} copied to clipboard"),
-                Err(e) => format!("Clipboard error: {e}"),
-            });
+            self.copy_info_value(label, value);
         }
+    }
+
+    fn copy_info_value(&mut self, label: String, value: String) {
+        self.info_copied_msg = Some(match copy_to_clipboard(&value) {
+            Ok(()) => format!("{label} copied to clipboard"),
+            Err(e) => format!("Clipboard error: {e}"),
+        });
     }
 
     fn handle_left_click(&mut self, x: u16, y: u16) {
@@ -1735,6 +1821,8 @@ impl App {
         self.overlay = Some(Overlay::InfoModal {
             items,
             cursor: 0,
+            info_cursor: 0,
+            focus: InfoModalFocus::Actions,
             row: row.unwrap(),
             scroll_offset: 0,
         });
@@ -3868,5 +3956,74 @@ mod tests {
 
         assert_eq!(cell_text(&rows[0]), "feature/very-long-branch-name");
         assert_eq!(rows[0].alignment, None);
+    }
+
+    #[test]
+    fn info_modal_focus_and_cursors_are_independent() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.active_view = ViewId::Branches;
+        app.branches.set_items(vec![BranchInfo {
+            name: "feature/test".into(),
+            is_current: false,
+            is_base: false,
+            tracking: TrackingStatus::Local,
+            ahead: None,
+            behind: None,
+            last_commit_date: Utc::now(),
+            merge_status: MergeStatus::Unmerged,
+            base_branch: "main".into(),
+            merge_base_commit: None,
+            pr: None,
+        }]);
+        app.open_context_menu();
+
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::InfoModal {
+                focus: InfoModalFocus::Actions,
+                cursor: 0,
+                info_cursor: 0,
+                ..
+            })
+        ));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::InfoModal {
+                focus: InfoModalFocus::Info,
+                cursor: 0,
+                info_cursor: 1,
+                ..
+            })
+        ));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::InfoModal {
+                focus: InfoModalFocus::Actions,
+                cursor: 1,
+                info_cursor: 1,
+                ..
+            })
+        ));
     }
 }

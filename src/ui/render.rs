@@ -23,7 +23,7 @@ use super::executing::draw_executing;
 use super::filter_ui::draw_filter;
 use super::graph_render::{draw_graph_options, render_graph_view};
 use super::help::draw_help;
-use super::info_modal::{draw_info_modal, InfoHitRegion, InfoModalRow};
+use super::info_modal::{draw_info_modal, InfoHitRegion, InfoModalFocus, InfoModalRow};
 use super::list_render::{ListRenderParams, RowRenderer};
 use super::menu::{draw_menu, MenuItem};
 use super::results::draw_results;
@@ -42,6 +42,8 @@ pub enum Overlay {
     InfoModal {
         items: Vec<MenuItem>,
         cursor: usize,
+        info_cursor: usize,
+        focus: InfoModalFocus,
         row: InfoModalRow,
         scroll_offset: u16,
     },
@@ -260,6 +262,8 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
             Overlay::InfoModal {
                 items,
                 cursor,
+                info_cursor,
+                focus,
                 row,
                 scroll_offset,
             } => {
@@ -268,6 +272,8 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                     row,
                     items,
                     *cursor,
+                    *focus,
+                    *info_cursor,
                     *scroll_offset,
                     ctx.info_copied_msg,
                     ctx.info_hit_regions,

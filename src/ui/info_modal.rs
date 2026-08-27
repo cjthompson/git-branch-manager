@@ -19,6 +19,12 @@ pub enum InfoModalRow {
     Worktree(WorktreeInfo),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfoModalFocus {
+    Info,
+    Actions,
+}
+
 struct InfoField {
     label: &'static str,
     value: String,
@@ -31,6 +37,18 @@ pub struct InfoHitRegion {
     pub rect: Rect,
     pub label: String,
     pub value: String,
+}
+
+impl InfoModalRow {
+    pub fn info_field_count(&self) -> usize {
+        build_fields(self).len()
+    }
+
+    pub fn info_field(&self, index: usize) -> Option<(String, String)> {
+        build_fields(self)
+            .get(index)
+            .map(|field| (field.label.to_string(), field.value.clone()))
+    }
 }
 
 /// Where a field's lines landed within the built line list, before any
@@ -48,6 +66,8 @@ pub fn draw_info_modal(
     row: &InfoModalRow,
     items: &[MenuItem],
     cursor: usize,
+    focus: InfoModalFocus,
+    info_cursor: usize,
     scroll_offset: u16,
     copied_msg: Option<&str>,
     hit_regions: &mut Vec<InfoHitRegion>,
@@ -70,6 +90,8 @@ pub fn draw_info_modal(
             &fields,
             items,
             cursor,
+            focus,
+            info_cursor,
             copied_msg,
             hit_regions,
             theme,
@@ -83,6 +105,8 @@ pub fn draw_info_modal(
             &fields,
             items,
             cursor,
+            focus,
+            info_cursor,
             scroll_offset,
             copied_msg,
             hit_regions,
@@ -433,6 +457,7 @@ fn build_info_lines(
     fields: &[InfoField],
     theme: &Theme,
     width: usize,
+    selected_field: Option<usize>,
 ) -> (Vec<Line<'static>>, Vec<FieldSpan>) {
     let value_width = width.saturating_sub(INFO_LABEL_WIDTH).max(1);
     let mut lines = Vec::new();
@@ -442,16 +467,27 @@ fn build_info_lines(
         let chunks = wrap_value(&f.value, value_width);
         let line_count = chunks.len() as u16;
         for (i, chunk) in chunks.into_iter().enumerate() {
+            let selected = selected_field == Some(spans.len());
             if i == 0 {
-                lines.push(Line::from(vec![
+                let line = Line::from(vec![
                     Span::styled(format!("{:<15} ", f.label), theme.title),
                     Span::raw(chunk),
-                ]));
+                ]);
+                lines.push(if selected {
+                    line.style(theme.cursor)
+                } else {
+                    line
+                });
             } else {
-                lines.push(Line::from(vec![
+                let line = Line::from(vec![
                     Span::raw(" ".repeat(INFO_LABEL_WIDTH)),
                     Span::raw(chunk),
-                ]));
+                ]);
+                lines.push(if selected {
+                    line.style(theme.cursor)
+                } else {
+                    line
+                });
             }
         }
         spans.push(FieldSpan {
@@ -471,6 +507,8 @@ fn draw_info_modal_wide(
     fields: &[InfoField],
     items: &[MenuItem],
     cursor: usize,
+    focus: InfoModalFocus,
+    info_cursor: usize,
     copied_msg: Option<&str>,
     hit_regions: &mut Vec<InfoHitRegion>,
     theme: &Theme,
@@ -515,7 +553,9 @@ fn draw_info_modal_wide(
         height: content_height,
     };
 
-    let (info_lines, field_spans) = build_info_lines(fields, theme, info_inner.width as usize);
+    let selected_field = (focus == InfoModalFocus::Info).then_some(info_cursor);
+    let (info_lines, field_spans) =
+        build_info_lines(fields, theme, info_inner.width as usize, selected_field);
 
     let info_para = Paragraph::new(info_lines);
     frame.render_widget(info_para, content_rect);
@@ -552,6 +592,22 @@ fn draw_info_modal_wide(
         };
         let para = Paragraph::new(Line::from(Span::styled(msg.to_string(), theme.merged)));
         frame.render_widget(para, msg_rect);
+    } else {
+        let hint_rect = Rect {
+            x: info_inner.x,
+            y: info_inner.y + content_height,
+            width: info_inner.width,
+            height: 1,
+        };
+        let hint = if focus == InfoModalFocus::Info {
+            "Tab switch  ↑/↓ navigate  Enter/y copy  Esc close"
+        } else {
+            "Tab switch  j/k navigate  Enter invoke  Esc close"
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(hint, theme.secondary_text))),
+            hint_rect,
+        );
     }
 
     // Render actions pane on the right
@@ -573,7 +629,7 @@ fn draw_info_modal_wide(
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let prefix = if i == cursor {
+            let prefix = if focus == InfoModalFocus::Actions && i == cursor {
                 format!("{} ", symbols.cursor_prefix)
             } else {
                 "  ".to_string()
@@ -581,7 +637,7 @@ fn draw_info_modal_wide(
 
             let item_style = if !item.enabled {
                 theme.secondary_text
-            } else if i == cursor {
+            } else if focus == InfoModalFocus::Actions && i == cursor {
                 theme.cursor
             } else {
                 Style::default()
@@ -624,6 +680,8 @@ fn draw_info_modal_narrow(
     fields: &[InfoField],
     items: &[MenuItem],
     cursor: usize,
+    focus: InfoModalFocus,
+    info_cursor: usize,
     scroll_offset: u16,
     copied_msg: Option<&str>,
     hit_regions: &mut Vec<InfoHitRegion>,
@@ -643,7 +701,8 @@ fn draw_info_modal_narrow(
     // Info lines come first, so each FieldSpan's start_line is also its index
     // within all_lines.
     let content_width = modal_rect.width.saturating_sub(3) as usize;
-    let (info_lines, field_spans) = build_info_lines(fields, theme, content_width);
+    let selected_field = (focus == InfoModalFocus::Info).then_some(info_cursor);
+    let (info_lines, field_spans) = build_info_lines(fields, theme, content_width, selected_field);
     all_lines.extend(info_lines);
 
     // Separator
@@ -659,7 +718,7 @@ fn draw_info_modal_narrow(
 
     // Action items
     for (i, item) in items.iter().enumerate() {
-        let prefix = if i == cursor {
+        let prefix = if focus == InfoModalFocus::Actions && i == cursor {
             format!("{} ", symbols.cursor_prefix)
         } else {
             "  ".to_string()
@@ -667,7 +726,7 @@ fn draw_info_modal_narrow(
 
         let item_style = if !item.enabled {
             theme.secondary_text
-        } else if i == cursor {
+        } else if focus == InfoModalFocus::Actions && i == cursor {
             theme.cursor
         } else {
             Style::default()
@@ -701,7 +760,11 @@ fn draw_info_modal_narrow(
     // Hint line
     all_lines.push(Line::from(""));
     all_lines.push(Line::from(Span::styled(
-        "j/k navigate  Enter invoke  Esc close",
+        if focus == InfoModalFocus::Info {
+            "Tab switch  ↑/↓ navigate  Enter/y copy  Esc close"
+        } else {
+            "Tab switch  j/k navigate  Enter invoke  Esc close"
+        },
         theme.secondary_text,
     )));
 
@@ -782,4 +845,31 @@ fn draw_info_modal_narrow(
 
     let scrollbar = Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight);
     frame.render_stateful_widget(scrollbar, scrollbar_rect, &mut scrollbar_state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn info_field_accessors_match_built_fields() {
+        let row = InfoModalRow::Tag(TagInfo {
+            name: "v1.2".into(),
+            commit_hash: "abc123".into(),
+            date: Utc::now(),
+            message: Some("release".into()),
+            is_annotated: true,
+        });
+        let fields = build_fields(&row);
+
+        assert_eq!(row.info_field_count(), fields.len());
+        for (index, field) in fields.iter().enumerate() {
+            assert_eq!(
+                row.info_field(index),
+                Some((field.label.into(), field.value.clone()))
+            );
+        }
+        assert_eq!(row.info_field(fields.len()), None);
+    }
 }
