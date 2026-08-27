@@ -18,6 +18,7 @@ use ratatui::text::Line;
 use crate::types::{MergeStatus, PrInfo, PrStatus, WorkingTreeStatus};
 use crate::ui::list_render::CellContext;
 use crate::ui::shared::age_style;
+use crate::{symbols::SymbolSet, theme::Theme};
 
 // ── Pure formatting helpers (testable without building a Cell) ──────────────
 
@@ -39,13 +40,11 @@ pub fn fit_text(full: String, short: String, col_width: Option<usize>, compact: 
 /// Merge-status text + style, fit to the resolved column width: full words
 /// (`merged`/`squash-merged`/`unmerged`) when the column is wide enough,
 /// abbreviations (`m`/`sm`/`u`) when narrow. The status symbol is always shown.
-pub(crate) fn merge_status_parts(
+fn merge_status_labels(
     status: &MergeStatus,
-    ctx: &CellContext,
-    col_width: Option<usize>,
-) -> (String, Style) {
-    let theme = ctx.theme;
-    let symbols = ctx.symbols;
+    theme: &Theme,
+    symbols: &SymbolSet,
+) -> (String, String, Style) {
     let (full, short, style) = match status {
         MergeStatus::Merged => (
             format!("merged {}", symbols.status_merged),
@@ -117,7 +116,26 @@ pub(crate) fn merge_status_parts(
             theme.dim,
         ),
     };
+    (full, short, style)
+}
+
+pub(crate) fn merge_status_parts(
+    status: &MergeStatus,
+    ctx: &CellContext,
+    col_width: Option<usize>,
+) -> (String, Style) {
+    let (full, short, style) = merge_status_labels(status, ctx.theme, ctx.symbols);
     (fit_text(full, short, col_width, ctx.compact), style)
+}
+
+/// Compact merge-status text + style shared by space-constrained views.
+pub(crate) fn compact_merge_status_parts(
+    status: &MergeStatus,
+    theme: &Theme,
+    symbols: &SymbolSet,
+) -> (String, Style) {
+    let (_, short, style) = merge_status_labels(status, theme, symbols);
+    (short, style)
 }
 
 /// Worktree working-tree-status text + style, fit to the resolved column width:

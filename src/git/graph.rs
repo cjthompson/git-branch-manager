@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
 
+use crate::types::MergeStatus;
 use thiserror::Error;
 
 /// An app-owned graph payload. It deliberately contains no repository handles
@@ -13,7 +14,7 @@ pub struct GraphSnapshot {
     pub source: GraphSource,
     pub commits: Vec<GraphCommit>,
     pub lines: Vec<GraphLine>,
-    pub sidebar: GraphSidebar,
+    pub ref_counts: GraphRefCounts,
     pub max_count: usize,
     pub includes_remotes: bool,
 }
@@ -30,7 +31,17 @@ pub struct GraphCommit {
     pub summary: String,
     pub parents: Vec<String>,
     pub lane: Option<usize>,
+    /// The live branch whose visual track owns this commit. This is derived
+    /// from the graph layout, not from generic reachability, so a merged side
+    /// branch does not get mislabeled as the base branch.
+    pub branch: Option<GraphBranchLabel>,
     pub refs: Vec<GraphRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphBranchLabel {
+    pub name: String,
+    pub target_oid: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +54,30 @@ pub struct GraphLine {
 pub struct GraphRef {
     pub name: String,
     pub kind: GraphRefKind,
+    pub status: Option<GraphRefStatus>,
+    pub tracking: Option<GraphRefTracking>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphRefStatus {
+    pub merge_status: MergeStatus,
+    pub ahead: Option<u32>,
+    pub behind: Option<u32>,
+    pub is_current: bool,
+    pub is_base: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphRefTracking {
+    pub remote_name: String,
+    pub ahead: u32,
+    pub behind: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GraphRefCounts {
+    pub local: usize,
+    pub remote: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,24 +87,12 @@ pub enum GraphRefKind {
     Tag,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct GraphSidebar {
-    pub local_branches: Vec<GraphSidebarRef>,
-    pub remote_branches: Vec<GraphSidebarRef>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphSidebarRef {
-    pub name: String,
-    pub target_oid: String,
-    pub lane: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphLoadOptions {
     pub max_count: usize,
     pub include_remotes: bool,
     pub line_style: GraphLineStyle,
+    pub base_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -95,6 +118,7 @@ impl Default for GraphLoadOptions {
             max_count: 500,
             include_remotes: false,
             line_style: GraphLineStyle::default(),
+            base_branch: None,
         }
     }
 }
@@ -110,7 +134,7 @@ pub fn load_graph(
     options: GraphLoadOptions,
 ) -> Result<GraphSnapshot, GraphLoadError> {
     let gleisbau_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        load_with_gleisbau(repo_path, options)
+        load_with_gleisbau(repo_path, options.clone())
     }));
 
     match gleisbau_result {
@@ -152,7 +176,11 @@ fn load_with_gleisbau(
     repo_path: &Path,
     options: GraphLoadOptions,
 ) -> Result<GraphSnapshot, String> {
-    let ref_data = collect_ref_data(repo_path, options.include_remotes)?;
+    let ref_data = collect_ref_data(
+        repo_path,
+        options.include_remotes,
+        options.base_branch.as_deref(),
+    )?;
     let settings = gleisbau_settings(options.include_remotes, options.line_style)?;
     let repository =
         gleisbau::Repository::open(repo_path).map_err(|error| error.message().to_string())?;
@@ -161,6 +189,25 @@ fn load_with_gleisbau(
         .with_settings(Rc::clone(&settings))
         .with_max_count(options.max_count)
         .build()?;
+    let mut local_branch_labels = ref_data
+        .local_branch_labels
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    local_branch_labels.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut branch_labels_by_trace = HashMap::new();
+    for label in local_branch_labels {
+        let Some(trace) = graph
+            .tracks
+            .commits
+            .iter()
+            .find(|info| info.oid.to_string() == label.target_oid)
+            .and_then(|info| info.branch_trace)
+        else {
+            continue;
+        };
+        branch_labels_by_trace.entry(trace).or_insert(label);
+    }
 
     let heights = vec![1; graph.layout.commit_count()];
     let rendered = gleisbau::print::unicode::print_graph_terminal(
@@ -177,7 +224,7 @@ fn load_with_gleisbau(
         );
     }
 
-    let commits = graph
+    let mut commits = graph
         .tracks
         .commits
         .iter()
@@ -196,20 +243,21 @@ fn load_with_gleisbau(
                 .and_then(|trace| graph.layout.track_visual(trace))
                 .and_then(|visual| visual.column);
 
+            let branch = info
+                .branch_trace
+                .and_then(|trace| branch_labels_by_trace.get(&trace).cloned());
+
             Ok(GraphCommit {
                 oid: oid.clone(),
                 summary,
                 parents: info.parents.iter().map(ToString::to_string).collect(),
                 lane,
+                branch,
                 refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let lanes_by_oid = commits
-        .iter()
-        .map(|commit| (commit.oid.clone(), commit.lane))
-        .collect();
-
+    assign_graph_branch_labels(&mut commits, &ref_data.branch_labels);
     Ok(GraphSnapshot {
         source: GraphSource::Gleisbau,
         commits,
@@ -222,7 +270,7 @@ fn load_with_gleisbau(
                 commit_index: line_to_commit.get(&index).copied(),
             })
             .collect(),
-        sidebar: ref_data.sidebar.with_lanes(&lanes_by_oid),
+        ref_counts: ref_data.ref_counts,
         max_count: options.max_count,
         includes_remotes: options.include_remotes,
     })
@@ -233,7 +281,11 @@ fn load_with_git_cli(
     options: GraphLoadOptions,
     cause: String,
 ) -> Result<GraphSnapshot, String> {
-    let ref_data = collect_ref_data(repo_path, options.include_remotes)?;
+    let ref_data = collect_ref_data(
+        repo_path,
+        options.include_remotes,
+        options.base_branch.as_deref(),
+    )?;
     let max_count = format!("--max-count={}", options.max_count);
     let mut command = Command::new("git");
     command.current_dir(repo_path).args([
@@ -290,6 +342,7 @@ fn load_with_git_cli(
             summary: fields[2].to_string(),
             parents: fields[1].split_whitespace().map(str::to_string).collect(),
             lane,
+            branch: None,
             refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
         });
         lines.push(GraphLine {
@@ -297,16 +350,12 @@ fn load_with_git_cli(
             commit_index: Some(commit_index),
         });
     }
-    let lanes_by_oid = commits
-        .iter()
-        .map(|commit| (commit.oid.clone(), commit.lane))
-        .collect();
-
+    assign_graph_branch_labels(&mut commits, &ref_data.branch_labels);
     Ok(GraphSnapshot {
         source: GraphSource::GitCliFallback { cause },
         commits,
         lines,
-        sidebar: ref_data.sidebar.with_lanes(&lanes_by_oid),
+        ref_counts: ref_data.ref_counts,
         max_count: options.max_count,
         includes_remotes: options.include_remotes,
     })
@@ -345,13 +394,36 @@ fn gleisbau_settings(
 #[derive(Default)]
 struct RefData {
     refs_by_oid: HashMap<String, Vec<GraphRef>>,
-    sidebar: GraphSidebar,
+    ref_counts: GraphRefCounts,
+    branch_labels: HashMap<String, GraphBranchLabel>,
+    local_branch_labels: HashMap<String, GraphBranchLabel>,
 }
 
-fn collect_ref_data(repo_path: &Path, include_remotes: bool) -> Result<RefData, String> {
+fn collect_ref_data(
+    repo_path: &Path,
+    include_remotes: bool,
+    requested_base: Option<&str>,
+) -> Result<RefData, String> {
     let repository =
         git2::Repository::open(repo_path).map_err(|error| error.message().to_string())?;
     let mut data = RefData::default();
+    let base_branch = requested_base
+        .map(str::to_string)
+        .or_else(|| crate::git::branch::detect_base_branch(&repository, None).ok());
+    let local_statuses = base_branch
+        .as_deref()
+        .and_then(|base| crate::git::branch::list_branches(&repository, base).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|branch| (branch.name.clone(), branch))
+        .collect::<HashMap<_, _>>();
+    let remote_statuses = if include_remotes {
+        collect_remote_statuses(repo_path, &repository, base_branch.as_deref())
+    } else {
+        HashMap::new()
+    };
+    let mut local_refs = Vec::new();
+    let mut remote_refs = Vec::new();
 
     for branch in repository
         .branches(Some(git2::BranchType::Local))
@@ -369,54 +441,90 @@ fn collect_ref_data(repo_path: &Path, include_remotes: bool) -> Result<RefData, 
             continue;
         };
         let target_oid = target.to_string();
+        local_refs.push((name.clone(), target_oid.clone()));
+        data.ref_counts.local += 1;
+        let label = GraphBranchLabel {
+            name: name.clone(),
+            target_oid: target_oid.clone(),
+        };
+        data.branch_labels.insert(name.clone(), label.clone());
+        data.local_branch_labels.insert(name.clone(), label);
+    }
+
+    for branch in repository
+        .branches(Some(git2::BranchType::Remote))
+        .map_err(|error| error.message().to_string())?
+    {
+        let (branch, _) = branch.map_err(|error| error.message().to_string())?;
+        let Some(name) = branch
+            .name()
+            .map_err(|error| error.message().to_string())?
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if name.ends_with("/HEAD") {
+            continue;
+        }
+        let Some(target) = branch.get().target() else {
+            continue;
+        };
+        let target_oid = target.to_string();
+        remote_refs.push((name.clone(), target_oid.clone()));
+        if include_remotes {
+            data.ref_counts.remote += 1;
+            data.branch_labels.insert(
+                name.clone(),
+                GraphBranchLabel {
+                    name: name.clone(),
+                    target_oid: target_oid.clone(),
+                },
+            );
+        }
+    }
+
+    for (name, target_oid) in &local_refs {
+        let status = local_statuses.get(name).map(graph_local_status);
+        let tracking = remote_refs
+            .iter()
+            .filter(|(remote_name, _)| remote_short_name(remote_name) == name)
+            .find_map(|(remote_name, remote_oid)| {
+                let (ahead, behind) = repository
+                    .graph_ahead_behind(
+                        git2::Oid::from_str(target_oid).ok()?,
+                        git2::Oid::from_str(remote_oid).ok()?,
+                    )
+                    .ok()?;
+                Some(GraphRefTracking {
+                    remote_name: remote_name.clone(),
+                    ahead: ahead.try_into().unwrap_or(u32::MAX),
+                    behind: behind.try_into().unwrap_or(u32::MAX),
+                })
+            });
         insert_ref(
             &mut data.refs_by_oid,
-            &target_oid,
+            target_oid,
             GraphRef {
                 name: name.clone(),
                 kind: GraphRefKind::LocalBranch,
+                status,
+                tracking,
             },
         );
-        data.sidebar.local_branches.push(GraphSidebarRef {
-            name,
-            target_oid,
-            lane: None,
-        });
     }
 
     if include_remotes {
-        for branch in repository
-            .branches(Some(git2::BranchType::Remote))
-            .map_err(|error| error.message().to_string())?
-        {
-            let (branch, _) = branch.map_err(|error| error.message().to_string())?;
-            let Some(name) = branch
-                .name()
-                .map_err(|error| error.message().to_string())?
-                .map(str::to_string)
-            else {
-                continue;
-            };
-            if name.ends_with("/HEAD") {
-                continue;
-            }
-            let Some(target) = branch.get().target() else {
-                continue;
-            };
-            let target_oid = target.to_string();
+        for (name, target_oid) in &remote_refs {
             insert_ref(
                 &mut data.refs_by_oid,
-                &target_oid,
+                target_oid,
                 GraphRef {
                     name: name.clone(),
                     kind: GraphRefKind::RemoteBranch,
+                    status: remote_statuses.get(name).cloned(),
+                    tracking: None,
                 },
             );
-            data.sidebar.remote_branches.push(GraphSidebarRef {
-                name,
-                target_oid,
-                lane: None,
-            });
         }
     }
 
@@ -438,17 +546,175 @@ fn collect_ref_data(repo_path: &Path, include_remotes: bool) -> Result<RefData, 
             GraphRef {
                 name: name.to_string(),
                 kind: GraphRefKind::Tag,
+                status: None,
+                tracking: None,
             },
         );
     }
 
-    data.sidebar
-        .local_branches
-        .sort_by(|left, right| left.name.cmp(&right.name));
-    data.sidebar
-        .remote_branches
-        .sort_by(|left, right| left.name.cmp(&right.name));
     Ok(data)
+}
+
+fn graph_local_status(branch: &crate::types::BranchInfo) -> GraphRefStatus {
+    GraphRefStatus {
+        merge_status: branch.merge_status,
+        ahead: branch.ahead,
+        behind: branch.behind,
+        is_current: branch.is_current,
+        is_base: branch.is_base,
+    }
+}
+
+fn collect_remote_statuses(
+    repo_path: &Path,
+    repository: &git2::Repository,
+    base_branch: Option<&str>,
+) -> HashMap<String, GraphRefStatus> {
+    let Some(base_branch) = base_branch else {
+        return HashMap::new();
+    };
+    let remotes = crate::git::branch::list_remote_branches_phase1(repository, base_branch)
+        .unwrap_or_default();
+    let mut statuses = remotes
+        .iter()
+        .map(|remote| {
+            (
+                remote.full_ref.clone(),
+                GraphRefStatus {
+                    merge_status: remote.merge_status,
+                    ahead: remote.ahead,
+                    behind: remote.behind,
+                    is_current: false,
+                    is_base: remote.is_base,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let receiver = crate::git::branch::spawn_remote_enricher(
+        repo_path.to_path_buf(),
+        base_branch.to_string(),
+        remotes,
+    );
+    while let Ok(result) = receiver.recv() {
+        if let Some(status) = statuses.get_mut(&result.full_ref) {
+            status.merge_status = result.merge_status;
+            status.ahead = result.ahead;
+            status.behind = result.behind;
+        }
+    }
+    statuses
+}
+
+fn remote_short_name(name: &str) -> &str {
+    name.split_once('/').map(|(_, short)| short).unwrap_or(name)
+}
+
+fn assign_graph_branch_labels(
+    commits: &mut [GraphCommit],
+    branch_labels: &HashMap<String, GraphBranchLabel>,
+) {
+    assign_first_parent_branch_labels(commits, branch_labels);
+    assign_merge_subject_branch_labels(commits);
+}
+
+fn assign_first_parent_branch_labels(
+    commits: &mut [GraphCommit],
+    branch_labels: &HashMap<String, GraphBranchLabel>,
+) {
+    let index_by_oid = commits
+        .iter()
+        .enumerate()
+        .map(|(index, commit)| (commit.oid.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let mut labels = branch_labels.values().cloned().collect::<Vec<_>>();
+    labels.sort_by(|left, right| left.name.cmp(&right.name));
+    for label in labels {
+        let mut oid = label.target_oid.clone();
+        let mut visited = HashSet::new();
+        while visited.insert(oid.clone()) {
+            let Some(&index) = index_by_oid.get(&oid) else {
+                break;
+            };
+            if commits[index].branch.is_none() {
+                commits[index].branch = Some(label.clone());
+            }
+            let Some(parent) = commits[index].parents.first() else {
+                break;
+            };
+            oid = parent.clone();
+        }
+    }
+}
+
+fn assign_merge_subject_branch_labels(commits: &mut [GraphCommit]) {
+    let index_by_oid = commits
+        .iter()
+        .enumerate()
+        .map(|(index, commit)| (commit.oid.clone(), index))
+        .collect::<HashMap<_, _>>();
+
+    for merge_index in 0..commits.len() {
+        let Some(branch_name) = parse_merge_branch_name(&commits[merge_index].summary) else {
+            continue;
+        };
+        let Some(first_parent) = commits[merge_index].parents.first() else {
+            continue;
+        };
+        let Some(second_parent) = commits[merge_index].parents.get(1) else {
+            continue;
+        };
+
+        let receiving_branch_history = first_parent_history(commits, &index_by_oid, first_parent);
+        let label = GraphBranchLabel {
+            name: branch_name,
+            target_oid: second_parent.clone(),
+        };
+        let mut oid = second_parent.clone();
+        let mut visited = HashSet::new();
+        while visited.insert(oid.clone()) {
+            if receiving_branch_history.contains(&oid) {
+                break;
+            }
+            let Some(&index) = index_by_oid.get(&oid) else {
+                break;
+            };
+            if commits[index].branch.is_none() {
+                commits[index].branch = Some(label.clone());
+            }
+            let Some(parent) = commits[index].parents.first() else {
+                break;
+            };
+            oid = parent.clone();
+        }
+    }
+}
+
+fn first_parent_history(
+    commits: &[GraphCommit],
+    index_by_oid: &HashMap<String, usize>,
+    start_oid: &str,
+) -> HashSet<String> {
+    let mut history = HashSet::new();
+    let mut oid = start_oid.to_string();
+    while history.insert(oid.clone()) {
+        let Some(&index) = index_by_oid.get(&oid) else {
+            break;
+        };
+        let Some(parent) = commits[index].parents.first() else {
+            break;
+        };
+        oid = parent.clone();
+    }
+    history
+}
+
+fn parse_merge_branch_name(summary: &str) -> Option<String> {
+    let marker = "Merge branch '";
+    let start = summary.find(marker)? + marker.len();
+    let rest = &summary[start..];
+    let end = rest.find('\'')?;
+    let name = &rest[..end];
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 fn insert_ref(refs_by_oid: &mut HashMap<String, Vec<GraphRef>>, oid: &str, reference: GraphRef) {
@@ -456,19 +722,6 @@ fn insert_ref(refs_by_oid: &mut HashMap<String, Vec<GraphRef>>, oid: &str, refer
         .entry(oid.to_string())
         .or_default()
         .push(reference);
-}
-
-impl GraphSidebar {
-    fn with_lanes(mut self, lanes_by_oid: &HashMap<String, Option<usize>>) -> Self {
-        for branch in self
-            .local_branches
-            .iter_mut()
-            .chain(self.remote_branches.iter_mut())
-        {
-            branch.lane = lanes_by_oid.get(&branch.target_oid).copied().flatten();
-        }
-        self
-    }
 }
 
 #[cfg(test)]

@@ -101,6 +101,107 @@ fn run_git_with_env(dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]) 
     }
 }
 
+/// Build one graph with live, nested, deleted, squashed, and tag-only topics.
+///
+/// The branch refs for the deleted topics are removed deliberately; tags keep
+/// the squash and detached histories reachable for graph inspection.
+fn setup_graph_label_fixture() -> TestDir {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path().to_path_buf();
+
+    run_git(&dir, &["checkout", "-b", "release/0.3"]);
+    run_git(&dir, &["commit", "--allow-empty", "-m", "release commit 1"]);
+
+    run_git(&dir, &["checkout", "-b", "feature/nested"]);
+    run_git(
+        &dir,
+        &["commit", "--allow-empty", "-m", "nested branch commit"],
+    );
+    run_git(&dir, &["checkout", "release/0.3"]);
+    run_git(
+        &dir,
+        &[
+            "merge",
+            "--no-ff",
+            "feature/nested",
+            "-m",
+            "Merge branch 'feature/nested' into release/0.3",
+        ],
+    );
+    run_git(&dir, &["branch", "-D", "feature/nested"]);
+
+    run_git(&dir, &["checkout", "main"]);
+    run_git(
+        &dir,
+        &[
+            "commit",
+            "--allow-empty",
+            "-m",
+            "main first-parent fallback",
+        ],
+    );
+    run_git(
+        &dir,
+        &[
+            "merge",
+            "--no-ff",
+            "release/0.3",
+            "-m",
+            "Merge branch 'release/0.3' into main",
+        ],
+    );
+
+    run_git(&dir, &["checkout", "-b", "worktree-agent-deleted"]);
+    run_git(
+        &dir,
+        &[
+            "commit",
+            "--allow-empty",
+            "-m",
+            "deleted merge branch commit",
+        ],
+    );
+    run_git(&dir, &["checkout", "main"]);
+    run_git(
+        &dir,
+        &["commit", "--allow-empty", "-m", "main before deleted merge"],
+    );
+    run_git(
+        &dir,
+        &[
+            "merge",
+            "--no-ff",
+            "worktree-agent-deleted",
+            "-m",
+            "Merge branch 'worktree-agent-deleted' into main",
+        ],
+    );
+    run_git(&dir, &["branch", "-D", "worktree-agent-deleted"]);
+
+    run_git(&dir, &["checkout", "-b", "feature/squash"]);
+    std::fs::write(dir.join("squash-one.txt"), "one\n").unwrap();
+    run_git(&dir, &["add", "squash-one.txt"]);
+    run_git(&dir, &["commit", "-m", "squash source commit 1"]);
+    std::fs::write(dir.join("squash-two.txt"), "two\n").unwrap();
+    run_git(&dir, &["add", "squash-two.txt"]);
+    run_git(&dir, &["commit", "-m", "squash source commit 2"]);
+    run_git(&dir, &["tag", "squash-source"]);
+    run_git(&dir, &["checkout", "main"]);
+    run_git(&dir, &["merge", "--squash", "feature/squash"]);
+    run_git(&dir, &["commit", "-m", "squash merge feature/squash"]);
+    run_git(&dir, &["branch", "-D", "feature/squash"]);
+
+    run_git(&dir, &["checkout", "--detach", "main"]);
+    run_git(
+        &dir,
+        &["commit", "--allow-empty", "-m", "detached tagged commit"],
+    );
+    run_git(&dir, &["tag", "detached-topic"]);
+    run_git(&dir, &["checkout", "main"]);
+
+    tmpdir
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -114,7 +215,7 @@ fn test_detect_base_branch_main() {
 }
 
 #[test]
-fn test_load_graph_preserves_merge_lanes_refs_and_local_sidebar() {
+fn test_load_graph_preserves_merge_lanes_and_local_refs() {
     let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();
 
@@ -151,15 +252,185 @@ fn test_load_graph_preserves_merge_lanes_refs_and_local_sidebar() {
             .iter()
             .any(|reference| reference.name == "feature/graph")
     }));
-    assert!(snapshot
-        .sidebar
-        .local_branches
-        .iter()
-        .any(|branch| branch.name == "feature/graph"));
     assert!(snapshot.commits.iter().any(|commit| commit.lane.is_some()));
+    assert_eq!(snapshot.ref_counts.local, 2);
+    assert_eq!(snapshot.ref_counts.remote, 0);
 
     fn assert_send<T: Send>() {}
     assert_send::<graph::GraphSnapshot>();
+}
+
+#[test]
+fn test_graph_branch_labels_follow_visual_branch_tracks() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "release/0.3"]);
+    run_git(dir, &["commit", "--allow-empty", "-m", "release commit 1"]);
+    run_git(dir, &["commit", "--allow-empty", "-m", "release commit 2"]);
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["commit", "--allow-empty", "-m", "main commit"]);
+    run_git(
+        dir,
+        &["merge", "--no-ff", "release/0.3", "-m", "merge release/0.3"],
+    );
+
+    let snapshot = graph::load_graph(dir, graph::GraphLoadOptions::default())
+        .expect("graph loader should preserve live branch tracks");
+    let release_commit = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "release commit 1")
+        .expect("release commit should be in graph");
+
+    assert_eq!(
+        release_commit
+            .branch
+            .as_ref()
+            .map(|branch| branch.name.as_str()),
+        Some("release/0.3")
+    );
+
+    let main_commit = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "main commit")
+        .expect("main commit should be in graph");
+    assert_eq!(
+        main_commit
+            .branch
+            .as_ref()
+            .map(|branch| branch.name.as_str()),
+        Some("main")
+    );
+}
+
+#[test]
+fn test_graph_does_not_expose_a_deleted_merge_branch_as_a_live_ref() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "worktree-agent-deleted"]);
+    run_git(
+        dir,
+        &["commit", "--allow-empty", "-m", "deleted branch commit"],
+    );
+    run_git(dir, &["checkout", "main"]);
+    run_git(
+        dir,
+        &[
+            "merge",
+            "--no-ff",
+            "worktree-agent-deleted",
+            "-m",
+            "merge worktree-agent-deleted",
+        ],
+    );
+    run_git(dir, &["branch", "-D", "worktree-agent-deleted"]);
+
+    let snapshot = graph::load_graph(dir, graph::GraphLoadOptions::default())
+        .expect("graph loader should handle deleted merge branches");
+    let deleted_commit = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "deleted branch commit")
+        .expect("deleted branch commit should remain in history");
+
+    assert!(deleted_commit.branch.is_none());
+    assert!(!snapshot.commits.iter().any(|commit| {
+        commit
+            .refs
+            .iter()
+            .any(|reference| reference.name == "worktree-agent-deleted")
+    }));
+}
+
+#[test]
+fn test_graph_labels_deleted_merge_branch_from_conventional_subject() {
+    let tmpdir = setup_graph_label_fixture();
+    let snapshot = graph::load_graph(tmpdir.path(), graph::GraphLoadOptions::default())
+        .expect("graph loader should preserve the composed fixture");
+    let deleted_commit = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "deleted merge branch commit")
+        .expect("deleted merge branch commit should be in graph");
+
+    assert_eq!(
+        deleted_commit
+            .branch
+            .as_ref()
+            .map(|branch| branch.name.as_str()),
+        Some("worktree-agent-deleted")
+    );
+}
+
+#[test]
+fn test_graph_label_fixture_labels_nested_and_first_parent_tracks() {
+    let tmpdir = setup_graph_label_fixture();
+    let snapshot = graph::load_graph(tmpdir.path(), graph::GraphLoadOptions::default())
+        .expect("graph loader should preserve the composed fixture");
+
+    let nested_commit = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "nested branch commit")
+        .expect("nested branch commit should be in graph");
+    assert_eq!(
+        nested_commit
+            .branch
+            .as_ref()
+            .map(|branch| branch.name.as_str()),
+        Some("feature/nested")
+    );
+
+    let main_commit = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "main first-parent fallback")
+        .expect("main first-parent commit should be in graph");
+    assert_eq!(
+        main_commit
+            .branch
+            .as_ref()
+            .map(|branch| branch.name.as_str()),
+        Some("main")
+    );
+}
+
+#[test]
+fn test_graph_label_fixture_keeps_tag_only_histories_reachable() {
+    let tmpdir = setup_graph_label_fixture();
+    let snapshot = graph::load_graph(
+        tmpdir.path(),
+        graph::GraphLoadOptions {
+            include_remotes: true,
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph loader should include tag-only fixture histories");
+
+    let squash_source = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "squash source commit 2")
+        .expect("tagged squash source should be in graph");
+    assert!(squash_source
+        .refs
+        .iter()
+        .any(|reference| reference.name == "squash-source"));
+    assert!(squash_source.branch.is_none());
+
+    let detached = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "detached tagged commit")
+        .expect("detached tagged commit should be in graph");
+    assert!(detached
+        .refs
+        .iter()
+        .any(|reference| reference.name == "detached-topic"));
+    assert!(detached.branch.is_none());
 }
 
 #[test]
@@ -177,10 +448,11 @@ fn test_load_graph_includes_remote_refs_only_when_requested() {
     let local_only = graph::load_graph(&work_dir, graph::GraphLoadOptions::default())
         .expect("local graph load should succeed");
     assert!(!local_only
-        .sidebar
-        .remote_branches
+        .commits
         .iter()
-        .any(|branch| branch.name == "origin/remote-only"));
+        .flat_map(|commit| commit.refs.iter())
+        .any(|reference| reference.name == "origin/remote-only"));
+    assert_eq!(local_only.ref_counts.remote, 0);
 
     let with_remotes = graph::load_graph(
         &work_dir,
@@ -190,17 +462,66 @@ fn test_load_graph_includes_remote_refs_only_when_requested() {
         },
     )
     .expect("remote graph load should succeed");
-    assert!(with_remotes
-        .sidebar
-        .remote_branches
-        .iter()
-        .any(|branch| branch.name == "origin/remote-only"));
     assert!(with_remotes.commits.iter().any(|commit| {
         commit
             .refs
             .iter()
             .any(|reference| reference.name == "origin/remote-only")
     }));
+    assert!(with_remotes.ref_counts.remote > 0);
+}
+
+#[test]
+fn test_graph_refs_include_remote_tracking_state() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    run_git(&work_dir, &["checkout", "-b", "ahead"]);
+    run_git(&work_dir, &["commit", "--allow-empty", "-m", "ahead base"]);
+    run_git(&work_dir, &["push", "-u", "origin", "ahead"]);
+    run_git(
+        &work_dir,
+        &["commit", "--allow-empty", "-m", "ahead local commit"],
+    );
+    run_git(&work_dir, &["checkout", "main"]);
+
+    let snapshot = graph::load_graph(
+        &work_dir,
+        graph::GraphLoadOptions {
+            include_remotes: true,
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load with remote tracking refs should succeed");
+
+    let ahead_ref = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "ahead local commit")
+        .and_then(|commit| {
+            commit
+                .refs
+                .iter()
+                .find(|reference| reference.name == "ahead")
+        })
+        .expect("local ahead ref should be attached to its tip");
+    let tracking = ahead_ref
+        .tracking
+        .as_ref()
+        .expect("local branch should expose matching remote tracking");
+    assert_eq!(tracking.remote_name, "origin/ahead");
+    assert_eq!((tracking.ahead, tracking.behind), (1, 0));
+
+    let main_ref = snapshot
+        .commits
+        .iter()
+        .flat_map(|commit| commit.refs.iter())
+        .find(|reference| reference.name == "main")
+        .expect("main ref should be present");
+    let main_tracking = main_ref
+        .tracking
+        .as_ref()
+        .expect("main should expose its matching remote");
+    assert_eq!((main_tracking.ahead, main_tracking.behind), (0, 0));
 }
 
 #[test]
@@ -278,11 +599,6 @@ fn test_load_graph_fallback_with_remotes_includes_tag_only_history() {
         snapshot.source,
         graph::GraphSource::GitCliFallback { ref cause } if cause.contains("shallow")
     ));
-    assert!(snapshot
-        .sidebar
-        .remote_branches
-        .iter()
-        .any(|branch| branch.name == "origin/remote-only"));
     assert!(snapshot.commits.iter().any(|commit| {
         commit.refs.iter().any(|reference| {
             reference.name == "origin/remote-only"

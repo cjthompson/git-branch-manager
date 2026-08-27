@@ -961,8 +961,6 @@ impl App {
 
     fn handle_graph_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('h') | KeyCode::Left => self.graph.focus_left(),
-            KeyCode::Char('l') | KeyCode::Right => self.graph.focus_right(),
             KeyCode::Char('j') | KeyCode::Down => self.graph.move_down(),
             KeyCode::Char('k') | KeyCode::Up => self.graph.move_up(),
             KeyCode::PageDown => self.graph.page_down(),
@@ -2139,8 +2137,8 @@ impl App {
         match self.active_view {
             ViewId::Graph => self
                 .graph
-                .selected_sidebar_ref()
-                .map(|(reference, _)| vec![reference.name.clone()])
+                .selected_ref()
+                .map(|reference| vec![reference.name.clone()])
                 .unwrap_or_default(),
             ViewId::Branches => self
                 .branches
@@ -2341,6 +2339,7 @@ impl App {
                 max_count,
                 include_remotes,
                 line_style: graph::GraphLineStyle::from_symbol_name(self.symbols.name),
+                base_branch: Some(self.base_branch.clone()),
             },
         ));
         self.toast = Some(Toast::new("Loading graph...".into(), 300));
@@ -3527,7 +3526,7 @@ mod tests {
             source: graph::GraphSource::Gleisbau,
             commits: vec![],
             lines: vec![],
-            sidebar: graph::GraphSidebar::default(),
+            ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: false,
         }))
@@ -3557,6 +3556,7 @@ mod tests {
                     summary: "first".into(),
                     parents: vec![],
                     lane: Some(0),
+                    branch: None,
                     refs: vec![],
                 },
                 graph::GraphCommit {
@@ -3564,6 +3564,7 @@ mod tests {
                     summary: "second".into(),
                     parents: vec![],
                     lane: Some(0),
+                    branch: None,
                     refs: vec![],
                 },
             ],
@@ -3577,7 +3578,7 @@ mod tests {
                     commit_index: Some(1),
                 },
             ],
-            sidebar: graph::GraphSidebar::default(),
+            ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: false,
         }));
@@ -3591,10 +3592,7 @@ mod tests {
             KeyCode::Char('l'),
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert_eq!(
-            app.graph.focus(),
-            git_branch_manager::view::graph::GraphPane::Sidebar
-        );
+        assert_eq!(app.graph.commit_cursor(), 1);
     }
 
     fn run_git(dir: &Path, args: &[&str]) {

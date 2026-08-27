@@ -1,24 +1,12 @@
-use crate::git::graph::{GraphLoadError, GraphSidebarRef, GraphSnapshot};
+use crate::git::graph::{GraphLoadError, GraphRef, GraphSnapshot};
 
 /// The default number of commits shown by the Graph tab. Larger histories are
 /// opt-in so opening the tab remains responsive on large repositories.
 pub const GRAPH_PAGE_SIZE: usize = 500;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GraphPane {
-    Commits,
-    Sidebar,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GraphRefScope {
-    Local,
-    Remote,
-}
-
-/// State owned exclusively by the Graph tab. It intentionally does not reuse
-/// `ListState`: graph lines, commit rows, and ref rows have different scroll
-/// and selection semantics than the sortable table views.
+/// State owned exclusively by the Graph tab. The graph and ref columns are
+/// rendered from one row stream, so they intentionally share one cursor and
+/// one scroll offset.
 #[derive(Debug)]
 pub struct GraphState {
     snapshot: Option<GraphSnapshot>,
@@ -26,11 +14,8 @@ pub struct GraphState {
     error: Option<String>,
     max_count: usize,
     include_remotes: bool,
-    focus: GraphPane,
-    commit_cursor: usize,
-    commit_offset: usize,
-    sidebar_cursor: usize,
-    sidebar_offset: usize,
+    cursor: usize,
+    offset: usize,
 }
 
 impl Default for GraphState {
@@ -47,11 +32,8 @@ impl GraphState {
             error: None,
             max_count: GRAPH_PAGE_SIZE,
             include_remotes: false,
-            focus: GraphPane::Commits,
-            commit_cursor: 0,
-            commit_offset: 0,
-            sidebar_cursor: 0,
-            sidebar_offset: 0,
+            cursor: 0,
+            offset: 0,
         }
     }
 
@@ -75,24 +57,12 @@ impl GraphState {
         self.include_remotes
     }
 
-    pub fn focus(&self) -> GraphPane {
-        self.focus
-    }
-
     pub fn commit_offset(&self) -> usize {
-        self.commit_offset
-    }
-
-    pub fn sidebar_offset(&self) -> usize {
-        self.sidebar_offset
+        self.offset
     }
 
     pub fn commit_cursor(&self) -> usize {
-        self.commit_cursor
-    }
-
-    pub fn sidebar_cursor(&self) -> usize {
-        self.sidebar_cursor
+        self.cursor
     }
 
     pub fn begin_load(&mut self, max_count: usize, include_remotes: bool) {
@@ -110,18 +80,14 @@ impl GraphState {
                 self.include_remotes = snapshot.includes_remotes;
                 self.snapshot = Some(snapshot);
                 self.error = None;
-                self.commit_cursor = 0;
-                self.commit_offset = 0;
-                self.sidebar_cursor = 0;
-                self.sidebar_offset = 0;
+                self.cursor = 0;
+                self.offset = 0;
             }
             Err(error) => {
                 self.snapshot = None;
                 self.error = Some(error.to_string());
-                self.commit_cursor = 0;
-                self.commit_offset = 0;
-                self.sidebar_cursor = 0;
-                self.sidebar_offset = 0;
+                self.cursor = 0;
+                self.offset = 0;
             }
         }
     }
@@ -136,70 +102,32 @@ impl GraphState {
         self.max_count
     }
 
-    pub fn focus_left(&mut self) {
-        self.focus = GraphPane::Commits;
-    }
-
-    pub fn focus_right(&mut self) {
-        self.focus = GraphPane::Sidebar;
-    }
-
     pub fn move_up(&mut self) {
-        match self.focus {
-            GraphPane::Commits => self.commit_cursor = self.commit_cursor.saturating_sub(1),
-            GraphPane::Sidebar => self.sidebar_cursor = self.sidebar_cursor.saturating_sub(1),
-        }
+        self.cursor = self.cursor.saturating_sub(1);
     }
 
     pub fn move_down(&mut self) {
-        match self.focus {
-            GraphPane::Commits => {
-                let count = self.commit_count();
-                if count > 0 {
-                    self.commit_cursor = (self.commit_cursor + 1).min(count - 1);
-                }
-            }
-            GraphPane::Sidebar => {
-                let count = self.sidebar_len();
-                if count > 0 {
-                    self.sidebar_cursor = (self.sidebar_cursor + 1).min(count - 1);
-                }
-            }
+        let count = self.commit_count();
+        if count > 0 {
+            self.cursor = (self.cursor + 1).min(count - 1);
         }
     }
 
     pub fn page_up(&mut self) {
-        match self.focus {
-            GraphPane::Commits => self.commit_cursor = self.commit_cursor.saturating_sub(20),
-            GraphPane::Sidebar => self.sidebar_cursor = self.sidebar_cursor.saturating_sub(10),
-        }
+        self.cursor = self.cursor.saturating_sub(20);
     }
 
     pub fn page_down(&mut self) {
-        match self.focus {
-            GraphPane::Commits => {
-                let count = self.commit_count();
-                self.commit_cursor = (self.commit_cursor + 20).min(count.saturating_sub(1));
-            }
-            GraphPane::Sidebar => {
-                let count = self.sidebar_len();
-                self.sidebar_cursor = (self.sidebar_cursor + 10).min(count.saturating_sub(1));
-            }
-        }
+        let count = self.commit_count();
+        self.cursor = (self.cursor + 20).min(count.saturating_sub(1));
     }
 
     pub fn home(&mut self) {
-        match self.focus {
-            GraphPane::Commits => self.commit_cursor = 0,
-            GraphPane::Sidebar => self.sidebar_cursor = 0,
-        }
+        self.cursor = 0;
     }
 
     pub fn end(&mut self) {
-        match self.focus {
-            GraphPane::Commits => self.commit_cursor = self.commit_count().saturating_sub(1),
-            GraphPane::Sidebar => self.sidebar_cursor = self.sidebar_len().saturating_sub(1),
-        }
+        self.cursor = self.commit_count().saturating_sub(1);
     }
 
     pub fn commit_count(&self) -> usize {
@@ -215,15 +143,6 @@ impl GraphState {
             .unwrap_or(0)
     }
 
-    pub fn sidebar_len(&self) -> usize {
-        self.snapshot
-            .as_ref()
-            .map(|snapshot| {
-                snapshot.sidebar.local_branches.len() + snapshot.sidebar.remote_branches.len()
-            })
-            .unwrap_or(0)
-    }
-
     pub fn selected_commit_line(&self) -> Option<usize> {
         self.snapshot.as_ref().and_then(|snapshot| {
             snapshot
@@ -231,7 +150,7 @@ impl GraphState {
                 .iter()
                 .enumerate()
                 .filter(|(_, line)| line.commit_index.is_some())
-                .nth(self.commit_cursor)
+                .nth(self.cursor)
                 .map(|(line_index, _)| line_index)
         })
     }
@@ -243,41 +162,22 @@ impl GraphState {
         self.snapshot.as_ref()?.commits.get(commit_index)
     }
 
-    pub fn sidebar_ref(&self, index: usize) -> Option<(&GraphSidebarRef, GraphRefScope)> {
-        let snapshot = self.snapshot.as_ref()?;
-        if let Some(reference) = snapshot.sidebar.local_branches.get(index) {
-            return Some((reference, GraphRefScope::Local));
-        }
-        let remote_index = index.checked_sub(snapshot.sidebar.local_branches.len())?;
-        snapshot
-            .sidebar
-            .remote_branches
-            .get(remote_index)
-            .map(|reference| (reference, GraphRefScope::Remote))
+    pub fn selected_ref(&self) -> Option<&GraphRef> {
+        let refs = &self.selected_commit()?.refs;
+        refs.iter()
+            .find(|reference| reference.kind == crate::git::graph::GraphRefKind::LocalBranch)
+            .or_else(|| refs.first())
     }
 
-    pub fn selected_sidebar_ref(&self) -> Option<(&GraphSidebarRef, GraphRefScope)> {
-        self.sidebar_ref(self.sidebar_cursor)
-    }
-
-    /// Keep the active row inside the viewport. The renderer calls this after
-    /// it knows the current pane heights.
-    pub fn ensure_visible(&mut self, graph_rows: usize, sidebar_rows: usize) {
+    /// Keep the active row inside the shared graph/ref viewport.
+    pub fn ensure_visible(&mut self, rows: usize) {
         if let Some(line_index) = self.selected_commit_line() {
-            if graph_rows > 0 {
-                if line_index < self.commit_offset {
-                    self.commit_offset = line_index;
-                } else if line_index >= self.commit_offset + graph_rows {
-                    self.commit_offset = line_index + 1 - graph_rows;
+            if rows > 0 {
+                if line_index < self.offset {
+                    self.offset = line_index;
+                } else if line_index >= self.offset + rows {
+                    self.offset = line_index + 1 - rows;
                 }
-            }
-        }
-
-        if sidebar_rows > 0 {
-            if self.sidebar_cursor < self.sidebar_offset {
-                self.sidebar_offset = self.sidebar_cursor;
-            } else if self.sidebar_cursor >= self.sidebar_offset + sidebar_rows {
-                self.sidebar_offset = self.sidebar_cursor + 1 - sidebar_rows;
             }
         }
     }
@@ -286,7 +186,7 @@ impl GraphState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::graph::{GraphCommit, GraphLine, GraphRef, GraphRefKind, GraphSidebar};
+    use crate::git::graph::{GraphCommit, GraphLine, GraphRef, GraphRefKind};
 
     fn snapshot() -> GraphSnapshot {
         GraphSnapshot {
@@ -297,9 +197,12 @@ mod tests {
                     summary: "first".into(),
                     parents: vec![],
                     lane: Some(0),
+                    branch: None,
                     refs: vec![GraphRef {
                         name: "main".into(),
                         kind: GraphRefKind::LocalBranch,
+                        status: None,
+                        tracking: None,
                     }],
                 },
                 GraphCommit {
@@ -307,6 +210,7 @@ mod tests {
                     summary: "second".into(),
                     parents: vec![],
                     lane: Some(0),
+                    branch: None,
                     refs: vec![],
                 },
             ],
@@ -324,28 +228,16 @@ mod tests {
                     commit_index: Some(1),
                 },
             ],
-            sidebar: GraphSidebar {
-                local_branches: vec![GraphSidebarRef {
-                    name: "main".into(),
-                    target_oid: "1111111111111111111111111111111111111111".into(),
-                    lane: Some(0),
-                }],
-                remote_branches: vec![],
-            },
+            ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: false,
         }
     }
 
     #[test]
-    fn graph_focus_and_navigation_are_independent_of_list_state() {
+    fn graph_navigation_uses_one_row_cursor() {
         let mut state = GraphState::new();
         state.apply_result(Ok(snapshot()));
-        assert_eq!(state.focus(), GraphPane::Commits);
-        state.focus_right();
-        state.move_down();
-        assert_eq!(state.sidebar_cursor(), 0);
-        state.focus_left();
         state.move_down();
         assert_eq!(state.commit_cursor(), 1);
     }
@@ -359,5 +251,25 @@ mod tests {
         assert!(state.includes_remotes());
         state.begin_load(state.max_count(), state.includes_remotes());
         assert!(state.is_loading());
+    }
+
+    #[test]
+    fn graph_and_ref_columns_share_one_scroll_offset() {
+        let mut state = GraphState::new();
+        let mut snapshot = snapshot();
+        snapshot.lines = (0..6)
+            .map(|index| GraphLine {
+                graph: "*".into(),
+                commit_index: Some(index % 2),
+            })
+            .collect();
+        state.apply_result(Ok(snapshot));
+
+        for _ in 0..4 {
+            state.move_down();
+        }
+        state.ensure_visible(3);
+
+        assert_eq!(state.commit_offset(), 2);
     }
 }

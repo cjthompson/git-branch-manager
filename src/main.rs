@@ -275,6 +275,7 @@ fn main() -> Result<()> {
         repo_path.clone(),
         graph::GraphLoadOptions {
             line_style: graph::GraphLineStyle::from_symbol_name(app.symbols.name),
+            base_branch: Some(app.base_branch.clone()),
             ..graph::GraphLoadOptions::default()
         },
     ));
