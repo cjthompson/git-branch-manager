@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-27
+
+### Graph LRT Pseudo-pane Implementation (P001)
+- Render the responsive LRT pseudo-pane (#graph, #ui, #responsive)
+
 ## 2026-08-26
 
 ### Graph LRT Pseudo-pane Implementation (P001)
