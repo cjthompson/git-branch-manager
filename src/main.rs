@@ -270,13 +270,16 @@ fn main() -> Result<()> {
         app.symbols = SymbolSet::from_name(sym);
     }
 
-    app.graph.begin_load(500, false);
+    let graph_max_count = app.graph.max_count();
+    let include_remotes = app.graph.includes_remotes();
+    app.graph.begin_load(graph_max_count, include_remotes);
     app.graph_rx = Some(graph::spawn_graph_loader(
         repo_path.clone(),
         graph::GraphLoadOptions {
+            max_count: graph_max_count,
+            include_remotes,
             line_style: graph::GraphLineStyle::from_symbol_name(app.symbols.name),
             base_branch: Some(app.base_branch.clone()),
-            ..graph::GraphLoadOptions::default()
         },
     ));
 

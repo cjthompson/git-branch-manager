@@ -243,6 +243,7 @@ impl App {
             .as_deref()
             .and_then(|k| sort_keys::index_for_key(&worktree_cols, k));
         let worktree_sort_asc = config.sort_asc_worktrees.unwrap_or(true);
+        let include_remotes = config.include_remotes.unwrap_or(false);
 
         let mut branch_state = ListState::empty();
         branch_state.loading = true;
@@ -272,7 +273,11 @@ impl App {
             symbols,
             should_exit: false,
             active_view: ViewId::Graph,
-            graph: GraphState::new(),
+            graph: {
+                let mut graph = GraphState::new();
+                graph.set_include_remotes(include_remotes);
+                graph
+            },
             branches: branch_state,
             remotes: remote_state,
             tags: tag_state,
@@ -1353,12 +1358,8 @@ impl App {
                     });
                 }
                 KeyCode::Enter => {
-                    if cursor == 0 {
-                        self.reload_graph_with_remotes(include_remotes);
-                    } else {
-                        self.graph.set_include_remotes(include_remotes);
-                        self.load_older_graph();
-                    }
+                    self.apply_graph_options(cursor, include_remotes);
+                    self.save_config();
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {}
                 _ => {
@@ -2447,6 +2448,15 @@ impl App {
         self.spawn_graph_load(self.graph.max_count(), include_remotes);
     }
 
+    fn apply_graph_options(&mut self, cursor: usize, include_remotes: bool) {
+        if cursor == 0 {
+            self.reload_graph_with_remotes(include_remotes);
+        } else {
+            self.graph.set_include_remotes(include_remotes);
+            self.load_older_graph();
+        }
+    }
+
     fn load_older_graph(&mut self) {
         let max_count = self.graph.load_older_history();
         self.spawn_graph_load(max_count, self.graph.includes_remotes());
@@ -2724,6 +2734,7 @@ impl App {
     fn save_config(&mut self) {
         self.config.theme = Some(self.theme.name.to_string());
         self.config.symbols = Some(self.symbols.name.to_string());
+        self.config.include_remotes = Some(self.graph.includes_remotes());
         self.save_sort_config_only();
         self.config.save();
     }
@@ -3587,10 +3598,7 @@ mod tests {
             KeyCode::Char(' '),
             crossterm::event::KeyModifiers::NONE,
         ));
-        app.handle_overlay_key(KeyEvent::new(
-            KeyCode::Enter,
-            crossterm::event::KeyModifiers::NONE,
-        ));
+        app.apply_graph_options(0, true);
         assert!(app.graph.includes_remotes());
         assert!(app.graph.is_loading());
         assert!(app.graph_rx.is_some());
@@ -3626,6 +3634,16 @@ mod tests {
         assert_eq!(app.graph.max_count(), 1000);
         assert!(app.graph.is_loading());
         assert!(app.graph_rx.is_some());
+    }
+
+    #[test]
+    fn app_restores_graph_remote_ref_preference_from_config() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let config: Config = toml::from_str("include_remotes = true\n").unwrap();
+
+        let app = App::new(tmpdir.path().to_path_buf(), "main".into(), config);
+
+        assert!(app.graph.includes_remotes());
     }
 
     #[test]

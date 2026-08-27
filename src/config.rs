@@ -18,6 +18,7 @@ pub struct Config {
     pub sort_asc_worktrees: Option<bool>,
     pub auto_fetch: Option<bool>,
     pub load_worktrees_on_launch: Option<bool>,
+    pub include_remotes: Option<bool>,
 }
 
 impl Config {
@@ -71,6 +72,7 @@ mod tests {
         assert_eq!(c.symbols, None);
         assert_eq!(c.theme, None);
         assert_eq!(c.auto_fetch, None);
+        assert_eq!(c.include_remotes, None);
     }
 
     #[test]
@@ -84,5 +86,14 @@ mod tests {
         let parsed: Config = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.theme, Some("dracula".into()));
         assert_eq!(parsed.auto_fetch, Some(true));
+    }
+
+    #[test]
+    fn config_roundtrip_preserves_graph_remote_ref_preference() {
+        let parsed: Config = toml::from_str("include_remotes = true\n").unwrap();
+        let serialized = toml::to_string(&parsed).unwrap();
+
+        assert_eq!(parsed.include_remotes, Some(true));
+        assert!(serialized.contains("include_remotes = true"));
     }
 }
