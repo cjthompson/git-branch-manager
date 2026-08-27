@@ -6,6 +6,9 @@
 - Render the responsive LRT pseudo-pane (#graph, #ui, #responsive)
 - Update the Graph handoff and verify integrated behavior (#graph, #docs, #testing)
 
+### Tasks
+- Add possible squash-merged commit indicator to Graph (#graph, #git, #ui)
+
 ## 2026-08-26
 
 ### Graph LRT Pseudo-pane Implementation (P001)
