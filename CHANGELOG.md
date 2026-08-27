@@ -4,6 +4,7 @@
 
 ### Graph LRT Pseudo-pane Implementation (P001)
 - Render the responsive LRT pseudo-pane (#graph, #ui, #responsive)
+- Update the Graph handoff and verify integrated behavior (#graph, #docs, #testing)
 
 ## 2026-08-26
 
