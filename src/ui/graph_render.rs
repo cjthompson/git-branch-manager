@@ -180,6 +180,18 @@ fn render_graph_rows(
                 theme,
                 symbols,
             );
+            if !is_merge && commit.is_some_and(|commit| commit.is_possible_squash_merge) {
+                if let Some(marker_index) = graph_line
+                    .graph
+                    .chars()
+                    .position(|character| matches!(character, '*' | '●' | 'o' | '○'))
+                {
+                    left_spans[marker_index] = Span::styled(
+                        symbols.graph_squash_commit,
+                        selected_style(theme.squash_merged, selected, theme),
+                    );
+                }
+            }
             if let Some(commit) = commit {
                 left_spans.push(Span::raw(" "));
                 left_spans.push(Span::styled(
@@ -691,6 +703,7 @@ mod tests {
                     has_linked_worktree: false,
                     tracking: None,
                 }],
+                is_possible_squash_merge: false,
             }],
             lines: vec![GraphLine {
                 graph: "*".into(),
@@ -767,6 +780,7 @@ mod tests {
                     has_linked_worktree: false,
                     tracking: None,
                 }],
+                is_possible_squash_merge: false,
             }],
             lines: vec![GraphLine {
                 graph: "*".into(),
@@ -841,6 +855,7 @@ mod tests {
                     tracking: None,
                 },
             ],
+            is_possible_squash_merge: false,
         };
         let text: String = ref_pane_spans(&commit, 30, false, &Theme::dark(), &SymbolSet::ascii())
             .iter()
@@ -865,6 +880,7 @@ mod tests {
                 kind: GraphRefKind::LocalBranch,
             }),
             refs: vec![],
+            is_possible_squash_merge: false,
         };
         let live = GraphCommit {
             oid: "live".into(),
@@ -878,6 +894,7 @@ mod tests {
                 has_linked_worktree: false,
                 tracking: None,
             }],
+            is_possible_squash_merge: false,
         };
         let theme = Theme::dark();
         let symbols = SymbolSet::ascii();
@@ -916,6 +933,7 @@ mod tests {
                     lane: Some(0),
                     branch: None,
                     refs: vec![],
+                    is_possible_squash_merge: false,
                 },
                 GraphCommit {
                     oid: "abcdef1234567890".into(),
@@ -924,6 +942,7 @@ mod tests {
                     lane: Some(1),
                     branch: None,
                     refs: vec![],
+                    is_possible_squash_merge: false,
                 },
             ],
             lines: vec![
@@ -973,6 +992,7 @@ mod tests {
                     lane: Some(0),
                     branch: None,
                     refs: vec![],
+                    is_possible_squash_merge: false,
                 },
                 GraphCommit {
                     oid: "2222222222222222".into(),
@@ -981,6 +1001,7 @@ mod tests {
                     lane: Some(0),
                     branch: None,
                     refs: vec![],
+                    is_possible_squash_merge: false,
                 },
             ],
             lines: vec![
@@ -1012,6 +1033,67 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(1, 2)].symbol(), "\u{25cf}");
         assert_eq!(buffer[(1, 3)].symbol(), "\u{f407}");
+    }
+
+    #[test]
+    fn graph_renders_possible_squash_marker_in_commit_lane_with_selection_style() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = GraphState::new();
+        state.apply_result(Ok(crate::git::graph::GraphSnapshot {
+            source: GraphSource::Gleisbau,
+            commits: vec![
+                GraphCommit {
+                    oid: "1111111111111111".into(),
+                    summary: "regular".into(),
+                    parents: vec!["0000000000000000".into()],
+                    lane: Some(0),
+                    branch: None,
+                    refs: vec![],
+                    is_possible_squash_merge: false,
+                },
+                GraphCommit {
+                    oid: "2222222222222222".into(),
+                    summary: "possible squash".into(),
+                    parents: vec!["1111111111111111".into()],
+                    lane: Some(0),
+                    branch: None,
+                    refs: vec![],
+                    is_possible_squash_merge: true,
+                },
+            ],
+            lines: vec![
+                GraphLine {
+                    graph: "*".into(),
+                    commit_index: Some(0),
+                },
+                GraphLine {
+                    graph: "*".into(),
+                    commit_index: Some(1),
+                },
+            ],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+        }));
+        state.move_down();
+        let theme = Theme::dark();
+        terminal
+            .draw(|frame| {
+                render_graph_view(frame, frame.area(), &mut state, &theme, &SymbolSet::ascii())
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(1, 2)].symbol(), "o");
+        assert_eq!(buffer[(1, 3)].symbol(), "~");
+        let expected_style = selected_style(theme.squash_merged, true, &theme);
+        let marker_style = buffer[(1, 3)].style();
+        assert_eq!(marker_style.fg, expected_style.fg);
+        assert_eq!(marker_style.bg, expected_style.bg);
+        assert_eq!(marker_style.add_modifier, expected_style.add_modifier);
+        assert_eq!(buffer[(2, 2)].symbol(), " ");
+        assert_eq!(buffer[(2, 3)].symbol(), " ");
     }
 
     #[test]
@@ -1177,6 +1259,7 @@ mod tests {
             lane: Some(0),
             branch: None,
             refs: vec![],
+            is_possible_squash_merge: false,
         };
         let lanes_by_oid = HashMap::from([("feature-parent", Some(3))]);
         let origin_lane = merge_origin_lane(Some(&merge), &lanes_by_oid);

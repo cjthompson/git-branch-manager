@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
@@ -34,6 +36,9 @@ pub struct GraphCommit {
     /// branch claims its chain first so retained merged refs cannot relabel it.
     pub branch: Option<GraphBranchLabel>,
     pub refs: Vec<GraphRef>,
+    /// True when this displayed base-branch commit has the same stable Git
+    /// patch ID as the aggregate patch of a displayed, non-merged local branch.
+    pub is_possible_squash_merge: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,11 +127,12 @@ pub fn load_graph(
     repo_path: &Path,
     options: GraphLoadOptions,
 ) -> Result<GraphSnapshot, GraphLoadError> {
+    let requested_base = options.base_branch.clone();
     let gleisbau_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         load_with_gleisbau(repo_path, options.clone())
     }));
 
-    match gleisbau_result {
+    let mut snapshot = match gleisbau_result {
         Ok(Ok(snapshot)) => Ok(snapshot),
         Ok(Err(cause)) => {
             load_with_git_cli(repo_path, options, cause.clone()).map_err(|fallback| {
@@ -145,7 +151,9 @@ pub fn load_graph(
                 }
             })
         }
-    }
+    }?;
+    annotate_possible_squash_merges(repo_path, &mut snapshot, requested_base.as_deref());
+    Ok(snapshot)
 }
 
 /// Load a graph in a worker thread. The receiver carries only the owned
@@ -219,6 +227,7 @@ fn load_with_gleisbau(
                 lane,
                 branch: None,
                 refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
+                is_possible_squash_merge: false,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -313,6 +322,7 @@ fn load_with_git_cli(
             lane,
             branch: None,
             refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
+            is_possible_squash_merge: false,
         });
         lines.push(GraphLine {
             graph,
@@ -332,6 +342,285 @@ fn load_with_git_cli(
         max_count: options.max_count,
         includes_remotes: options.include_remotes,
     })
+}
+
+/// Match only work represented by this bounded snapshot. Both base commits and
+/// local branch tips are selected from `snapshot.commits`, so increasing
+/// repository history or ref age cannot make Graph startup scan beyond the
+/// configured `max_count` window.
+fn annotate_possible_squash_merges(
+    repo_path: &Path,
+    snapshot: &mut GraphSnapshot,
+    requested_base: Option<&str>,
+) {
+    let base_branch = requested_base.map(str::to_string).or_else(|| {
+        let repository = git2::Repository::open(repo_path).ok()?;
+        crate::git::branch::detect_base_branch(&repository, None).ok()
+    });
+    let Some(base_branch) = base_branch else {
+        return;
+    };
+    let Some(base_tip) = snapshot.commits.iter().find_map(|commit| {
+        commit
+            .refs
+            .iter()
+            .any(|reference| {
+                reference.kind == GraphRefKind::LocalBranch && reference.name == base_branch
+            })
+            .then(|| commit.oid.clone())
+    }) else {
+        return;
+    };
+
+    let mut jobs = snapshot
+        .commits
+        .iter()
+        .filter(|commit| {
+            commit.parents.len() == 1
+                && commit.branch.as_ref().is_some_and(|branch| {
+                    branch.kind == GraphRefKind::LocalBranch && branch.name == base_branch
+                })
+        })
+        .map(|commit| PatchJob {
+            target: PatchTarget::BaseCommit(commit.oid.clone()),
+            old_oid: commit.parents[0].clone(),
+            new_oid: commit.oid.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let displayed_branch_tips = snapshot
+        .commits
+        .iter()
+        .filter(|commit| {
+            commit.refs.iter().any(|reference| {
+                reference.kind == GraphRefKind::LocalBranch && reference.name != base_branch
+            })
+        })
+        .map(|commit| commit.oid.clone())
+        .collect::<HashSet<_>>();
+
+    for tip in displayed_branch_tips {
+        let merge_base = match displayed_branch_relation(&snapshot.commits, &base_tip, &tip) {
+            DisplayedBranchRelation::Diverged { merge_base } => merge_base,
+            DisplayedBranchRelation::RegularlyMerged | DisplayedBranchRelation::Ineligible => {
+                continue;
+            }
+        };
+        jobs.push(PatchJob {
+            target: PatchTarget::BranchTip,
+            old_oid: merge_base,
+            new_oid: tip,
+        });
+    }
+
+    let mut base_oids_by_patch = HashMap::<String, Vec<String>>::new();
+    let mut branch_patch_ids = HashSet::new();
+    for result in load_patch_ids(repo_path, jobs) {
+        let Some(patch_id) = result.patch_id else {
+            continue;
+        };
+        match result.target {
+            PatchTarget::BaseCommit(oid) => {
+                base_oids_by_patch.entry(patch_id).or_default().push(oid);
+            }
+            PatchTarget::BranchTip => {
+                branch_patch_ids.insert(patch_id);
+            }
+        }
+    }
+
+    let matching_base_oids = branch_patch_ids
+        .iter()
+        .filter_map(|patch_id| base_oids_by_patch.get(patch_id))
+        .flatten()
+        .collect::<HashSet<_>>();
+    for commit in &mut snapshot.commits {
+        commit.is_possible_squash_merge = matching_base_oids.contains(&commit.oid);
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DisplayedBranchRelation {
+    RegularlyMerged,
+    Diverged { merge_base: String },
+    Ineligible,
+}
+
+/// Resolve ancestry only through commits already owned by the snapshot. A
+/// merge base outside the displayed window is intentionally ineligible rather
+/// than triggering an unbounded repository walk during Graph startup.
+fn displayed_branch_relation(
+    commits: &[GraphCommit],
+    base_tip: &str,
+    branch_tip: &str,
+) -> DisplayedBranchRelation {
+    let commits_by_oid = commits
+        .iter()
+        .map(|commit| (commit.oid.as_str(), commit))
+        .collect::<HashMap<_, _>>();
+    let base_ancestors = displayed_ancestors(&commits_by_oid, base_tip);
+    if base_ancestors.contains(branch_tip) {
+        return DisplayedBranchRelation::RegularlyMerged;
+    }
+    let branch_ancestors = displayed_ancestors(&commits_by_oid, branch_tip);
+    let common = base_ancestors
+        .intersection(&branch_ancestors)
+        .copied()
+        .collect::<HashSet<_>>();
+    if common.is_empty() {
+        return DisplayedBranchRelation::Ineligible;
+    }
+
+    let ancestors_by_common = common
+        .iter()
+        .map(|oid| (*oid, displayed_ancestors(&commits_by_oid, oid)))
+        .collect::<HashMap<_, _>>();
+    let mut best = common.iter().copied().filter(|candidate| {
+        !common.iter().any(|other| {
+            other != candidate
+                && ancestors_by_common
+                    .get(other)
+                    .is_some_and(|ancestors| ancestors.contains(candidate))
+        })
+    });
+    let Some(merge_base) = best.next() else {
+        return DisplayedBranchRelation::Ineligible;
+    };
+    if best.next().is_some() {
+        return DisplayedBranchRelation::Ineligible;
+    }
+    DisplayedBranchRelation::Diverged {
+        merge_base: merge_base.to_string(),
+    }
+}
+
+fn displayed_ancestors<'a>(
+    commits_by_oid: &HashMap<&'a str, &'a GraphCommit>,
+    start: &str,
+) -> HashSet<&'a str> {
+    let Some(start) = commits_by_oid.get(start) else {
+        return HashSet::new();
+    };
+    let mut ancestors = HashSet::new();
+    let mut pending = vec![start.oid.as_str()];
+    while let Some(oid) = pending.pop() {
+        if !ancestors.insert(oid) {
+            continue;
+        }
+        if let Some(commit) = commits_by_oid.get(oid) {
+            pending.extend(
+                commit
+                    .parents
+                    .iter()
+                    .filter_map(|parent| commits_by_oid.get(parent.as_str()))
+                    .map(|parent| parent.oid.as_str()),
+            );
+        }
+    }
+    ancestors
+}
+
+/// Like the established squash loader, Graph patch matching uses four workers
+/// regardless of CPU count. Each worker runs at most one Git subprocess at a
+/// time, so both worker and active-subprocess concurrency are capped at four.
+const GRAPH_PATCH_WORKER_COUNT: usize = 4;
+
+struct PatchJob {
+    target: PatchTarget,
+    old_oid: String,
+    new_oid: String,
+}
+
+enum PatchTarget {
+    BaseCommit(String),
+    BranchTip,
+}
+
+struct PatchResult {
+    target: PatchTarget,
+    patch_id: Option<String>,
+}
+
+fn load_patch_ids(repo_path: &Path, jobs: Vec<PatchJob>) -> Vec<PatchResult> {
+    if jobs.is_empty() {
+        return Vec::new();
+    }
+
+    let worker_count = jobs.len().min(GRAPH_PATCH_WORKER_COUNT);
+    let queue = Arc::new(Mutex::new(
+        jobs.into_iter().collect::<std::collections::VecDeque<_>>(),
+    ));
+    let (tx, rx) = mpsc::channel();
+    let mut handles = Vec::with_capacity(worker_count);
+    for _ in 0..worker_count {
+        let queue = Arc::clone(&queue);
+        let tx = tx.clone();
+        let repo_path = repo_path.to_path_buf();
+        handles.push(std::thread::spawn(move || {
+            while let Some(job) = next_patch_job(&queue) {
+                let patch_id = stable_patch_id(&repo_path, &job.old_oid, &job.new_oid);
+                if tx
+                    .send(PatchResult {
+                        target: job.target,
+                        patch_id,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+    drop(tx);
+
+    let results = rx.into_iter().collect();
+    for handle in handles {
+        let _ = handle.join();
+    }
+    results
+}
+
+fn next_patch_job(queue: &Mutex<std::collections::VecDeque<PatchJob>>) -> Option<PatchJob> {
+    queue.lock().ok()?.pop_front()
+}
+
+fn stable_patch_id(repo_path: &Path, old_oid: &str, new_oid: &str) -> Option<String> {
+    let diff = Command::new("git")
+        .current_dir(repo_path)
+        .args([
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            old_oid,
+            new_oid,
+            "--",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !diff.status.success() || diff.stdout.is_empty() {
+        return None;
+    }
+
+    let mut patch_id = Command::new("git")
+        .current_dir(repo_path)
+        .args(["patch-id", "--stable"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    patch_id.stdin.as_mut()?.write_all(&diff.stdout).ok()?;
+    let output = patch_id.wait_with_output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
 }
 
 fn gleisbau_settings(
@@ -662,6 +951,18 @@ fn insert_ref(refs_by_oid: &mut HashMap<String, Vec<GraphRef>>, oid: &str, refer
 mod tests {
     use super::*;
 
+    fn commit(oid: &str, parents: &[&str]) -> GraphCommit {
+        GraphCommit {
+            oid: oid.into(),
+            summary: oid.into(),
+            parents: parents.iter().map(|parent| (*parent).into()).collect(),
+            lane: None,
+            branch: None,
+            refs: Vec::new(),
+            is_possible_squash_merge: false,
+        }
+    }
+
     #[test]
     fn round_line_style_uses_gleisbau_round_characters() {
         use gleisbau::settings::Characters;
@@ -684,6 +985,42 @@ mod tests {
         assert_eq!(
             GraphLineStyle::from_symbol_name("ascii"),
             GraphLineStyle::Thin
+        );
+    }
+
+    #[test]
+    fn displayed_history_bounds_branch_relationships() {
+        let commits = vec![
+            commit("base-tip", &["base-parent"]),
+            commit("branch-tip", &["shared"]),
+            commit("base-parent", &["shared"]),
+            commit("shared", &["root"]),
+            commit("root", &[]),
+        ];
+        assert_eq!(
+            displayed_branch_relation(&commits, "base-tip", "branch-tip"),
+            DisplayedBranchRelation::Diverged {
+                merge_base: "shared".into()
+            }
+        );
+
+        let regular = vec![
+            commit("base-tip", &["branch-tip"]),
+            commit("branch-tip", &["root"]),
+            commit("root", &[]),
+        ];
+        assert_eq!(
+            displayed_branch_relation(&regular, "base-tip", "branch-tip"),
+            DisplayedBranchRelation::RegularlyMerged
+        );
+
+        let truncated = vec![
+            commit("base-tip", &["missing-base-parent"]),
+            commit("branch-tip", &["missing-branch-parent"]),
+        ];
+        assert_eq!(
+            displayed_branch_relation(&truncated, "base-tip", "branch-tip"),
+            DisplayedBranchRelation::Ineligible
         );
     }
 }

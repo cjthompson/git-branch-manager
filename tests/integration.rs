@@ -86,6 +86,19 @@ fn run_git(dir: &std::path::Path, args: &[&str]) {
     }
 }
 
+fn git_output(dir: &std::path::Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!("git {:?} failed in {}: {}", args, dir.display(), stderr);
+    }
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
 /// Run a git command with scoped environment variables in the given directory,
 /// panicking on failure.
 fn run_git_with_env(dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]) {
@@ -704,6 +717,258 @@ fn test_load_graph_uses_cli_fallback_for_shallow_repository() {
         .lines
         .iter()
         .any(|line| line.commit_index.is_some()));
+}
+
+#[test]
+fn test_graph_marks_only_base_commit_with_exact_squash_patch() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/exact"]);
+    std::fs::write(dir.join("exact.txt"), "exact patch\n").unwrap();
+    run_git(dir, &["add", "exact.txt"]);
+    run_git(dir, &["commit", "-m", "source patch subject"]);
+    std::fs::write(dir.join("exact-second.txt"), "second exact patch\n").unwrap();
+    run_git(dir, &["add", "exact-second.txt"]);
+    run_git(dir, &["commit", "-m", "source follow-up subject"]);
+    let source_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/exact"]);
+    run_git(dir, &["commit", "-m", "unrelated landing subject"]);
+    let exact_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    run_git(dir, &["checkout", "-b", "feature/message-only"]);
+    std::fs::write(dir.join("branch-only.txt"), "branch content\n").unwrap();
+    run_git(dir, &["add", "branch-only.txt"]);
+    run_git(dir, &["commit", "-m", "shared misleading subject"]);
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("base-only.txt"), "different base content\n").unwrap();
+    run_git(dir, &["add", "base-only.txt"]);
+    run_git(dir, &["commit", "-m", "shared misleading subject"]);
+    let message_only_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph loader should annotate exact squash patch matches");
+
+    let exact_base = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.oid == exact_base_oid)
+        .expect("exact base commit should be displayed");
+    assert!(exact_base.is_possible_squash_merge);
+
+    let source = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.oid == source_oid)
+        .expect("source branch commit should be displayed");
+    assert!(
+        !source.is_possible_squash_merge,
+        "only the matching base-branch commit receives the annotation"
+    );
+
+    let message_only_base = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.oid == message_only_base_oid)
+        .expect("same-subject base commit should be displayed");
+    assert!(
+        !message_only_base.is_possible_squash_merge,
+        "matching subjects with different patches must not annotate a commit"
+    );
+}
+
+#[test]
+fn test_graph_preserves_every_base_oid_for_duplicate_patch_ids() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    let root_oid = repo.head().unwrap().target().unwrap().to_string();
+
+    std::fs::write(dir.join("duplicate.txt"), "same patch\n").unwrap();
+    run_git(dir, &["add", "duplicate.txt"]);
+    run_git(dir, &["commit", "-m", "first duplicate patch"]);
+    let first_oid = git_output(dir, &["rev-parse", "HEAD"]);
+    run_git(dir, &["rm", "duplicate.txt"]);
+    run_git(dir, &["commit", "-m", "remove duplicate patch"]);
+    std::fs::write(dir.join("duplicate.txt"), "same patch\n").unwrap();
+    run_git(dir, &["add", "duplicate.txt"]);
+    run_git(dir, &["commit", "-m", "second duplicate patch"]);
+    let second_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    run_git(dir, &["checkout", "-b", "feature/duplicate", &root_oid]);
+    std::fs::write(dir.join("duplicate.txt"), "same patch\n").unwrap();
+    run_git(dir, &["add", "duplicate.txt"]);
+    run_git(dir, &["commit", "-m", "duplicate source patch"]);
+    let source_oid = git_output(dir, &["rev-parse", "HEAD"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph loader should retain duplicate patch matches");
+
+    for oid in [&first_oid, &second_oid] {
+        let commit = snapshot
+            .commits
+            .iter()
+            .find(|commit| commit.oid == *oid)
+            .expect("duplicate-patch base commit should be displayed");
+        assert!(
+            commit.is_possible_squash_merge,
+            "every base OID sharing the exact patch ID must be annotated"
+        );
+    }
+    assert!(
+        !snapshot
+            .commits
+            .iter()
+            .find(|commit| commit.oid == source_oid)
+            .expect("source branch commit should be displayed")
+            .is_possible_squash_merge
+    );
+}
+
+#[test]
+fn test_graph_excludes_regular_merges_roots_and_empty_patches() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/regular"]);
+    std::fs::write(dir.join("regular.txt"), "regular patch\n").unwrap();
+    run_git(dir, &["add", "regular.txt"]);
+    run_git(dir, &["commit", "-m", "regular source patch"]);
+    let regular_tip = git_output(dir, &["rev-parse", "HEAD"]);
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["cherry-pick", &regular_tip]);
+    let equivalent_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
+    run_git(
+        dir,
+        &[
+            "merge",
+            "--no-ff",
+            "feature/regular",
+            "-m",
+            "regular merge after equivalent patch",
+        ],
+    );
+
+    run_git(dir, &["checkout", "-b", "feature/empty"]);
+    run_git(
+        dir,
+        &["commit", "--allow-empty", "-m", "empty branch patch"],
+    );
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["commit", "--allow-empty", "-m", "empty base patch"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph loader should ignore ineligible patch shapes");
+
+    assert!(
+        !snapshot
+            .commits
+            .iter()
+            .find(|commit| commit.oid == equivalent_base_oid)
+            .expect("equivalent regular-merge base commit should be displayed")
+            .is_possible_squash_merge,
+        "a regularly merged branch must not create a possible-squash indicator"
+    );
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .all(|commit| !commit.is_possible_squash_merge),
+        "merge commits, root commits, and empty patches cannot match"
+    );
+}
+
+#[test]
+fn test_graph_cli_fallback_receives_exact_squash_annotation() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    let root_oid = repo.head().unwrap().target().unwrap();
+
+    run_git(dir, &["checkout", "-b", "feature/fallback-squash"]);
+    std::fs::write(dir.join("fallback.txt"), "fallback patch\n").unwrap();
+    run_git(dir, &["add", "fallback.txt"]);
+    run_git(dir, &["commit", "-m", "fallback source"]);
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/fallback-squash"]);
+    run_git(dir, &["commit", "-m", "fallback landing"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    std::fs::write(dir.join(".git/shallow"), format!("{root_oid}\n")).unwrap();
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("CLI fallback should receive the shared squash annotation");
+
+    assert!(matches!(
+        snapshot.source,
+        graph::GraphSource::GitCliFallback { .. }
+    ));
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .find(|commit| commit.oid == squash_oid)
+            .expect("fallback squash commit should be displayed")
+            .is_possible_squash_merge
+    );
+}
+
+#[test]
+fn test_graph_squash_matching_stays_within_displayed_history_bound() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/outside-window"]);
+    std::fs::write(dir.join("bounded.txt"), "bounded patch\n").unwrap();
+    run_git(dir, &["add", "bounded.txt"]);
+    run_git(dir, &["commit", "-m", "bounded source"]);
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/outside-window"]);
+    run_git(dir, &["commit", "-m", "bounded landing"]);
+    run_git(
+        dir,
+        &["commit", "--allow-empty", "-m", "newest displayed commit"],
+    );
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            max_count: 1,
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("bounded graph load should not inspect undisplayed matching history");
+
+    assert_eq!(snapshot.commits.len(), 1);
+    assert!(snapshot
+        .commits
+        .iter()
+        .all(|commit| !commit.is_possible_squash_merge));
 }
 
 #[test]

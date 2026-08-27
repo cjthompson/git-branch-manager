@@ -9,6 +9,8 @@ pub struct SymbolSet {
     pub current_branch: &'static str,
     /// Marker for an ordinary commit in the Graph tab.
     pub graph_commit: &'static str,
+    /// Marker for a base commit that may be a squash-merge landing commit.
+    pub graph_squash_commit: &'static str,
     /// Marker for a merge commit in the Graph tab.
     pub graph_merge: &'static str,
     /// Left-facing merge connector used by the Powerline graph renderer.
@@ -46,6 +48,7 @@ impl SymbolSet {
             arrow_down: "-",
             current_branch: "*",
             graph_commit: "o",
+            graph_squash_commit: "~",
             graph_merge: "+",
             graph_arrow_left: "<",
             graph_arrow_right: ">",
@@ -73,6 +76,7 @@ impl SymbolSet {
             arrow_down: "\u{2193}",           // down arrow
             current_branch: "\u{25cf}",       // black circle
             graph_commit: "\u{25cf}",         // black circle
+            graph_squash_commit: "\u{2248}",  // almost equal to
             graph_merge: "\u{25cb}",          // white circle
             graph_arrow_left: "\u{25c0}",     // black left-pointing triangle
             graph_arrow_right: "\u{25b6}",    // black right-pointing triangle
@@ -100,6 +104,7 @@ impl SymbolSet {
             arrow_down: "\u{f063}",           // nerd font arrow-down
             current_branch: "\u{e0a0}",       // powerline branch
             graph_commit: "\u{25cf}",         // medium filled circle
+            graph_squash_commit: "\u{2248}",  // almost equal to
             graph_merge: "\u{f407}",          // nerd font git-merge
             graph_arrow_left: "\u{25c0}",     // black left-pointing triangle
             graph_arrow_right: "\u{25b6}",    // black right-pointing triangle
@@ -248,6 +253,23 @@ mod tests {
         for set in sets {
             assert_eq!(ratatui::text::Span::raw(set.graph_remote_ref).width(), 1);
             assert_eq!(ratatui::text::Span::raw(set.graph_tag_ref).width(), 1);
+        }
+    }
+
+    #[test]
+    fn possible_squash_commit_markers_are_distinct_and_width_safe() {
+        let sets = [
+            SymbolSet::ascii(),
+            SymbolSet::unicode(),
+            SymbolSet::powerline(),
+        ];
+        assert_eq!(sets[0].graph_squash_commit, "~");
+        assert_eq!(sets[1].graph_squash_commit, "≈");
+        assert_eq!(sets[2].graph_squash_commit, "≈");
+        for set in sets {
+            assert_ne!(set.graph_squash_commit, set.graph_commit);
+            assert_ne!(set.graph_squash_commit, set.graph_merge);
+            assert_eq!(ratatui::text::Span::raw(set.graph_squash_commit).width(), 1);
         }
     }
 }

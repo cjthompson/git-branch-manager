@@ -204,6 +204,7 @@ mod tests {
                         has_linked_worktree: false,
                         tracking: None,
                     }],
+                    is_possible_squash_merge: false,
                 },
                 GraphCommit {
                     oid: "2222222222222222222222222222222222222222".into(),
@@ -212,6 +213,7 @@ mod tests {
                     lane: Some(0),
                     branch: None,
                     refs: vec![],
+                    is_possible_squash_merge: false,
                 },
             ],
             lines: vec![
