@@ -7,6 +7,7 @@
 - Update the Graph handoff and verify integrated behavior (#graph, #docs, #testing)
 
 ### Tasks
+- Add focus-aware horizontal Graph scrolling (#graph, #ui)
 - Add possible squash-merged commit indicator to Graph (#graph, #git, #ui)
 
 ## 2026-08-26
