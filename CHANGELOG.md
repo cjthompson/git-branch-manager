@@ -2,6 +2,10 @@
 
 ## 2026-08-26
 
+### Graph LRT Pseudo-pane Implementation (P001)
+- Reduce Graph ref metadata and add linked-worktree data (#graph, #git)
+- Add one-cell right-pane glyphs (#graph, #symbols, #ui)
+
 ### Fixes
 - Remote column should show full remote ref and base branch info (#ui, #branches)
 - Remote view: show full remote branch name in separate column (#ui, #remote)
