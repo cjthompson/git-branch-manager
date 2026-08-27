@@ -608,7 +608,6 @@ fn test_graph_refs_include_remote_tracking_state() {
         .tracking
         .as_ref()
         .expect("local branch should expose matching remote tracking");
-    assert_eq!(tracking.remote_name, "origin/ahead");
     assert_eq!((tracking.ahead, tracking.behind), (1, 0));
 
     let main_ref = snapshot
@@ -622,6 +621,52 @@ fn test_graph_refs_include_remote_tracking_state() {
         .as_ref()
         .expect("main should expose its matching remote");
     assert_eq!((main_tracking.ahead, main_tracking.behind), (0, 0));
+
+    let remote_ahead = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "ahead base")
+        .expect("remote tracking ref should remain on its own tip");
+    assert!(remote_ahead
+        .refs
+        .iter()
+        .any(|reference| reference.name == "origin/ahead"));
+    assert!(!remote_ahead
+        .refs
+        .iter()
+        .any(|reference| reference.name == "ahead"));
+}
+
+#[test]
+fn test_graph_refs_mark_only_linked_worktrees() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["checkout", "-b", "feature/linked"]);
+    run_git(dir, &["checkout", "main"]);
+    let worktree_parent = tempfile::tempdir().expect("worktree parent");
+    let linked_path = worktree_parent.path().join("linked");
+    let linked_path_string = linked_path.to_string_lossy().into_owned();
+    run_git(
+        dir,
+        &["worktree", "add", &linked_path_string, "feature/linked"],
+    );
+
+    let snapshot = graph::load_graph(dir, graph::GraphLoadOptions::default())
+        .expect("graph load should include linked worktree metadata");
+    let linked = snapshot
+        .commits
+        .iter()
+        .flat_map(|commit| commit.refs.iter())
+        .find(|reference| reference.name == "feature/linked")
+        .expect("linked branch ref");
+    assert!(linked.has_linked_worktree);
+    let main = snapshot
+        .commits
+        .iter()
+        .flat_map(|commit| commit.refs.iter())
+        .find(|reference| reference.name == "main")
+        .expect("main branch ref");
+    assert!(!main.has_linked_worktree);
 }
 
 #[test]

@@ -15,6 +15,8 @@ pub struct SymbolSet {
     pub graph_arrow_left: &'static str,
     /// Right-facing merge connector used by the graph renderer.
     pub graph_arrow_right: &'static str,
+    pub graph_remote_ref: &'static str,
+    pub graph_tag_ref: &'static str,
     pub status_merged: &'static str,
     pub status_in_sync: &'static str,
     pub status_squash_merged: &'static str,
@@ -47,6 +49,8 @@ impl SymbolSet {
             graph_merge: "+",
             graph_arrow_left: "<",
             graph_arrow_right: ">",
+            graph_remote_ref: "@",
+            graph_tag_ref: "#",
             status_merged: "+",
             status_in_sync: "=",
             status_squash_merged: "~",
@@ -72,6 +76,8 @@ impl SymbolSet {
             graph_merge: "\u{25cb}",          // white circle
             graph_arrow_left: "\u{25c0}",     // black left-pointing triangle
             graph_arrow_right: "\u{25b6}",    // black right-pointing triangle
+            graph_remote_ref: "\u{2601}",     // cloud
+            graph_tag_ref: "\u{2311}",        // tag marker
             status_merged: "\u{2714}",        // heavy check mark
             status_in_sync: "\u{2261}",       // identical to (≡)
             status_squash_merged: "\u{2248}", // almost equal to
@@ -97,6 +103,8 @@ impl SymbolSet {
             graph_merge: "\u{f407}",          // nerd font git-merge
             graph_arrow_left: "\u{25c0}",     // black left-pointing triangle
             graph_arrow_right: "\u{25b6}",    // black right-pointing triangle
+            graph_remote_ref: "\u{f0c2}",     // nerd font cloud
+            graph_tag_ref: "\u{f02b}",        // nerd font tag
             status_merged: "\u{f126}",        // nerd font code-fork (merged)
             status_in_sync: "\u{f441}",       // nerd font nf-dev-equals
             status_squash_merged: "\u{25cf}", // solid circle (squash-merged)
@@ -218,5 +226,28 @@ mod tests {
         assert_eq!(SymbolSet::ascii().status_in_sync, "=");
         assert_eq!(SymbolSet::unicode().status_in_sync, "\u{2261}");
         assert_eq!(SymbolSet::powerline().status_in_sync, "\u{f441}");
+    }
+
+    #[test]
+    fn graph_ref_markers_are_exact_and_width_safe() {
+        let sets = [
+            SymbolSet::ascii(),
+            SymbolSet::unicode(),
+            SymbolSet::powerline(),
+        ];
+        assert_eq!(
+            (sets[0].graph_remote_ref, sets[0].graph_tag_ref),
+            ("@", "#")
+        );
+        assert_eq!(
+            (sets[1].graph_remote_ref, sets[1].graph_tag_ref),
+            ("☁", "⌑")
+        );
+        assert_eq!(sets[2].graph_remote_ref, "\u{f0c2}");
+        assert_eq!(sets[2].graph_tag_ref, "\u{f02b}");
+        for set in sets {
+            assert_eq!(ratatui::text::Span::raw(set.graph_remote_ref).width(), 1);
+            assert_eq!(ratatui::text::Span::raw(set.graph_tag_ref).width(), 1);
+        }
     }
 }

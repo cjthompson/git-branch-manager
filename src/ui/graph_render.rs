@@ -91,7 +91,7 @@ pub fn render_graph_view(
 
     let [header_area, rows_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(content_area);
-    let ref_width = ref_column_width(content_area.width);
+    let ref_width = ref_pane_width(content_area.width);
     let graph_width = content_area.width.saturating_sub(ref_width + 1);
     state.ensure_visible(rows_area.height as usize);
     render_graph_header(frame, header_area, graph_width, ref_width, theme, symbols);
@@ -106,12 +106,9 @@ pub fn render_graph_view(
     );
 }
 
-fn ref_column_width(width: u16) -> u16 {
-    if width >= 60 {
-        30.min(width.saturating_sub(20))
-    } else {
-        18.min(width.saturating_sub(12)).max(1)
-    }
+fn ref_pane_width(content_width: u16) -> u16 {
+    let available = content_width.saturating_sub(1);
+    available.min((content_width / 3).max(3))
 }
 
 fn render_graph_header(
@@ -122,9 +119,15 @@ fn render_graph_header(
     theme: &Theme,
     symbols: &SymbolSet,
 ) {
+    let separator = graph_separator(symbols);
+    let label = match ref_width {
+        0..=8 => "LRT".to_string(),
+        9..=14 => format!("LRT{separator}State"),
+        _ => format!("LRT {separator} State {separator} Refs"),
+    };
     let line = compose_row(
         vec![Span::styled(" Commits", theme.primary_text)],
-        vec![Span::styled(" Refs", theme.primary_text)],
+        vec![Span::styled(label, theme.primary_text)],
         graph_width,
         ref_width,
         theme,
@@ -151,13 +154,6 @@ fn render_graph_rows(
         .commits
         .iter()
         .map(|commit| (commit.oid.as_str(), commit.lane))
-        .collect();
-    let local_names: HashSet<&str> = snapshot
-        .commits
-        .iter()
-        .flat_map(|commit| commit.refs.iter())
-        .filter(|reference| reference.kind == GraphRefKind::LocalBranch)
-        .map(|reference| reference.name.as_str())
         .collect();
     let mut pending_merge_lane = None;
     let lines: Vec<Line<'static>> = snapshot
@@ -205,7 +201,7 @@ fn render_graph_rows(
                 pending_merge_lane = None;
             }
             let right_spans = commit
-                .map(|commit| graph_ref_spans(commit, &local_names, selected, theme, symbols))
+                .map(|commit| ref_pane_spans(commit, ref_width, selected, theme, symbols))
                 .unwrap_or_default();
             compose_row(
                 left_spans,
@@ -292,25 +288,18 @@ fn graph_separator(symbols: &SymbolSet) -> &'static str {
     }
 }
 
-fn graph_ref_spans(
+fn ref_pane_spans(
     commit: &GraphCommit,
-    local_names: &HashSet<&str>,
+    ref_width: u16,
     selected: bool,
     theme: &Theme,
     symbols: &SymbolSet,
 ) -> Vec<Span<'static>> {
-    let mut refs: Vec<&GraphRef> = commit
-        .refs
-        .iter()
-        .filter(|reference| match reference.kind {
-            GraphRefKind::RemoteBranch => reference
-                .name
-                .split_once('/')
-                .map(|(_, short_name)| !local_names.contains(short_name))
-                .unwrap_or(true),
-            _ => true,
-        })
-        .collect();
+    if ref_width == 0 {
+        return Vec::new();
+    }
+
+    let mut refs: Vec<&GraphRef> = commit.refs.iter().collect();
     refs.sort_by_key(|reference| {
         (
             match reference.kind {
@@ -322,45 +311,118 @@ fn graph_ref_spans(
         )
     });
 
-    let mut spans = Vec::new();
-    for (index, reference) in refs.into_iter().enumerate() {
-        if index > 0 {
-            spans.push(Span::raw("  "));
-        }
-        let style = selected_style(ref_style(reference.kind, theme), selected, theme);
-        let scope = match reference.kind {
-            GraphRefKind::LocalBranch => "L",
-            GraphRefKind::RemoteBranch => "R",
-            GraphRefKind::Tag => "T",
-        };
-        let lane = commit
-            .lane
-            .map(|lane| lane.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        spans.push(Span::styled(format!(" {scope} {lane} "), style));
-        spans.extend(ref_tracking_spans(reference, selected, theme, symbols));
-        spans.extend(ref_status_spans(reference, selected, theme, symbols));
-        spans.push(Span::styled(reference.name.clone(), style));
-    }
-    if spans.is_empty() {
-        if let Some(branch) = commit.branch.as_ref() {
-            let scope = match branch.kind {
-                GraphRefKind::LocalBranch => "L",
-                GraphRefKind::RemoteBranch => "R",
-                GraphRefKind::Tag => "T",
-            };
-            let style = if branch.target_oid == commit.oid {
-                ref_style(branch.kind, theme)
+    let mut spans = vec![
+        Span::styled(
+            if refs.iter().any(|r| r.kind == GraphRefKind::LocalBranch) {
+                symbols.current_branch
             } else {
-                theme.secondary_text
-            };
+                " "
+            },
+            selected_style(theme.primary_text, selected, theme),
+        ),
+        Span::styled(
+            if refs.iter().any(|r| r.kind == GraphRefKind::RemoteBranch) {
+                symbols.graph_remote_ref
+            } else {
+                " "
+            },
+            selected_style(theme.remote_title, selected, theme),
+        ),
+        Span::styled(
+            if refs.iter().any(|r| r.kind == GraphRefKind::Tag) {
+                symbols.graph_tag_ref
+            } else {
+                " "
+            },
+            selected_style(theme.squash_merged, selected, theme),
+        ),
+    ];
+
+    if ref_width <= 8 {
+        return spans;
+    }
+
+    let state = ref_pane_state_spans(&refs, selected, theme, symbols);
+    if ref_width <= 14 {
+        spans.push(Span::styled(
+            graph_separator(symbols),
+            selected_style(theme.secondary_text, selected, theme),
+        ));
+        spans.extend(state);
+        return spans;
+    }
+
+    spans.push(ref_pane_space(1, selected, theme));
+    spans.push(Span::styled(
+        graph_separator(symbols),
+        selected_style(theme.secondary_text, selected, theme),
+    ));
+    spans.push(ref_pane_space(1, selected, theme));
+    spans.extend(padded_ref_pane_state_spans(state, selected, theme));
+    spans.push(ref_pane_space(1, selected, theme));
+    spans.push(Span::styled(
+        graph_separator(symbols),
+        selected_style(theme.secondary_text, selected, theme),
+    ));
+    spans.push(ref_pane_space(1, selected, theme));
+
+    if refs.is_empty() {
+        if let Some(branch) = commit.branch.as_ref() {
             spans.push(Span::styled(
-                format!(" {scope} - {}", branch.name),
-                selected_style(style, selected, theme),
+                branch.name.clone(),
+                selected_style(theme.dim, selected, theme),
             ));
         }
+        return spans;
+    }
+
+    let local_names: HashSet<&str> = refs
+        .iter()
+        .filter(|r| r.kind == GraphRefKind::LocalBranch)
+        .map(|r| r.name.as_str())
+        .collect();
+    let mut shown = 0;
+    for reference in refs {
+        if reference.kind == GraphRefKind::RemoteBranch
+            && reference
+                .name
+                .split_once('/')
+                .is_some_and(|(_, short)| local_names.contains(short))
+        {
+            continue;
+        }
+        if shown > 0 {
+            spans.push(ref_pane_space(2, selected, theme));
+        }
+        spans.push(Span::styled(
+            reference.name.clone(),
+            selected_style(ref_style(reference.kind, theme), selected, theme),
+        ));
+        shown += 1;
     }
     spans
+}
+
+const STATE_WIDTH: usize = 5;
+
+fn ref_pane_space(width: usize, selected: bool, theme: &Theme) -> Span<'static> {
+    Span::styled(
+        " ".repeat(width),
+        selected_style(Style::default(), selected, theme),
+    )
+}
+
+fn padded_ref_pane_state_spans(
+    state: Vec<Span<'static>>,
+    selected: bool,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let mut state = truncate_spans(state, STATE_WIDTH);
+    let used = spans_width(&state);
+    if used < STATE_WIDTH {
+        state.push(ref_pane_space(STATE_WIDTH - used, selected, theme));
+    }
+    state
 }
 
 fn commit_summary_style(commit: &GraphCommit, theme: &Theme) -> Style {
@@ -370,51 +432,60 @@ fn commit_summary_style(commit: &GraphCommit, theme: &Theme) -> Style {
     }
 }
 
-fn ref_tracking_spans(
-    reference: &GraphRef,
+fn ref_pane_state_spans(
+    refs: &[&GraphRef],
     selected: bool,
     theme: &Theme,
     symbols: &SymbolSet,
 ) -> Vec<Span<'static>> {
-    let Some(tracking) = reference.tracking.as_ref() else {
-        return Vec::new();
-    };
-    let (text, style) = if tracking.ahead > 0 && tracking.behind == 0 {
-        (
-            format!("{}{} ", symbols.arrow_up, tracking.ahead),
-            theme.ahead,
-        )
-    } else if tracking.behind > 0 && tracking.ahead == 0 {
-        (
-            format!("{}{} ", symbols.arrow_down, tracking.behind),
-            theme.behind,
-        )
-    } else if tracking.ahead == 0 && tracking.behind == 0 {
-        (format!("{} ", symbols.status_in_sync), theme.in_sync)
-    } else {
-        (format!("{} ", symbols.tracking_link), theme.in_sync)
-    };
-    vec![Span::styled(text, selected_style(style, selected, theme))]
-}
-
-fn ref_status_spans(
-    reference: &GraphRef,
-    selected: bool,
-    theme: &Theme,
-    symbols: &SymbolSet,
-) -> Vec<Span<'static>> {
-    let Some(status) = reference.status.as_ref() else {
-        return Vec::new();
-    };
-    if status.is_base {
-        return Vec::new();
+    let mut spans = Vec::new();
+    if let Some(reference) = refs
+        .iter()
+        .filter(|r| r.kind == GraphRefKind::LocalBranch && r.tracking.is_some())
+        .min_by_key(|r| r.name.as_str())
+    {
+        if let Some(tracking) = reference.tracking.as_ref() {
+            let (text, style) = match (tracking.ahead, tracking.behind) {
+                (0, 0) => (symbols.status_in_sync.to_string(), theme.in_sync),
+                (ahead, 0) => (
+                    format!(
+                        "{}{}",
+                        symbols.arrow_up,
+                        if ahead < 10 {
+                            ahead.to_string()
+                        } else {
+                            String::new()
+                        }
+                    ),
+                    theme.ahead,
+                ),
+                (0, behind) => (
+                    format!(
+                        "{}{}",
+                        symbols.arrow_down,
+                        if behind < 10 {
+                            behind.to_string()
+                        } else {
+                            String::new()
+                        }
+                    ),
+                    theme.behind,
+                ),
+                _ => ("RB".to_string(), theme.unmerged),
+            };
+            spans.push(Span::styled(text, selected_style(style, selected, theme)));
+        }
     }
-    let (text, style) =
-        crate::ui::cells::compact_merge_status_parts(&status.merge_status, theme, symbols);
-    vec![Span::styled(
-        format!("{text} "),
-        selected_style(style, selected, theme),
-    )]
+    if refs
+        .iter()
+        .any(|r| r.kind == GraphRefKind::LocalBranch && r.has_linked_worktree)
+    {
+        spans.push(Span::styled(
+            if spans.is_empty() { "WT" } else { " WT" },
+            selected_style(theme.primary_text, selected, theme),
+        ));
+    }
+    spans
 }
 
 fn ref_style(kind: GraphRefKind, theme: &Theme) -> Style {
@@ -617,7 +688,7 @@ mod tests {
                 refs: vec![GraphRef {
                     name: "main".into(),
                     kind: crate::git::graph::GraphRefKind::LocalBranch,
-                    status: None,
+                    has_linked_worktree: false,
                     tracking: None,
                 }],
             }],
@@ -693,7 +764,7 @@ mod tests {
                 refs: vec![GraphRef {
                     name: "main".into(),
                     kind: crate::git::graph::GraphRefKind::LocalBranch,
-                    status: None,
+                    has_linked_worktree: false,
                     tracking: None,
                 }],
             }],
@@ -740,125 +811,94 @@ mod tests {
     }
 
     #[test]
-    fn graph_ref_lane_comes_from_its_commit() {
+    fn graph_ref_markers_are_width_safe() {
         let commit = GraphCommit {
-            oid: "1234567890abcdef".into(),
-            summary: "visible commit".into(),
+            oid: "tip".into(),
+            summary: "tip".into(),
             parents: vec![],
-            lane: Some(3),
+            lane: Some(0),
+            branch: None,
+            refs: vec![
+                GraphRef {
+                    name: "main".into(),
+                    kind: GraphRefKind::LocalBranch,
+                    has_linked_worktree: true,
+                    tracking: Some(crate::git::graph::GraphRefTracking {
+                        ahead: 9,
+                        behind: 0,
+                    }),
+                },
+                GraphRef {
+                    name: "origin/main".into(),
+                    kind: GraphRefKind::RemoteBranch,
+                    has_linked_worktree: false,
+                    tracking: None,
+                },
+                GraphRef {
+                    name: "v1".into(),
+                    kind: GraphRefKind::Tag,
+                    has_linked_worktree: false,
+                    tracking: None,
+                },
+            ],
+        };
+        let text: String = ref_pane_spans(&commit, 30, false, &Theme::dark(), &SymbolSet::ascii())
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.starts_with("*@#"));
+        assert!(text.contains("+9 WT"));
+        assert!(!text.contains("origin/main"));
+        assert!(!text.contains("Merged"));
+    }
+
+    #[test]
+    fn inferred_branch_name_starts_at_the_same_refs_column_as_a_live_ref() {
+        let inferred = GraphCommit {
+            oid: "inferred".into(),
+            summary: "inferred".into(),
+            parents: vec![],
+            lane: Some(0),
+            branch: Some(crate::git::graph::GraphBranchLabel {
+                name: "main".into(),
+                target_oid: "tip".into(),
+                kind: GraphRefKind::LocalBranch,
+            }),
+            refs: vec![],
+        };
+        let live = GraphCommit {
+            oid: "live".into(),
+            summary: "live".into(),
+            parents: vec![],
+            lane: Some(0),
             branch: None,
             refs: vec![GraphRef {
                 name: "main".into(),
                 kind: GraphRefKind::LocalBranch,
-                status: None,
+                has_linked_worktree: false,
                 tracking: None,
             }],
         };
-        let local_names = HashSet::from(["main"]);
-
-        let rendered: String = graph_ref_spans(
-            &commit,
-            &local_names,
-            false,
-            &Theme::dark(),
-            &SymbolSet::ascii(),
-        )
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect();
-
-        assert!(rendered.contains(" L 3 "), "rendered ref: {rendered}");
-    }
-
-    #[test]
-    fn graph_refs_are_ordered_and_show_tracking_and_merge_status() {
-        use crate::git::graph::{GraphRefStatus, GraphRefTracking};
-        use crate::types::MergeStatus;
-
         let theme = Theme::dark();
         let symbols = SymbolSet::ascii();
-        let main = GraphRef {
-            name: "main".into(),
-            kind: GraphRefKind::LocalBranch,
-            status: Some(GraphRefStatus {
-                merge_status: MergeStatus::InSync,
-                ahead: Some(0),
-                behind: Some(0),
-                is_current: true,
-                is_base: false,
-            }),
-            tracking: Some(GraphRefTracking {
-                remote_name: "origin/main".into(),
-                ahead: 0,
-                behind: 0,
-            }),
+        let text = |commit: &GraphCommit| {
+            ref_pane_spans(commit, 30, false, &theme, &symbols)
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
         };
-        let feature = GraphRef {
-            name: "feature".into(),
-            kind: GraphRefKind::LocalBranch,
-            status: Some(GraphRefStatus {
-                merge_status: MergeStatus::Unmerged,
-                ahead: Some(2),
-                behind: Some(0),
-                is_current: false,
-                is_base: false,
-            }),
-            tracking: Some(GraphRefTracking {
-                remote_name: "origin/feature".into(),
-                ahead: 2,
-                behind: 0,
-            }),
-        };
-        let same_remote = GraphRef {
-            name: "origin/main".into(),
-            kind: GraphRefKind::RemoteBranch,
-            status: None,
-            tracking: None,
-        };
-        let feature_remote = GraphRef {
-            name: "origin/feature".into(),
-            kind: GraphRefKind::RemoteBranch,
-            status: None,
-            tracking: None,
-        };
-        let remote_only = GraphRef {
-            name: "origin/release".into(),
-            kind: GraphRefKind::RemoteBranch,
-            status: None,
-            tracking: None,
-        };
-        let tag = GraphRef {
-            name: "v0.3.0".into(),
-            kind: GraphRefKind::Tag,
-            status: None,
-            tracking: None,
-        };
-        let commit = GraphCommit {
-            oid: "main-tip".into(),
-            summary: "main".into(),
-            parents: vec![],
-            lane: Some(0),
-            branch: None,
-            refs: vec![tag, remote_only, feature_remote, same_remote, feature, main],
-        };
-        let local_names = HashSet::from(["main", "feature"]);
 
-        let text: String = graph_ref_spans(&commit, &local_names, false, &theme, &symbols)
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert!(text.contains("+2"), "local branch ahead count: {text}");
-        assert!(text.contains("-"), "merge status symbol: {text}");
-        assert!(
-            !text.contains("origin/main"),
-            "matching remote hidden: {text}"
+        let inferred_start = text(&inferred).find("main").expect("inferred branch name");
+        let live_start = text(&live).find("main").expect("live branch name");
+
+        assert_eq!(
+            inferred_start, live_start,
+            "inferred branch labels must use the same Refs prefix as live refs"
         );
-        assert!(
-            text.contains("= "),
-            "sync marker is present in matching rows: {text}"
+        assert_eq!(
+            inferred_start, 14,
+            "full-width Refs text starts after LRT and State"
         );
-        assert!(text.find("main").unwrap() < text.find("origin/release").unwrap());
-        assert!(text.find("origin/release").unwrap() < text.find("v0.3.0").unwrap());
     }
 
     #[test]

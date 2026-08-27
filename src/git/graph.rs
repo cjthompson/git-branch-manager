@@ -4,7 +4,6 @@ use std::process::Command;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
 
-use crate::types::MergeStatus;
 use thiserror::Error;
 
 /// An app-owned graph payload. It deliberately contains no repository handles
@@ -54,22 +53,12 @@ pub struct GraphLine {
 pub struct GraphRef {
     pub name: String,
     pub kind: GraphRefKind,
-    pub status: Option<GraphRefStatus>,
+    pub has_linked_worktree: bool,
     pub tracking: Option<GraphRefTracking>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphRefStatus {
-    pub merge_status: MergeStatus,
-    pub ahead: Option<u32>,
-    pub behind: Option<u32>,
-    pub is_current: bool,
-    pub is_base: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphRefTracking {
-    pub remote_name: String,
     pub ahead: u32,
     pub behind: u32,
 }
@@ -395,18 +384,11 @@ fn collect_ref_data(
         .map(str::to_string)
         .or_else(|| crate::git::branch::detect_base_branch(&repository, None).ok());
     data.base_branch = base_branch.clone();
-    let local_statuses = base_branch
-        .as_deref()
-        .and_then(|base| crate::git::branch::list_branches(&repository, base).ok())
-        .unwrap_or_default()
+    let linked_worktrees = crate::git::worktree::list_worktrees(repo_path)
         .into_iter()
-        .map(|branch| (branch.name.clone(), branch))
-        .collect::<HashMap<_, _>>();
-    let remote_statuses = if include_remotes {
-        collect_remote_statuses(repo_path, &repository, base_branch.as_deref())
-    } else {
-        HashMap::new()
-    };
+        .filter(|worktree| !worktree.is_main)
+        .filter_map(|worktree| worktree.branch)
+        .collect::<HashSet<_>>();
     let mut local_refs = Vec::new();
     let mut remote_refs = Vec::new();
 
@@ -470,11 +452,10 @@ fn collect_ref_data(
     }
 
     for (name, target_oid) in &local_refs {
-        let status = local_statuses.get(name).map(graph_local_status);
         let tracking = remote_refs
             .iter()
             .filter(|(remote_name, _)| remote_short_name(remote_name) == name)
-            .find_map(|(remote_name, remote_oid)| {
+            .find_map(|(_remote_name, remote_oid)| {
                 let (ahead, behind) = repository
                     .graph_ahead_behind(
                         git2::Oid::from_str(target_oid).ok()?,
@@ -482,7 +463,6 @@ fn collect_ref_data(
                     )
                     .ok()?;
                 Some(GraphRefTracking {
-                    remote_name: remote_name.clone(),
                     ahead: ahead.try_into().unwrap_or(u32::MAX),
                     behind: behind.try_into().unwrap_or(u32::MAX),
                 })
@@ -493,7 +473,7 @@ fn collect_ref_data(
             GraphRef {
                 name: name.clone(),
                 kind: GraphRefKind::LocalBranch,
-                status,
+                has_linked_worktree: linked_worktrees.contains(name),
                 tracking,
             },
         );
@@ -507,7 +487,7 @@ fn collect_ref_data(
                 GraphRef {
                     name: name.clone(),
                     kind: GraphRefKind::RemoteBranch,
-                    status: remote_statuses.get(name).cloned(),
+                    has_linked_worktree: false,
                     tracking: None,
                 },
             );
@@ -532,63 +512,13 @@ fn collect_ref_data(
             GraphRef {
                 name: name.to_string(),
                 kind: GraphRefKind::Tag,
-                status: None,
+                has_linked_worktree: false,
                 tracking: None,
             },
         );
     }
 
     Ok(data)
-}
-
-fn graph_local_status(branch: &crate::types::BranchInfo) -> GraphRefStatus {
-    GraphRefStatus {
-        merge_status: branch.merge_status,
-        ahead: branch.ahead,
-        behind: branch.behind,
-        is_current: branch.is_current,
-        is_base: branch.is_base,
-    }
-}
-
-fn collect_remote_statuses(
-    repo_path: &Path,
-    repository: &git2::Repository,
-    base_branch: Option<&str>,
-) -> HashMap<String, GraphRefStatus> {
-    let Some(base_branch) = base_branch else {
-        return HashMap::new();
-    };
-    let remotes = crate::git::branch::list_remote_branches_phase1(repository, base_branch)
-        .unwrap_or_default();
-    let mut statuses = remotes
-        .iter()
-        .map(|remote| {
-            (
-                remote.full_ref.clone(),
-                GraphRefStatus {
-                    merge_status: remote.merge_status,
-                    ahead: remote.ahead,
-                    behind: remote.behind,
-                    is_current: false,
-                    is_base: remote.is_base,
-                },
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let receiver = crate::git::branch::spawn_remote_enricher(
-        repo_path.to_path_buf(),
-        base_branch.to_string(),
-        remotes,
-    );
-    while let Ok(result) = receiver.recv() {
-        if let Some(status) = statuses.get_mut(&result.full_ref) {
-            status.merge_status = result.merge_status;
-            status.ahead = result.ahead;
-            status.behind = result.behind;
-        }
-    }
-    statuses
 }
 
 fn remote_short_name(name: &str) -> &str {

@@ -201,7 +201,7 @@ mod tests {
                     refs: vec![GraphRef {
                         name: "main".into(),
                         kind: GraphRefKind::LocalBranch,
-                        status: None,
+                        has_linked_worktree: false,
                         tracking: None,
                     }],
                 },
