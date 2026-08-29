@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-28
+
+### Tasks
+- Add Gleisbau-backed graph loading with Git fallback (#graph, #git)
+- Add the first Graph tab with DAG and branch sidebar (#graph, #tui)
+
 ## 2026-08-27
 
 ### Graph LRT Pseudo-pane Implementation (P001)
