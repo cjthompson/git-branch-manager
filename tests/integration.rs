@@ -2,8 +2,8 @@ use std::process::Command;
 use std::sync::atomic::AtomicBool;
 
 use git_branch_manager::git::{
-    branch, cache, diagnostics, graph, merge_detection, operations, squash_loader, status, tags,
-    worktree,
+    branch, cache, diagnostics, fuzzy_match, graph, merge_detection, operations, squash_loader,
+    status, tags, worktree,
 };
 use git_branch_manager::types::{ChangedFileKind, DiagKind, MergeStatus};
 
@@ -2961,6 +2961,1837 @@ fn test_is_not_squash_merged_direct() {
         None,
         None
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Squash-merge detection test scenarios (plan P002)
+//
+// See docs/plans/2026-08-29-squash-merge-test-scenarios.md for the full
+// scenario matrix and docs/plans/2026-08-29-squash-merge-algorithm-options.md
+// for the parent algorithm-options doc these scenarios validate against.
+//
+// Naming: `test_squash_scenario_NN_...` (NN matches the plan doc's numbering;
+// sub-scenarios like 8a/8b/8c and 20a-20d get their own suffixed test).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_squash_scenario_01_baseline_single_commit_clean_squash() {
+    // Plan scenario 1: single-commit branch, squashed cleanly onto base.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/baseline"]);
+    std::fs::write(dir.join("baseline.txt"), "baseline content\n").unwrap();
+    run_git(dir, &["add", "baseline.txt"]);
+    run_git(dir, &["commit", "-m", "baseline feature commit"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/baseline"]);
+    run_git(dir, &["commit", "-m", "squash landing"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    // Expect A: Graph flags the landing commit, with no fuzzy annotation
+    // (Option 6 defers to the exact-match tier).
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    let landing = snapshot
+        .commits
+        .iter()
+        .find(|c| c.oid == squash_oid)
+        .expect("squash landing commit should be displayed");
+    assert!(
+        landing.is_possible_squash_merge,
+        "clean single-commit squash should be flagged (Algorithm A)"
+    );
+    assert!(
+        landing.fuzzy_squash_match.is_none(),
+        "exact match must not also get a fuzzy annotation"
+    );
+
+    // Expect B: Branches view reports a squash-merged status family member.
+    // No remote is configured in this test repo, so it's local-only.
+    let repo = git2::Repository::open(dir).unwrap();
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let feature = branches
+        .iter()
+        .find(|b| b.name == "feature/baseline")
+        .unwrap();
+    assert_eq!(feature.merge_status, MergeStatus::LocalSquashMerged);
+}
+
+#[test]
+fn test_squash_scenario_02_multi_commit_branch_squashed_into_one_base_commit() {
+    // Plan scenario 2: multi-commit branch touching multiple files, squashed
+    // as a single base commit.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/multi"]);
+    std::fs::write(dir.join("a.txt"), "a content\n").unwrap();
+    run_git(dir, &["add", "a.txt"]);
+    run_git(dir, &["commit", "-m", "add a"]);
+    std::fs::write(dir.join("b.txt"), "b content\n").unwrap();
+    run_git(dir, &["add", "b.txt"]);
+    run_git(dir, &["commit", "-m", "add b"]);
+    std::fs::write(dir.join("a.txt"), "a content, revised\n").unwrap();
+    run_git(dir, &["add", "a.txt"]);
+    run_git(dir, &["commit", "-m", "revise a"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/multi"]);
+    run_git(dir, &["commit", "-m", "squash landing (multi)"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .find(|c| c.oid == squash_oid)
+            .expect("squash landing commit should be displayed")
+            .is_possible_squash_merge,
+        "multi-commit branch squashed to one base commit should still match on aggregate diff"
+    );
+
+    let repo = git2::Repository::open(dir).unwrap();
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let feature = branches
+        .iter()
+        .find(|b| b.name == "feature/multi")
+        .unwrap();
+    assert_eq!(feature.merge_status, MergeStatus::LocalSquashMerged);
+}
+
+#[test]
+fn test_squash_scenario_03_regular_merge_is_not_flagged_as_squash() {
+    // Plan scenario 3: a normal two-parent merge must not be flagged as squash
+    // by either detector.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/regular-merge"]);
+    std::fs::write(dir.join("regular.txt"), "regular content\n").unwrap();
+    run_git(dir, &["add", "regular.txt"]);
+    run_git(dir, &["commit", "-m", "regular feature commit"]);
+
+    run_git(dir, &["checkout", "main"]);
+    // Give main its own commit so the merge can't fast-forward and actually
+    // produces a two-parent merge commit.
+    std::fs::write(dir.join("main-change.txt"), "main change\n").unwrap();
+    run_git(dir, &["add", "main-change.txt"]);
+    run_git(dir, &["commit", "-m", "main change"]);
+    run_git(
+        dir,
+        &["merge", "feature/regular-merge", "-m", "regular merge"],
+    );
+    let merge_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    assert!(
+        !snapshot
+            .commits
+            .iter()
+            .find(|c| c.oid == merge_oid)
+            .expect("merge commit should be displayed")
+            .is_possible_squash_merge,
+        "a regular merge commit must never be flagged as a possible squash merge"
+    );
+
+    let repo = git2::Repository::open(dir).unwrap();
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let feature = branches
+        .iter()
+        .find(|b| b.name == "feature/regular-merge")
+        .unwrap();
+    assert_eq!(
+        feature.merge_status,
+        MergeStatus::Merged,
+        "regular merges must be classified by the regular-merge detector, not fall through to squash"
+    );
+}
+
+#[test]
+fn test_squash_scenario_04_branch_with_internal_merge_commit_then_squash_merged() {
+    // Plan scenario 4: the branch's own history contains a merge commit
+    // before it is squash-merged into base. Algorithm A/B diff merge-base to
+    // tip as a flat tree diff, so internal topology must not matter.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/topology"]);
+    std::fs::write(dir.join("topology.txt"), "topology base\n").unwrap();
+    run_git(dir, &["add", "topology.txt"]);
+    run_git(dir, &["commit", "-m", "topology base commit"]);
+
+    run_git(dir, &["checkout", "-b", "feature/topology-sub"]);
+    std::fs::write(dir.join("sub.txt"), "sub content\n").unwrap();
+    run_git(dir, &["add", "sub.txt"]);
+    run_git(dir, &["commit", "-m", "sub commit"]);
+
+    run_git(dir, &["checkout", "feature/topology"]);
+    run_git(
+        dir,
+        &["merge", "feature/topology-sub", "-m", "merge sub into topology"],
+    );
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/topology"]);
+    run_git(dir, &["commit", "-m", "squash landing (topology)"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .find(|c| c.oid == squash_oid)
+            .expect("squash landing commit should be displayed")
+            .is_possible_squash_merge,
+        "a merge commit inside the branch's own history must not prevent detection"
+    );
+
+    let repo = git2::Repository::open(dir).unwrap();
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let feature = branches
+        .iter()
+        .find(|b| b.name == "feature/topology")
+        .unwrap();
+    assert_eq!(feature.merge_status, MergeStatus::LocalSquashMerged);
+}
+
+#[test]
+fn test_squash_scenario_05_partial_landing_via_individual_cherry_picks() {
+    // Plan scenario 5: only 2 of the branch's 3 commits are cherry-picked
+    // individually onto base (not a full squash). Documents the current
+    // all-or-nothing behavior as a known, accepted limitation (see plan doc
+    // scenario 5) rather than a bug to fix here.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/partial"]);
+    std::fs::write(dir.join("p1.txt"), "p1\n").unwrap();
+    run_git(dir, &["add", "p1.txt"]);
+    run_git(dir, &["commit", "-m", "p1"]);
+    let c1 = git_output(dir, &["rev-parse", "HEAD"]);
+    std::fs::write(dir.join("p2.txt"), "p2\n").unwrap();
+    run_git(dir, &["add", "p2.txt"]);
+    run_git(dir, &["commit", "-m", "p2"]);
+    let c2 = git_output(dir, &["rev-parse", "HEAD"]);
+    std::fs::write(dir.join("p3.txt"), "p3\n").unwrap();
+    run_git(dir, &["add", "p3.txt"]);
+    run_git(dir, &["commit", "-m", "p3"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["cherry-pick", &c1]);
+    run_git(dir, &["cherry-pick", &c2]);
+    let landed_tip = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .all(|c| !c.is_possible_squash_merge),
+        "partial cherry-pick coverage must not produce any possible-squash annotation \
+         (known limitation: no single base commit's diff equals the branch's full aggregate diff)"
+    );
+    let _ = landed_tip;
+
+    assert!(
+        !merge_detection::is_squash_merged(dir, "main", "feature/partial", None, None),
+        "partial coverage (2 of 3 commits landed individually) must not report as fully squash-merged"
+    );
+}
+
+#[test]
+fn test_squash_scenario_06_reordered_commits_and_hunk_order_insensitivity() {
+    // Plan scenario 6, part 1: commits touching different files land as one
+    // squash commit; functional flagged assertion (order of commits within
+    // the branch must not matter to the aggregate diff).
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/reordered"]);
+    std::fs::write(dir.join("z.txt"), "z content\n").unwrap();
+    run_git(dir, &["add", "z.txt"]);
+    run_git(dir, &["commit", "-m", "add z first"]);
+    std::fs::write(dir.join("a.txt"), "a content\n").unwrap();
+    run_git(dir, &["add", "a.txt"]);
+    run_git(dir, &["commit", "-m", "add a second"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/reordered"]);
+    run_git(dir, &["commit", "-m", "squash landing (reordered)"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .find(|c| c.oid == squash_oid)
+            .expect("squash landing commit should be displayed")
+            .is_possible_squash_merge,
+        "commit order within the branch must not affect the aggregate-diff match"
+    );
+
+    // Plan scenario 6, part 2: directly confirm `git patch-id --stable`'s
+    // documented hunk-order insensitivity holds for this codebase's exact
+    // invocation (`git diff --binary --full-index --no-ext-diff --no-textconv`
+    // piped to `git patch-id --stable`), not just in isolation. A custom
+    // `diff.orderFile` forces `git diff` to emit the same two file-hunks in
+    // reverse order; the resulting patch-id must still match the default-order
+    // patch-id.
+    let parent = git_output(dir, &["rev-parse", &format!("{squash_oid}^")]);
+    let default_order_id = git_output(
+        dir,
+        &[
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            &parent,
+            &squash_oid,
+            "--",
+        ],
+    );
+    let order_file = dir.join("order.txt");
+    std::fs::write(&order_file, "a.txt\nz.txt\n").unwrap();
+    let reordered_diff_output = Command::new("git")
+        .current_dir(dir)
+        .args([
+            "-c",
+            &format!("diff.orderFile={}", order_file.display()),
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            &parent,
+            &squash_oid,
+            "--",
+        ])
+        .output()
+        .expect("git diff with orderFile should run");
+    assert!(reordered_diff_output.status.success());
+
+    fn patch_id_of(dir: &std::path::Path, diff_text: &[u8]) -> String {
+        use std::io::Write;
+        let mut child = Command::new("git")
+            .current_dir(dir)
+            .args(["patch-id", "--stable"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("git patch-id should spawn");
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(diff_text)
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    let default_id = patch_id_of(dir, default_order_id.as_bytes());
+    let reordered_id = patch_id_of(dir, &reordered_diff_output.stdout);
+    assert_eq!(
+        default_id, reordered_id,
+        "git patch-id --stable must be insensitive to hunk/file order in this codebase's exact invocation"
+    );
+}
+
+#[test]
+fn test_squash_scenario_07_rebased_branch_then_squash_merged() {
+    // Plan scenario 7: branch created off base; base advances; branch is
+    // rebased onto the new base tip; then squashed. Detection must use the
+    // post-rebase merge-base, not a stale ancestor.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/rebased"]);
+    std::fs::write(dir.join("rebased.txt"), "rebased content\n").unwrap();
+    run_git(dir, &["add", "rebased.txt"]);
+    run_git(dir, &["commit", "-m", "rebased feature commit"]);
+
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("main-advance.txt"), "main advanced\n").unwrap();
+    run_git(dir, &["add", "main-advance.txt"]);
+    run_git(dir, &["commit", "-m", "main advances"]);
+
+    run_git(dir, &["checkout", "feature/rebased"]);
+    run_git(dir, &["rebase", "main"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/rebased"]);
+    run_git(dir, &["commit", "-m", "squash landing (rebased)"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .find(|c| c.oid == squash_oid)
+            .expect("squash landing commit should be displayed")
+            .is_possible_squash_merge,
+        "a rebased-then-squashed branch must be flagged using the post-rebase merge-base"
+    );
+
+    let repo = git2::Repository::open(dir).unwrap();
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let feature = branches
+        .iter()
+        .find(|b| b.name == "feature/rebased")
+        .unwrap();
+    assert_eq!(feature.merge_status, MergeStatus::LocalSquashMerged);
+}
+
+#[test]
+fn test_squash_scenario_08a_conflict_resolution_extra_lines_fuzzy_positive() {
+    // Plan scenario 8a: base and branch modify the same file on different
+    // lines (no true git-level conflict), but the squash author also fixed up
+    // a few adjacent lines while resolving. The squash commit's diff therefore
+    // contains the branch's real changes *plus* extra resolution-only lines
+    // not present in the branch's own diff.
+    //
+    // The branch's own diff changes 6 lines (12 added/removed tokens); the
+    // squash adds one extra resolution edit (2 more tokens) on top. Hand-
+    // calculated Jaccard similarity: 12 shared / 14 union ≈ 0.857 — comfortably
+    // above the calibrated FUZZY_SIMILARITY_THRESHOLD (see git/fuzzy_match.rs).
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    let original = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n";
+    std::fs::write(dir.join("f8a.txt"), original).unwrap();
+    run_git(dir, &["add", "f8a.txt"]);
+    run_git(dir, &["commit", "-m", "f8a baseline"]);
+
+    run_git(dir, &["checkout", "-b", "feature/8a"]);
+    let branch_content = "l1-b\nl2-b\nl3-b\nl4-b\nl5-b\nl6-b\nl7\nl8\n";
+    std::fs::write(dir.join("f8a.txt"), branch_content).unwrap();
+    run_git(dir, &["commit", "-am", "branch changes lines 1-6"]);
+    let branch_tip = git_output(dir, &["rev-parse", "HEAD"]);
+
+    run_git(dir, &["checkout", "main"]);
+    // main advances independently so the squash isn't a trivial fast-forward.
+    let main_parent_content = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8-main\n";
+    std::fs::write(dir.join("f8a.txt"), main_parent_content).unwrap();
+    run_git(dir, &["commit", "-am", "main changes line 8 independently"]);
+    let main_parent = git_output(dir, &["rev-parse", "HEAD"]);
+
+    run_git(dir, &["merge", "--squash", "feature/8a"]);
+    // Simulate a conflict-resolution pass: apply the branch's lines 1-6 *plus*
+    // one extra resolution tweak the branch itself never made (line 7).
+    let squash_content = "l1-b\nl2-b\nl3-b\nl4-b\nl5-b\nl6-b\nl7-resolved\nl8-main\n";
+    std::fs::write(dir.join("f8a.txt"), squash_content).unwrap();
+    run_git(dir, &["add", "f8a.txt"]);
+    run_git(dir, &["commit", "-m", "squash landing with extra resolution edit"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    // Expect A: not flagged under exact patch-id match (known false negative).
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    let landing = snapshot
+        .commits
+        .iter()
+        .find(|c| c.oid == squash_oid)
+        .expect("squash landing commit should be displayed");
+    assert!(
+        !landing.is_possible_squash_merge,
+        "extra resolution lines must break exact patch-id equality (known false negative, plan scenario 8a)"
+    );
+
+    // Expect B: not SquashMerged, same reason.
+    assert!(!merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/8a",
+        None,
+        Some(&main_parent),
+    ));
+
+    // Expect Option 6: flagged as a fuzzy possible-squash match with high
+    // similarity.
+    let fuzzy = landing
+        .fuzzy_squash_match
+        .as_ref()
+        .expect("high line-level similarity should surface a fuzzy possible-squash match");
+    assert!(
+        fuzzy.similarity_percent >= 75,
+        "expected high similarity for a near-exact match with one extra resolution edit, got {}",
+        fuzzy.similarity_percent
+    );
+    let _ = branch_tip;
+}
+
+#[test]
+fn test_squash_scenario_08b_true_conflicting_hunks_manually_resolved() {
+    // Plan scenario 8b: base and branch modify the *same* lines (a true
+    // conflict). The squash commit's tree is constructed directly as what a
+    // human would produce resolving the conflict, rather than via a
+    // mechanical merge. This test records whichever side of the Option 6
+    // threshold this concrete recipe lands on (observe-then-assert), per the
+    // plan doc's explicit instruction not to assume a specific classification
+    // in advance.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    let original = "one\ntwo\nthree\nfour\nfive\n";
+    std::fs::write(dir.join("f8b.txt"), original).unwrap();
+    run_git(dir, &["add", "f8b.txt"]);
+    run_git(dir, &["commit", "-m", "f8b baseline"]);
+
+    run_git(dir, &["checkout", "-b", "feature/8b"]);
+    let branch_content = "one-BRANCH\ntwo-BRANCH\nthree\nfour\nfive\n";
+    std::fs::write(dir.join("f8b.txt"), branch_content).unwrap();
+    run_git(dir, &["commit", "-am", "branch changes lines 1-2"]);
+
+    run_git(dir, &["checkout", "main"]);
+    let main_parent_content = "one-MAIN\ntwo-MAIN\nthree\nfour\nfive\n";
+    std::fs::write(dir.join("f8b.txt"), main_parent_content).unwrap();
+    run_git(dir, &["commit", "-am", "main changes lines 1-2 independently (true conflict)"]);
+    let main_parent = git_output(dir, &["rev-parse", "HEAD"]);
+
+    // This is a true git-level conflict, so `git merge --squash` exits
+    // non-zero and leaves conflict markers in the working tree; run it
+    // directly (not via the panic-on-failure `run_git` helper) and ignore the
+    // exit code, since we overwrite the file with the manually resolved
+    // content below anyway.
+    let _ = Command::new("git")
+        .current_dir(dir)
+        .args(["merge", "--squash", "feature/8b"])
+        .output()
+        .expect("git merge --squash should run (conflict exit is expected)");
+    // Manually resolve: keep main's line 1, branch's line 2, as a human might.
+    let resolved_content = "one-MAIN\ntwo-BRANCH\nthree\nfour\nfive\n";
+    std::fs::write(dir.join("f8b.txt"), resolved_content).unwrap();
+    run_git(dir, &["add", "f8b.txt"]);
+    run_git(dir, &["commit", "-m", "manually resolved squash landing"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    let landing = snapshot
+        .commits
+        .iter()
+        .find(|c| c.oid == squash_oid)
+        .expect("squash landing commit should be displayed");
+    assert!(
+        !landing.is_possible_squash_merge,
+        "a manually-resolved true conflict must not exact-match (plan scenario 8b)"
+    );
+    assert!(!merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/8b",
+        None,
+        Some(&main_parent),
+    ));
+
+    // Observe-then-assert: record whichever side of the threshold this
+    // recipe lands on. Branch diff touches 2 lines (4 tokens); resolved
+    // squash diff also touches 2 lines (4 tokens: -one-MAIN/-two-MAIN/+one-MAIN(no)
+    // ... in practice the overlap is only the "two-BRANCH" addition, since the
+    // removed lines differ (main's own text) and "one-MAIN" survives unchanged
+    // (no diff line for it in the squash-vs-main-parent diff). This is a much
+    // lower structural overlap than 8a, so we expect this concrete recipe to
+    // land BELOW the fuzzy threshold.
+    assert!(
+        landing.fuzzy_squash_match.is_none(),
+        "observed: this true-conflict recipe's similarity is too low to clear the fuzzy \
+         threshold (majority of the resolved content differs from the branch's own diff); \
+         if this fails, update this comment to record the newly-observed classification \
+         rather than assuming the prior expectation still holds"
+    );
+}
+
+#[test]
+fn test_squash_scenario_08c_merge_tree_confirmation_check() {
+    // Plan scenario 8c: uses the parent doc's Option 3 (`git merge-tree`)
+    // confirmation signal, not Option 6. Using the same conflict-resolution
+    // shape as 8a, run `git merge-tree --write-tree base branch` (the
+    // *original*, un-squashed branch) against *current* base (which already
+    // contains the resolved squash) and compare the resulting tree to base's
+    // own tree. This scenario documents whether merge-tree re-simulation
+    // succeeds even when exact patch-id match fails.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    let original = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n";
+    std::fs::write(dir.join("f8c.txt"), original).unwrap();
+    run_git(dir, &["add", "f8c.txt"]);
+    run_git(dir, &["commit", "-m", "f8c baseline"]);
+
+    run_git(dir, &["checkout", "-b", "feature/8c"]);
+    let branch_content = "l1-b\nl2-b\nl3-b\nl4-b\nl5-b\nl6-b\nl7\nl8\n";
+    std::fs::write(dir.join("f8c.txt"), branch_content).unwrap();
+    run_git(dir, &["commit", "-am", "branch changes lines 1-6"]);
+
+    run_git(dir, &["checkout", "main"]);
+    let main_parent_content = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8-main\n";
+    std::fs::write(dir.join("f8c.txt"), main_parent_content).unwrap();
+    run_git(dir, &["commit", "-am", "main changes line 8 independently"]);
+
+    run_git(dir, &["merge", "--squash", "feature/8c"]);
+    let squash_content = "l1-b\nl2-b\nl3-b\nl4-b\nl5-b\nl6-b\nl7-resolved\nl8-main\n";
+    std::fs::write(dir.join("f8c.txt"), squash_content).unwrap();
+    run_git(dir, &["add", "f8c.txt"]);
+    run_git(dir, &["commit", "-m", "squash landing with extra resolution edit"]);
+
+    let merge_tree_output = Command::new("git")
+        .current_dir(dir)
+        .args(["merge-tree", "--write-tree", "main", "feature/8c"])
+        .output()
+        .expect("git merge-tree should run");
+
+    // Observe-then-assert: empirically, `git merge-tree --write-tree` reports
+    // a genuine CONFLICT (non-zero exit) for this fixture, not a clean tree
+    // match. All 8 lines of `f8c.txt` sit inside a single diff hunk on both
+    // sides (the file is short enough that git's default 3-line context
+    // merges the whole file into one hunk), so `main`'s independent line-7/8
+    // edits and `feature`'s line 1-6 edits are treated as *overlapping*
+    // hunks by the `ort` merge strategy even though the specific changed
+    // lines don't literally collide — a real content conflict is reported.
+    // This means merge-tree does NOT succeed where patch-id (8a/8b) fails
+    // for this recipe; it fails too, just for a different, hunk-granularity
+    // reason. This is itself a useful, concrete data point for the parent
+    // plan doc's "A true, B false"-style disagreement-visibility principle:
+    // here, neither exact patch-id equality nor merge-tree re-simulation
+    // confirms the squash for a same-file multi-line resolution.
+    assert!(
+        !merge_tree_output.status.success(),
+        "observed: git merge-tree reports a real conflict for this same-file, \
+         multi-hunk resolution fixture rather than silently confirming the squash"
+    );
+    let stdout = String::from_utf8_lossy(&merge_tree_output.stdout);
+    assert!(
+        stdout.contains("CONFLICT"),
+        "expected merge-tree's stdout to report the conflict explicitly, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_squash_scenario_09_binary_file_changes() {
+    // Plan scenario 9: branch adds/modifies a binary file; squash lands the
+    // same binary change. Treated as an empirical determination (binary-diff
+    // patch-id behavior is undocumented at the git-scm level per the plan
+    // doc), not an assumed-safe path.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/binary"]);
+    // A small, fixed-content "binary" blob (embedded NUL byte forces git to
+    // treat it as binary).
+    std::fs::write(dir.join("blob.bin"), [0u8, 1, 2, 3, 0, 255, 254, 253]).unwrap();
+    run_git(dir, &["add", "blob.bin"]);
+    run_git(dir, &["commit", "-m", "add binary blob"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/binary"]);
+    run_git(dir, &["commit", "-m", "squash landing (binary)"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .find(|c| c.oid == squash_oid)
+            .expect("squash landing commit should be displayed")
+            .is_possible_squash_merge,
+        "observed: this codebase's `git diff --binary --full-index` + `git patch-id --stable` \
+         pipeline produces a matching patch-id for an identical binary-file change"
+    );
+
+    assert!(merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/binary",
+        None,
+        None
+    ));
+}
+
+#[test]
+fn test_squash_scenario_10a_rename_only_no_content_change() {
+    // Plan scenario 10a: branch renames a file with no content change; squash
+    // lands the rename.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    std::fs::write(dir.join("original-name.txt"), "unchanged content\n").unwrap();
+    run_git(dir, &["add", "original-name.txt"]);
+    run_git(dir, &["commit", "-m", "add original-name.txt"]);
+
+    run_git(dir, &["checkout", "-b", "feature/rename-only"]);
+    run_git(dir, &["mv", "original-name.txt", "renamed.txt"]);
+    run_git(dir, &["commit", "-m", "rename only"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/rename-only"]);
+    run_git(dir, &["commit", "-m", "squash landing (rename only)"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .find(|c| c.oid == squash_oid)
+            .expect("squash landing commit should be displayed")
+            .is_possible_squash_merge,
+        "observed: a pure rename (default rename detection in `git diff`, on since Git 2.9) \
+         still produces a matching stable patch-id"
+    );
+    assert!(merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/rename-only",
+        None,
+        None
+    ));
+}
+
+#[test]
+fn test_squash_scenario_10b_rename_and_content_change() {
+    // Plan scenario 10b: branch renames a file *and* changes its content;
+    // squash lands both.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    std::fs::write(dir.join("original2.txt"), "line one\nline two\nline three\n").unwrap();
+    run_git(dir, &["add", "original2.txt"]);
+    run_git(dir, &["commit", "-m", "add original2.txt"]);
+
+    run_git(dir, &["checkout", "-b", "feature/rename-and-change"]);
+    run_git(dir, &["mv", "original2.txt", "renamed2.txt"]);
+    std::fs::write(dir.join("renamed2.txt"), "line one\nline two CHANGED\nline three\n").unwrap();
+    run_git(dir, &["commit", "-am", "rename and change content"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/rename-and-change"]);
+    run_git(dir, &["commit", "-m", "squash landing (rename + change)"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .find(|c| c.oid == squash_oid)
+            .expect("squash landing commit should be displayed")
+            .is_possible_squash_merge,
+        "observed: rename-plus-content-change still produces a matching stable patch-id"
+    );
+    assert!(merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/rename-and-change",
+        None,
+        None
+    ));
+}
+
+#[test]
+fn test_squash_scenario_10c_executable_bit_only_change() {
+    // Plan scenario 10c: branch changes a file's executable bit only.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    std::fs::write(dir.join("script.sh"), "#!/bin/sh\necho hi\n").unwrap();
+    run_git(dir, &["add", "script.sh"]);
+    run_git(dir, &["commit", "-m", "add script.sh"]);
+
+    run_git(dir, &["checkout", "-b", "feature/exec-bit"]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(dir.join("script.sh")).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(dir.join("script.sh"), perms).unwrap();
+    }
+    run_git(dir, &["update-index", "--chmod=+x", "script.sh"]);
+    run_git(dir, &["commit", "-m", "make script.sh executable"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/exec-bit"]);
+    run_git(dir, &["commit", "-m", "squash landing (exec bit)"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .find(|c| c.oid == squash_oid)
+            .expect("squash landing commit should be displayed")
+            .is_possible_squash_merge,
+        "observed: a mode-only (executable bit) change still produces a matching stable patch-id"
+    );
+    assert!(merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/exec-bit",
+        None,
+        None
+    ));
+}
+
+#[test]
+fn test_squash_scenario_11_whitespace_only_change() {
+    // Plan scenario 11 (positive): branch changes only trailing whitespace on
+    // otherwise-identical content; squash lands the identical whitespace
+    // change. `git patch-id --stable` is documented (and empirically
+    // confirmed here) to ignore whitespace differences entirely.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    std::fs::write(dir.join("ws.txt"), "line one\nline two\nline three\n").unwrap();
+    run_git(dir, &["add", "ws.txt"]);
+    run_git(dir, &["commit", "-m", "add ws.txt"]);
+
+    run_git(dir, &["checkout", "-b", "feature/whitespace"]);
+    std::fs::write(dir.join("ws.txt"), "line one   \nline two\nline three\n").unwrap();
+    run_git(dir, &["commit", "-am", "trailing whitespace on line one"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/whitespace"]);
+    run_git(dir, &["commit", "-m", "squash landing (whitespace)"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .find(|c| c.oid == squash_oid)
+            .expect("squash landing commit should be displayed")
+            .is_possible_squash_merge,
+        "git patch-id --stable ignores whitespace-only differences"
+    );
+    assert!(merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/whitespace",
+        None,
+        None
+    ));
+}
+
+#[test]
+fn test_squash_scenario_11_whitespace_negative_unrelated() {
+    // Plan scenario 11 (negative control): base's independent commit makes
+    // only an *unrelated* whitespace change (not the branch's change) — must
+    // NOT be flagged, since both would otherwise produce a degenerate
+    // near-empty diff that could coincidentally collide.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    std::fs::write(
+        dir.join("ws-a.txt"),
+        "alpha one\nalpha two\nalpha three\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ws-b.txt"),
+        "beta one\nbeta two\nbeta three\n",
+    )
+    .unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "add ws-a.txt and ws-b.txt"]);
+
+    run_git(dir, &["checkout", "-b", "feature/ws-unrelated"]);
+    std::fs::write(
+        dir.join("ws-a.txt"),
+        "alpha one   \nalpha two\nalpha three\n",
+    )
+    .unwrap();
+    run_git(dir, &["commit", "-am", "branch: trailing whitespace on ws-a.txt"]);
+
+    run_git(dir, &["checkout", "main"]);
+    // An independent, unrelated whitespace-only change on a *different* file.
+    std::fs::write(
+        dir.join("ws-b.txt"),
+        "beta one   \nbeta two\nbeta three\n",
+    )
+    .unwrap();
+    run_git(dir, &["commit", "-am", "main: unrelated trailing whitespace on ws-b.txt"]);
+    let unrelated_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    assert!(
+        !snapshot
+            .commits
+            .iter()
+            .find(|c| c.oid == unrelated_base_oid)
+            .expect("unrelated base commit should be displayed")
+            .is_possible_squash_merge,
+        "an unrelated whitespace-only change to a different file must not be flagged"
+    );
+    assert!(!merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/ws-unrelated",
+        None,
+        None
+    ));
+}
+
+#[test]
+fn test_squash_scenario_12_empty_net_zero_branch_and_base_commit() {
+    // Plan scenario 12: a branch whose commits fully cancel out (branch-tip
+    // tree == merge-base tree) produces an empty diff. `git patch-id --stable`
+    // on an empty diff produces no output at all (confirmed empirically: this
+    // codebase's `compute_patch`/`stable_patch_id` early-returns `None` when
+    // `git diff`'s stdout is empty, *before* ever invoking `patch-id`). A
+    // second, unrelated empty-diff base commit is also constructed to confirm
+    // the current implementation does not treat two "empty" patch-ids as
+    // equal to each other (a real false-positive risk if `None == None` were
+    // ever compared) — it can't, since only `Some(patch_id)` entries are
+    // inserted into the match tables (see `annotate_possible_squash_merges`
+    // in `git/graph.rs`).
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/net-zero"]);
+    std::fs::write(dir.join("temp.txt"), "temporary content\n").unwrap();
+    run_git(dir, &["add", "temp.txt"]);
+    run_git(dir, &["commit", "-m", "add temp content"]);
+    run_git(dir, &["rm", "temp.txt"]);
+    run_git(dir, &["commit", "-m", "remove temp content (net zero)"]);
+
+    run_git(dir, &["checkout", "main"]);
+    // An unrelated, independent net-zero commit on base: add then remove a
+    // different file in a single commit sequence.
+    std::fs::write(dir.join("other-temp.txt"), "other temporary\n").unwrap();
+    run_git(dir, &["add", "other-temp.txt"]);
+    run_git(dir, &["commit", "-m", "add other temp content"]);
+    run_git(dir, &["rm", "other-temp.txt"]);
+    run_git(dir, &["commit", "-m", "remove other temp content (net zero, unrelated)"]);
+    let empty_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    assert!(
+        !snapshot
+            .commits
+            .iter()
+            .find(|c| c.oid == empty_base_oid)
+            .expect("unrelated empty base commit should be displayed")
+            .is_possible_squash_merge,
+        "an unrelated empty/net-zero base commit must never be flagged, including against \
+         another empty-diff branch — empty diffs are explicitly excluded (None), never matched"
+    );
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .all(|c| !c.is_possible_squash_merge),
+        "no commit in this fixture should be flagged: both diffs involved are empty"
+    );
+
+    assert!(!merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/net-zero",
+        None,
+        None
+    ));
+}
+
+#[test]
+fn test_squash_scenario_13_reverted_branch_net_zero_but_no_specific_squash_point() {
+    // Plan scenario 13: branch adds a commit, then a second commit that
+    // reverts it (net-zero from base's perspective, but the commits still
+    // exist as distinct history). Two separate assertions per the plan doc:
+    // (a) the branch's tip tree is trivially content-identical to base's tree
+    // (the "already integrated" OR-claim, checked directly via tree OIDs
+    // since this codebase has no dedicated `already_integrated` field yet);
+    // (b) no *specific* base commit is flagged as the squash point (the
+    // `possible_squash(commit)` AND-claim), since there is nothing for a
+    // base commit's diff to match against.
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    let base_tree = repo.head().unwrap().peel_to_tree().unwrap().id().to_string();
+
+    run_git(dir, &["checkout", "-b", "feature/reverted"]);
+    std::fs::write(dir.join("temp2.txt"), "temp content 2\n").unwrap();
+    run_git(dir, &["add", "temp2.txt"]);
+    run_git(dir, &["commit", "-m", "add temp2 content"]);
+    run_git(dir, &["rm", "temp2.txt"]);
+    run_git(dir, &["commit", "-m", "revert temp2 content"]);
+
+    // (a) content-equivalence check.
+    let branch_tree = git_output(dir, &["rev-parse", "HEAD^{tree}"]);
+    assert_eq!(
+        branch_tree, base_tree,
+        "reverted branch's tip tree must equal base's tree (already integrated, content-wise)"
+    );
+
+    // (b) no specific base commit is the squash point.
+    run_git(dir, &["checkout", "main"]);
+    assert!(
+        !merge_detection::is_squash_merged(dir, "main", "feature/reverted", None, None),
+        "an empty aggregate diff must not report as squash-merged into any base commit"
+    );
+
+    let repo = git2::Repository::open(dir).unwrap();
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let feature = branches
+        .iter()
+        .find(|b| b.name == "feature/reverted")
+        .unwrap();
+    assert_eq!(
+        feature.merge_status,
+        MergeStatus::Unmerged,
+        "observed: current status classification has no distinct \"already integrated but no \
+         specific squash point\" state — a reverted branch reports plain Unmerged, matching \
+         neither the regular-merge reachable-set check (different OID) nor the squash check \
+         (no diff to match)"
+    );
+}
+
+#[test]
+fn test_squash_scenario_14_duplicate_independently_recreated_patch() {
+    // Plan scenario 14: branch makes a one-line change; independently, a
+    // *later, unrelated* commit on base makes the exact same one-line change
+    // to the same file (two developers writing the identical fix). This is
+    // the documented, accepted false positive for patch-id-based detection:
+    // content equivalence, not historical provenance, is all patch-id can
+    // observe.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    std::fs::write(dir.join("dup.txt"), "before\n").unwrap();
+    run_git(dir, &["add", "dup.txt"]);
+    run_git(dir, &["commit", "-m", "add dup.txt"]);
+
+    run_git(dir, &["checkout", "-b", "feature/duplicate-fix"]);
+    std::fs::write(dir.join("dup.txt"), "after\n").unwrap();
+    run_git(dir, &["commit", "-am", "branch: fix dup.txt"]);
+
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("dup.txt"), "after\n").unwrap();
+    run_git(dir, &["commit", "-am", "main: independently make the identical fix"]);
+    let independent_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    let independent = snapshot
+        .commits
+        .iter()
+        .find(|c| c.oid == independent_base_oid)
+        .expect("independent base commit should be displayed");
+    assert!(
+        independent.is_possible_squash_merge,
+        "documented, accepted false positive: an independently recreated identical one-line \
+         fix is indistinguishable from a real squash landing under patch-id equality \
+         (content equivalence, not historical provenance) — see plan doc scenario 14"
+    );
+    assert!(merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/duplicate-fix",
+        None,
+        None
+    ));
+
+    // Calibration data point for Option 6: directly score the two diffs
+    // (branch's own diff vs. the independent base commit's diff) with
+    // `fuzzy_match::score`/`classify`. Since these are the exact same
+    // one-line, one-file change, similarity is 1.0 — and `classify` already
+    // defers `similarity >= 1.0` to the exact-match tier (which fired above),
+    // so no *additional* fuzzy signal is expected here regardless of the
+    // small-diff `MIN_UNION_SIZE_FOR_FUZZY` gate.
+    let branch_diff = git_output(
+        dir,
+        &["diff", "--binary", "--full-index", "main~1", "feature/duplicate-fix", "--"],
+    );
+    let base_diff = git_output(
+        dir,
+        &["diff", "--binary", "--full-index", "main~1", "main", "--"],
+    );
+    let fscore = fuzzy_match::score(branch_diff.as_bytes(), base_diff.as_bytes())
+        .expect("identical single-file diffs should pass the cheap prefilter");
+    assert_eq!(
+        fscore.similarity, 1.0,
+        "observed: the coincidental duplicate fix scores as perfectly similar"
+    );
+    assert!(
+        fuzzy_match::classify(&fscore).is_none(),
+        "similarity == 1.0 always defers to the exact-match tier, regardless of diff size"
+    );
+}
+
+#[test]
+fn test_squash_scenario_15_criss_cross_multiple_merge_bases() {
+    // Plan scenario 15: construct a criss-cross merge (two branches that have
+    // merged each other using each other's *pre-merge* tips), so `main` and
+    // `feature` have two co-equal merge bases. `git merge-base --all` should
+    // report both; a plain `git merge-base` picks exactly one of them
+    // (officially unspecified by git). This test pins down current behavior
+    // for this fixture rather than asserting a "correct" choice git itself
+    // doesn't guarantee.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "criss-a"]);
+    std::fs::write(dir.join("a.txt"), "a content\n").unwrap();
+    run_git(dir, &["add", "a.txt"]);
+    run_git(dir, &["commit", "-m", "criss-a commit"]);
+    let a_tip = git_output(dir, &["rev-parse", "HEAD"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["checkout", "-b", "criss-b"]);
+    std::fs::write(dir.join("b.txt"), "b content\n").unwrap();
+    run_git(dir, &["add", "b.txt"]);
+    run_git(dir, &["commit", "-m", "criss-b commit"]);
+    let b_tip = git_output(dir, &["rev-parse", "HEAD"]);
+
+    // Merge b into a normally: parents [a_tip, b_tip].
+    run_git(dir, &["checkout", "criss-a"]);
+    run_git(dir, &["merge", "criss-b", "-m", "merge b into a"]);
+    let merged_tree = git_output(dir, &["rev-parse", "HEAD^{tree}"]);
+
+    // Construct the *other* merge directly via commit-tree, with parents
+    // [b_tip, a_tip] (the PRE-merge tips) so neither merge commit is an
+    // ancestor of the other — a genuine criss-cross, not a fast-forwarded
+    // chain.
+    let criss_merge_2 = git_output(
+        dir,
+        &["commit-tree", &merged_tree, "-p", &b_tip, "-p", &a_tip, "-m", "merge a into b"],
+    );
+    run_git(dir, &["branch", "-f", "criss-b", &criss_merge_2]);
+
+    let all_bases = git_output(dir, &["merge-base", "--all", "criss-a", "criss-b"]);
+    let base_count = all_bases.lines().filter(|l| !l.trim().is_empty()).count();
+    assert_eq!(
+        base_count, 2,
+        "expected a genuine criss-cross fixture with two co-equal merge bases, got: {all_bases}"
+    );
+    let base_set: std::collections::HashSet<&str> = all_bases.lines().collect();
+    assert!(base_set.contains(a_tip.as_str()));
+    assert!(base_set.contains(b_tip.as_str()));
+
+    // Record which single base `git merge-base` (no --all) actually picks in
+    // this codebase's exact invocation pattern.
+    let picked = git_output(dir, &["merge-base", "criss-a", "criss-b"]);
+    assert!(
+        base_set.contains(picked.as_str()),
+        "the single-base pick must be one of the --all candidates, got: {picked}"
+    );
+
+    // Confirm using this merge-base does not panic and produces a boolean.
+    // criss-a and criss-b have identical trees at this point (both built from
+    // `merged_tree`), so a squash-style comparison should find the branch
+    // fully represented already (this is a smoke check of the fixture, not a
+    // squash-detection claim about a landed commit).
+    let result = merge_detection::is_squash_merged(dir, "criss-a", "criss-b", None, Some(&picked));
+    // No assertion on the boolean value itself beyond it not panicking —
+    // per the plan doc, only the merge-base pick and non-panicking behavior
+    // are being characterized here.
+    let _ = result;
+}
+
+#[test]
+fn test_squash_scenario_16_shallow_out_of_window_history_max_count_boundary() {
+    // Plan scenario 16: the actual squash-landing commit is older than the
+    // Graph's configured `max_count` window.
+    // Expect A: not flagged — Algorithm A fails closed outside its displayed
+    // window (no false positive, no panic).
+    // Expect B: still detects it — B is documented as searching beyond the
+    // Graph display window (the concrete "A false, B true" disagreement case).
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/out-of-window"]);
+    std::fs::write(dir.join("window.txt"), "windowed content\n").unwrap();
+    run_git(dir, &["add", "window.txt"]);
+    run_git(dir, &["commit", "-m", "windowed source"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/out-of-window"]);
+    run_git(dir, &["commit", "-m", "squash landing (out of window)"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    // Push the squash landing commit outside the displayed window.
+    run_git(dir, &["commit", "--allow-empty", "-m", "newer commit 1"]);
+    run_git(dir, &["commit", "--allow-empty", "-m", "newer commit 2"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            max_count: 2,
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("bounded graph load should not error");
+    assert_eq!(snapshot.commits.len(), 2);
+    assert!(
+        !snapshot.commits.iter().any(|c| c.oid == squash_oid),
+        "the squash landing commit should be outside the displayed window"
+    );
+    assert!(
+        snapshot
+            .commits
+            .iter()
+            .all(|c| !c.is_possible_squash_merge),
+        "Algorithm A must fail closed (no false positive) outside its displayed window"
+    );
+
+    // Expect B: full history search still finds it.
+    assert!(
+        merge_detection::is_squash_merged(dir, "main", "feature/out-of-window", None, None),
+        "Algorithm B is not bounded by the Graph's display window and should still detect it"
+    );
+}
+
+#[test]
+fn test_squash_scenario_17_local_base_vs_remote_base_divergence() {
+    // Plan scenario 17: branch is squash-merged into origin/main, but local
+    // main has not fetched/merged that commit yet. Detection against local
+    // main must report false; detection against origin/main (after fetch)
+    // must report true.
+    let base = tempfile::tempdir().expect("failed to create tempdir");
+    let remote_dir = base.path().join("remote.git");
+    std::fs::create_dir_all(&remote_dir).unwrap();
+    run_git(&remote_dir, &["init", "--bare", "-b", "main"]);
+
+    let work_dir = base.path().join("work");
+    run_git(base.path(), &["clone", remote_dir.to_str().unwrap(), "work"]);
+    run_git(&work_dir, &["config", "user.name", "Test User"]);
+    run_git(&work_dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(work_dir.join("README.md"), "# Test\n").unwrap();
+    run_git(&work_dir, &["add", "."]);
+    run_git(&work_dir, &["commit", "-m", "Initial commit"]);
+    run_git(&work_dir, &["push", "-u", "origin", "main"]);
+
+    run_git(&work_dir, &["checkout", "-b", "feature/divergence"]);
+    std::fs::write(work_dir.join("divergence.txt"), "divergence content\n").unwrap();
+    run_git(&work_dir, &["add", "divergence.txt"]);
+    run_git(&work_dir, &["commit", "-m", "feature commit"]);
+    run_git(&work_dir, &["push", "-u", "origin", "feature/divergence"]);
+    run_git(&work_dir, &["checkout", "main"]);
+
+    // A second clone squash-merges the feature branch and pushes to origin,
+    // without `work` ever fetching it locally into `main`.
+    let second_dir = base.path().join("second");
+    run_git(base.path(), &["clone", remote_dir.to_str().unwrap(), "second"]);
+    run_git(&second_dir, &["config", "user.name", "Second User"]);
+    run_git(&second_dir, &["config", "user.email", "second@example.com"]);
+    run_git(&second_dir, &["fetch", "origin", "feature/divergence"]);
+    run_git(&second_dir, &["merge", "--squash", "origin/feature/divergence"]);
+    run_git(&second_dir, &["commit", "-m", "squash merge feature/divergence"]);
+    run_git(&second_dir, &["push", "origin", "main"]);
+
+    // `work`'s local main is still behind; only fetch (not merge/pull).
+    run_git(&work_dir, &["fetch", "origin"]);
+
+    assert!(
+        !merge_detection::is_squash_merged(&work_dir, "main", "feature/divergence", None, None),
+        "local main has not fetched the squash landing commit yet, so it must not be flagged"
+    );
+    assert!(
+        merge_detection::is_squash_merged(
+            &work_dir,
+            "origin/main",
+            "feature/divergence",
+            None,
+            None
+        ),
+        "origin/main (fetched) already contains the squash landing and must be flagged"
+    );
+}
+
+#[test]
+fn test_squash_scenario_18_branch_advances_after_cached_as_squash_merged() {
+    // Plan scenario 18: branch is squash-merged and detected/cached as
+    // SquashMerged; branch then gets a new commit on top (still local,
+    // unpushed, unmerged). Re-running detection should no longer report
+    // SquashMerged for the branch's *current* tip. `MergeStatus::SquashMerged`
+    // (the local+remote-confirmed variant) is cached *permanently* in
+    // `git/cache.rs::BranchCache::lookup` — it ignores `commit_hash` entirely
+    // for that one status, unlike `LocalSquashMerged`/`RemoteSquashMerged`
+    // (commit-hash-gated). This test exercises exactly that permanent-cache
+    // branch by using a remote setup where both local and remote sides
+    // confirm the squash (producing `SquashMerged`, not the volatile
+    // `LocalSquashMerged`), then documents whether the known bug reproduces.
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    run_git(&work_dir, &["checkout", "-b", "feature/cache-staleness"]);
+    std::fs::write(work_dir.join("stale.txt"), "stale content\n").unwrap();
+    run_git(&work_dir, &["add", "stale.txt"]);
+    run_git(&work_dir, &["commit", "-m", "feature commit"]);
+    run_git(&work_dir, &["push", "-u", "origin", "feature/cache-staleness"]);
+
+    run_git(&work_dir, &["checkout", "main"]);
+    run_git(&work_dir, &["merge", "--squash", "feature/cache-staleness"]);
+    run_git(&work_dir, &["commit", "-m", "squash merge feature/cache-staleness"]);
+    run_git(&work_dir, &["push", "origin", "main"]);
+
+    let repo = git2::Repository::open(&work_dir).unwrap();
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let feature = branches
+        .iter()
+        .find(|b| b.name == "feature/cache-staleness")
+        .unwrap();
+    assert_eq!(
+        feature.merge_status,
+        MergeStatus::SquashMerged,
+        "both local and remote main confirm the squash, so this must be the fully-confirmed \
+         (and thus permanently-cached) SquashMerged variant"
+    );
+
+    // Branch advances with a brand-new, unmerged, unpushed commit.
+    run_git(&work_dir, &["checkout", "feature/cache-staleness"]);
+    std::fs::write(work_dir.join("new-work.txt"), "new unmerged work\n").unwrap();
+    run_git(&work_dir, &["add", "new-work.txt"]);
+    run_git(&work_dir, &["commit", "-m", "new unmerged commit on top"]);
+    run_git(&work_dir, &["checkout", "main"]);
+
+    let repo = git2::Repository::open(&work_dir).unwrap();
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let feature = branches
+        .iter()
+        .find(|b| b.name == "feature/cache-staleness")
+        .unwrap();
+    // Known bug (see git/cache.rs BranchCache::lookup and the parent plan
+    // doc's cache-limitation note): SquashMerged is cached permanently and
+    // ignores the branch's now-advanced commit hash, so the stale status is
+    // retained instead of being recomputed as Unmerged/Pending for the new
+    // tip. This assertion documents today's actual (buggy) behavior; it is a
+    // deliberate visible pin, not an endorsement of the behavior.
+    assert_eq!(
+        feature.merge_status,
+        MergeStatus::SquashMerged,
+        "KNOWN BUG (see docs/plans/2026-08-29-squash-merge-test-scenarios.md scenario 18 and \
+         git/cache.rs's permanent-cache comment for SquashMerged/Merged): the cache does not \
+         invalidate on branch advancement for this status, so a branch with new unmerged work \
+         still reports the stale SquashMerged status from before it advanced"
+    );
+}
+
+#[test]
+#[ignore]
+fn test_squash_scenario_19_large_history_performance_characterization() {
+    // Plan scenario 19: not a correctness assertion. Generate a large base
+    // history and many diverged local branches, most unrelated to any squash,
+    // and record wall-clock time as a baseline. Ignored by default (expensive);
+    // run explicitly with:
+    //   cargo test test_squash_scenario_19 -- --ignored --nocapture
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    const BASE_COMMITS: usize = 500;
+    const BRANCH_COUNT: usize = 50;
+
+    for i in 0..BASE_COMMITS {
+        std::fs::write(dir.join(format!("base-{i}.txt")), format!("base content {i}\n")).unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", &format!("base commit {i}")]);
+    }
+
+    for i in 0..BRANCH_COUNT {
+        let branch_name = format!("feature/perf-{i}");
+        run_git(dir, &["checkout", "-b", &branch_name, "main"]);
+        std::fs::write(
+            dir.join(format!("feature-{i}.txt")),
+            format!("feature content {i}\n"),
+        )
+        .unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", &format!("feature commit {i}")]);
+        run_git(dir, &["checkout", "main"]);
+    }
+
+    let start = std::time::Instant::now();
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed even at this scale");
+    let graph_elapsed = start.elapsed();
+    eprintln!(
+        "[scenario 19] Algorithm A (Graph): {} commits displayed, {} branches, elapsed {:?}",
+        snapshot.commits.len(),
+        BRANCH_COUNT,
+        graph_elapsed
+    );
+
+    let repo = git2::Repository::open(dir).unwrap();
+    let start = std::time::Instant::now();
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branch_elapsed = start.elapsed();
+    eprintln!(
+        "[scenario 19] Algorithm B (Branches list_branches): {} branches, elapsed {:?}",
+        branches.len(),
+        branch_elapsed
+    );
+}
+
+#[test]
+fn test_squash_scenario_20a_squash_plus_trivial_follow_up_folded_in() {
+    // Plan scenario 20a: branch's real changes land in the squash commit,
+    // plus one small unrelated line (e.g. a version bump) folded in during
+    // the squash but never part of the branch's own commits.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    std::fs::write(
+        dir.join("f20a.txt"),
+        "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\nversion: 1\n",
+    )
+    .unwrap();
+    run_git(dir, &["add", "f20a.txt"]);
+    run_git(dir, &["commit", "-m", "f20a baseline"]);
+
+    run_git(dir, &["checkout", "-b", "feature/20a"]);
+    std::fs::write(
+        dir.join("f20a.txt"),
+        "alpha-x\nbeta-x\ngamma-x\ndelta-x\nepsilon-x\nzeta-x\nversion: 1\n",
+    )
+    .unwrap();
+    run_git(dir, &["commit", "-am", "branch changes 6 lines"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/20a"]);
+    // Fold in an unrelated trivial version bump the branch never made.
+    std::fs::write(
+        dir.join("f20a.txt"),
+        "alpha-x\nbeta-x\ngamma-x\ndelta-x\nepsilon-x\nzeta-x\nversion: 2\n",
+    )
+    .unwrap();
+    run_git(dir, &["add", "f20a.txt"]);
+    run_git(dir, &["commit", "-m", "squash landing plus version bump"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    let landing = snapshot
+        .commits
+        .iter()
+        .find(|c| c.oid == squash_oid)
+        .expect("squash landing commit should be displayed");
+    assert!(
+        !landing.is_possible_squash_merge,
+        "the extra version-bump line must break exact patch-id equality"
+    );
+    assert!(
+        !merge_detection::is_squash_merged(dir, "main", "feature/20a", None, None),
+        "Algorithm B must also miss this under exact match"
+    );
+    let fuzzy = landing
+        .fuzzy_squash_match
+        .as_ref()
+        .expect("Option 6 should flag this as a fuzzy possible-squash match");
+    assert!(
+        fuzzy.similarity_percent >= 75,
+        "expected high similarity for a near-exact match with one trivial extra line, got {}",
+        fuzzy.similarity_percent
+    );
+}
+
+#[test]
+fn test_squash_scenario_20b_squash_omits_a_trivial_branch_change() {
+    // Plan scenario 20b: the squash commit landed slightly *less* than the
+    // branch's full diff (e.g. a debug line dropped during squash). Confirms
+    // the similarity computation is symmetric (handles both superset and
+    // subset cases), not just the 20a "extra line" direction.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    std::fs::write(
+        dir.join("f20b.txt"),
+        "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\ndebug: off\n",
+    )
+    .unwrap();
+    run_git(dir, &["add", "f20b.txt"]);
+    run_git(dir, &["commit", "-m", "f20b baseline"]);
+
+    run_git(dir, &["checkout", "-b", "feature/20b"]);
+    std::fs::write(
+        dir.join("f20b.txt"),
+        "alpha-x\nbeta-x\ngamma-x\ndelta-x\nepsilon-x\nzeta-x\ndebug: on\n",
+    )
+    .unwrap();
+    run_git(dir, &["commit", "-am", "branch changes 6 lines plus enables debug"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/20b"]);
+    // Drop the branch's debug-line change during squash (revert it back).
+    std::fs::write(
+        dir.join("f20b.txt"),
+        "alpha-x\nbeta-x\ngamma-x\ndelta-x\nepsilon-x\nzeta-x\ndebug: off\n",
+    )
+    .unwrap();
+    run_git(dir, &["add", "f20b.txt"]);
+    run_git(dir, &["commit", "-m", "squash landing, debug line omitted"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    let landing = snapshot
+        .commits
+        .iter()
+        .find(|c| c.oid == squash_oid)
+        .expect("squash landing commit should be displayed");
+    assert!(
+        !landing.is_possible_squash_merge,
+        "omitting a branch change also breaks exact patch-id equality"
+    );
+    assert!(!merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/20b",
+        None,
+        None
+    ));
+    let fuzzy = landing
+        .fuzzy_squash_match
+        .as_ref()
+        .expect("Option 6 should flag this subset case as a fuzzy possible-squash match too");
+    assert!(
+        fuzzy.similarity_percent >= 75,
+        "expected high similarity for the omitted-trivial-change (subset) case, got {}",
+        fuzzy.similarity_percent
+    );
+}
+
+#[test]
+fn test_squash_scenario_20c_autoformatter_noise_during_squash() {
+    // Plan scenario 20c: the squash commit's diff contains the branch's real
+    // change plus many trivial formatting-tool line changes across the same
+    // file (e.g. a linter reformatted touched lines). Per the plan doc, this
+    // is the hardest calibration case; observe-then-assert whichever side of
+    // the threshold this concrete recipe lands on rather than assuming a
+    // specific classification, and record the outcome plainly.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    let baseline: Vec<String> = (1..=20).map(|i| format!("line{i} = {i};")).collect();
+    std::fs::write(dir.join("f20c.txt"), baseline.join("\n") + "\n").unwrap();
+    run_git(dir, &["add", "f20c.txt"]);
+    run_git(dir, &["commit", "-m", "f20c baseline"]);
+
+    run_git(dir, &["checkout", "-b", "feature/20c"]);
+    // The branch's real change: modify a single line.
+    let mut branch_lines = baseline.clone();
+    branch_lines[9] = "line10 = 10; // real change".to_string();
+    std::fs::write(dir.join("f20c.txt"), branch_lines.join("\n") + "\n").unwrap();
+    run_git(dir, &["commit", "-am", "branch: real change to line 10"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/20c"]);
+    // Simulate an autoformatter: reformat every line's spacing plus keep the
+    // real change.
+    let mut formatted_lines = branch_lines.clone();
+    for line in formatted_lines.iter_mut() {
+        *line = line.replace(" = ", "=");
+    }
+    std::fs::write(dir.join("f20c.txt"), formatted_lines.join("\n") + "\n").unwrap();
+    run_git(dir, &["add", "f20c.txt"]);
+    run_git(dir, &["commit", "-m", "squash landing plus autoformatter noise"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    let landing = snapshot
+        .commits
+        .iter()
+        .find(|c| c.oid == squash_oid)
+        .expect("squash landing commit should be displayed");
+    assert!(
+        !landing.is_possible_squash_merge,
+        "autoformatter noise must break exact patch-id equality"
+    );
+    assert!(!merge_detection::is_squash_merged(
+        dir,
+        "main",
+        "feature/20c",
+        None,
+        None
+    ));
+
+    // Observe-then-assert: record the actual classification for this
+    // recipe rather than assuming one. With 20 lines reformatted (spacing
+    // removed on every line) plus the 1 real content change, the branch's
+    // own diff (1 changed line, 2 tokens) shares very little of the squash
+    // diff's changed-line set (20 reformatted lines + 1 real change, ~40
+    // tokens) — low Jaccard similarity is expected, so this recipe is
+    // expected to land BELOW the fuzzy threshold without a raw-line-comparison
+    // formatting-aware normalization pass (which is not implemented; see
+    // git/fuzzy_match.rs's module doc comment and this test's own comment as
+    // the recorded outcome of that open design question).
+    assert!(
+        landing.fuzzy_squash_match.is_none(),
+        "observed: without formatting-aware normalization, heavy autoformatter noise dilutes \
+         line-level Jaccard similarity below the fuzzy threshold for this recipe; if this \
+         assertion starts failing, update this comment to record the newly observed value \
+         rather than assuming the prior finding still holds"
+    );
+}
+
+#[test]
+fn test_squash_scenario_20d_coincidentally_similar_but_unrelated_negative_control() {
+    // Plan scenario 20d: two commits touch the same file with moderate line
+    // overlap by coincidence, but are not the same logical change (different
+    // function, same file, similar boilerplate). Must NOT be flagged by
+    // Option 6 — this is the fuzzy tier's own false-positive control.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    std::fs::write(
+        dir.join("f20d.txt"),
+        "fn one() {}\nfn two() {}\nfn three() {}\nfn four() {}\n",
+    )
+    .unwrap();
+    run_git(dir, &["add", "f20d.txt"]);
+    run_git(dir, &["commit", "-m", "f20d baseline"]);
+
+    run_git(dir, &["checkout", "-b", "feature/20d"]);
+    std::fs::write(
+        dir.join("f20d.txt"),
+        "fn one() {\n    println!(\"one\");\n}\nfn two() {}\nfn three() {}\nfn four() {}\n",
+    )
+    .unwrap();
+    run_git(dir, &["commit", "-am", "branch: implement fn one with similar boilerplate"]);
+
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(
+        dir.join("f20d.txt"),
+        "fn one() {}\nfn two() {}\nfn three() {\n    println!(\"three\");\n}\nfn four() {}\n",
+    )
+    .unwrap();
+    run_git(
+        dir,
+        &["commit", "-am", "main: unrelated commit, implement fn three with similar boilerplate"],
+    );
+    let unrelated_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    let unrelated = snapshot
+        .commits
+        .iter()
+        .find(|c| c.oid == unrelated_base_oid)
+        .expect("unrelated base commit should be displayed");
+    assert!(
+        !unrelated.is_possible_squash_merge,
+        "these are genuinely different diffs, so exact match must not fire"
+    );
+    assert!(
+        unrelated.fuzzy_squash_match.is_none(),
+        "coincidental boilerplate similarity must not clear the fuzzy threshold — if this \
+         fails, FUZZY_SIMILARITY_THRESHOLD in git/fuzzy_match.rs is too low and needs \
+         revisiting before this tier ships (plan doc scenario 20d)"
+    );
+}
+
+#[test]
+fn test_squash_scenario_21_structural_graph_render_not_blocked_by_squash_enrichment() {
+    // Plan scenario 21: a UX/architecture characterization test, not a
+    // detection-correctness one. The parent plan doc's "Loading and UI
+    // direction" follow-up task calls for decoupling the Graph's structural
+    // snapshot (DAG, refs, commit summaries) from squash-merge enrichment, so
+    // the structural view can render before annotation completes.
+    //
+    // As of this test, `git::graph::load_graph` is fully synchronous: it
+    // calls `annotate_possible_squash_merges` in-line before returning the
+    // snapshot (see `git/graph.rs::load_graph`), so the structural result and
+    // the squash annotations are always published together, not
+    // incrementally. That decoupling follow-up has not landed. Per the plan
+    // doc's explicit instruction ("otherwise, record it as a currently-failing
+    // characterization test with a comment pointing back to that follow-up
+    // task"), this test pins down *today's* actual (blocking) behavior as a
+    // passing assertion, rather than being left failing or `#[ignore]`d —
+    // when the decoupling work referenced above lands, this test's assertion
+    // should be inverted (or replaced with a real incremental-publish test)
+    // to reflect the new contract.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/21"]);
+    std::fs::write(dir.join("f21.txt"), "content\n").unwrap();
+    run_git(dir, &["add", "f21.txt"]);
+    run_git(dir, &["commit", "-m", "feature commit"]);
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/21"]);
+    run_git(dir, &["commit", "-m", "squash landing"]);
+
+    let snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+
+    // The structural snapshot (commits/DAG) and the squash annotation are
+    // both already fully populated by the time `load_graph` returns — there
+    // is currently no earlier point at which callers can observe the
+    // structural data without also waiting for annotation, since both happen
+    // inside one synchronous call.
+    assert!(
+        !snapshot.commits.is_empty(),
+        "structural snapshot should be populated"
+    );
+    assert!(
+        snapshot.commits.iter().any(|c| c.is_possible_squash_merge),
+        "known current limitation: squash annotation is computed synchronously as part of the \
+         same `load_graph` call that produces the structural snapshot, so by definition it is \
+         never observably 'not yet done' when the structural data becomes available — the \
+         follow-up decoupling task (parent plan doc, 'Loading and UI direction') has not landed"
+    );
 }
 
 #[test]

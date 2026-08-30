@@ -39,6 +39,23 @@ pub struct GraphCommit {
     /// True when this displayed base-branch commit has the same stable Git
     /// patch ID as the aggregate patch of a displayed, non-merged local branch.
     pub is_possible_squash_merge: bool,
+    /// Set when this commit's diff is a *near*-match (not exact) for a
+    /// displayed branch tip's aggregate diff, per the Option 6 fuzzy/possible
+    /// tier (`git::fuzzy_match`). Never set on a commit that already has
+    /// `is_possible_squash_merge == true` — Option 6 is additive and defers
+    /// to the exact-match tier.
+    pub fuzzy_squash_match: Option<FuzzySquashMatch>,
+}
+
+/// A fuzzy (non-exact) possible-squash-merge signal for a single base commit,
+/// scored against the best-matching displayed branch tip. See
+/// `docs/plans/2026-08-29-squash-merge-test-scenarios.md` "New: Option 6".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FuzzySquashMatch {
+    /// Jaccard similarity as an integer percent (0-100), rounded from the raw
+    /// f32 score. Stored as u8 rather than f32 so GraphCommit/FuzzySquashMatch
+    /// can keep deriving Eq (f32 has no Eq impl).
+    pub similarity_percent: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +245,7 @@ fn load_with_gleisbau(
                 branch: None,
                 refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
                 is_possible_squash_merge: false,
+                fuzzy_squash_match: None,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -323,6 +341,7 @@ fn load_with_git_cli(
             branch: None,
             refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
             is_possible_squash_merge: false,
+            fuzzy_squash_match: None,
         });
         lines.push(GraphLine {
             graph,
@@ -415,16 +434,31 @@ fn annotate_possible_squash_merges(
 
     let mut base_oids_by_patch = HashMap::<String, Vec<String>>::new();
     let mut branch_patch_ids = HashSet::new();
+    // Retained alongside patch IDs so pairs whose patch IDs don't exactly
+    // match can still be scored by the Option 6 fuzzy tier below, without a
+    // second `git diff` subprocess per job.
+    let mut base_diffs = Vec::<(String, Vec<u8>)>::new();
+    let mut branch_diffs = Vec::<Vec<u8>>::new();
     for result in load_patch_ids(repo_path, jobs) {
-        let Some(patch_id) = result.patch_id else {
-            continue;
-        };
         match result.target {
             PatchTarget::BaseCommit(oid) => {
-                base_oids_by_patch.entry(patch_id).or_default().push(oid);
+                if let Some(patch_id) = result.patch_id {
+                    base_oids_by_patch
+                        .entry(patch_id)
+                        .or_default()
+                        .push(oid.clone());
+                }
+                if let Some(diff_text) = result.diff_text {
+                    base_diffs.push((oid, diff_text));
+                }
             }
             PatchTarget::BranchTip => {
-                branch_patch_ids.insert(patch_id);
+                if let Some(patch_id) = result.patch_id {
+                    branch_patch_ids.insert(patch_id);
+                }
+                if let Some(diff_text) = result.diff_text {
+                    branch_diffs.push(diff_text);
+                }
             }
         }
     }
@@ -436,6 +470,28 @@ fn annotate_possible_squash_merges(
         .collect::<HashSet<_>>();
     for commit in &mut snapshot.commits {
         commit.is_possible_squash_merge = matching_base_oids.contains(&commit.oid);
+    }
+
+    // Option 6: for base commits that didn't get an exact patch-id match,
+    // score their diff against every displayed branch tip's diff and keep
+    // the best fuzzy classification, if any clears the threshold.
+    for (oid, base_diff) in &base_diffs {
+        if matching_base_oids.contains(oid) {
+            continue;
+        }
+        let best_percent = branch_diffs
+            .iter()
+            .filter_map(|branch_diff| crate::git::fuzzy_match::score(branch_diff, base_diff))
+            .filter_map(|fuzzy_score| crate::git::fuzzy_match::classify(&fuzzy_score))
+            .max();
+        let Some(percent) = best_percent else {
+            continue;
+        };
+        if let Some(commit) = snapshot.commits.iter_mut().find(|commit| commit.oid == *oid) {
+            commit.fuzzy_squash_match = Some(FuzzySquashMatch {
+                similarity_percent: percent,
+            });
+        }
     }
 }
 
@@ -539,6 +595,13 @@ enum PatchTarget {
 struct PatchResult {
     target: PatchTarget,
     patch_id: Option<String>,
+    /// Raw `git diff` stdout for this job, retained alongside the patch-id so
+    /// `annotate_possible_squash_merges` can run the Option 6 fuzzy-match tier
+    /// on pairs whose patch IDs don't exactly match, without a second `git
+    /// diff` subprocess per job. `Some` whenever the diff subprocess produced
+    /// non-empty output (regardless of whether patch-id computation itself
+    /// succeeded); `None` for empty/net-zero diffs or subprocess failures.
+    diff_text: Option<Vec<u8>>,
 }
 
 fn load_patch_ids(repo_path: &Path, jobs: Vec<PatchJob>) -> Vec<PatchResult> {
@@ -558,11 +621,12 @@ fn load_patch_ids(repo_path: &Path, jobs: Vec<PatchJob>) -> Vec<PatchResult> {
         let repo_path = repo_path.to_path_buf();
         handles.push(std::thread::spawn(move || {
             while let Some(job) = next_patch_job(&queue) {
-                let patch_id = stable_patch_id(&repo_path, &job.old_oid, &job.new_oid);
+                let (patch_id, diff_text) = compute_patch(&repo_path, &job.old_oid, &job.new_oid);
                 if tx
                     .send(PatchResult {
                         target: job.target,
                         patch_id,
+                        diff_text,
                     })
                     .is_err()
                 {
@@ -584,7 +648,13 @@ fn next_patch_job(queue: &Mutex<std::collections::VecDeque<PatchJob>>) -> Option
     queue.lock().ok()?.pop_front()
 }
 
-fn stable_patch_id(repo_path: &Path, old_oid: &str, new_oid: &str) -> Option<String> {
+/// Run a single `git diff` between `old_oid` and `new_oid`, then feed its
+/// output through `git patch-id --stable`. Returns `(patch_id, diff_text)`:
+/// `diff_text` is the raw diff bytes (for the Option 6 fuzzy-match tier),
+/// `patch_id` is the stable patch identity (for the existing exact-match
+/// tier). Both share the single `git diff` invocation below rather than
+/// re-running it per caller.
+fn compute_patch(repo_path: &Path, old_oid: &str, new_oid: &str) -> (Option<String>, Option<Vec<u8>>) {
     let diff = Command::new("git")
         .current_dir(repo_path)
         .args([
@@ -598,29 +668,36 @@ fn stable_patch_id(repo_path: &Path, old_oid: &str, new_oid: &str) -> Option<Str
             "--",
         ])
         .stdin(Stdio::null())
-        .output()
-        .ok()?;
+        .output();
+    let Ok(diff) = diff else {
+        return (None, None);
+    };
     if !diff.status.success() || diff.stdout.is_empty() {
-        return None;
+        return (None, None);
     }
+    let diff_text = Some(diff.stdout.clone());
 
-    let mut patch_id = Command::new("git")
-        .current_dir(repo_path)
-        .args(["patch-id", "--stable"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    patch_id.stdin.as_mut()?.write_all(&diff.stdout).ok()?;
-    let output = patch_id.wait_with_output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
-        .next()
-        .map(str::to_string)
+    let patch_id = (|| {
+        let mut patch_id = Command::new("git")
+            .current_dir(repo_path)
+            .args(["patch-id", "--stable"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        patch_id.stdin.as_mut()?.write_all(&diff.stdout).ok()?;
+        let output = patch_id.wait_with_output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .next()
+            .map(str::to_string)
+    })();
+
+    (patch_id, diff_text)
 }
 
 fn gleisbau_settings(
@@ -960,6 +1037,7 @@ mod tests {
             branch: None,
             refs: Vec::new(),
             is_possible_squash_merge: false,
+            fuzzy_squash_match: None,
         }
     }
 

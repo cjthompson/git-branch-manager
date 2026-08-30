@@ -1,6 +1,7 @@
 pub mod branch;
 pub mod cache;
 pub mod diagnostics;
+pub mod fuzzy_match;
 pub mod github;
 pub mod graph;
 pub mod merge_detection;
