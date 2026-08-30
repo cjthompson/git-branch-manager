@@ -2,6 +2,9 @@
 
 ## 2026-08-29
 
+### Squash-merge detection test scenarios (P002)
+- Implement squash-merge detection test scenarios (#testing, #squash-merge)
+
 ### Tasks
 - Add git log graph view with improved graph drawing (#ui, #git, #graph)
 - Reuse existing branch and remote action menus from Graph (#graph, #actions, #tui)
@@ -79,6 +82,11 @@
 - Results and Confirm modals now resize dynamically to fit content — long messages and key hints no longer cut off (#ui, #modal)
 - Remote branches now inherit squash-merge status from local branch detection — squash-merged branches no longer show as unmerged in the Remotes view (#ui, #remotes, #merge-detection)
 
+## 2026-06-25
+
+### Fixes
+- Refresh branch metadata after branch actions (#branches)
+
 ## 2026-06-23
 
 ### Fixes
@@ -111,3 +119,26 @@
 - Extract shared cell renderers (age, status, ahead/behind, PR) (#refactor, #dryness)
 - Extract shared filter token groups (#refactor, #dryness)
 - Extract shared column comparators and builders (#refactor, #dryness)
+
+## 2026-04-04
+
+### Fixes
+- Sort column cycling skips wrong columns and indicator is misaligned (#sorting, #bug)
+- Settings: default sort column and sort direction cannot be changed (#settings, #bug)
+- Add [base] tag and current branch indicator to branch names (#ui, #branches)
+
+### Tasks
+- Make all columns sortable (#sorting, #columns)
+- Base branch must always be first in local and remote branch lists (#ui, #sorting)
+
+## 2026-04-03
+
+### Fixes
+- Age column: full vs abbreviated format based on terminal width (#ui, #columns)
+- Remote view: match original app layout and features (#ui, #remote)
+- Tab then Shift-Tab does not return to previous view (#navigation, #bug)
+- Add merged/squashed counts to status bar (#ui, #statusbar)
+- Status column must show full merge status text (#ui, #columns)
+
+### Tasks
+- Add PR column to branch list views (#ui, #columns)
