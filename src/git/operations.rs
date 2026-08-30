@@ -481,12 +481,22 @@ pub fn delete_remotes_batch(
     branch_names: &[String],
     cancel: &AtomicBool,
 ) -> Vec<OperationResult> {
+    delete_remotes_batch_for_remote(repo_path, "origin", branch_names, cancel)
+}
+
+#[instrument(skip(repo_path, branch_names, cancel), fields(count = branch_names.len()))]
+pub fn delete_remotes_batch_for_remote(
+    repo_path: &Path,
+    remote: &str,
+    branch_names: &[String],
+    cancel: &AtomicBool,
+) -> Vec<OperationResult> {
     if branch_names.is_empty() {
         return vec![];
     }
 
     // Try batch delete first
-    let mut args = vec!["push", "origin", "--delete"];
+    let mut args = vec!["push", remote, "--delete"];
     let refs: Vec<&str> = branch_names.iter().map(|s| s.as_str()).collect();
     args.extend(&refs);
 
@@ -514,13 +524,18 @@ pub fn delete_remotes_batch(
     // Fallback to individual deletes
     branch_names
         .iter()
-        .map(|name| delete_remote(repo_path, name, cancel))
+        .map(|name| delete_remote(repo_path, remote, name, cancel))
         .collect()
 }
 
-fn delete_remote(repo_path: &Path, branch_name: &str, cancel: &AtomicBool) -> OperationResult {
+fn delete_remote(
+    repo_path: &Path,
+    remote: &str,
+    branch_name: &str,
+    cancel: &AtomicBool,
+) -> OperationResult {
     match run_git_cancellable(
-        git_cmd(repo_path).args(["push", "origin", "--delete", branch_name]),
+        git_cmd(repo_path).args(["push", remote, "--delete", branch_name]),
         cancel,
     ) {
         None => cancelled(branch_name, BranchAction::DeleteRemoteBranch),
@@ -563,12 +578,22 @@ pub fn delete_remotes_with_progress(
     prog_tx: &Sender<ProgressUpdate>,
     cancel: &AtomicBool,
 ) -> Vec<OperationResult> {
+    delete_remotes_with_progress_for_remote(repo_path, "origin", branch_names, prog_tx, cancel)
+}
+
+pub fn delete_remotes_with_progress_for_remote(
+    repo_path: &Path,
+    remote: &str,
+    branch_names: &[String],
+    prog_tx: &Sender<ProgressUpdate>,
+    cancel: &AtomicBool,
+) -> Vec<OperationResult> {
     run_with_progress(
         branch_names,
         BranchAction::DeleteRemoteBranch,
         prog_tx,
         cancel,
-        |name| delete_remote(repo_path, name, cancel),
+        |name| delete_remote(repo_path, remote, name, cancel),
     )
 }
 

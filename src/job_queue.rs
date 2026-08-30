@@ -23,12 +23,13 @@ use crate::view::ViewId;
 /// How long a completed job's summary lingers in the status area.
 const SUMMARY_LINGER_SECS: i64 = 4;
 
-/// A confirmed action, queued or executing: the action, its targets, and the
-/// view to refresh once it completes.
+/// A confirmed action, queued or executing: the action, its targets, optional
+/// remote context, and the view to refresh once it completes.
 #[derive(Debug, Clone)]
 pub struct ActionJob {
     pub action: BranchAction,
     pub targets: Vec<String>,
+    pub remote: Option<String>,
     pub return_view: ViewId,
 }
 
@@ -87,6 +88,7 @@ impl CompletionSummary {
 pub struct JobEvent {
     pub action: BranchAction,
     pub targets: Vec<String>,
+    pub remote: Option<String>,
     pub return_view: ViewId,
     pub results: Vec<OperationResult>,
 }
@@ -148,12 +150,25 @@ impl ActionJobQueue {
         targets: Vec<String>,
         return_view: ViewId,
     ) {
+        self.enqueue_or_start_with_remote(action, targets, None, return_view);
+    }
+
+    /// Like [`Self::enqueue_or_start`], while retaining the authoritative
+    /// remote name for a single remote-branch action.
+    pub fn enqueue_or_start_with_remote(
+        &mut self,
+        action: BranchAction,
+        targets: Vec<String>,
+        remote: Option<String>,
+        return_view: ViewId,
+    ) {
         if targets.is_empty() {
             return;
         }
         let job = ActionJob {
             action,
             targets,
+            remote,
             return_view,
         };
         if self.is_busy() {
@@ -168,6 +183,7 @@ impl ActionJobQueue {
         let base_branch = self.base_branch.clone();
         let item_names = job.targets.clone();
         let action = job.action;
+        let remote = job.remote.clone();
 
         let (op_tx, op_rx) = mpsc::channel();
         let (prog_tx, prog_rx) = mpsc::channel();
@@ -177,12 +193,13 @@ impl ActionJobQueue {
         std::thread::spawn(move || {
             let needs_stash =
                 !crate::git::status::detect_working_tree_status(&repo_path).is_clean();
-            let results = execute_action(
+            let results = execute_action_with_remote(
                 action,
                 &item_names,
                 &repo_path,
                 &base_branch,
                 needs_stash,
+                remote.as_deref(),
                 &prog_tx,
                 &cancel_clone,
             );
@@ -233,6 +250,7 @@ impl ActionJobQueue {
                 event = Some(JobEvent {
                     action: job.action,
                     targets: job.targets,
+                    remote: job.remote,
                     return_view: job.return_view,
                     results,
                 });
@@ -271,6 +289,7 @@ impl ActionJobQueue {
                     Some(JobEvent {
                         action: job.action,
                         targets: job.targets,
+                        remote: job.remote,
                         return_view: job.return_view,
                         results,
                     })
@@ -393,12 +412,14 @@ impl ActionJobQueue {
 
 // ---- Action Execution (runs on background thread) ----
 
-fn execute_action(
+#[allow(clippy::too_many_arguments)]
+fn execute_action_with_remote(
     action: BranchAction,
     item_names: &[String],
     repo_path: &Path,
     base_branch: &str,
     needs_stash: bool,
+    remote: Option<&str>,
     prog_tx: &Sender<ProgressUpdate>,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Vec<OperationResult> {
@@ -446,8 +467,10 @@ fn execute_action(
                     total,
                     current_item: "Deleting remote branches...".into(),
                 });
-                results.extend(operations::delete_remotes_batch(
+                let remote_name = remote.unwrap_or("origin");
+                results.extend(operations::delete_remotes_batch_for_remote(
                     repo_path,
+                    remote_name,
                     &locally_deleted,
                     cancel_flag,
                 ));
@@ -564,8 +587,10 @@ fn execute_action(
             }
         }
         BranchAction::DeleteRemoteBranch => {
-            results.extend(operations::delete_remotes_with_progress(
+            let remote_name = remote.unwrap_or("origin");
+            results.extend(operations::delete_remotes_with_progress_for_remote(
                 repo_path,
+                remote_name,
                 item_names,
                 prog_tx,
                 cancel_flag,
@@ -573,15 +598,14 @@ fn execute_action(
         }
         BranchAction::DeleteRemoteAndLocal => {
             if let Some(name) = item_names.first() {
-                let remote_results = operations::delete_remotes_batch(
+                let remote_name = remote.unwrap_or("origin");
+                let remote_results = operations::delete_remotes_batch_for_remote(
                     repo_path,
+                    remote_name,
                     std::slice::from_ref(name),
                     cancel_flag,
                 );
-                results.extend(remote_results.into_iter().map(|mut r| {
-                    r.action = BranchAction::DeleteRemoteAndLocal;
-                    r
-                }));
+                results.extend(remote_results);
                 if let Ok(repo) = git2::Repository::open(repo_path) {
                     let local_result = operations::delete_local(&repo, name);
                     results.push(OperationResult {
@@ -593,21 +617,30 @@ fn execute_action(
         }
         BranchAction::CheckoutRemote => {
             if let Some(name) = item_names.first() {
+                let remote_name = remote.unwrap_or("origin");
                 results.push(operations::checkout_remote_branch(
-                    repo_path, "origin", name,
+                    repo_path,
+                    remote_name,
+                    name,
                 ));
             }
         }
         BranchAction::FetchRemote => {
-            if let Some(name) = item_names.first() {
-                results.extend(operations::fetch_remote(repo_path, name, cancel_flag));
+            if !item_names.is_empty() {
+                let remote_name = remote.unwrap_or("origin");
+                results.extend(operations::fetch_remote(
+                    repo_path,
+                    remote_name,
+                    cancel_flag,
+                ));
             }
         }
         BranchAction::PullRemote => {
             if let Some(name) = item_names.first() {
+                let remote_name = remote.unwrap_or("origin");
                 results.extend(operations::pull_remote(
                     repo_path,
-                    "origin",
+                    remote_name,
                     name,
                     cancel_flag,
                 ));
@@ -615,7 +648,8 @@ fn execute_action(
         }
         BranchAction::MergeRemoteIntoCurrent => {
             if let Some(name) = item_names.first() {
-                let full_ref = format!("origin/{name}");
+                let remote_name = remote.unwrap_or("origin");
+                let full_ref = format!("{remote_name}/{name}");
                 results.extend(operations::merge_remote_into_current(
                     repo_path, &full_ref, name,
                 ));
@@ -623,7 +657,8 @@ fn execute_action(
         }
         BranchAction::CherryPickRemote => {
             if let Some(name) = item_names.first() {
-                let full_ref = format!("origin/{name}");
+                let remote_name = remote.unwrap_or("origin");
+                let full_ref = format!("{remote_name}/{name}");
                 results.extend(operations::cherry_pick_remote(repo_path, &full_ref, name));
             }
         }
@@ -762,6 +797,7 @@ mod tests {
         ActionJob {
             action,
             targets: targets.iter().map(|s| s.to_string()).collect(),
+            remote: None,
             return_view: ViewId::Branches,
         }
     }
@@ -1051,12 +1087,13 @@ mod tests {
 
         let (prog_tx, _prog_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        let results = execute_action(
+        let results = execute_action_with_remote(
             BranchAction::WorktreeRemoveAndDeleteBranch,
             &[wt_path.to_string_lossy().to_string()],
             dir,
             "main",
             false,
+            None,
             &prog_tx,
             &cancel,
         );
@@ -1115,12 +1152,13 @@ mod tests {
 
         let (prog_tx, _prog_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        let results = execute_action(
+        let results = execute_action_with_remote(
             BranchAction::WorktreeRemoveAndDeleteBranchRemote,
             &[wt_path.to_string_lossy().to_string()],
             &work_dir,
             "main",
             false,
+            None,
             &prog_tx,
             &cancel,
         );
@@ -1145,5 +1183,74 @@ mod tests {
         assert!(repo
             .find_branch("origin/wt-remote-branch", git2::BranchType::Remote)
             .is_err());
+    }
+
+    #[test]
+    fn execute_action_remote_checkout_uses_the_selected_remote() {
+        let base_tmp = tempfile::tempdir().expect("temp base dir");
+        let base_dir = base_tmp.path();
+        let remote_dir = base_dir.join("remote.git");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        run_git(&remote_dir, &["init", "--bare", "-b", "main"]);
+
+        run_git(base_dir, &["clone", remote_dir.to_str().unwrap(), "work"]);
+        let work_dir = base_dir.join("work");
+        run_git(&work_dir, &["config", "user.name", "Test User"]);
+        run_git(&work_dir, &["config", "user.email", "test@example.com"]);
+        std::fs::write(work_dir.join("README.md"), "# Test\n").unwrap();
+        run_git(&work_dir, &["add", "README.md"]);
+        run_git(&work_dir, &["commit", "-m", "Initial commit"]);
+        run_git(&work_dir, &["branch", "-M", "main"]);
+        run_git(&work_dir, &["push", "origin", "main"]);
+        run_git(&work_dir, &["remote", "rename", "origin", "upstream"]);
+
+        run_git(&work_dir, &["checkout", "-b", "remote-checkout"]);
+        std::fs::write(work_dir.join("feature.txt"), "content\n").unwrap();
+        run_git(&work_dir, &["add", "feature.txt"]);
+        run_git(&work_dir, &["commit", "-m", "feature commit"]);
+        run_git(&work_dir, &["push", "-u", "upstream", "remote-checkout"]);
+        run_git(&work_dir, &["checkout", "main"]);
+        run_git(&work_dir, &["branch", "-D", "remote-checkout"]);
+        run_git(&work_dir, &["fetch", "upstream"]);
+
+        let (prog_tx, _prog_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let results = execute_action_with_remote(
+            BranchAction::CheckoutRemote,
+            &["remote-checkout".into()],
+            &work_dir,
+            "main",
+            false,
+            Some("upstream"),
+            &prog_tx,
+            &cancel,
+        );
+
+        assert!(results.iter().any(|result| result.success), "{results:?}");
+        let repo = git2::Repository::open(&work_dir).unwrap();
+        assert!(repo
+            .find_branch("remote-checkout", git2::BranchType::Local)
+            .is_ok());
+
+        run_git(&work_dir, &["checkout", "main"]);
+        let deletion_results = execute_action_with_remote(
+            BranchAction::DeleteLocalAndRemote,
+            &["remote-checkout".into()],
+            &work_dir,
+            "main",
+            false,
+            Some("upstream"),
+            &prog_tx,
+            &cancel,
+        );
+        assert!(
+            deletion_results
+                .iter()
+                .any(|result| result.action == BranchAction::DeleteRemoteBranch && result.success),
+            "{deletion_results:?}"
+        );
+        assert!(deletion_results
+            .iter()
+            .any(|result| result.action == BranchAction::DeleteLocal && result.success));
     }
 }

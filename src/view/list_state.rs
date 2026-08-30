@@ -2,6 +2,7 @@ use super::column::ColumnDef;
 use super::ViewItem;
 use crate::types::MergeStatus;
 use ratatui::widgets::TableState;
+use std::collections::HashSet;
 
 /// Generic state for any list view. Holds items, cursor, selection,
 /// sort, filter, and search state. Shared by all 4 primary views.
@@ -103,16 +104,9 @@ impl<T: ViewItem> ListState<T> {
     // --- Mutators ---
 
     pub fn set_items(&mut self, items: Vec<T>) {
-        let len = items.len();
+        let (cursor_id, cursor_display_position, selected_ids) = self.snapshot_row_state();
         self.items = items;
-        self.selected = vec![false; len];
-        self.cursor = 0;
-        if len > 0 {
-            self.table_state.select(Some(0));
-        } else {
-            self.table_state.select(None);
-        }
-        self.rebuild_display_indices();
+        self.restore_row_state(cursor_id, cursor_display_position, selected_ids);
     }
 
     pub fn set_cursor(&mut self, cursor: usize) {
@@ -251,6 +245,56 @@ impl<T: ViewItem> ListState<T> {
             self.cursor_item_index().into_iter().collect()
         } else {
             selected
+        }
+    }
+
+    fn snapshot_row_state(&self) -> (Option<String>, usize, HashSet<String>) {
+        let cursor_id = self.cursor_item().map(ViewItem::identity);
+        let cursor_display_position = self.table_state.selected().unwrap_or(0);
+        let selected_ids = self
+            .items
+            .iter()
+            .zip(&self.selected)
+            .filter(|(_, selected)| **selected)
+            .map(|(item, _)| item.identity())
+            .collect();
+        (cursor_id, cursor_display_position, selected_ids)
+    }
+
+    fn restore_row_state(
+        &mut self,
+        cursor_id: Option<String>,
+        cursor_display_position: usize,
+        selected_ids: HashSet<String>,
+    ) {
+        self.rebuild_display_indices();
+        self.selected = self
+            .items
+            .iter()
+            .map(|item| selected_ids.contains(&item.identity()))
+            .collect();
+
+        let cursor_raw_index = cursor_id.as_deref().and_then(|identity| {
+            self.items
+                .iter()
+                .position(|item| item.identity() == identity)
+        });
+        let display_position = cursor_raw_index
+            .and_then(|raw_index| {
+                self.display_indices
+                    .iter()
+                    .position(|&index| index == raw_index)
+            })
+            .unwrap_or_else(|| {
+                cursor_display_position.min(self.display_indices.len().saturating_sub(1))
+            });
+
+        if let Some(&raw_index) = self.display_indices.get(display_position) {
+            self.cursor = raw_index;
+            self.table_state.select(Some(display_position));
+        } else {
+            self.cursor = 0;
+            self.table_state.select(None);
         }
     }
 }
@@ -422,18 +466,10 @@ pub fn apply_sort<T: ViewItem>(state: &mut ListState<T>, columns: &[ColumnDef<T>
     };
 
     let asc = state.sort_ascending;
+    let (cursor_id, cursor_display_position, selected_ids) = state.snapshot_row_state();
 
     sort_items(&mut state.items, compare, asc);
-
-    // Reset selection and cursor
-    state.selected = vec![false; state.items.len()];
-    state.cursor = 0;
-    state.table_state.select(if state.items.is_empty() {
-        None
-    } else {
-        Some(0)
-    });
-    state.rebuild_display_indices();
+    state.restore_row_state(cursor_id, cursor_display_position, selected_ids);
 }
 
 /// Cycle to next sort column (None -> first sortable -> ... -> None), skipping non-sortable columns
@@ -681,11 +717,32 @@ mod tests {
     }
 
     #[test]
-    fn set_items_resets_selection() {
+    fn set_items_preserves_existing_selection() {
         let mut state = ListState::new(sample_branches());
         state.selected_mut()[1] = true;
         state.set_items(sample_branches());
-        assert!(state.selected().iter().all(|&s| !s));
+        assert!(state.selected()[1]);
+    }
+
+    #[test]
+    fn set_items_preserves_cursor_and_selection_by_row_identity() {
+        let mut state = ListState::new(sample_branches());
+        nav_down(&mut state);
+        select_toggle(&mut state);
+        assert_eq!(state.cursor_item().unwrap().display_name(), "feature/a");
+
+        let mut replacement = sample_branches();
+        replacement.swap(1, 2);
+        state.set_items(replacement);
+
+        assert_eq!(state.cursor_item().unwrap().display_name(), "feature/a");
+        let selected_names: Vec<&str> = state
+            .items()
+            .iter()
+            .zip(state.selected())
+            .filter_map(|(item, selected)| selected.then_some(item.display_name()))
+            .collect();
+        assert_eq!(selected_names, vec!["feature/a"]);
     }
 
     #[test]

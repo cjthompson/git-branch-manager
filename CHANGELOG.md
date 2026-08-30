@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-29
+
+### Tasks
+- Add git log graph view with improved graph drawing (#ui, #git, #graph)
+- Reuse existing branch and remote action menus from Graph (#graph, #actions, #tui)
+
 ## 2026-08-28
 
 ### Tasks

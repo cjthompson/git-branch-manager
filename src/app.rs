@@ -717,19 +717,21 @@ impl App {
         }
         if let Some(JobEvent {
             action,
+            remote,
             results,
             return_view,
             ..
         }) = job_poll.event
         {
-            self.refresh_view_data(return_view);
+            self.refresh_after_job(action, return_view);
 
-            // When DeleteLocalAndRemote completes, immediately filter deleted branches
-            // from the in-memory remotes list so they don't appear until a fetch
+            // When DeleteLocalAndRemote completes, immediately filter confirmed remote
+            // deletions from the in-memory remotes list so they don't appear until a fetch.
             if action == BranchAction::DeleteLocalAndRemote {
+                let selected_remote = remote.as_deref().unwrap_or("origin");
                 let successfully_deleted: Vec<String> = results
                     .iter()
-                    .filter(|r| r.success && r.action == BranchAction::DeleteLocal)
+                    .filter(|r| r.success && r.action == BranchAction::DeleteRemoteBranch)
                     .map(|r| r.branch_name.clone())
                     .collect();
 
@@ -740,7 +742,10 @@ impl App {
                         self.remotes
                             .items()
                             .iter()
-                            .filter(|remote| !deleted_set.contains(&remote.short_name))
+                            .filter(|remote| {
+                                remote.remote != selected_remote
+                                    || !deleted_set.contains(&remote.short_name)
+                            })
                             .cloned()
                             .collect(),
                     );
@@ -816,6 +821,10 @@ impl App {
                 self.toast = None;
                 dirty = true;
             }
+        }
+
+        if dirty {
+            self.refresh_open_graph_menu();
         }
 
         dirty
@@ -1041,6 +1050,7 @@ impl App {
 
     fn handle_graph_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Enter => self.open_context_menu(),
             KeyCode::Char('j') | KeyCode::Down => self.graph.move_down(),
             KeyCode::Char('k') | KeyCode::Up => self.graph.move_up(),
             KeyCode::PageDown => self.graph.page_down(),
@@ -1127,16 +1137,28 @@ impl App {
             Some(Overlay::Help) => {
                 // Any key closes help
             }
-            Some(Overlay::Confirm { action, targets }) => match key.code {
+            Some(Overlay::Confirm {
+                action,
+                targets,
+                remote,
+            }) => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
-                    self.job_queue
-                        .enqueue_or_start(action, targets, self.return_view);
+                    self.job_queue.enqueue_or_start_with_remote(
+                        action,
+                        targets,
+                        remote,
+                        self.return_view,
+                    );
                 }
                 KeyCode::Char('n') | KeyCode::Esc => {
                     // Cancel -- don't put overlay back
                 }
                 _ => {
-                    self.overlay = Some(Overlay::Confirm { action, targets });
+                    self.overlay = Some(Overlay::Confirm {
+                        action,
+                        targets,
+                        remote,
+                    });
                 }
             },
             Some(Overlay::Menu { cursor, items }) => match key.code {
@@ -1173,7 +1195,7 @@ impl App {
                 KeyCode::Enter => {
                     if let Some(item) = items.get(cursor) {
                         if item.enabled {
-                            self.execute_menu_action(item.action);
+                            self.execute_menu_action(item.clone());
                         } else {
                             self.overlay = Some(Overlay::Menu { cursor, items });
                         }
@@ -1186,7 +1208,7 @@ impl App {
                         .enumerate()
                         .find(|(_, mi)| mi.shortcut == Some(c) && mi.enabled)
                     {
-                        self.execute_menu_action(item.action);
+                        self.execute_menu_action(item.clone());
                     } else {
                         self.overlay = Some(Overlay::Menu { cursor, items });
                     }
@@ -1337,7 +1359,7 @@ impl App {
                 KeyCode::Enter if focus == InfoModalFocus::Actions => {
                     if let Some(item) = items.get(cursor) {
                         if item.enabled {
-                            self.execute_menu_action(item.action);
+                            self.execute_menu_action(item.clone());
                         } else {
                             self.overlay = Some(Overlay::InfoModal {
                                 cursor,
@@ -1357,7 +1379,7 @@ impl App {
                         .enumerate()
                         .find(|(_, mi)| mi.shortcut == Some(c) && mi.enabled)
                     {
-                        self.execute_menu_action(item.action);
+                        self.execute_menu_action(item.clone());
                     } else {
                         self.overlay = Some(Overlay::InfoModal {
                             cursor,
@@ -1887,13 +1909,14 @@ impl App {
 
     fn open_context_menu(&mut self) {
         let items = self.build_menu_items();
-        if items.is_empty() {
+        let Some(row) = self.build_info_modal_row() else {
             return;
-        }
-        let row = self.build_info_modal_row();
-        if row.is_none() {
-            return;
-        }
+        };
+        let focus = if items.is_empty() {
+            InfoModalFocus::Info
+        } else {
+            InfoModalFocus::Actions
+        };
         self.return_view = self.active_view;
         // Clear any stale copy confirmation from a previous opening.
         self.info_copied_msg = None;
@@ -1901,15 +1924,15 @@ impl App {
             items,
             cursor: 0,
             info_cursor: 0,
-            focus: InfoModalFocus::Actions,
-            row: row.unwrap(),
+            focus,
+            row,
             scroll_offset: 0,
         });
     }
 
     fn build_menu_items(&self) -> Vec<MenuItem> {
         match self.active_view {
-            ViewId::Graph => vec![],
+            ViewId::Graph => self.build_graph_menu(),
             ViewId::Branches => self.build_branch_menu(),
             ViewId::Remotes => self.build_remote_menu(),
             ViewId::Tags => self.build_tag_menu(),
@@ -1919,7 +1942,11 @@ impl App {
 
     fn build_info_modal_row(&self) -> Option<InfoModalRow> {
         match self.active_view {
-            ViewId::Graph => None,
+            ViewId::Graph => self
+                .graph
+                .selected_commit()
+                .cloned()
+                .map(InfoModalRow::GraphCommit),
             ViewId::Branches => self
                 .branches
                 .cursor_item()
@@ -1939,14 +1966,127 @@ impl App {
         }
     }
 
+    fn build_graph_menu(&self) -> Vec<MenuItem> {
+        let Some(commit) = self.graph.selected_commit() else {
+            return vec![];
+        };
+        self.build_graph_menu_for(commit)
+    }
+
+    fn build_graph_menu_for(&self, commit: &graph::GraphCommit) -> Vec<MenuItem> {
+        let mut groups = Vec::new();
+        for reference in &commit.refs {
+            let items = match reference.kind {
+                graph::GraphRefKind::LocalBranch => self
+                    .branches
+                    .items()
+                    .iter()
+                    .find(|branch| branch.name == reference.name)
+                    .map(|branch| self.build_branch_menu_for(branch)),
+                graph::GraphRefKind::RemoteBranch => self
+                    .remotes
+                    .items()
+                    .iter()
+                    .find(|branch| branch.full_ref == reference.name)
+                    .map(|branch| self.build_remote_menu_for(branch)),
+                graph::GraphRefKind::Tag => self
+                    .tags
+                    .items()
+                    .iter()
+                    .find(|tag| tag.name == reference.name)
+                    .map(|tag| self.build_tag_menu_for(tag)),
+            };
+            if let Some(items) = items {
+                groups.push((reference.name.clone(), items));
+            }
+        }
+
+        let has_multiple_refs = groups.len() > 1;
+        groups
+            .into_iter()
+            .flat_map(|(reference, items)| {
+                items.into_iter().map(move |mut item| {
+                    item.label = format!("{reference}: {}", item.label);
+                    if has_multiple_refs {
+                        item.shortcut = None;
+                    }
+                    item
+                })
+            })
+            .collect()
+    }
+
+    fn refresh_open_graph_menu(&mut self) {
+        let Some(old_commit) = (match self.overlay.as_ref() {
+            Some(Overlay::InfoModal {
+                row: InfoModalRow::GraphCommit(commit),
+                ..
+            }) => Some(commit.clone()),
+            _ => None,
+        }) else {
+            return;
+        };
+        let commit = self.graph.selected_commit().cloned().unwrap_or(old_commit);
+        let items = self.build_graph_menu_for(&commit);
+
+        let Some(Overlay::InfoModal {
+            items: old_items,
+            cursor,
+            info_cursor,
+            focus,
+            row: _,
+            scroll_offset,
+        }) = self.overlay.take()
+        else {
+            unreachable!();
+        };
+        let selected = old_items
+            .get(cursor)
+            .map(|item| (item.action, item.target.as_str(), item.remote.as_deref()));
+        let cursor = selected
+            .and_then(|(action, target, remote)| {
+                items.iter().position(|item| {
+                    item.action == action
+                        && item.target == target
+                        && item.remote.as_deref() == remote
+                })
+            })
+            .unwrap_or(0);
+        let focus = if items.is_empty() {
+            InfoModalFocus::Info
+        } else {
+            focus
+        };
+        let row = InfoModalRow::GraphCommit(commit);
+        let info_cursor = info_cursor.min(row.info_field_count().saturating_sub(1));
+        self.overlay = Some(Overlay::InfoModal {
+            items,
+            cursor,
+            info_cursor,
+            focus,
+            row,
+            scroll_offset,
+        });
+    }
+
     fn build_branch_menu(&self) -> Vec<MenuItem> {
         let Some(branch) = self.branches.cursor_item() else {
             return vec![];
         };
+        self.build_branch_menu_for(branch)
+    }
+
+    fn build_branch_menu_for(&self, branch: &BranchInfo) -> Vec<MenuItem> {
         let has_remote = matches!(
             &branch.tracking,
             TrackingStatus::Tracked { gone: false, .. }
         );
+        let tracking_remote = match &branch.tracking {
+            TrackingStatus::Tracked { remote_ref, .. } => remote_ref
+                .split_once('/')
+                .map(|(remote, _)| remote.to_owned()),
+            TrackingStatus::Local => None,
+        };
         let is_ahead = branch.ahead.is_some_and(|a| a > 0);
         let is_behind = branch.behind.is_some_and(|b| b > 0);
         let has_pr = self.pr_map.contains_key(&branch.name);
@@ -1962,6 +2102,8 @@ impl App {
                 },
                 shortcut: Some('c'),
                 action: BranchAction::Checkout,
+                target: branch.name.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Delete local".into(),
@@ -1975,6 +2117,8 @@ impl App {
                 },
                 shortcut: Some('d'),
                 action: BranchAction::DeleteLocal,
+                target: branch.name.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Delete local + remote".into(),
@@ -1990,6 +2134,8 @@ impl App {
                 },
                 shortcut: Some('D'),
                 action: BranchAction::DeleteLocalAndRemote,
+                target: branch.name.clone(),
+                remote: tracking_remote,
             },
             MenuItem {
                 label: "Fast-forward".into(),
@@ -2003,6 +2149,8 @@ impl App {
                 },
                 shortcut: Some('f'),
                 action: BranchAction::FastForward,
+                target: branch.name.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Push".into(),
@@ -2016,6 +2164,8 @@ impl App {
                 },
                 shortcut: Some('p'),
                 action: BranchAction::Push,
+                target: branch.name.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Force push".into(),
@@ -2031,6 +2181,8 @@ impl App {
                 },
                 shortcut: Some('P'),
                 action: BranchAction::ForcePush,
+                target: branch.name.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Pull".into(),
@@ -2044,6 +2196,8 @@ impl App {
                 },
                 shortcut: Some('l'),
                 action: BranchAction::Pull,
+                target: branch.name.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Merge into base".into(),
@@ -2057,6 +2211,8 @@ impl App {
                 },
                 shortcut: Some('m'),
                 action: BranchAction::Merge,
+                target: branch.name.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Squash merge into base".into(),
@@ -2070,6 +2226,8 @@ impl App {
                 },
                 shortcut: Some('s'),
                 action: BranchAction::SquashMerge,
+                target: branch.name.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Rebase onto base".into(),
@@ -2083,6 +2241,8 @@ impl App {
                 },
                 shortcut: Some('r'),
                 action: BranchAction::Rebase,
+                target: branch.name.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Create worktree".into(),
@@ -2094,6 +2254,8 @@ impl App {
                 },
                 shortcut: Some('w'),
                 action: BranchAction::Worktree,
+                target: branch.name.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Open PR in browser".into(),
@@ -2101,6 +2263,8 @@ impl App {
                 reason: if !has_pr { Some("no PR".into()) } else { None },
                 shortcut: Some('o'),
                 action: BranchAction::ViewRemotePR,
+                target: branch.name.clone(),
+                remote: None,
             },
         ]
     }
@@ -2109,6 +2273,10 @@ impl App {
         let Some(branch) = self.remotes.cursor_item() else {
             return vec![];
         };
+        self.build_remote_menu_for(branch)
+    }
+
+    fn build_remote_menu_for(&self, branch: &RemoteBranchInfo) -> Vec<MenuItem> {
         let pinned = branch.is_pinned();
         let has_local = branch.has_local;
         let has_pr = self.pr_map.contains_key(&branch.short_name);
@@ -2126,6 +2294,8 @@ impl App {
                 },
                 shortcut: Some('c'),
                 action: BranchAction::CheckoutRemote,
+                target: branch.short_name.clone(),
+                remote: Some(branch.remote.clone()),
             },
             MenuItem {
                 label: "Delete remote branch".into(),
@@ -2133,6 +2303,8 @@ impl App {
                 reason: if pinned { Some("base".into()) } else { None },
                 shortcut: Some('d'),
                 action: BranchAction::DeleteRemoteBranch,
+                target: branch.short_name.clone(),
+                remote: Some(branch.remote.clone()),
             },
             MenuItem {
                 label: "Delete remote + local".into(),
@@ -2146,6 +2318,8 @@ impl App {
                 },
                 shortcut: Some('D'),
                 action: BranchAction::DeleteRemoteAndLocal,
+                target: branch.short_name.clone(),
+                remote: Some(branch.remote.clone()),
             },
             MenuItem {
                 label: "Fetch remote".into(),
@@ -2153,6 +2327,8 @@ impl App {
                 reason: if pinned { Some("base".into()) } else { None },
                 shortcut: Some('f'),
                 action: BranchAction::FetchRemote,
+                target: branch.short_name.clone(),
+                remote: Some(branch.remote.clone()),
             },
             MenuItem {
                 label: "Pull remote".into(),
@@ -2166,6 +2342,8 @@ impl App {
                 },
                 shortcut: Some('l'),
                 action: BranchAction::PullRemote,
+                target: branch.short_name.clone(),
+                remote: Some(branch.remote.clone()),
             },
             MenuItem {
                 label: "Merge into current".into(),
@@ -2173,6 +2351,8 @@ impl App {
                 reason: if pinned { Some("base".into()) } else { None },
                 shortcut: Some('m'),
                 action: BranchAction::MergeRemoteIntoCurrent,
+                target: branch.short_name.clone(),
+                remote: Some(branch.remote.clone()),
             },
             MenuItem {
                 label: "Cherry-pick latest".into(),
@@ -2180,6 +2360,8 @@ impl App {
                 reason: if pinned { Some("base".into()) } else { None },
                 shortcut: Some('p'),
                 action: BranchAction::CherryPickRemote,
+                target: branch.short_name.clone(),
+                remote: Some(branch.remote.clone()),
             },
             MenuItem {
                 label: "View PR in browser".into(),
@@ -2193,14 +2375,20 @@ impl App {
                 },
                 shortcut: Some('o'),
                 action: BranchAction::ViewRemotePR,
+                target: branch.short_name.clone(),
+                remote: Some(branch.remote.clone()),
             },
         ]
     }
 
     fn build_tag_menu(&self) -> Vec<MenuItem> {
-        let Some(_tag) = self.tags.cursor_item() else {
+        let Some(tag) = self.tags.cursor_item() else {
             return vec![];
         };
+        self.build_tag_menu_for(tag)
+    }
+
+    fn build_tag_menu_for(&self, tag: &TagInfo) -> Vec<MenuItem> {
         vec![
             MenuItem {
                 label: "Delete tag".into(),
@@ -2208,6 +2396,8 @@ impl App {
                 reason: None,
                 shortcut: Some('d'),
                 action: BranchAction::DeleteTag,
+                target: tag.name.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Delete tag (local + remote)".into(),
@@ -2215,6 +2405,8 @@ impl App {
                 reason: None,
                 shortcut: Some('D'),
                 action: BranchAction::DeleteTagAndRemote,
+                target: tag.name.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Push tag to remote".into(),
@@ -2222,6 +2414,8 @@ impl App {
                 reason: None,
                 shortcut: Some('p'),
                 action: BranchAction::PushTag,
+                target: tag.name.clone(),
+                remote: None,
             },
         ]
     }
@@ -2255,6 +2449,7 @@ impl App {
         let delete_branch_remote_reason = delete_branch_reason
             .clone()
             .or((!has_remote).then(|| "no remote".into()));
+        let target = wt.path.to_string_lossy().to_string();
 
         vec![
             MenuItem {
@@ -2269,6 +2464,8 @@ impl App {
                 },
                 shortcut: Some('d'),
                 action: BranchAction::WorktreeRemove,
+                target: target.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Force remove worktree".into(),
@@ -2280,6 +2477,8 @@ impl App {
                 },
                 shortcut: Some('D'),
                 action: BranchAction::WorktreeForceRemove,
+                target: target.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Remove worktree + branch".into(),
@@ -2287,6 +2486,8 @@ impl App {
                 reason: delete_branch_reason.clone(),
                 shortcut: Some('b'),
                 action: BranchAction::WorktreeRemoveAndDeleteBranch,
+                target: target.clone(),
+                remote: None,
             },
             MenuItem {
                 label: "Remove worktree + branch (local + remote)".into(),
@@ -2294,26 +2495,17 @@ impl App {
                 reason: delete_branch_remote_reason,
                 shortcut: Some('B'),
                 action: BranchAction::WorktreeRemoveAndDeleteBranchRemote,
+                target,
+                remote: None,
             },
         ]
     }
 
-    fn execute_menu_action(&mut self, action: BranchAction) {
+    fn execute_menu_action(&mut self, item: MenuItem) {
+        let action = item.action;
         // View PR -- fire and forget, no confirm
         if action == BranchAction::ViewRemotePR {
-            let name = match self.active_view {
-                ViewId::Branches => self
-                    .branches
-                    .cursor_item()
-                    .map(|b| b.name.clone())
-                    .unwrap_or_default(),
-                ViewId::Remotes => self
-                    .remotes
-                    .cursor_item()
-                    .map(|b| b.short_name.clone())
-                    .unwrap_or_default(),
-                _ => return,
-            };
+            let name = item.target;
             let repo_path = self.repo_path.clone();
             std::thread::spawn(move || {
                 let _ = std::process::Command::new("gh")
@@ -2327,44 +2519,11 @@ impl App {
             return;
         }
 
-        // Get target names for confirm dialog
-        let targets = self.get_cursor_targets(action);
-        if targets.is_empty() {
-            return;
-        }
-
-        self.overlay = Some(Overlay::Confirm { action, targets });
-    }
-
-    /// Get target name(s) for a single-item action from the context menu
-    fn get_cursor_targets(&self, _action: BranchAction) -> Vec<String> {
-        match self.active_view {
-            ViewId::Graph => self
-                .graph
-                .selected_ref()
-                .map(|reference| vec![reference.name.clone()])
-                .unwrap_or_default(),
-            ViewId::Branches => self
-                .branches
-                .cursor_item()
-                .map(|b| vec![b.name.clone()])
-                .unwrap_or_default(),
-            ViewId::Remotes => self
-                .remotes
-                .cursor_item()
-                .map(|b| vec![b.short_name.clone()])
-                .unwrap_or_default(),
-            ViewId::Tags => self
-                .tags
-                .cursor_item()
-                .map(|t| vec![t.name.clone()])
-                .unwrap_or_default(),
-            ViewId::Worktrees => self
-                .worktrees
-                .cursor_item()
-                .map(|w| vec![w.path.to_string_lossy().to_string()])
-                .unwrap_or_default(),
-        }
+        self.overlay = Some(Overlay::Confirm {
+            action,
+            targets: vec![item.target],
+            remote: item.remote,
+        });
     }
 
     // ---- View-level action helpers ----
@@ -2426,11 +2585,25 @@ impl App {
     /// Open a confirm overlay for `action` over `targets`, returning to
     /// `return_view` when it closes. No-op when `targets` is empty.
     fn open_confirm(&mut self, action: BranchAction, return_view: ViewId, targets: Vec<String>) {
+        self.open_confirm_with_remote(action, return_view, targets, None);
+    }
+
+    fn open_confirm_with_remote(
+        &mut self,
+        action: BranchAction,
+        return_view: ViewId,
+        targets: Vec<String>,
+        remote: Option<String>,
+    ) {
         if targets.is_empty() {
             return;
         }
         self.return_view = return_view;
-        self.overlay = Some(Overlay::Confirm { action, targets });
+        self.overlay = Some(Overlay::Confirm {
+            action,
+            targets,
+            remote,
+        });
     }
 
     // ---- Sorting ----
@@ -2494,6 +2667,18 @@ impl App {
                 self.spawn_worktree_load();
             }
             _ => {}
+        }
+    }
+
+    /// Preload the authoritative rows needed to adapt Graph refs into the
+    /// existing Remote and Tag action menus. Branch rows already stream at
+    /// launch through `phase1_rx`.
+    pub fn preload_graph_action_metadata(&mut self) {
+        if self.remotes.items().is_empty() && !self.remotes.loading {
+            self.spawn_remote_load();
+        }
+        if self.tags.items().is_empty() && !self.tags.loading {
+            self.spawn_tag_load();
         }
     }
 
@@ -2734,6 +2919,18 @@ impl App {
         }
     }
 
+    fn refresh_after_job(&mut self, action: BranchAction, origin: ViewId) {
+        if origin != ViewId::Graph {
+            self.refresh_view_data(origin);
+            return;
+        }
+
+        for view in graph_affected_views(action) {
+            self.refresh_view_data(*view);
+        }
+        self.refresh_view_data(ViewId::Graph);
+    }
+
     fn start_fetch(&mut self, prune: bool) {
         let repo_path = self.repo_path.clone();
         let (tx, rx) = mpsc::channel();
@@ -2955,6 +3152,40 @@ impl App {
 
     fn clear_toast(&mut self) {
         self.toast = None;
+    }
+}
+
+fn graph_affected_views(action: BranchAction) -> &'static [ViewId] {
+    match action {
+        BranchAction::DeleteLocal => &[ViewId::Branches, ViewId::Remotes],
+        BranchAction::DeleteLocalAndRemote => &[ViewId::Branches, ViewId::Remotes],
+        BranchAction::Checkout
+        | BranchAction::FastForward
+        | BranchAction::Merge
+        | BranchAction::SquashMerge
+        | BranchAction::Rebase => &[ViewId::Branches, ViewId::Worktrees],
+        BranchAction::Fetch | BranchAction::FetchPrune => {
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Tags]
+        }
+        BranchAction::Push | BranchAction::ForcePush => &[ViewId::Branches, ViewId::Remotes],
+        BranchAction::Pull => &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees],
+        BranchAction::Worktree => &[ViewId::Worktrees],
+        BranchAction::DeleteTag | BranchAction::DeleteTagAndRemote | BranchAction::PushTag => {
+            &[ViewId::Tags]
+        }
+        BranchAction::DeleteRemoteBranch => &[ViewId::Branches, ViewId::Remotes],
+        BranchAction::DeleteRemoteAndLocal => &[ViewId::Branches, ViewId::Remotes],
+        BranchAction::CheckoutRemote => &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees],
+        BranchAction::FetchRemote => &[ViewId::Branches, ViewId::Remotes, ViewId::Tags],
+        BranchAction::PullRemote
+        | BranchAction::MergeRemoteIntoCurrent
+        | BranchAction::CherryPickRemote => &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees],
+        BranchAction::WorktreeRemove | BranchAction::WorktreeForceRemove => &[ViewId::Worktrees],
+        BranchAction::WorktreeRemoveAndDeleteBranch => &[ViewId::Branches, ViewId::Worktrees],
+        BranchAction::WorktreeRemoveAndDeleteBranchRemote => {
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees]
+        }
+        BranchAction::ViewRemotePR => &[],
     }
 }
 
@@ -3344,6 +3575,98 @@ mod tests {
         }
     }
 
+    fn branch(name: &str, tracking: TrackingStatus) -> BranchInfo {
+        BranchInfo {
+            name: name.into(),
+            is_current: false,
+            is_base: false,
+            tracking,
+            ahead: None,
+            behind: None,
+            last_commit_date: Utc::now(),
+            merge_status: MergeStatus::Unmerged,
+            base_branch: "main".into(),
+            merge_base_commit: None,
+            pr: None,
+        }
+    }
+
+    fn remote(full_ref: &str, short_name: &str) -> RemoteBranchInfo {
+        RemoteBranchInfo {
+            full_ref: full_ref.into(),
+            remote: full_ref.split_once('/').unwrap().0.into(),
+            short_name: short_name.into(),
+            has_local: false,
+            is_base: false,
+            last_commit_date: Utc::now(),
+            merge_status: MergeStatus::Unmerged,
+            ahead: None,
+            behind: None,
+            disjoint: false,
+            pr: None,
+        }
+    }
+
+    fn tag(name: &str) -> TagInfo {
+        TagInfo {
+            name: name.into(),
+            commit_hash: "1111111".into(),
+            date: Utc::now(),
+            message: None,
+            is_annotated: false,
+        }
+    }
+
+    fn graph_snapshot(refs: Vec<graph::GraphRef>) -> graph::GraphSnapshot {
+        graph::GraphSnapshot {
+            source: graph::GraphSource::Gleisbau,
+            commits: vec![graph::GraphCommit {
+                oid: "1111111111111111111111111111111111111111".into(),
+                summary: "selected commit".into(),
+                parents: vec!["0000000000000000000000000000000000000000".into()],
+                lane: Some(0),
+                branch: None,
+                refs,
+                is_possible_squash_merge: false,
+            }],
+            lines: vec![graph::GraphLine {
+                graph: "*".into(),
+                commit_index: Some(0),
+            }],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: true,
+        }
+    }
+
+    fn graph_ref(name: &str, kind: graph::GraphRefKind) -> graph::GraphRef {
+        graph::GraphRef {
+            name: name.into(),
+            kind,
+            has_linked_worktree: false,
+            tracking: None,
+        }
+    }
+
+    fn graph_app(refs: Vec<graph::GraphRef>) -> App {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.active_view = ViewId::Graph;
+        app.graph.apply_result(Ok(graph_snapshot(refs)));
+        app
+    }
+
+    fn info_modal_items(app: &App) -> &[MenuItem] {
+        match app.overlay.as_ref() {
+            Some(Overlay::InfoModal { items, .. }) => items,
+            other => panic!("expected info modal, got {other:?}"),
+        }
+    }
+
     fn cell_text(line: &Line<'static>) -> String {
         line.spans
             .iter()
@@ -3564,6 +3887,506 @@ mod tests {
         assert_eq!(app.active_view, ViewId::Branches);
     }
 
+    #[test]
+    fn graph_enter_uses_local_branch_metadata_for_actions() {
+        let mut app = graph_app(vec![graph_ref(
+            "feature/local",
+            graph::GraphRefKind::LocalBranch,
+        )]);
+        let mut local = branch(
+            "feature/local",
+            TrackingStatus::Tracked {
+                remote_ref: "origin/feature/local".into(),
+                gone: false,
+            },
+        );
+        local.ahead = Some(0);
+        app.branches.set_items(vec![local]);
+        app.has_configured_remote = true;
+        app.pr_map.insert(
+            "feature/local".into(),
+            PrInfo {
+                number: 42,
+                status: PrStatus::Open,
+            },
+        );
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        let items = info_modal_items(&app);
+        let push = items
+            .iter()
+            .find(|item| item.action == BranchAction::Push)
+            .expect("local Push action");
+        assert!(!push.enabled);
+        assert_eq!(push.reason.as_deref(), Some("not ahead"));
+        assert!(items
+            .iter()
+            .any(|item| { item.action == BranchAction::ViewRemotePR && item.enabled }));
+    }
+
+    #[test]
+    fn graph_enter_uses_remote_branch_metadata_for_actions() {
+        let mut app = graph_app(vec![graph_ref(
+            "upstream/feature/remote",
+            graph::GraphRefKind::RemoteBranch,
+        )]);
+        app.remotes
+            .set_items(vec![remote("upstream/feature/remote", "feature/remote")]);
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        let items = info_modal_items(&app);
+        assert!(items
+            .iter()
+            .any(|item| { item.action == BranchAction::CheckoutRemote && item.enabled }));
+        let delete = items
+            .iter()
+            .find(|item| item.action == BranchAction::DeleteRemoteBranch)
+            .expect("remote Delete action");
+        assert!(delete.enabled);
+        assert_eq!(delete.target, "feature/remote");
+        assert_eq!(delete.remote.as_deref(), Some("upstream"));
+    }
+
+    #[test]
+    fn graph_enter_uses_tag_metadata_and_keeps_ref_free_commits_informational() {
+        let mut tag_app = graph_app(vec![graph_ref("v1.2.3", graph::GraphRefKind::Tag)]);
+        tag_app.tags.set_items(vec![tag("v1.2.3")]);
+
+        tag_app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(info_modal_items(&tag_app)
+            .iter()
+            .any(|item| item.action == BranchAction::PushTag));
+
+        let mut ref_free_app = graph_app(vec![]);
+        ref_free_app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            ref_free_app.overlay,
+            Some(Overlay::InfoModal {
+                ref items,
+                focus: InfoModalFocus::Info,
+                ..
+            }) if items.is_empty()
+        ));
+    }
+
+    #[test]
+    fn graph_info_modal_picks_up_authoritative_metadata_loaded_in_background() {
+        let mut app = graph_app(vec![graph_ref("v1.2.3", graph::GraphRefKind::Tag)]);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(info_modal_items(&app).is_empty());
+
+        let (tx, rx) = mpsc::channel();
+        tx.send(vec![tag("v1.2.3")]).unwrap();
+        app.tag_load_rx = Some(rx);
+        app.drain_channels();
+
+        assert!(info_modal_items(&app)
+            .iter()
+            .any(|item| item.action == BranchAction::PushTag));
+    }
+
+    #[test]
+    fn graph_info_modal_refreshes_when_selected_commit_is_reloaded() {
+        let mut app = graph_app(vec![graph_ref(
+            "feature/local",
+            graph::GraphRefKind::LocalBranch,
+        )]);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        let mut snapshot = graph_snapshot(vec![graph_ref(
+            "feature/local",
+            graph::GraphRefKind::LocalBranch,
+        )]);
+        snapshot.commits[0].summary = "reloaded commit".into();
+        app.graph.apply_result(Ok(snapshot));
+        app.refresh_open_graph_menu();
+
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::InfoModal {
+                row: InfoModalRow::GraphCommit(ref commit),
+                ..
+            }) if commit.summary == "reloaded commit"
+        ));
+    }
+
+    #[test]
+    fn graph_multiple_refs_confirm_the_selected_authoritative_target() {
+        let mut app = graph_app(vec![
+            graph_ref("feature/local", graph::GraphRefKind::LocalBranch),
+            graph_ref("origin/feature/remote", graph::GraphRefKind::RemoteBranch),
+            graph_ref("v1.2.3", graph::GraphRefKind::Tag),
+        ]);
+        let mut local = branch("feature/local", TrackingStatus::Local);
+        local.is_current = true;
+        app.branches.set_items(vec![local]);
+        app.remotes
+            .set_items(vec![remote("origin/feature/remote", "feature/remote")]);
+        app.tags.set_items(vec![tag("v1.2.3")]);
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        let items = info_modal_items(&app);
+        assert!(items
+            .iter()
+            .all(|item| item.shortcut.is_none() && item.label.contains(":")));
+        let disabled_local_delete = items
+            .iter()
+            .find(|item| item.action == BranchAction::DeleteLocal)
+            .expect("local Delete action");
+        assert!(!disabled_local_delete.enabled);
+        assert_eq!(disabled_local_delete.reason.as_deref(), Some("current"));
+
+        let remote_delete_cursor = items
+            .iter()
+            .position(|item| item.action == BranchAction::DeleteRemoteBranch)
+            .expect("remote Delete action");
+        let overlay = app.overlay.take().unwrap();
+        let Overlay::InfoModal {
+            items,
+            info_cursor,
+            focus,
+            row,
+            scroll_offset,
+            ..
+        } = overlay
+        else {
+            unreachable!();
+        };
+        app.overlay = Some(Overlay::InfoModal {
+            items,
+            cursor: remote_delete_cursor,
+            info_cursor,
+            focus,
+            row,
+            scroll_offset,
+        });
+
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Confirm {
+                action: BranchAction::DeleteRemoteBranch,
+                ref targets,
+                ..
+            }) if targets == &["feature/remote"]
+        ));
+        assert_eq!(app.return_view, ViewId::Graph);
+    }
+
+    #[test]
+    fn graph_origin_job_refreshes_authoritative_list_and_graph() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("README.md"), "base\n").unwrap();
+        run_git(dir, &["add", "README.md"]);
+        run_git(dir, &["commit", "-m", "initial"]);
+        run_git(dir, &["branch", "-M", "main"]);
+        run_git(dir, &["branch", "feature/refresh"]);
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.active_view = ViewId::Tags;
+        app.branches.set_items(vec![]);
+        app.graph.apply_result(Ok(graph_snapshot(vec![graph_ref(
+            "feature/refresh",
+            graph::GraphRefKind::LocalBranch,
+        )])));
+
+        let (op_tx, op_rx) = mpsc::channel();
+        let (_prog_tx, prog_rx) = mpsc::channel();
+        app.job_queue.inject_running_for_test(
+            git_branch_manager::job_queue::ActionJob {
+                action: BranchAction::Push,
+                targets: vec!["feature/refresh".into()],
+                remote: None,
+                return_view: ViewId::Graph,
+            },
+            op_rx,
+            prog_rx,
+            Arc::new(AtomicBool::new(false)),
+        );
+        op_tx
+            .send(vec![OperationResult {
+                branch_name: "feature/refresh".into(),
+                action: BranchAction::Push,
+                success: true,
+                message: "Pushed feature/refresh".into(),
+            }])
+            .unwrap();
+
+        app.drain_channels();
+
+        assert!(app
+            .branches
+            .items()
+            .iter()
+            .any(|branch| branch.name == "feature/refresh"));
+        assert!(app.remotes.loading);
+        assert!(app.graph.is_loading());
+        assert_eq!(app.active_view, ViewId::Tags);
+    }
+
+    #[test]
+    fn graph_origin_remote_checkout_refreshes_branches_remotes_and_graph() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("README.md"), "base\n").unwrap();
+        run_git(dir, &["add", "README.md"]);
+        run_git(dir, &["commit", "-m", "initial"]);
+        run_git(dir, &["branch", "-M", "main"]);
+        run_git(dir, &["branch", "feature/remote"]);
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.active_view = ViewId::Tags;
+        app.branches.set_items(vec![]);
+        app.graph.apply_result(Ok(graph_snapshot(vec![graph_ref(
+            "origin/feature/remote",
+            graph::GraphRefKind::RemoteBranch,
+        )])));
+
+        let (op_tx, op_rx) = mpsc::channel();
+        let (_prog_tx, prog_rx) = mpsc::channel();
+        app.job_queue.inject_running_for_test(
+            git_branch_manager::job_queue::ActionJob {
+                action: BranchAction::CheckoutRemote,
+                targets: vec!["feature/remote".into()],
+                remote: None,
+                return_view: ViewId::Graph,
+            },
+            op_rx,
+            prog_rx,
+            Arc::new(AtomicBool::new(false)),
+        );
+        op_tx
+            .send(vec![OperationResult {
+                branch_name: "feature/remote".into(),
+                action: BranchAction::CheckoutRemote,
+                success: true,
+                message: "Checked out feature/remote".into(),
+            }])
+            .unwrap();
+
+        app.drain_channels();
+
+        assert!(app
+            .branches
+            .items()
+            .iter()
+            .any(|branch| branch.name == "feature/remote"));
+        assert!(app.remotes.loading);
+        assert!(app.worktrees.loading);
+        assert!(app.graph.is_loading());
+        assert_eq!(app.active_view, ViewId::Tags);
+    }
+
+    #[test]
+    fn graph_origin_remote_delete_and_local_refreshes_branches_remotes_and_graph() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("README.md"), "base\n").unwrap();
+        run_git(dir, &["add", "README.md"]);
+        run_git(dir, &["commit", "-m", "initial"]);
+        run_git(dir, &["branch", "-M", "main"]);
+        run_git(dir, &["branch", "feature/remote"]);
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.active_view = ViewId::Tags;
+        app.branches.set_items(vec![]);
+        app.graph.apply_result(Ok(graph_snapshot(vec![graph_ref(
+            "origin/feature/remote",
+            graph::GraphRefKind::RemoteBranch,
+        )])));
+
+        let (op_tx, op_rx) = mpsc::channel();
+        let (_prog_tx, prog_rx) = mpsc::channel();
+        app.job_queue.inject_running_for_test(
+            git_branch_manager::job_queue::ActionJob {
+                action: BranchAction::DeleteRemoteAndLocal,
+                targets: vec!["feature/remote".into()],
+                remote: None,
+                return_view: ViewId::Graph,
+            },
+            op_rx,
+            prog_rx,
+            Arc::new(AtomicBool::new(false)),
+        );
+        op_tx
+            .send(vec![OperationResult {
+                branch_name: "feature/remote".into(),
+                action: BranchAction::DeleteRemoteAndLocal,
+                success: true,
+                message: "Deleted feature/remote".into(),
+            }])
+            .unwrap();
+
+        app.drain_channels();
+
+        assert!(app
+            .branches
+            .items()
+            .iter()
+            .any(|branch| branch.name == "feature/remote"));
+        assert!(app.remotes.loading);
+        assert!(app.graph.is_loading());
+        assert_eq!(app.active_view, ViewId::Tags);
+    }
+
+    #[test]
+    fn graph_action_refreshes_dependent_ref_views() {
+        assert_eq!(
+            graph_affected_views(BranchAction::DeleteLocal),
+            &[ViewId::Branches, ViewId::Remotes]
+        );
+        assert_eq!(
+            graph_affected_views(BranchAction::DeleteRemoteBranch),
+            &[ViewId::Branches, ViewId::Remotes]
+        );
+        assert_eq!(
+            graph_affected_views(BranchAction::FetchRemote),
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Tags]
+        );
+    }
+
+    #[test]
+    fn local_remote_delete_keeps_remote_when_remote_deletion_fails() {
+        let mut app = graph_app(vec![graph_ref(
+            "feature/local",
+            graph::GraphRefKind::LocalBranch,
+        )]);
+        app.remotes
+            .set_items(vec![remote("origin/feature/local", "feature/local")]);
+
+        let (op_tx, op_rx) = mpsc::channel();
+        let (_prog_tx, prog_rx) = mpsc::channel();
+        app.job_queue.inject_running_for_test(
+            git_branch_manager::job_queue::ActionJob {
+                action: BranchAction::DeleteLocalAndRemote,
+                targets: vec!["feature/local".into()],
+                remote: None,
+                return_view: ViewId::Graph,
+            },
+            op_rx,
+            prog_rx,
+            Arc::new(AtomicBool::new(false)),
+        );
+        op_tx
+            .send(vec![
+                OperationResult {
+                    branch_name: "feature/local".into(),
+                    action: BranchAction::DeleteLocal,
+                    success: true,
+                    message: "Deleted local feature/local".into(),
+                },
+                OperationResult {
+                    branch_name: "feature/local".into(),
+                    action: BranchAction::DeleteRemoteBranch,
+                    success: false,
+                    message: "Remote deletion failed".into(),
+                },
+            ])
+            .unwrap();
+
+        app.drain_channels();
+
+        assert!(app.remotes.loading);
+        assert!(app
+            .remotes
+            .items()
+            .iter()
+            .any(|branch| branch.short_name == "feature/local"));
+    }
+
+    #[test]
+    fn local_remote_delete_filters_only_the_selected_remote() {
+        let mut app = graph_app(vec![graph_ref(
+            "feature/local",
+            graph::GraphRefKind::LocalBranch,
+        )]);
+        app.remotes.set_items(vec![
+            remote("origin/feature/local", "feature/local"),
+            remote("upstream/feature/local", "feature/local"),
+        ]);
+
+        let (op_tx, op_rx) = mpsc::channel();
+        let (_prog_tx, prog_rx) = mpsc::channel();
+        app.job_queue.inject_running_for_test(
+            git_branch_manager::job_queue::ActionJob {
+                action: BranchAction::DeleteLocalAndRemote,
+                targets: vec!["feature/local".into()],
+                remote: Some("upstream".into()),
+                return_view: ViewId::Graph,
+            },
+            op_rx,
+            prog_rx,
+            Arc::new(AtomicBool::new(false)),
+        );
+        op_tx
+            .send(vec![
+                OperationResult {
+                    branch_name: "feature/local".into(),
+                    action: BranchAction::DeleteLocal,
+                    success: true,
+                    message: "Deleted local feature/local".into(),
+                },
+                OperationResult {
+                    branch_name: "feature/local".into(),
+                    action: BranchAction::DeleteRemoteBranch,
+                    success: true,
+                    message: "Deleted upstream/feature/local".into(),
+                },
+            ])
+            .unwrap();
+
+        app.drain_channels();
+
+        assert!(app
+            .remotes
+            .items()
+            .iter()
+            .any(|branch| branch.full_ref == "origin/feature/local"));
+        assert!(!app
+            .remotes
+            .items()
+            .iter()
+            .any(|branch| branch.full_ref == "upstream/feature/local"));
+    }
+
     fn run_git(dir: &std::path::Path, args: &[&str]) {
         let output = Command::new("git")
             .args(args)
@@ -3671,6 +4494,7 @@ mod tests {
             git_branch_manager::job_queue::ActionJob {
                 action: BranchAction::Rebase,
                 targets: vec![branch_name.to_string()],
+                remote: None,
                 return_view: ViewId::Branches,
             },
             op_rx,

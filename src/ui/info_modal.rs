@@ -7,12 +7,14 @@ use ratatui::widgets::{
 
 use super::menu::MenuItem;
 use super::shared::centered_rect_pct;
+use crate::git::graph::{GraphCommit, GraphRefKind};
 use crate::symbols::SymbolSet;
 use crate::theme::Theme;
 use crate::types::*;
 
 #[derive(Debug, Clone)]
 pub enum InfoModalRow {
+    GraphCommit(GraphCommit),
     Branch(BranchInfo),
     Remote(RemoteBranchInfo),
     Tag(TagInfo),
@@ -118,6 +120,10 @@ pub fn draw_info_modal(
 
 fn get_title(row: &InfoModalRow) -> String {
     match row {
+        InfoModalRow::GraphCommit(commit) => {
+            let short_oid: String = commit.oid.chars().take(7).collect();
+            format!("{short_oid} {}", commit.summary)
+        }
         InfoModalRow::Branch(b) => b.name.clone(),
         InfoModalRow::Remote(r) => r.short_name.clone(),
         InfoModalRow::Tag(t) => t.name.clone(),
@@ -127,11 +133,67 @@ fn get_title(row: &InfoModalRow) -> String {
 
 fn build_fields(row: &InfoModalRow) -> Vec<InfoField> {
     match row {
+        InfoModalRow::GraphCommit(commit) => graph_commit_fields(commit),
         InfoModalRow::Branch(b) => branch_fields(b),
         InfoModalRow::Remote(r) => remote_fields(r),
         InfoModalRow::Tag(t) => tag_fields(t),
         InfoModalRow::Worktree(w) => worktree_fields(w),
     }
+}
+
+fn graph_commit_fields(commit: &GraphCommit) -> Vec<InfoField> {
+    let mut fields = vec![
+        InfoField {
+            label: "Commit",
+            value: commit.oid.clone(),
+        },
+        InfoField {
+            label: "Summary",
+            value: commit.summary.clone(),
+        },
+    ];
+
+    if !commit.parents.is_empty() {
+        fields.push(InfoField {
+            label: "Parents",
+            value: commit.parents.join(", "),
+        });
+    }
+
+    if let Some(branch) = &commit.branch {
+        fields.push(InfoField {
+            label: "Branch",
+            value: branch.name.clone(),
+        });
+    }
+
+    for (label, kind) in [
+        ("Local Refs", GraphRefKind::LocalBranch),
+        ("Remote Refs", GraphRefKind::RemoteBranch),
+        ("Tags", GraphRefKind::Tag),
+    ] {
+        let names = commit
+            .refs
+            .iter()
+            .filter(|reference| reference.kind == kind)
+            .map(|reference| reference.name.as_str())
+            .collect::<Vec<_>>();
+        if !names.is_empty() {
+            fields.push(InfoField {
+                label,
+                value: names.join(", "),
+            });
+        }
+    }
+
+    if commit.is_possible_squash_merge {
+        fields.push(InfoField {
+            label: "Possible Squash Merge",
+            value: "yes".into(),
+        });
+    }
+
+    fields
 }
 
 fn branch_fields(b: &BranchInfo) -> Vec<InfoField> {

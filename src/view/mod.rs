@@ -67,6 +67,11 @@ impl ViewId {
 /// Provides the common interface the generic framework needs.
 pub trait ViewItem: Clone {
     fn display_name(&self) -> &str;
+    /// Stable identity used to preserve cursor and checked rows across a
+    /// refresh that may reorder or enrich the list.
+    fn identity(&self) -> String {
+        self.display_name().to_owned()
+    }
     fn is_pinned(&self) -> bool;
     /// Whether this is the base/default branch (always sorts first among pinned items)
     fn is_base(&self) -> bool {
@@ -164,6 +169,9 @@ impl ViewItem for TagInfo {
 impl ViewItem for WorktreeInfo {
     fn display_name(&self) -> &str {
         self.branch.as_deref().unwrap_or("[detached]")
+    }
+    fn identity(&self) -> String {
+        self.path.to_string_lossy().into_owned()
     }
     fn is_pinned(&self) -> bool {
         self.is_main

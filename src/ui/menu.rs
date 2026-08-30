@@ -11,6 +11,10 @@ pub struct MenuItem {
     pub label: String,
     pub shortcut: Option<char>,
     pub action: BranchAction,
+    /// Exact operation target resolved from the authoritative backing row.
+    pub target: String,
+    /// Remote name for remote-branch operations, when the target is a remote ref.
+    pub remote: Option<String>,
     pub enabled: bool,
     pub reason: Option<String>,
 }

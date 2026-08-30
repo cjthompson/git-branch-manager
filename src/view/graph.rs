@@ -1,4 +1,4 @@
-use crate::git::graph::{GraphLoadError, GraphRef, GraphSnapshot};
+use crate::git::graph::{GraphLoadError, GraphSnapshot};
 
 /// The default number of commits shown by the Graph tab. Larger histories are
 /// opt-in so opening the tab remains responsive on large repositories.
@@ -92,13 +92,29 @@ impl GraphState {
 
     pub fn apply_result(&mut self, result: Result<GraphSnapshot, GraphLoadError>) {
         self.loading = false;
+        let selected_oid = self.selected_commit().map(|commit| commit.oid.clone());
         match result {
             Ok(snapshot) => {
+                let cursor = selected_oid
+                    .as_deref()
+                    .and_then(|oid| {
+                        snapshot
+                            .lines
+                            .iter()
+                            .filter_map(|line| line.commit_index)
+                            .position(|commit_index| {
+                                snapshot
+                                    .commits
+                                    .get(commit_index)
+                                    .is_some_and(|commit| commit.oid == oid)
+                            })
+                    })
+                    .unwrap_or(0);
                 self.max_count = snapshot.max_count;
                 self.include_remotes = snapshot.includes_remotes;
                 self.snapshot = Some(snapshot);
                 self.error = None;
-                self.cursor = 0;
+                self.cursor = cursor;
                 self.offset = 0;
                 self.horizontal_offset = 0;
             }
@@ -180,13 +196,6 @@ impl GraphState {
             .selected_commit_line()
             .and_then(|line_index| self.snapshot.as_ref()?.lines[line_index].commit_index)?;
         self.snapshot.as_ref()?.commits.get(commit_index)
-    }
-
-    pub fn selected_ref(&self) -> Option<&GraphRef> {
-        let refs = &self.selected_commit()?.refs;
-        refs.iter()
-            .find(|reference| reference.kind == crate::git::graph::GraphRefKind::LocalBranch)
-            .or_else(|| refs.first())
     }
 
     /// Keep the active row inside the shared graph/ref viewport.
@@ -321,5 +330,19 @@ mod tests {
             fallback: "failed".into(),
         }));
         assert_eq!(state.horizontal_offset(), 0);
+    }
+
+    #[test]
+    fn graph_reload_retains_selected_commit_when_it_is_still_present() {
+        let mut state = GraphState::new();
+        state.apply_result(Ok(snapshot()));
+        state.move_down();
+        assert_eq!(state.selected_commit().unwrap().summary, "second");
+
+        state.begin_load(500, false);
+        state.apply_result(Ok(snapshot()));
+
+        assert_eq!(state.commit_cursor(), 1);
+        assert_eq!(state.selected_commit().unwrap().summary, "second");
     }
 }

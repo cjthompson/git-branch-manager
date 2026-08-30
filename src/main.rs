@@ -293,6 +293,7 @@ fn main() -> Result<()> {
             base_branch: Some(app.base_branch.clone()),
         },
     ));
+    app.preload_graph_action_metadata();
 
     // Auto-fetch if configured
     if app.config.auto_fetch == Some(true) {
