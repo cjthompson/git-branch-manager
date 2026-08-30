@@ -3628,6 +3628,7 @@ mod tests {
                 branch: None,
                 refs,
                 is_possible_squash_merge: false,
+                fuzzy_squash_match: None,
             }],
             lines: vec![graph::GraphLine {
                 graph: "*".into(),
