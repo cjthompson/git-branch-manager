@@ -124,6 +124,16 @@ pub struct App {
     >,
     pub phase1_rx: Option<Receiver<Phase1Msg>>,
     pub graph_rx: Option<Receiver<Result<graph::GraphSnapshot, graph::GraphLoadError>>>,
+    /// Result channel for the asynchronous squash-merge enrichment spawned
+    /// after each successful structural graph load. The current reload
+    /// generation lives in `graph_generation`; enrichment messages whose
+    /// generation does not match are dropped (they belong to a stale
+    /// snapshot the user no longer sees).
+    pub graph_enrich_rx: Option<Receiver<graph::GraphEnrichmentMsg>>,
+    /// Bumped once per `spawn_graph_load` call. Both the structural snapshot
+    /// we just received and any in-flight enrichment are tagged with it, so
+    /// a stale enrichment result cannot overwrite a newer snapshot.
+    pub graph_generation: u64,
 
     // Cache (used for R-key cache clearing)
     #[allow(dead_code)]
@@ -323,6 +333,8 @@ impl App {
             remote_load_rx: None,
             phase1_rx: None,
             graph_rx: None,
+            graph_enrich_rx: None,
+            graph_generation: 0,
             cache,
             toast: None,
             cancel_flag: None,
@@ -440,8 +452,39 @@ impl App {
         let mut dirty = false;
 
         for result in drain_channel(&mut self.graph_rx, 1, &mut dirty) {
+            // Stamp the snapshot with the current reload generation so the
+            // enrichment that follows can be matched back to it. The
+            // generation is also the gate we check below in the enrich
+            // drain — stale enrichment from a previous load is dropped
+            // rather than overwriting the newer snapshot's markers.
+            let result = match result {
+                Ok(mut snapshot) => {
+                    snapshot.generation = Some(self.graph_generation);
+                    Ok(snapshot)
+                }
+                err => err,
+            };
             self.graph.apply_result(result);
             self.clear_toast();
+
+            if let Some(snapshot) = self.graph.snapshot().cloned() {
+                self.graph_enrich_rx = Some(graph::spawn_possible_squash_enrichment(
+                    snapshot,
+                    self.repo_path.clone(),
+                    Some(self.base_branch.clone()),
+                    self.graph_generation,
+                ));
+            }
+        }
+
+        for msg in drain_channel(&mut self.graph_enrich_rx, 1, &mut dirty) {
+            // Drop enrichment that belongs to a previous reload — the
+            // user already moved past that snapshot. A failed/cancelled
+            // enrichment just never sends; if the receiver is dropped
+            // mid-compute, the worker thread exits on its next `tx.send`.
+            if msg.generation == self.graph_generation {
+                self.graph.apply_squash_enrichment(&msg.updates);
+            }
         }
 
         // Phase-1 messages (fast metadata first, merge statuses second)
@@ -2682,7 +2725,13 @@ impl App {
         }
     }
 
-    fn spawn_graph_load(&mut self, max_count: usize, include_remotes: bool) {
+    pub fn spawn_graph_load(&mut self, max_count: usize, include_remotes: bool) {
+        self.graph_generation = self.graph_generation.saturating_add(1);
+        // Drop any in-flight enrichment from a previous load. The
+        // background thread will see the dropped receiver and exit on its
+        // next `tx.send`; no stale update can be applied to the new
+        // snapshot via the generation check.
+        self.graph_enrich_rx = None;
         self.graph.begin_load(max_count, include_remotes);
         self.graph_rx = Some(graph::spawn_graph_loader(
             self.repo_path.clone(),
@@ -3637,6 +3686,7 @@ mod tests {
             ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: true,
+            generation: None,
         }
     }
 
@@ -3803,6 +3853,7 @@ mod tests {
             ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: false,
+            generation: None,
         }))
         .expect("send graph result");
         app.graph_rx = Some(rx);
@@ -3859,6 +3910,7 @@ mod tests {
             ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: false,
+            generation: None,
         }));
 
         app.handle_key(KeyEvent::new(
@@ -5017,4 +5069,173 @@ mod tests {
     // `execute_action`'s worktree-remove-and-delete-branch coverage moved to
     // `job_queue.rs`'s own test module, since that's where the (now private)
     // function lives.
+
+    #[test]
+    fn graph_enrichment_with_stale_generation_is_dropped_by_drain() {
+        // Drives the App's drain_channels directly: a stale enrichment
+        // message (generation 1) must NOT mark a snapshot whose generation
+        // is 2. This is the App-level half of the "stale enrichment cannot
+        // overwrite a newer snapshot" requirement.
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.active_view = ViewId::Graph;
+        // Force a known starting generation.
+        app.spawn_graph_load(500, false);
+        let first_generation = app.graph_generation;
+
+        // Inject the structural snapshot for the first load directly.
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(graph::GraphSnapshot {
+            source: graph::GraphSource::Gleisbau,
+            commits: vec![graph::GraphCommit {
+                oid: "1111111111111111111111111111111111111111".into(),
+                summary: "first".into(),
+                parents: vec![],
+                lane: Some(0),
+                branch: None,
+                refs: vec![graph::GraphRef {
+                    name: "main".into(),
+                    kind: graph::GraphRefKind::LocalBranch,
+                    has_linked_worktree: false,
+                    tracking: None,
+                }],
+                is_possible_squash_merge: false,
+                fuzzy_squash_match: None,
+            }],
+            lines: vec![graph::GraphLine {
+                graph: "*".into(),
+                commit_index: Some(0),
+            }],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+            generation: None,
+        }))
+        .expect("send first snapshot");
+        app.graph_rx = Some(rx);
+        app.drain_channels();
+        assert!(!app.graph.is_loading());
+
+        // Trigger a second load — bumps graph_generation.
+        app.spawn_graph_load(500, false);
+        let second_generation = app.graph_generation;
+        assert!(second_generation > first_generation);
+
+        // Inject a structural snapshot for the second load.
+        let (tx2, rx2) = mpsc::channel();
+        tx2.send(Ok(graph::GraphSnapshot {
+            source: graph::GraphSource::Gleisbau,
+            commits: vec![graph::GraphCommit {
+                oid: "2222222222222222222222222222222222222222".into(),
+                summary: "second".into(),
+                parents: vec![],
+                lane: Some(0),
+                branch: None,
+                refs: vec![],
+                is_possible_squash_merge: false,
+                fuzzy_squash_match: None,
+            }],
+            lines: vec![graph::GraphLine {
+                graph: "*".into(),
+                commit_index: Some(0),
+            }],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+            generation: None,
+        }))
+        .expect("send second snapshot");
+        app.graph_rx = Some(rx2);
+        app.drain_channels();
+
+        // Now a STALE enrichment arrives (tagged with the first generation).
+        // The App's drain must drop it because msg.generation != current.
+        let (etx, erx) = mpsc::channel();
+        etx.send(graph::GraphEnrichmentMsg {
+            generation: first_generation,
+            updates: vec![graph::GraphEnrichmentUpdate {
+                oid: "2222222222222222222222222222222222222222".into(),
+                is_possible_squash_merge: true,
+                fuzzy_squash_match: None,
+            }],
+        })
+        .expect("send stale enrichment");
+        app.graph_enrich_rx = Some(erx);
+        app.drain_channels();
+
+        let current = app
+            .graph
+            .snapshot()
+            .expect("snapshot present after second load");
+        assert!(
+            !current.commits[0].is_possible_squash_merge,
+            "stale enrichment must not overwrite the newer snapshot's marker"
+        );
+    }
+
+    #[test]
+    fn graph_enrichment_with_matching_generation_is_applied_by_drain() {
+        // Companion to the stale-enrichment test: a matching-generation
+        // enrichment message must apply, confirming the App's gate is the
+        // only thing filtering enrichment.
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.active_view = ViewId::Graph;
+        app.spawn_graph_load(500, false);
+        let generation = app.graph_generation;
+
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(graph::GraphSnapshot {
+            source: graph::GraphSource::Gleisbau,
+            commits: vec![graph::GraphCommit {
+                oid: "3333333333333333333333333333333333333333".into(),
+                summary: "third".into(),
+                parents: vec![],
+                lane: Some(0),
+                branch: None,
+                refs: vec![],
+                is_possible_squash_merge: false,
+                fuzzy_squash_match: None,
+            }],
+            lines: vec![graph::GraphLine {
+                graph: "*".into(),
+                commit_index: Some(0),
+            }],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+            generation: None,
+        }))
+        .expect("send snapshot");
+        app.graph_rx = Some(rx);
+        app.drain_channels();
+
+        // Enrichment tagged with the same generation as the snapshot.
+        let (etx, erx) = mpsc::channel();
+        etx.send(graph::GraphEnrichmentMsg {
+            generation,
+            updates: vec![graph::GraphEnrichmentUpdate {
+                oid: "3333333333333333333333333333333333333333".into(),
+                is_possible_squash_merge: true,
+                fuzzy_squash_match: None,
+            }],
+        })
+        .expect("send matching enrichment");
+        app.graph_enrich_rx = Some(erx);
+        app.drain_channels();
+
+        let current = app.graph.snapshot().expect("snapshot present");
+        assert!(
+            current.commits[0].is_possible_squash_merge,
+            "matching-generation enrichment must be applied by the drain"
+        );
+    }
 }

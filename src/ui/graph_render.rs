@@ -874,6 +874,7 @@ mod tests {
             ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: false,
+            generation: None,
         }));
         state
     }
@@ -952,6 +953,7 @@ mod tests {
             ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: false,
+            generation: None,
         }));
         terminal
             .draw(|frame| {
@@ -1020,6 +1022,7 @@ mod tests {
             ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: false,
+            generation: None,
         }));
 
         let render = |terminal: &mut Terminal<TestBackend>, state: &mut GraphState| {
@@ -1091,6 +1094,7 @@ mod tests {
             ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: false,
+            generation: None,
         }));
 
         let render_row = |terminal: &mut Terminal<TestBackend>, state: &mut GraphState| {
@@ -1272,6 +1276,7 @@ mod tests {
             ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: false,
+            generation: None,
         }));
         terminal
             .draw(|frame| {
@@ -1333,6 +1338,7 @@ mod tests {
             ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: false,
+            generation: None,
         }));
         terminal
             .draw(|frame| {
@@ -1393,6 +1399,7 @@ mod tests {
             ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: false,
+            generation: None,
         }));
         state.move_down();
         let theme = Theme::dark();

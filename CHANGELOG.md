@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-31
+
+### Fixes
+- Do not block Graph rendering on squash-merge detection (#graph, #performance, #async, #ui)
+
 ## 2026-08-30
 
 ### Tasks

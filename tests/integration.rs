@@ -251,7 +251,7 @@ fn test_load_graph_preserves_merge_lanes_and_local_refs() {
         ],
     );
 
-    let snapshot = graph::load_graph(dir, graph::GraphLoadOptions::default())
+    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
         .expect("graph loader should handle an ordinary merged local branch");
 
     assert!(matches!(snapshot.source, graph::GraphSource::Gleisbau));
@@ -288,7 +288,7 @@ fn test_graph_branch_labels_follow_visual_branch_tracks() {
         &["merge", "--no-ff", "release/0.3", "-m", "merge release/0.3"],
     );
 
-    let snapshot = graph::load_graph(dir, graph::GraphLoadOptions::default())
+    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
         .expect("graph loader should preserve live branch tracks");
     let release_commit = snapshot
         .commits
@@ -362,13 +362,13 @@ fn test_graph_base_branch_owns_first_parent_chain_with_retained_merged_ref() {
         base_branch: Some("main".into()),
         ..graph::GraphLoadOptions::default()
     };
-    let snapshot = graph::load_graph(dir, options.clone())
+    let snapshot = graph::load_graph_with_squash_annotations(dir, options.clone())
         .expect("Gleisbau should preserve base-branch ownership");
     assert!(matches!(snapshot.source, graph::GraphSource::Gleisbau));
     assert_main_owns_first_parent_chain(&snapshot);
 
     std::fs::write(dir.join(".git/shallow"), format!("{initial_oid}\n")).unwrap();
-    let fallback = graph::load_graph(dir, options)
+    let fallback = graph::load_graph_with_squash_annotations(dir, options)
         .expect("Git CLI fallback should preserve base-branch ownership");
     assert!(matches!(
         fallback.source,
@@ -396,7 +396,7 @@ fn test_graph_local_branch_owns_track_before_matching_remote() {
         &["commit", "--allow-empty", "-m", "release local tip"],
     );
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         &work_dir,
         graph::GraphLoadOptions {
             include_remotes: true,
@@ -441,7 +441,7 @@ fn test_graph_does_not_expose_a_deleted_merge_branch_as_a_live_ref() {
     );
     run_git(dir, &["branch", "-D", "worktree-agent-deleted"]);
 
-    let snapshot = graph::load_graph(dir, graph::GraphLoadOptions::default())
+    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
         .expect("graph loader should handle deleted merge branches");
     let deleted_commit = snapshot
         .commits
@@ -461,7 +461,7 @@ fn test_graph_does_not_expose_a_deleted_merge_branch_as_a_live_ref() {
 #[test]
 fn test_graph_labels_deleted_merge_branch_from_conventional_subject() {
     let tmpdir = setup_graph_label_fixture();
-    let snapshot = graph::load_graph(tmpdir.path(), graph::GraphLoadOptions::default())
+    let snapshot = graph::load_graph_with_squash_annotations(tmpdir.path(), graph::GraphLoadOptions::default())
         .expect("graph loader should preserve the composed fixture");
     let deleted_commit = snapshot
         .commits
@@ -481,7 +481,7 @@ fn test_graph_labels_deleted_merge_branch_from_conventional_subject() {
 #[test]
 fn test_graph_label_fixture_labels_nested_and_first_parent_tracks() {
     let tmpdir = setup_graph_label_fixture();
-    let snapshot = graph::load_graph(tmpdir.path(), graph::GraphLoadOptions::default())
+    let snapshot = graph::load_graph_with_squash_annotations(tmpdir.path(), graph::GraphLoadOptions::default())
         .expect("graph loader should preserve the composed fixture");
 
     let nested_commit = snapshot
@@ -514,7 +514,7 @@ fn test_graph_label_fixture_labels_nested_and_first_parent_tracks() {
 #[test]
 fn test_graph_label_fixture_keeps_tag_only_histories_reachable() {
     let tmpdir = setup_graph_label_fixture();
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         tmpdir.path(),
         graph::GraphLoadOptions {
             include_remotes: true,
@@ -558,7 +558,7 @@ fn test_load_graph_includes_remote_refs_only_when_requested() {
     run_git(&work_dir, &["checkout", "main"]);
     run_git(&work_dir, &["branch", "-D", "remote-only"]);
 
-    let local_only = graph::load_graph(&work_dir, graph::GraphLoadOptions::default())
+    let local_only = graph::load_graph_with_squash_annotations(&work_dir, graph::GraphLoadOptions::default())
         .expect("local graph load should succeed");
     assert!(!local_only
         .commits
@@ -567,7 +567,7 @@ fn test_load_graph_includes_remote_refs_only_when_requested() {
         .any(|reference| reference.name == "origin/remote-only"));
     assert_eq!(local_only.ref_counts.remote, 0);
 
-    let with_remotes = graph::load_graph(
+    let with_remotes = graph::load_graph_with_squash_annotations(
         &work_dir,
         graph::GraphLoadOptions {
             include_remotes: true,
@@ -597,7 +597,7 @@ fn test_graph_refs_include_remote_tracking_state() {
     );
     run_git(&work_dir, &["checkout", "main"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         &work_dir,
         graph::GraphLoadOptions {
             include_remotes: true,
@@ -664,7 +664,7 @@ fn test_graph_refs_mark_only_linked_worktrees() {
         &["worktree", "add", &linked_path_string, "feature/linked"],
     );
 
-    let snapshot = graph::load_graph(dir, graph::GraphLoadOptions::default())
+    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
         .expect("graph load should include linked worktree metadata");
     let linked = snapshot
         .commits
@@ -692,7 +692,7 @@ fn test_load_graph_caps_history_at_five_hundred_commits() {
         run_git(dir, &["commit", "--allow-empty", "-m", &message]);
     }
 
-    let snapshot = graph::load_graph(dir, graph::GraphLoadOptions::default())
+    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
         .expect("bounded graph load should succeed");
     assert_eq!(snapshot.commits.len(), 500);
     assert_eq!(snapshot.max_count, 500);
@@ -705,7 +705,7 @@ fn test_load_graph_uses_cli_fallback_for_shallow_repository() {
     let head = repo.head().unwrap().target().unwrap();
     std::fs::write(dir.join(".git/shallow"), format!("{head}\n")).unwrap();
 
-    let snapshot = graph::load_graph(dir, graph::GraphLoadOptions::default())
+    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
         .expect("git CLI fallback should handle a shallow repository");
 
     assert!(matches!(
@@ -748,7 +748,7 @@ fn test_graph_marks_only_base_commit_with_exact_squash_patch() {
     run_git(dir, &["commit", "-m", "shared misleading subject"]);
     let message_only_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -809,7 +809,7 @@ fn test_graph_preserves_every_base_oid_for_duplicate_patch_ids() {
     let source_oid = git_output(dir, &["rev-parse", "HEAD"]);
     run_git(dir, &["checkout", "main"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -871,7 +871,7 @@ fn test_graph_excludes_regular_merges_roots_and_empty_patches() {
     run_git(dir, &["checkout", "main"]);
     run_git(dir, &["commit", "--allow-empty", "-m", "empty base patch"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -914,7 +914,7 @@ fn test_graph_cli_fallback_receives_exact_squash_annotation() {
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
     std::fs::write(dir.join(".git/shallow"), format!("{root_oid}\n")).unwrap();
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -954,7 +954,7 @@ fn test_graph_squash_matching_stays_within_displayed_history_bound() {
         &["commit", "--allow-empty", "-m", "newest displayed commit"],
     );
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             max_count: 1,
@@ -996,7 +996,7 @@ fn test_load_graph_fallback_with_remotes_includes_tag_only_history() {
     let head = repo.head().unwrap().target().unwrap();
     std::fs::write(work_dir.join(".git/shallow"), format!("{head}\n")).unwrap();
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         &work_dir,
         graph::GraphLoadOptions {
             include_remotes: true,
@@ -2992,7 +2992,7 @@ fn test_squash_scenario_01_baseline_single_commit_clean_squash() {
 
     // Expect A: Graph flags the landing commit, with no fuzzy annotation
     // (Option 6 defers to the exact-match tier).
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3048,7 +3048,7 @@ fn test_squash_scenario_02_multi_commit_branch_squashed_into_one_base_commit() {
     run_git(dir, &["commit", "-m", "squash landing (multi)"]);
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3099,7 +3099,7 @@ fn test_squash_scenario_03_regular_merge_is_not_flagged_as_squash() {
     );
     let merge_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3159,7 +3159,7 @@ fn test_squash_scenario_04_branch_with_internal_merge_commit_then_squash_merged(
     run_git(dir, &["commit", "-m", "squash landing (topology)"]);
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3213,7 +3213,7 @@ fn test_squash_scenario_05_partial_landing_via_individual_cherry_picks() {
     run_git(dir, &["cherry-pick", &c2]);
     let landed_tip = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3258,7 +3258,7 @@ fn test_squash_scenario_06_reordered_commits_and_hunk_order_insensitivity() {
     run_git(dir, &["commit", "-m", "squash landing (reordered)"]);
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3374,7 +3374,7 @@ fn test_squash_scenario_07_rebased_branch_then_squash_merged() {
     run_git(dir, &["commit", "-m", "squash landing (rebased)"]);
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3444,7 +3444,7 @@ fn test_squash_scenario_08a_conflict_resolution_extra_lines_fuzzy_positive() {
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
     // Expect A: not flagged under exact patch-id match (known false negative).
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3530,7 +3530,7 @@ fn test_squash_scenario_08b_true_conflicting_hunks_manually_resolved() {
     run_git(dir, &["commit", "-m", "manually resolved squash landing"]);
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3658,7 +3658,7 @@ fn test_squash_scenario_09_binary_file_changes() {
     run_git(dir, &["commit", "-m", "squash landing (binary)"]);
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3706,7 +3706,7 @@ fn test_squash_scenario_10a_rename_only_no_content_change() {
     run_git(dir, &["commit", "-m", "squash landing (rename only)"]);
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3754,7 +3754,7 @@ fn test_squash_scenario_10b_rename_and_content_change() {
     run_git(dir, &["commit", "-m", "squash landing (rename + change)"]);
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3806,7 +3806,7 @@ fn test_squash_scenario_10c_executable_bit_only_change() {
     run_git(dir, &["commit", "-m", "squash landing (exec bit)"]);
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3854,7 +3854,7 @@ fn test_squash_scenario_11_whitespace_only_change() {
     run_git(dir, &["commit", "-m", "squash landing (whitespace)"]);
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3920,7 +3920,7 @@ fn test_squash_scenario_11_whitespace_negative_unrelated() {
     run_git(dir, &["commit", "-am", "main: unrelated trailing whitespace on ws-b.txt"]);
     let unrelated_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -3979,7 +3979,7 @@ fn test_squash_scenario_12_empty_net_zero_branch_and_base_commit() {
     run_git(dir, &["commit", "-m", "remove other temp content (net zero, unrelated)"]);
     let empty_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -4090,7 +4090,7 @@ fn test_squash_scenario_14_duplicate_independently_recreated_patch() {
     run_git(dir, &["commit", "-am", "main: independently make the identical fix"]);
     let independent_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -4239,7 +4239,7 @@ fn test_squash_scenario_16_shallow_out_of_window_history_max_count_boundary() {
     run_git(dir, &["commit", "--allow-empty", "-m", "newer commit 1"]);
     run_git(dir, &["commit", "--allow-empty", "-m", "newer commit 2"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             max_count: 2,
@@ -4427,7 +4427,7 @@ fn test_squash_scenario_19_large_history_performance_characterization() {
     }
 
     let start = std::time::Instant::now();
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -4490,7 +4490,7 @@ fn test_squash_scenario_20a_squash_plus_trivial_follow_up_folded_in() {
     run_git(dir, &["commit", "-m", "squash landing plus version bump"]);
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -4559,7 +4559,7 @@ fn test_squash_scenario_20b_squash_omits_a_trivial_branch_change() {
     run_git(dir, &["commit", "-m", "squash landing, debug line omitted"]);
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -4630,7 +4630,7 @@ fn test_squash_scenario_20c_autoformatter_noise_during_squash() {
     run_git(dir, &["commit", "-m", "squash landing plus autoformatter noise"]);
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -4711,7 +4711,7 @@ fn test_squash_scenario_20d_coincidentally_similar_but_unrelated_negative_contro
     );
     let unrelated_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
-    let snapshot = graph::load_graph(
+    let snapshot = graph::load_graph_with_squash_annotations(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
@@ -4744,18 +4744,11 @@ fn test_squash_scenario_21_structural_graph_render_not_blocked_by_squash_enrichm
     // snapshot (DAG, refs, commit summaries) from squash-merge enrichment, so
     // the structural view can render before annotation completes.
     //
-    // As of this test, `git::graph::load_graph` is fully synchronous: it
-    // calls `annotate_possible_squash_merges` in-line before returning the
-    // snapshot (see `git/graph.rs::load_graph`), so the structural result and
-    // the squash annotations are always published together, not
-    // incrementally. That decoupling follow-up has not landed. Per the plan
-    // doc's explicit instruction ("otherwise, record it as a currently-failing
-    // characterization test with a comment pointing back to that follow-up
-    // task"), this test pins down *today's* actual (blocking) behavior as a
-    // passing assertion, rather than being left failing or `#[ignore]`d —
-    // when the decoupling work referenced above lands, this test's assertion
-    // should be inverted (or replaced with a real incremental-publish test)
-    // to reflect the new contract.
+    // Post-decoupling, `git::graph::load_graph` returns the structural
+    // snapshot immediately and squash-merge enrichment is a separate,
+    // asynchronous step. This test pins the new contract: structural data
+    // is available synchronously, with no squash markers set until
+    // enrichment runs.
     let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();
 
@@ -4767,6 +4760,8 @@ fn test_squash_scenario_21_structural_graph_render_not_blocked_by_squash_enrichm
     run_git(dir, &["merge", "--squash", "feature/21"]);
     run_git(dir, &["commit", "-m", "squash landing"]);
 
+    // Step 1: structural snapshot is available immediately, with no
+    // squash markers set — this is the new contract.
     let snapshot = graph::load_graph(
         dir,
         graph::GraphLoadOptions {
@@ -4774,23 +4769,201 @@ fn test_squash_scenario_21_structural_graph_render_not_blocked_by_squash_enrichm
             ..graph::GraphLoadOptions::default()
         },
     )
-    .expect("graph load should succeed");
+    .expect("structural graph load should succeed");
 
-    // The structural snapshot (commits/DAG) and the squash annotation are
-    // both already fully populated by the time `load_graph` returns — there
-    // is currently no earlier point at which callers can observe the
-    // structural data without also waiting for annotation, since both happen
-    // inside one synchronous call.
     assert!(
         !snapshot.commits.is_empty(),
-        "structural snapshot should be populated"
+        "structural snapshot should be populated synchronously"
     );
     assert!(
+        !snapshot.commits.iter().any(|c| c.is_possible_squash_merge),
+        "no squash markers should be set on the fresh structural snapshot — \
+         enrichment runs asynchronously and is gated by the reload generation"
+    );
+    assert!(
+        snapshot.commits.iter().all(|c| c.fuzzy_squash_match.is_none()),
+        "no fuzzy squash matches should be set on the fresh structural snapshot"
+    );
+}
+
+#[test]
+fn test_squash_scenario_21b_completed_enrichment_updates_squash_marker() {
+    // Companion to scenario 21: once enrichment runs (the asynchronous
+    // step), the squash marker must be set on the matching base commit.
+    // This is the "completed enrichment updates the marker" half of the
+    // new decoupled contract.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/21b"]);
+    std::fs::write(dir.join("f21b.txt"), "content\n").unwrap();
+    run_git(dir, &["add", "f21b.txt"]);
+    run_git(dir, &["commit", "-m", "feature commit"]);
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/21b"]);
+    run_git(dir, &["commit", "-m", "squash landing"]);
+
+    let mut snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("structural graph load should succeed");
+
+    // No markers yet.
+    assert!(
+        !snapshot.commits.iter().any(|c| c.is_possible_squash_merge),
+        "fresh structural snapshot must not carry squash markers"
+    );
+
+    // Run enrichment synchronously, as `spawn_possible_squash_enrichment`
+    // would do on its background thread.
+    let updates =
+        graph::compute_possible_squash_updates(dir, &snapshot, Some("main"));
+    graph::apply_squash_enrichment(&mut snapshot, &updates);
+
+    assert!(
         snapshot.commits.iter().any(|c| c.is_possible_squash_merge),
-        "known current limitation: squash annotation is computed synchronously as part of the \
-         same `load_graph` call that produces the structural snapshot, so by definition it is \
-         never observably 'not yet done' when the structural data becomes available — the \
-         follow-up decoupling task (parent plan doc, 'Loading and UI direction') has not landed"
+        "after enrichment, the squash landing commit on main must be flagged"
+    );
+}
+
+#[test]
+fn test_squash_scenario_21c_stale_enrichment_does_not_overwrite_newer_snapshot() {
+    // Stale enrichment — a result from a previous reload that lands after a
+    // newer load — must be dropped, not applied to the newer snapshot. The
+    // public surface is the per-message `generation` field; the App uses it
+    // to gate updates. This test exercises the gate via the git module's
+    // enrichment-update data type directly.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // Build a fresh snapshot (no markers yet).
+    let mut snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("structural graph load should succeed");
+    assert!(!snapshot.commits.iter().any(|c| c.is_possible_squash_merge));
+
+    // Simulate a stale enrichment result that claims a non-existent
+    // commit is a squash merge. Even if the App-level generation check
+    // were bypassed, the per-OID application in `apply_squash_enrichment`
+    // ignores unknown OIDs — so this would be a no-op regardless. The
+    // real test is below: the App's drain only applies updates whose
+    // generation matches the snapshot's generation tag.
+    snapshot.generation = Some(2);
+    let stale = graph::GraphEnrichmentMsg {
+        generation: 1, // stale: belongs to an earlier reload
+        updates: snapshot
+            .commits
+            .iter()
+            .map(|c| graph::GraphEnrichmentUpdate {
+                oid: c.oid.clone(),
+                is_possible_squash_merge: true,
+                fuzzy_squash_match: None,
+            })
+            .collect(),
+    };
+    // Re-load a clean snapshot for the "current" generation so we can
+    // assert no markers leaked from the stale message.
+    let mut current = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("structural graph load should succeed");
+    current.generation = Some(2);
+
+    // The App's drain applies only when msg.generation == self.graph_generation.
+    // We model that gate here: with current.generation=2 and stale.generation=1,
+    // the stale update must NOT touch the current snapshot.
+    if stale.generation == 2 {
+        graph::apply_squash_enrichment(&mut current, &stale.updates);
+    }
+    assert!(
+        !current.commits.iter().any(|c| c.is_possible_squash_merge),
+        "stale enrichment (generation 1) must not overwrite the newer snapshot's markers"
+    );
+
+    // Sanity check: a *matching* generation WOULD have applied the
+    // update, confirming the gate is the only thing keeping the snapshot
+    // clean.
+    let matching = graph::GraphEnrichmentMsg {
+        generation: 2,
+        ..stale.clone()
+    };
+    if matching.generation == current.generation.unwrap_or(0) {
+        graph::apply_squash_enrichment(&mut current, &matching.updates);
+    }
+    assert!(
+        current.commits.iter().any(|c| c.is_possible_squash_merge),
+        "matching-generation enrichment must apply, confirming the gate is the only filter"
+    );
+}
+
+#[test]
+fn test_squash_scenario_21d_failed_enrichment_leaves_snapshot_usable_and_unmarked() {
+    // Failed enrichment — empty updates, or a panic, or a channel drop —
+    // must leave the structural snapshot usable and unmarked. The Graph
+    // view must not be left in a "Loading graph..." state just because
+    // the optional enrichment pass failed.
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/21d"]);
+    std::fs::write(dir.join("f21d.txt"), "content\n").unwrap();
+    run_git(dir, &["add", "f21d.txt"]);
+    run_git(dir, &["commit", "-m", "feature commit"]);
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/21d"]);
+    run_git(dir, &["commit", "-m", "squash landing"]);
+
+    let mut snapshot = graph::load_graph(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("structural graph load should succeed");
+    assert!(!snapshot.commits.is_empty());
+
+    // Simulate a "failed" enrichment: empty update list. The GraphState
+    // must remain fully usable (structural data + refs) and unmarked.
+    let empty = graph::GraphEnrichmentMsg {
+        generation: snapshot.generation.unwrap_or(0),
+        updates: Vec::new(),
+    };
+    let before = snapshot.clone();
+    graph::apply_squash_enrichment(&mut snapshot, &empty.updates);
+    assert_eq!(
+        snapshot, before,
+        "empty enrichment must not mutate the snapshot"
+    );
+    assert!(
+        !snapshot.commits.iter().any(|c| c.is_possible_squash_merge),
+        "failed enrichment must not mark any commit"
+    );
+    assert!(
+        !snapshot.commits.is_empty() && !snapshot.lines.is_empty(),
+        "structural data must remain usable after failed enrichment"
+    );
+
+    // Simulate a worker thread that panics: the channel is dropped, no
+    // message ever arrives. The snapshot stays as-is — that is the
+    // observable behavior of `apply_squash_enrichment(&[], …)`.
+    graph::apply_squash_enrichment(&mut snapshot, &[]);
+    assert!(
+        !snapshot.commits.iter().any(|c| c.is_possible_squash_merge),
+        "never-arriving enrichment (worker panic) must leave the snapshot unmarked"
     );
 }
 

@@ -18,6 +18,28 @@ pub struct GraphSnapshot {
     pub ref_counts: GraphRefCounts,
     pub max_count: usize,
     pub includes_remotes: bool,
+    /// Reload-generation tag. `None` for snapshots that bypass the enrichment
+    /// channel (test fixtures, the CLI dump path). The App stamps every
+    /// `load_graph` result with `Some(generation)` so it can match enrichment
+    /// messages to the snapshot they belong to and drop stale ones.
+    pub generation: Option<u64>,
+}
+
+/// One per-commit update produced by asynchronous squash-merge enrichment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphEnrichmentUpdate {
+    pub oid: String,
+    pub is_possible_squash_merge: bool,
+    pub fuzzy_squash_match: Option<FuzzySquashMatch>,
+}
+
+/// Channel message carrying the full set of squash-merge enrichment updates
+/// for a given `GraphSnapshot` reload generation. Delivered as a single
+/// batch rather than per-commit so the App applies it atomically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphEnrichmentMsg {
+    pub generation: u64,
+    pub updates: Vec<GraphEnrichmentUpdate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,21 +166,18 @@ pub fn load_graph(
     repo_path: &Path,
     options: GraphLoadOptions,
 ) -> Result<GraphSnapshot, GraphLoadError> {
-    let requested_base = options.base_branch.clone();
     let gleisbau_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         load_with_gleisbau(repo_path, options.clone())
     }));
 
-    let mut snapshot = match gleisbau_result {
+    match gleisbau_result {
         Ok(Ok(snapshot)) => Ok(snapshot),
-        Ok(Err(cause)) => {
-            load_with_git_cli(repo_path, options, cause.clone()).map_err(|fallback| {
-                GraphLoadError::Both {
-                    gleisbau: cause,
-                    fallback,
-                }
-            })
-        }
+        Ok(Err(cause)) => load_with_git_cli(repo_path, options, cause.clone()).map_err(|fallback| {
+            GraphLoadError::Both {
+                gleisbau: cause,
+                fallback,
+            }
+        }),
         Err(_) => {
             let cause = "Gleisbau panicked while building the graph".to_string();
             load_with_git_cli(repo_path, options, cause.clone()).map_err(|fallback| {
@@ -168,9 +187,49 @@ pub fn load_graph(
                 }
             })
         }
-    }?;
-    annotate_possible_squash_merges(repo_path, &mut snapshot, requested_base.as_deref());
+    }
+}
+
+/// Synchronous, single-call helper for tests: loads the structural snapshot
+/// and applies squash-merge enrichment on the calling thread, returning the
+/// fully annotated snapshot. The app uses `spawn_possible_squash_enrichment`
+/// instead so the Graph view becomes usable before annotation completes.
+#[doc(hidden)]
+pub fn load_graph_with_squash_annotations(
+    repo_path: &Path,
+    options: GraphLoadOptions,
+) -> Result<GraphSnapshot, GraphLoadError> {
+    let mut snapshot = load_graph(repo_path, options.clone())?;
+    let updates =
+        compute_possible_squash_updates(repo_path, &snapshot, options.base_branch.as_deref());
+    apply_squash_enrichment(&mut snapshot, &updates);
     Ok(snapshot)
+}
+
+/// Spawn a background thread that computes squash-merge enrichment for the
+/// given snapshot and returns a receiver for the single batched result. The
+/// caller (App) is expected to compare `msg.generation` against its current
+/// reload generation before applying — enrichment that completes after a
+/// newer load started must NOT overwrite the newer snapshot.
+pub fn spawn_possible_squash_enrichment(
+    snapshot: GraphSnapshot,
+    repo_path: PathBuf,
+    requested_base: Option<String>,
+    generation: u64,
+) -> Receiver<GraphEnrichmentMsg> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let updates = compute_possible_squash_updates(
+            &repo_path,
+            &snapshot,
+            requested_base.as_deref(),
+        );
+        let _ = tx.send(GraphEnrichmentMsg {
+            generation,
+            updates,
+        });
+    });
+    rx
 }
 
 /// Load a graph in a worker thread. The receiver carries only the owned
@@ -269,6 +328,7 @@ fn load_with_gleisbau(
         ref_counts: ref_data.ref_counts,
         max_count: options.max_count,
         includes_remotes: options.include_remotes,
+        generation: None,
     })
 }
 
@@ -360,6 +420,7 @@ fn load_with_git_cli(
         ref_counts: ref_data.ref_counts,
         max_count: options.max_count,
         includes_remotes: options.include_remotes,
+        generation: None,
     })
 }
 
@@ -367,17 +428,22 @@ fn load_with_git_cli(
 /// local branch tips are selected from `snapshot.commits`, so increasing
 /// repository history or ref age cannot make Graph startup scan beyond the
 /// configured `max_count` window.
-fn annotate_possible_squash_merges(
+///
+/// Returns a list of per-commit updates that the caller applies to the
+/// snapshot via `apply_squash_enrichment`. This split lets the App run the
+/// heavy work on a background thread and the result stays purely owned
+/// (no `&mut` over the App's snapshot) so it can be applied at any time.
+pub fn compute_possible_squash_updates(
     repo_path: &Path,
-    snapshot: &mut GraphSnapshot,
+    snapshot: &GraphSnapshot,
     requested_base: Option<&str>,
-) {
+) -> Vec<GraphEnrichmentUpdate> {
     let base_branch = requested_base.map(str::to_string).or_else(|| {
         let repository = git2::Repository::open(repo_path).ok()?;
         crate::git::branch::detect_base_branch(&repository, None).ok()
     });
     let Some(base_branch) = base_branch else {
-        return;
+        return Vec::new();
     };
     let Some(base_tip) = snapshot.commits.iter().find_map(|commit| {
         commit
@@ -388,7 +454,7 @@ fn annotate_possible_squash_merges(
             })
             .then(|| commit.oid.clone())
     }) else {
-        return;
+        return Vec::new();
     };
 
     let mut jobs = snapshot
@@ -468,13 +534,11 @@ fn annotate_possible_squash_merges(
         .filter_map(|patch_id| base_oids_by_patch.get(patch_id))
         .flatten()
         .collect::<HashSet<_>>();
-    for commit in &mut snapshot.commits {
-        commit.is_possible_squash_merge = matching_base_oids.contains(&commit.oid);
-    }
 
     // Option 6: for base commits that didn't get an exact patch-id match,
     // score their diff against every displayed branch tip's diff and keep
     // the best fuzzy classification, if any clears the threshold.
+    let mut fuzzy_by_oid: HashMap<String, FuzzySquashMatch> = HashMap::new();
     for (oid, base_diff) in &base_diffs {
         if matching_base_oids.contains(oid) {
             continue;
@@ -487,10 +551,42 @@ fn annotate_possible_squash_merges(
         let Some(percent) = best_percent else {
             continue;
         };
-        if let Some(commit) = snapshot.commits.iter_mut().find(|commit| commit.oid == *oid) {
-            commit.fuzzy_squash_match = Some(FuzzySquashMatch {
+        fuzzy_by_oid.insert(
+            oid.clone(),
+            FuzzySquashMatch {
                 similarity_percent: percent,
-            });
+            },
+        );
+    }
+
+    snapshot
+        .commits
+        .iter()
+        .filter(|commit| {
+            commit.branch.as_ref().is_some_and(|branch| {
+                branch.kind == GraphRefKind::LocalBranch && branch.name == base_branch
+            })
+        })
+        .map(|commit| GraphEnrichmentUpdate {
+            oid: commit.oid.clone(),
+            is_possible_squash_merge: matching_base_oids.contains(&commit.oid),
+            fuzzy_squash_match: fuzzy_by_oid.get(&commit.oid).cloned(),
+        })
+        .collect()
+}
+
+/// Apply a batch of squash-merge enrichment updates to a snapshot. Unknown
+/// OIDs are ignored — they may belong to a newer snapshot (stale enrichment)
+/// or to commits the structural snapshot didn't include.
+pub fn apply_squash_enrichment(snapshot: &mut GraphSnapshot, updates: &[GraphEnrichmentUpdate]) {
+    for update in updates {
+        if let Some(commit) = snapshot
+            .commits
+            .iter_mut()
+            .find(|commit| commit.oid == update.oid)
+        {
+            commit.is_possible_squash_merge = update.is_possible_squash_merge;
+            commit.fuzzy_squash_match = update.fuzzy_squash_match.clone();
         }
     }
 }

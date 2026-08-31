@@ -1,4 +1,4 @@
-use crate::git::graph::{GraphLoadError, GraphSnapshot};
+use crate::git::graph::{GraphEnrichmentUpdate, GraphLoadError, GraphSnapshot};
 
 /// The default number of commits shown by the Graph tab. Larger histories are
 /// opt-in so opening the tab remains responsive on large repositories.
@@ -130,6 +130,20 @@ impl GraphState {
 
     pub fn set_include_remotes(&mut self, include_remotes: bool) {
         self.include_remotes = include_remotes;
+    }
+
+    /// Apply asynchronous squash-merge enrichment to the active snapshot.
+    /// Returns true if the enrichment actually changed the snapshot. The
+    /// caller is expected to have already verified the enrichment belongs
+    /// to the current reload generation; this method does not compare
+    /// `snapshot.generation` against any App-side epoch.
+    pub fn apply_squash_enrichment(&mut self, updates: &[GraphEnrichmentUpdate]) -> bool {
+        let Some(snapshot) = self.snapshot.as_mut() else {
+            return false;
+        };
+        let before = snapshot.clone();
+        crate::git::graph::apply_squash_enrichment(snapshot, updates);
+        *snapshot != before
     }
 
     /// Increase the history window by one page and return the new limit.
@@ -264,6 +278,7 @@ mod tests {
             ref_counts: Default::default(),
             max_count: 500,
             includes_remotes: false,
+            generation: None,
         }
     }
 

@@ -16,7 +16,7 @@ use std::io;
 use git_branch_manager::cli::Cli;
 use git_branch_manager::config::Config;
 use git_branch_manager::git::{
-    branch, cache, diagnostics, graph, merge_detection, operations, worktree,
+    branch, cache, diagnostics, merge_detection, operations, worktree,
 };
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::types::MergeStatus;
@@ -283,16 +283,7 @@ fn main() -> Result<()> {
 
     let graph_max_count = app.graph.max_count();
     let include_remotes = app.graph.includes_remotes();
-    app.graph.begin_load(graph_max_count, include_remotes);
-    app.graph_rx = Some(graph::spawn_graph_loader(
-        repo_path.clone(),
-        graph::GraphLoadOptions {
-            max_count: graph_max_count,
-            include_remotes,
-            line_style: graph::GraphLineStyle::from_symbol_name(app.symbols.name),
-            base_branch: Some(app.base_branch.clone()),
-        },
-    ));
+    app.spawn_graph_load(graph_max_count, include_remotes);
     app.preload_graph_action_metadata();
 
     // Auto-fetch if configured
