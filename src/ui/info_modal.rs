@@ -70,7 +70,7 @@ pub fn draw_info_modal(
     cursor: usize,
     focus: InfoModalFocus,
     info_cursor: usize,
-    scroll_offset: u16,
+    scroll_offset: &mut u16,
     copied_msg: Option<&str>,
     hit_regions: &mut Vec<InfoHitRegion>,
     theme: &Theme,
@@ -744,7 +744,7 @@ fn draw_info_modal_narrow(
     cursor: usize,
     focus: InfoModalFocus,
     info_cursor: usize,
-    scroll_offset: u16,
+    scroll_offset: &mut u16,
     copied_msg: Option<&str>,
     hit_regions: &mut Vec<InfoHitRegion>,
     theme: &Theme,
@@ -779,6 +779,7 @@ fn draw_info_modal_narrow(
     all_lines.push(Line::from(Span::styled("Actions", theme.title)));
 
     // Action items
+    let actions_start_line = all_lines.len() as u16;
     for (i, item) in items.iter().enumerate() {
         let prefix = if focus == InfoModalFocus::Actions && i == cursor {
             format!("{} ", symbols.cursor_prefix)
@@ -857,7 +858,26 @@ fn draw_info_modal_narrow(
     };
 
     let max_scroll = total_lines.saturating_sub(content_height);
-    let clamped_offset = scroll_offset.min(max_scroll);
+
+    // Auto-scroll to keep the current selection in view. This pane mixes
+    // wrapped info text with one-line action rows in a single scroll
+    // buffer, so the target line is computed by hand rather than via a
+    // shared ListState.
+    let target_line = match focus {
+        InfoModalFocus::Actions => actions_start_line + cursor as u16,
+        InfoModalFocus::Info => field_spans
+            .get(info_cursor)
+            .map(|span| span.start_line)
+            .unwrap_or(0),
+    };
+    let mut offset = *scroll_offset;
+    if target_line < offset {
+        offset = target_line;
+    } else if content_height > 0 && target_line >= offset + content_height {
+        offset = target_line + 1 - content_height;
+    }
+    let clamped_offset = offset.min(max_scroll);
+    *scroll_offset = clamped_offset;
 
     let para = Paragraph::new(all_lines).scroll((clamped_offset, 0));
     frame.render_widget(para, content_rect);

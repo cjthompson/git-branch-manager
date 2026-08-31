@@ -48,7 +48,6 @@ pub enum Overlay {
         info_cursor: usize,
         focus: InfoModalFocus,
         row: InfoModalRow,
-        scroll_offset: u16,
     },
     Confirm {
         action: BranchAction,
@@ -93,6 +92,11 @@ pub struct RenderContext<'a> {
     // Info modal: confirmation message + recorded click-to-copy hit regions
     pub info_copied_msg: Option<&'a str>,
     pub info_hit_regions: &'a mut Vec<InfoHitRegion>,
+    /// Scroll offset for the narrow-width info modal's combined info+actions
+    /// scroll buffer. Corrected in place each frame to keep the current
+    /// selection visible, mirroring ratatui's own TableState offset
+    /// correction in ui/list_render.rs.
+    pub info_modal_scroll_offset: &'a mut u16,
     // Non-modal status area for the confirmed-action job queue
     pub job_status: JobStatusView<'a>,
     // List states
@@ -283,7 +287,6 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 info_cursor,
                 focus,
                 row,
-                scroll_offset,
             } => {
                 draw_info_modal(
                     frame,
@@ -292,7 +295,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                     *cursor,
                     *focus,
                     *info_cursor,
-                    *scroll_offset,
+                    ctx.info_modal_scroll_offset,
                     ctx.info_copied_msg,
                     ctx.info_hit_regions,
                     ctx.theme,

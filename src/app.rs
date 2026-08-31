@@ -155,6 +155,11 @@ pub struct App {
     // confirmation message shown after a successful copy.
     pub info_hit_regions: Vec<InfoHitRegion>,
     pub info_copied_msg: Option<String>,
+    // Info modal: scroll offset for the narrow-layout combined info+actions
+    // pane. Lives outside `Overlay::InfoModal` (like info_hit_regions/
+    // info_copied_msg) because render.rs needs to correct it in place each
+    // frame, and RenderContext.overlay is an immutable reference.
+    pub info_modal_scroll_offset: u16,
 
     // Whether remote fetch has been done this session
     pub remote_fetched: bool,
@@ -342,6 +347,7 @@ impl App {
             terminal_rows: 0,
             info_hit_regions: Vec::new(),
             info_copied_msg: None,
+            info_modal_scroll_offset: 0,
             remote_fetched,
             has_configured_remote,
             last_branch_fingerprint: None,
@@ -428,6 +434,7 @@ impl App {
             config: &self.config,
             info_copied_msg: self.info_copied_msg.as_deref(),
             info_hit_regions: &mut self.info_hit_regions,
+            info_modal_scroll_offset: &mut self.info_modal_scroll_offset,
             graph: &mut self.graph,
             job_status: self.job_queue.render_data(),
             branches: &mut self.branches,
@@ -1266,7 +1273,6 @@ impl App {
                 focus,
                 items,
                 row,
-                scroll_offset,
             }) => match key.code {
                 KeyCode::Tab | KeyCode::BackTab => {
                     self.overlay = Some(Overlay::InfoModal {
@@ -1279,7 +1285,6 @@ impl App {
                         },
                         items,
                         row,
-                        scroll_offset,
                     });
                 }
                 KeyCode::Char('j') | KeyCode::Down if focus == InfoModalFocus::Actions => {
@@ -1294,7 +1299,6 @@ impl App {
                             focus,
                             items,
                             row,
-                            scroll_offset,
                         });
                     } else {
                         self.overlay = Some(Overlay::InfoModal {
@@ -1303,7 +1307,6 @@ impl App {
                             focus,
                             items,
                             row,
-                            scroll_offset,
                         });
                     }
                 }
@@ -1324,29 +1327,26 @@ impl App {
                         focus,
                         items,
                         row,
-                        scroll_offset,
                     });
                 }
                 KeyCode::Char('u') | KeyCode::PageUp => {
-                    let new_offset = scroll_offset.saturating_sub(5);
+                    self.info_modal_scroll_offset = self.info_modal_scroll_offset.saturating_sub(5);
                     self.overlay = Some(Overlay::InfoModal {
                         cursor,
                         info_cursor,
                         focus,
                         items,
                         row,
-                        scroll_offset: new_offset,
                     });
                 }
                 KeyCode::Char('d') | KeyCode::PageDown => {
-                    let new_offset = scroll_offset.saturating_add(5);
+                    self.info_modal_scroll_offset = self.info_modal_scroll_offset.saturating_add(5);
                     self.overlay = Some(Overlay::InfoModal {
                         cursor,
                         info_cursor,
                         focus,
                         items,
                         row,
-                        scroll_offset: new_offset,
                     });
                 }
                 KeyCode::Down if focus == InfoModalFocus::Info => {
@@ -1359,7 +1359,6 @@ impl App {
                         focus,
                         items,
                         row,
-                        scroll_offset,
                     });
                 }
                 KeyCode::Up if focus == InfoModalFocus::Info => {
@@ -1370,7 +1369,6 @@ impl App {
                         focus,
                         items,
                         row,
-                        scroll_offset,
                     });
                 }
                 KeyCode::Enter if focus == InfoModalFocus::Info => {
@@ -1383,7 +1381,6 @@ impl App {
                         focus,
                         items,
                         row,
-                        scroll_offset,
                     });
                 }
                 KeyCode::Char('y') if focus == InfoModalFocus::Info => {
@@ -1396,7 +1393,6 @@ impl App {
                         focus,
                         items,
                         row,
-                        scroll_offset,
                     });
                 }
                 KeyCode::Enter if focus == InfoModalFocus::Actions => {
@@ -1410,7 +1406,6 @@ impl App {
                                 focus,
                                 items,
                                 row,
-                                scroll_offset,
                             });
                         }
                     }
@@ -1430,7 +1425,6 @@ impl App {
                             focus,
                             items,
                             row,
-                            scroll_offset,
                         });
                     }
                 }
@@ -1441,7 +1435,6 @@ impl App {
                         focus,
                         items,
                         row,
-                        scroll_offset,
                     });
                 }
             },
@@ -1750,10 +1743,22 @@ impl App {
     // ---- Mouse handling ----
 
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
-        // The info modal handles left-clicks (click a value to copy it).
+        // The info modal handles left-clicks (click a value to copy it) and
+        // mouse-wheel scrolling of its combined info+actions pane.
         if matches!(self.overlay, Some(Overlay::InfoModal { .. })) {
-            if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
-                self.handle_info_modal_click(mouse.column, mouse.row);
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.handle_info_modal_click(mouse.column, mouse.row);
+                }
+                MouseEventKind::ScrollDown => {
+                    self.info_modal_scroll_offset =
+                        self.info_modal_scroll_offset.saturating_add(3);
+                }
+                MouseEventKind::ScrollUp => {
+                    self.info_modal_scroll_offset =
+                        self.info_modal_scroll_offset.saturating_sub(3);
+                }
+                _ => {}
             }
             return;
         }
@@ -1963,13 +1968,13 @@ impl App {
         self.return_view = self.active_view;
         // Clear any stale copy confirmation from a previous opening.
         self.info_copied_msg = None;
+        self.info_modal_scroll_offset = 0;
         self.overlay = Some(Overlay::InfoModal {
             items,
             cursor: 0,
             info_cursor: 0,
             focus,
             row,
-            scroll_offset: 0,
         });
     }
 
@@ -2078,7 +2083,6 @@ impl App {
             info_cursor,
             focus,
             row: _,
-            scroll_offset,
         }) = self.overlay.take()
         else {
             unreachable!();
@@ -2108,7 +2112,6 @@ impl App {
             info_cursor,
             focus,
             row,
-            scroll_offset,
         });
     }
 
@@ -4267,7 +4270,6 @@ mod tests {
             info_cursor,
             focus,
             row,
-            scroll_offset,
             ..
         } = overlay
         else {
@@ -4279,7 +4281,6 @@ mod tests {
             info_cursor,
             focus,
             row,
-            scroll_offset,
         });
 
         app.handle_overlay_key(KeyEvent::new(
