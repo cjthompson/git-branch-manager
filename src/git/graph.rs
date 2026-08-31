@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
+use crate::git::cache::BranchCache;
+
 /// An app-owned graph payload. It deliberately contains no repository handles
 /// or Gleisbau values, so it can move across a background channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -457,6 +459,8 @@ pub fn compute_possible_squash_updates(
         return Vec::new();
     };
 
+    let mut cache = BranchCache::load(repo_path);
+
     let mut jobs = snapshot
         .commits
         .iter()
@@ -505,7 +509,7 @@ pub fn compute_possible_squash_updates(
     // second `git diff` subprocess per job.
     let mut base_diffs = Vec::<(String, Vec<u8>)>::new();
     let mut branch_diffs = Vec::<Vec<u8>>::new();
-    for result in load_patch_ids(repo_path, jobs) {
+    for result in load_patch_ids(repo_path, jobs, &mut cache) {
         match result.target {
             PatchTarget::BaseCommit(oid) => {
                 if let Some(patch_id) = result.patch_id {
@@ -559,7 +563,7 @@ pub fn compute_possible_squash_updates(
         );
     }
 
-    snapshot
+    let updates: Vec<GraphEnrichmentUpdate> = snapshot
         .commits
         .iter()
         .filter(|commit| {
@@ -572,7 +576,9 @@ pub fn compute_possible_squash_updates(
             is_possible_squash_merge: matching_base_oids.contains(&commit.oid),
             fuzzy_squash_match: fuzzy_by_oid.get(&commit.oid).cloned(),
         })
-        .collect()
+        .collect();
+    cache.save();
+    updates
 }
 
 /// Apply a batch of squash-merge enrichment updates to a snapshot. Unknown
@@ -677,6 +683,14 @@ fn displayed_ancestors<'a>(
 /// time, so both worker and active-subprocess concurrency are capped at four.
 const GRAPH_PATCH_WORKER_COUNT: usize = 4;
 
+/// Bump whenever `compute_patch`'s `git diff`/`git patch-id` invocation
+/// (its flags, or what gets hashed) changes in a way that could yield a
+/// different (patch_id, diff_text) pair for the same (old_oid, new_oid).
+/// Embedded in every `graph_patch` cache key so a version bump
+/// invalidates all previously cached entries at once, with no schema
+/// migration needed.
+const GRAPH_DIFF_VERSION: u32 = 1;
+
 struct PatchJob {
     target: PatchTarget,
     old_oid: String,
@@ -700,14 +714,38 @@ struct PatchResult {
     diff_text: Option<Vec<u8>>,
 }
 
-fn load_patch_ids(repo_path: &Path, jobs: Vec<PatchJob>) -> Vec<PatchResult> {
+fn load_patch_ids(
+    repo_path: &Path,
+    jobs: Vec<PatchJob>,
+    cache: &mut BranchCache,
+) -> Vec<PatchResult> {
     if jobs.is_empty() {
         return Vec::new();
     }
 
-    let worker_count = jobs.len().min(GRAPH_PATCH_WORKER_COUNT);
+    // Cache-hit fast path: resolve every job whose (old_oid, new_oid)
+    // diff is already known, with no subprocess cost, before dispatching
+    // the remainder to the worker pool. Mirrors the cache-hit/worker-pool
+    // split in `squash_loader::spawn_squash_checker`.
+    let mut results = Vec::with_capacity(jobs.len());
+    let mut misses = Vec::new();
+    for job in jobs {
+        match cache.lookup_graph_patch(&job.old_oid, &job.new_oid, GRAPH_DIFF_VERSION) {
+            Some((patch_id, diff_text)) => results.push(PatchResult {
+                target: job.target,
+                patch_id,
+                diff_text,
+            }),
+            None => misses.push(job),
+        }
+    }
+    if misses.is_empty() {
+        return results;
+    }
+
+    let worker_count = misses.len().min(GRAPH_PATCH_WORKER_COUNT);
     let queue = Arc::new(Mutex::new(
-        jobs.into_iter().collect::<std::collections::VecDeque<_>>(),
+        misses.into_iter().collect::<std::collections::VecDeque<_>>(),
     ));
     let (tx, rx) = mpsc::channel();
     let mut handles = Vec::with_capacity(worker_count);
@@ -717,15 +755,18 @@ fn load_patch_ids(repo_path: &Path, jobs: Vec<PatchJob>) -> Vec<PatchResult> {
         let repo_path = repo_path.to_path_buf();
         handles.push(std::thread::spawn(move || {
             while let Some(job) = next_patch_job(&queue) {
-                let (patch_id, diff_text) = compute_patch(&repo_path, &job.old_oid, &job.new_oid);
-                if tx
-                    .send(PatchResult {
+                let (patch_id, diff_text) =
+                    compute_patch(&repo_path, &job.old_oid, &job.new_oid);
+                let sent = tx.send((
+                    job.old_oid,
+                    job.new_oid,
+                    PatchResult {
                         target: job.target,
                         patch_id,
                         diff_text,
-                    })
-                    .is_err()
-                {
+                    },
+                ));
+                if sent.is_err() {
                     break;
                 }
             }
@@ -733,10 +774,22 @@ fn load_patch_ids(repo_path: &Path, jobs: Vec<PatchJob>) -> Vec<PatchResult> {
     }
     drop(tx);
 
-    let results = rx.into_iter().collect();
+    // Cache owner: only this (calling) thread ever touches `cache`,
+    // mirroring squash_loader's single-writer rule.
+    for (old_oid, new_oid, result) in rx {
+        cache.insert_graph_patch(
+            &old_oid,
+            &new_oid,
+            GRAPH_DIFF_VERSION,
+            result.patch_id.clone(),
+            result.diff_text.clone(),
+        );
+        results.push(result);
+    }
     for handle in handles {
         let _ = handle.join();
     }
+
     results
 }
 

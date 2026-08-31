@@ -28,10 +28,29 @@ pub struct MergeBaseData {
     pub entries: HashMap<String, Option<String>>,
 }
 
-/// On-disk cache for a single repository. All three caches (merge status,
-/// ahead/behind, merge base) live in one SQLite database; writes are incremental
-/// (only dirtied keys are upserted), which makes the concurrent saves from the
-/// phase-1 threads and the squash loader safe without clobbering each other.
+/// Cached result of the `git diff` + `git patch-id --stable` pipeline for a
+/// single (old_oid, new_oid) pair, used by Graph's squash-merge patch
+/// matching (`git::graph::compute_possible_squash_updates`). Keyed by OID
+/// pair plus a diff-option/algorithm version rather than by branch/base
+/// tip: a diff between two fixed, immutable Git objects never changes, so
+/// the OID pair alone is a sufficient and permanently-valid cache key.
+/// Base tip, branch tip, merge base, and the Graph display-bounds window
+/// only affect *which* OID pairs get queried (via job construction in
+/// `compute_possible_squash_updates`) — never what a given pair's diff
+/// value is — so those inputs don't need to appear in this key. Bumping
+/// `graph::GRAPH_DIFF_VERSION` invalidates every entry at once if the
+/// `git diff`/`patch-id` invocation changes.
+#[derive(Debug, Clone)]
+struct GraphPatchEntry {
+    patch_id: Option<String>,
+    diff_text: Option<Vec<u8>>,
+}
+
+/// On-disk cache for a single repository. All four caches (merge status,
+/// ahead/behind, merge base, Graph patch) live in one SQLite database;
+/// writes are incremental (only dirtied keys are upserted), which makes
+/// the concurrent saves from the phase-1 threads and the squash loader
+/// safe without clobbering each other.
 ///
 /// The `Connection` is opened per save/load rather than held, so `BranchCache`
 /// stays `Send` and can be moved across the background-thread channels.
@@ -42,9 +61,11 @@ pub struct BranchCache {
     /// Same OID pair always yields the same count — valid until either tip changes.
     ab_entries: HashMap<String, [u32; 2]>,
     pub mb_data: MergeBaseData,
+    graph_patch_entries: HashMap<String, GraphPatchEntry>,
     dirty_entries: RefCell<HashSet<String>>,
     dirty_ab: RefCell<HashSet<String>>,
     dirty_mb: RefCell<HashSet<String>>,
+    dirty_graph_patch: RefCell<HashSet<String>>,
     /// Branch-status rows to remove from disk on the next save (orphan cleanup).
     deleted_entries: RefCell<HashSet<String>>,
     base_tip_dirty: Cell<bool>,
@@ -62,7 +83,7 @@ impl BranchCache {
     /// controlled location instead of the per-repo OS cache directory.
     pub fn load_from_path(path: PathBuf) -> Self {
         let span = Span::current();
-        let (entries, ab_entries, mb_entries, base_tip) = read_all(&path);
+        let (entries, ab_entries, mb_entries, base_tip, graph_patch_entries) = read_all(&path);
         span.record("entry_count", entries.len() as u64);
         Self {
             path,
@@ -72,9 +93,11 @@ impl BranchCache {
                 base_tip,
                 entries: mb_entries,
             },
+            graph_patch_entries,
             dirty_entries: RefCell::new(HashSet::new()),
             dirty_ab: RefCell::new(HashSet::new()),
             dirty_mb: RefCell::new(HashSet::new()),
+            dirty_graph_patch: RefCell::new(HashSet::new()),
             deleted_entries: RefCell::new(HashSet::new()),
             base_tip_dirty: Cell::new(false),
             hits: Cell::new(0),
@@ -87,11 +110,13 @@ impl BranchCache {
         let dirty_entries: Vec<String> = self.dirty_entries.borrow().iter().cloned().collect();
         let dirty_ab: Vec<String> = self.dirty_ab.borrow().iter().cloned().collect();
         let dirty_mb: Vec<String> = self.dirty_mb.borrow().iter().cloned().collect();
+        let dirty_graph_patch: Vec<String> = self.dirty_graph_patch.borrow().iter().cloned().collect();
         let deleted_entries: Vec<String> = self.deleted_entries.borrow().iter().cloned().collect();
         let write_base_tip = self.base_tip_dirty.get();
         if dirty_entries.is_empty()
             && dirty_ab.is_empty()
             && dirty_mb.is_empty()
+            && dirty_graph_patch.is_empty()
             && deleted_entries.is_empty()
             && !write_base_tip
         {
@@ -165,6 +190,25 @@ impl BranchCache {
             }
         }
 
+        for key in &dirty_graph_patch {
+            let Some(entry) = self.graph_patch_entries.get(key) else {
+                continue;
+            };
+            if tx
+                .execute(
+                    "INSERT INTO graph_patch (key, patch_id, diff_text)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(key) DO UPDATE SET
+                         patch_id = excluded.patch_id,
+                         diff_text = excluded.diff_text",
+                    params![key, entry.patch_id.as_deref(), entry.diff_text.as_deref()],
+                )
+                .is_err()
+            {
+                return;
+            }
+        }
+
         for branch_name in &deleted_entries {
             if tx
                 .execute(
@@ -196,6 +240,7 @@ impl BranchCache {
             self.dirty_entries.borrow_mut().clear();
             self.dirty_ab.borrow_mut().clear();
             self.dirty_mb.borrow_mut().clear();
+            self.dirty_graph_patch.borrow_mut().clear();
             self.deleted_entries.borrow_mut().clear();
             self.base_tip_dirty.set(false);
         }
@@ -231,6 +276,37 @@ impl BranchCache {
         let key = format!("{branch_tip}:{base_tip}");
         self.mb_data.entries.insert(key.clone(), merge_base);
         self.dirty_mb.borrow_mut().insert(key);
+    }
+
+    /// Returns the cached `(patch_id, diff_text)` for the diff between
+    /// `old_oid` and `new_oid` under diff-algorithm `version`:
+    /// - `None` → not cached (miss)
+    /// - `Some((patch_id, diff_text))` → cached result, including the
+    ///   legitimate "empty/failed diff" case where both are `None`.
+    pub fn lookup_graph_patch(
+        &self,
+        old_oid: &str,
+        new_oid: &str,
+        version: u32,
+    ) -> Option<(Option<String>, Option<Vec<u8>>)> {
+        let key = format!("{old_oid}:{new_oid}:v{version}");
+        self.graph_patch_entries
+            .get(&key)
+            .map(|entry| (entry.patch_id.clone(), entry.diff_text.clone()))
+    }
+
+    pub fn insert_graph_patch(
+        &mut self,
+        old_oid: &str,
+        new_oid: &str,
+        version: u32,
+        patch_id: Option<String>,
+        diff_text: Option<Vec<u8>>,
+    ) {
+        let key = format!("{old_oid}:{new_oid}:v{version}");
+        self.graph_patch_entries
+            .insert(key.clone(), GraphPatchEntry { patch_id, diff_text });
+        self.dirty_graph_patch.borrow_mut().insert(key);
     }
 
     pub fn lookup_ahead_behind(
@@ -419,9 +495,11 @@ impl BranchCache {
         self.entries.clear();
         self.ab_entries.clear();
         self.mb_data = MergeBaseData::default();
+        self.graph_patch_entries.clear();
         self.dirty_entries.borrow_mut().clear();
         self.dirty_ab.borrow_mut().clear();
         self.dirty_mb.borrow_mut().clear();
+        self.dirty_graph_patch.borrow_mut().clear();
         self.deleted_entries.borrow_mut().clear();
         self.base_tip_dirty.set(false);
         let _ = fs::remove_file(&self.path);
@@ -453,6 +531,11 @@ fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             key        TEXT PRIMARY KEY,
             merge_base TEXT
         );
+        CREATE TABLE IF NOT EXISTS graph_patch (
+            key        TEXT PRIMARY KEY,
+            patch_id   TEXT,
+            diff_text  BLOB
+        );
         CREATE TABLE IF NOT EXISTS meta (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -468,18 +551,32 @@ fn read_all(
     HashMap<String, [u32; 2]>,
     HashMap<String, Option<String>>,
     Option<String>,
+    HashMap<String, GraphPatchEntry>,
 ) {
     if !path.exists() {
-        return (HashMap::new(), HashMap::new(), HashMap::new(), None);
+        return (
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+        );
     }
     let Ok(conn) = open_conn(path) else {
-        return (HashMap::new(), HashMap::new(), HashMap::new(), None);
+        return (
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+        );
     };
     (
         read_entries(&conn),
         read_ahead_behind(&conn),
         read_merge_base(&conn),
         read_base_tip(&conn),
+        read_graph_patch(&conn),
     )
 }
 
@@ -524,6 +621,24 @@ fn read_merge_base(conn: &Connection) -> HashMap<String, Option<String>> {
     };
     let Ok(rows) = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    }) else {
+        return HashMap::new();
+    };
+    rows.flatten().collect()
+}
+
+fn read_graph_patch(conn: &Connection) -> HashMap<String, GraphPatchEntry> {
+    let Ok(mut stmt) = conn.prepare("SELECT key, patch_id, diff_text FROM graph_patch") else {
+        return HashMap::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            GraphPatchEntry {
+                patch_id: row.get::<_, Option<String>>(1)?,
+                diff_text: row.get::<_, Option<Vec<u8>>>(2)?,
+            },
+        ))
     }) else {
         return HashMap::new();
     };
@@ -771,5 +886,155 @@ mod tests {
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("git-bm-cache-") && name.ends_with(".sqlite3")));
+    }
+
+    #[test]
+    fn graph_patch_cache_insert_and_lookup() {
+        let (_dir, mut cache) = temp_cache();
+        cache.insert_graph_patch(
+            "a1",
+            "a2",
+            1,
+            Some("p1".to_string()),
+            Some(vec![1, 2, 3]),
+        );
+        assert_eq!(
+            cache.lookup_graph_patch("a1", "a2", 1),
+            Some((Some("p1".to_string()), Some(vec![1, 2, 3])))
+        );
+    }
+
+    #[test]
+    fn graph_patch_cache_miss_when_not_present() {
+        let (_dir, cache) = temp_cache();
+        assert_eq!(cache.lookup_graph_patch("x", "y", 1), None);
+    }
+
+    #[test]
+    fn graph_patch_cache_version_bump_invalidates() {
+        let (_dir, mut cache) = temp_cache();
+        cache.insert_graph_patch("a1", "a2", 1, Some("p1".to_string()), None);
+        assert_eq!(
+            cache.lookup_graph_patch("a1", "a2", 1),
+            Some((Some("p1".to_string()), None))
+        );
+        // Version 2 must miss even though OIDs match.
+        assert_eq!(cache.lookup_graph_patch("a1", "a2", 2), None);
+    }
+
+    #[test]
+    fn graph_patch_cache_empty_and_failed_computation_is_cached_as_hit() {
+        let (_dir, mut cache) = temp_cache();
+        cache.insert_graph_patch("a1", "a2", 1, None, None);
+        // Must return Some((None, None)) — distinct from "not cached" None.
+        assert_eq!(cache.lookup_graph_patch("a1", "a2", 1), Some((None, None)));
+    }
+
+    #[test]
+    fn graph_patch_cache_duplicate_patch_id_different_oid_pairs_do_not_collide() {
+        let (_dir, mut cache) = temp_cache();
+        cache.insert_graph_patch("a1", "a2", 1, Some("shared".to_string()), None);
+        cache.insert_graph_patch(
+            "b1",
+            "b2",
+            1,
+            Some("shared".to_string()),
+            Some(vec![9, 9, 9]),
+        );
+        assert_eq!(
+            cache.lookup_graph_patch("a1", "a2", 1),
+            Some((Some("shared".to_string()), None))
+        );
+        assert_eq!(
+            cache.lookup_graph_patch("b1", "b2", 1),
+            Some((Some("shared".to_string()), Some(vec![9, 9, 9])))
+        );
+    }
+
+    #[test]
+    fn graph_patch_cache_save_and_reload() {
+        let dir = TempDir::new().unwrap();
+        let cache_path = dir.path().join("cache.sqlite3");
+        let mut cache = BranchCache::load_from_path(cache_path.clone());
+        cache.insert_graph_patch(
+            "a1",
+            "a2",
+            1,
+            Some("p1".to_string()),
+            Some(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+        );
+        cache.save();
+
+        let reloaded = BranchCache::load_from_path(cache_path);
+        assert_eq!(
+            reloaded.lookup_graph_patch("a1", "a2", 1),
+            Some((
+                Some("p1".to_string()),
+                Some(vec![0xDE, 0xAD, 0xBE, 0xEF])
+            ))
+        );
+    }
+
+    #[test]
+    fn graph_patch_cache_cross_repository_isolation() {
+        let dir_a = TempDir::new().unwrap();
+        let dir_b = TempDir::new().unwrap();
+        let path_a = dir_a.path().join("cache_a.sqlite3");
+        let path_b = dir_b.path().join("cache_b.sqlite3");
+
+        let mut cache_a = BranchCache::load_from_path(path_a);
+        cache_a.insert_graph_patch("a1", "a2", 1, Some("only-in-a".to_string()), None);
+        cache_a.save();
+
+        let cache_b = BranchCache::load_from_path(path_b);
+        // B has its own file — must not see A's entry.
+        assert_eq!(cache_b.lookup_graph_patch("a1", "a2", 1), None);
+    }
+
+    #[test]
+    fn graph_patch_cache_cleared_by_clear() {
+        let (_dir, mut cache) = temp_cache();
+        cache.insert_graph_patch("a1", "a2", 1, Some("p1".to_string()), None);
+        cache.clear();
+        assert_eq!(cache.lookup_graph_patch("a1", "a2", 1), None);
+    }
+
+    #[test]
+    fn graph_patch_cache_concurrent_writers_do_not_clobber() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("cache.sqlite3");
+        let n = 8usize;
+
+        let mut handles = Vec::with_capacity(n);
+        for thread_index in 0..n {
+            let path = path.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut cache = BranchCache::load_from_path(path);
+                cache.insert_graph_patch(
+                    &format!("old-{thread_index}"),
+                    &format!("new-{thread_index}"),
+                    1,
+                    Some(format!("patch-{thread_index}")),
+                    None,
+                );
+                cache.save();
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("writer thread panicked");
+        }
+
+        let reloaded = BranchCache::load_from_path(path);
+        for thread_index in 0..n {
+            assert_eq!(
+                reloaded.lookup_graph_patch(
+                    &format!("old-{thread_index}"),
+                    &format!("new-{thread_index}"),
+                    1,
+                ),
+                Some((Some(format!("patch-{thread_index}")), None)),
+                "thread {thread_index} entry missing after concurrent writes"
+            );
+        }
     }
 }

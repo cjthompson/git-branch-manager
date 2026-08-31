@@ -5,6 +5,9 @@
 ### Fixes
 - Do not block Graph rendering on squash-merge detection (#graph, #performance, #async, #ui)
 
+### Tasks
+- Add OID-aware cache for Graph squash-merge detection (#graph, #cache, #git, #performance)
+
 ## 2026-08-30
 
 ### Tasks
