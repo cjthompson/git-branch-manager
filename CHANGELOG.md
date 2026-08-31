@@ -3,6 +3,7 @@
 ## 2026-08-31
 
 ### Fixes
+- Action model scrollbar does not scroll with keyboard or mouse (#ui, #keyboard, #mouse, #scroll)
 - Do not block Graph rendering on squash-merge detection (#graph, #performance, #async, #ui)
 
 ### Tasks
