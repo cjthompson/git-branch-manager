@@ -3891,6 +3891,148 @@ mod tests {
     }
 
     #[test]
+    fn tab_cycles_through_all_five_views_forward_and_reverse() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        assert_eq!(app.active_view, ViewId::Graph);
+
+        // Forward: Graph -> Branches -> Remotes -> Tags -> Worktrees -> Graph
+        let forward = [
+            ViewId::Branches,
+            ViewId::Remotes,
+            ViewId::Tags,
+            ViewId::Worktrees,
+            ViewId::Graph,
+        ];
+        for expected in forward {
+            app.handle_key(KeyEvent::new(
+                KeyCode::Tab,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            assert_eq!(app.active_view, expected);
+        }
+
+        // Reverse: Shift-Tab (Worktrees -> Tags -> Remotes -> Branches -> Graph)
+        app.active_view = ViewId::Graph;
+        let reverse_shift = [
+            ViewId::Worktrees,
+            ViewId::Tags,
+            ViewId::Remotes,
+            ViewId::Branches,
+            ViewId::Graph,
+        ];
+        for expected in reverse_shift {
+            app.handle_key(KeyEvent::new(
+                KeyCode::Tab,
+                crossterm::event::KeyModifiers::SHIFT,
+            ));
+            assert_eq!(app.active_view, expected);
+        }
+
+        // Reverse: BackTab (same direction as Shift-Tab)
+        app.active_view = ViewId::Graph;
+        let reverse_backtab = [
+            ViewId::Worktrees,
+            ViewId::Tags,
+            ViewId::Remotes,
+            ViewId::Branches,
+            ViewId::Graph,
+        ];
+        for expected in reverse_backtab {
+            app.handle_key(KeyEvent::new(
+                KeyCode::BackTab,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            assert_eq!(app.active_view, expected);
+        }
+    }
+
+    #[test]
+    fn existing_four_tab_navigation_still_works_after_graph_tab_added() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+
+        // Branches: cursor moves with j/k; Enter opens a context menu
+        app.active_view = ViewId::Branches;
+        app.branches.set_items(vec![branch("feature/a", TrackingStatus::Local)]);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('k'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(app.overlay, Some(Overlay::InfoModal { .. })));
+        app.overlay = None;
+
+        // Remotes: cursor moves with j/k; Enter opens a context menu
+        app.active_view = ViewId::Remotes;
+        app.remotes.set_items(vec![remote("origin/feature/b", "feature/b")]);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('k'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(app.overlay, Some(Overlay::InfoModal { .. })));
+        app.overlay = None;
+
+        // Tags: cursor moves with j/k; Enter opens a context menu
+        app.active_view = ViewId::Tags;
+        app.tags.set_items(vec![tag("v1.0.0")]);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('k'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(app.overlay, Some(Overlay::InfoModal { .. })));
+        app.overlay = None;
+
+        // Worktrees: cursor moves with j/k; Enter opens a context menu
+        app.active_view = ViewId::Worktrees;
+        app.worktrees.set_items(vec![worktree("feature/c")]);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('k'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(app.overlay, Some(Overlay::InfoModal { .. })));
+    }
+
+    #[test]
     fn graph_enter_uses_local_branch_metadata_for_actions() {
         let mut app = graph_app(vec![graph_ref(
             "feature/local",

@@ -79,6 +79,14 @@ const GRAPH_KEYS: &[(&str, &str)] = &[
     ("r", "Reload graph"),
 ];
 
+/// Graph-view concept notes shown in the help overlay.
+const GRAPH_CONCEPTS: &[&str] = &[
+    "Graph = DAG + live-ref pane",
+    "o toggles remote refs (saved)",
+    "L adds +500 commits (session)",
+    "Falls back to git log if needed",
+];
+
 /// Renders the help overlay on top of the current view.
 pub fn draw_help(frame: &mut Frame, active_view: ViewId, theme: &Theme) {
     let area = frame.area();
@@ -102,7 +110,16 @@ pub fn draw_help(frame: &mut Frame, active_view: ViewId, theme: &Theme) {
     all_entries.extend_from_slice(view_keys);
     // We'll interleave with section headers below
 
-    let all_lines: Vec<HelpEntry> = build_help_entries(&section_header, view_keys, COMMON_KEYS);
+    let all_lines: Vec<HelpEntry> = build_help_entries(
+        &section_header,
+        view_keys,
+        COMMON_KEYS,
+        if active_view == ViewId::Graph {
+            GRAPH_CONCEPTS
+        } else {
+            &[]
+        },
+    );
 
     let col_width = 38u16;
     let separator = "  \u{2502}  "; // " | "
@@ -169,6 +186,7 @@ pub fn draw_help(frame: &mut Frame, active_view: ViewId, theme: &Theme) {
 enum HelpEntry {
     Section(String),
     Key { key: String, desc: String },
+    Note(String),
     Blank,
 }
 
@@ -176,6 +194,7 @@ fn build_help_entries(
     view_section: &str,
     view_keys: &[(&str, &str)],
     common_keys: &[(&str, &str)],
+    concepts: &[&str],
 ) -> Vec<HelpEntry> {
     let mut entries = Vec::new();
 
@@ -186,6 +205,13 @@ fn build_help_entries(
             key: k.to_string(),
             desc: d.to_string(),
         });
+    }
+    if !concepts.is_empty() {
+        entries.push(HelpEntry::Blank);
+        entries.push(HelpEntry::Section("Graph Concepts".to_string()));
+        for note in concepts {
+            entries.push(HelpEntry::Note(note.to_string()));
+        }
     }
     entries.push(HelpEntry::Blank);
 
@@ -215,6 +241,10 @@ fn render_help_entry<'a>(entry: &HelpEntry, key_style: Style, theme: &Theme) -> 
                 Span::styled(desc.clone(), Style::default()),
             ]
         }
+        HelpEntry::Note(text) => vec![Span::styled(
+            text.clone(),
+            Style::default().add_modifier(Modifier::DIM),
+        )],
         HelpEntry::Blank => {
             vec![Span::raw("")]
         }

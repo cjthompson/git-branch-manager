@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-30
+
+### Tasks
+- Document Graph UX and verify regression coverage (#graph, #docs, #testing)
+
 ## 2026-08-29
 
 ### Squash-merge detection test scenarios (P002)

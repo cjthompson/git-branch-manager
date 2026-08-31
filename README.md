@@ -39,6 +39,19 @@ git branch-manager
 - **Batch operations** — delete local branches, or delete local + remote in one action
 - **Auto-detect base branch** — reads `origin/HEAD`, falls back to main/master/develop
 - **Non-destructive loop** — after an operation, results are shown and the branch list refreshes so you can keep working
+- **Graph view** — first tab; commit DAG with live-ref pane, remote overlay, and automatic Git-CLI fallback
+
+## Graph View
+
+Graph is the first tab and the default view on launch. Each row streams the commit DAG (topology, abbreviated OID, summary) on the left alongside a responsive `LRT │ State │ Refs` pane on the right. The pane and the DAG share one cursor and scroll offset — there is no independent pane focus yet.
+
+Press `o` to open Graph options. `Space` toggles "Include remote refs", and `Enter` applies the toggle and reloads. The remote-ref preference **persists** to `config.toml` (only the history-window size does not persist across restarts).
+
+Press `L` to load 500 more commits per press; history expansion is uncapped and session-only.
+
+Press `Enter` on a commit to open the same branch/remote/tag context menu used by the Branches, Remotes, and Tags views, built from whatever live refs point at that commit. Commits with no matching refs are shown informationally with no actions.
+
+Graph loads via the Gleisbau graph-layout crate first. If Gleisbau errors or panics (e.g. on shallow clones or unusual ref states), Graph falls back to `git log --graph --topo-order --decorate` and shows a "Git fallback: \<cause\>" banner.
 
 ## Usage
 
@@ -67,6 +80,20 @@ git branch-manager --list
 ```
 
 ## Keybindings
+
+### Graph
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move cursor down |
+| `k` / `↑` | Move cursor up |
+| `h` / `l` / `←` / `→` | Scroll commit text and refs |
+| `g` / `G` | Home / End |
+| `PgUp` / `PgDn` | Page scroll |
+| `Enter` | Open action menu for commit's refs |
+| `o` | Open Graph options |
+| `L` | Load 500 older commits |
+| `r` | Reload graph |
 
 ### Branch List
 

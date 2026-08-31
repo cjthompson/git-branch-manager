@@ -142,6 +142,22 @@ The graph-specific coverage includes:
 - Loading-toast clearing after a graph result arrives.
 - Default Graph tab, Graph options, navigation, and older-history reload behavior.
 
+### Task #040 verification (2026-08-30)
+
+Documentation and regression coverage for the Graph tab were verified with:
+
+```text
+cargo build
+cargo test -- --test-threads=1
+cargo clippy --all-targets -- -D warnings
+```
+
+- `cargo build` succeeded.
+- `cargo test -- --test-threads=1` ran all tests to completion; the new tests added under this task (`tab_cycles_through_all_five_views_forward_and_reverse`, `existing_four_tab_navigation_still_works_after_graph_tab_added`) passed, along with the existing graph-related suite (`graph_options_overlay_applies_remote_refs`, `graph_load_older_control_reloads_with_next_page`, `graph_navigation_and_horizontal_scroll_keys_bypass_generic_table_handler`, `graph_enter_uses_local_branch_metadata_for_actions`, `graph_enter_uses_remote_branch_metadata_for_actions`, `graph_enter_uses_tag_metadata_and_keeps_ref_free_commits_informational`, `app_starts_on_graph_tab`, `app_restores_graph_remote_ref_preference_from_config`).
+- `cargo clippy --all-targets -- -D warnings` produced no warnings.
+
+Note: `./scripts/gen-arch-diagram.sh` was **not run** — `cargo-modules` and Graphviz `dot` are both absent from this machine. The script hard-exits with an install hint in that case, so no attempt was made to install them as part of this task. The existing `docs/architecture/architecture.svg` (last touched 2026-06-06, predates all Graph modules) would automatically pick up `git::graph`, `view::graph`, and `ui::graph_render` if regenerated; no code change to `scripts/layer_dot.py` is required (its `classify()` already buckets by `git::`, `view::`, `ui::` prefix).
+
 ## Follow-up seams
 
 Future work should preserve these boundaries unless the product requirements change:
@@ -151,4 +167,4 @@ Future work should preserve these boundaries unless the product requirements cha
 - If ref actions are added, implement them as explicit Graph-pane actions rather than routing the Graph view through generic list operations.
 - If graph filtering/search is added, define whether it filters commits, graph connector lines, or both; the current cursor/offset mapping assumes connector lines remain in the rendered snapshot.
 - If a new symbol set is added, define its graph commit/merge/arrow glyphs and line style in `SymbolSet` and add renderer width tests before enabling it.
-- Persisting the remote-ref toggle or history size is not implemented; both currently live for the app session only.
+- The remote-ref toggle persists to `config.toml` via `App::save_config` (`src/app.rs`); the history-window size (`max_count`) does not persist and resets to `GRAPH_PAGE_SIZE` each session.
