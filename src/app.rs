@@ -4337,12 +4337,11 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
         op_tx
-            .send(vec![OperationResult {
-                branch_name: "feature/refresh".into(),
-                action: BranchAction::Push,
-                success: true,
-                message: "Pushed feature/refresh".into(),
-            }])
+            .send(vec![OperationResult::success(
+                "feature/refresh",
+                BranchAction::Push,
+                "Pushed feature/refresh",
+            )])
             .unwrap();
 
         app.drain_channels();
@@ -4392,12 +4391,11 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
         op_tx
-            .send(vec![OperationResult {
-                branch_name: "feature/remote".into(),
-                action: BranchAction::CheckoutRemote,
-                success: true,
-                message: "Checked out feature/remote".into(),
-            }])
+            .send(vec![OperationResult::success(
+                "feature/remote",
+                BranchAction::CheckoutRemote,
+                "Checked out feature/remote",
+            )])
             .unwrap();
 
         app.drain_channels();
@@ -4448,12 +4446,11 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
         op_tx
-            .send(vec![OperationResult {
-                branch_name: "feature/remote".into(),
-                action: BranchAction::DeleteRemoteAndLocal,
-                success: true,
-                message: "Deleted feature/remote".into(),
-            }])
+            .send(vec![OperationResult::success(
+                "feature/remote",
+                BranchAction::DeleteRemoteAndLocal,
+                "Deleted feature/remote",
+            )])
             .unwrap();
 
         app.drain_channels();
@@ -4508,17 +4505,17 @@ mod tests {
         );
         op_tx
             .send(vec![
-                OperationResult {
-                    branch_name: "feature/local".into(),
-                    action: BranchAction::DeleteLocal,
-                    success: true,
-                    message: "Deleted local feature/local".into(),
-                },
+                OperationResult::success(
+                    "feature/local",
+                    BranchAction::DeleteLocal,
+                    "Deleted local feature/local",
+                ),
                 OperationResult {
                     branch_name: "feature/local".into(),
                     action: BranchAction::DeleteRemoteBranch,
                     success: false,
                     message: "Remote deletion failed".into(),
+                    failure: None,
                 },
             ])
             .unwrap();
@@ -4559,18 +4556,16 @@ mod tests {
         );
         op_tx
             .send(vec![
-                OperationResult {
-                    branch_name: "feature/local".into(),
-                    action: BranchAction::DeleteLocal,
-                    success: true,
-                    message: "Deleted local feature/local".into(),
-                },
-                OperationResult {
-                    branch_name: "feature/local".into(),
-                    action: BranchAction::DeleteRemoteBranch,
-                    success: true,
-                    message: "Deleted upstream/feature/local".into(),
-                },
+                OperationResult::success(
+                    "feature/local",
+                    BranchAction::DeleteLocal,
+                    "Deleted local feature/local",
+                ),
+                OperationResult::success(
+                    "feature/local",
+                    BranchAction::DeleteRemoteBranch,
+                    "Deleted upstream/feature/local",
+                ),
             ])
             .unwrap();
 
@@ -4703,12 +4698,11 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
         op_tx
-            .send(vec![OperationResult {
-                branch_name: branch_name.into(),
-                action: BranchAction::Rebase,
-                success: true,
-                message: "Rebased feature/rebase-refresh onto main".into(),
-            }])
+            .send(vec![OperationResult::success(
+                branch_name,
+                BranchAction::Rebase,
+                "Rebased feature/rebase-refresh onto main",
+            )])
             .unwrap();
 
         app.drain_channels();

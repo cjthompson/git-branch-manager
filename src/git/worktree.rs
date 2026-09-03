@@ -2,6 +2,7 @@ use crate::types::{
     BranchInfo, MergeStatus, WorkingTreeStatus, WorktreeEnrichResult, WorktreeInfo,
 };
 use chrono::{DateTime, TimeZone, Utc};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::mpsc::{self, Receiver};
@@ -282,4 +283,25 @@ fn head_commit_date(dir: &Path) -> DateTime<Utc> {
         .ok()
         .and_then(|ts| Utc.timestamp_opt(ts, 0).single())
         .unwrap_or_else(Utc::now)
+}
+
+/// Short names of every branch currently checked out in a non-main worktree.
+///
+/// Used to detect branches that can't be deleted (or need `--force`) because
+/// they're checked out elsewhere. Mirrors the filter `list_worktrees` callers
+/// previously inlined themselves.
+pub fn branches_checked_out_in_worktrees(repo_path: &Path) -> HashSet<String> {
+    list_worktrees(repo_path)
+        .into_iter()
+        .filter(|worktree| !worktree.is_main)
+        .filter_map(|worktree| worktree.branch)
+        .collect()
+}
+
+/// The non-main worktree path that has `branch` checked out, if any.
+pub fn worktree_path_for_branch(repo_path: &Path, branch: &str) -> Option<PathBuf> {
+    list_worktrees(repo_path)
+        .into_iter()
+        .find(|worktree| !worktree.is_main && worktree.branch.as_deref() == Some(branch))
+        .map(|worktree| worktree.path)
 }

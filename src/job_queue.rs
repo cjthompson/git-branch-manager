@@ -436,6 +436,7 @@ fn execute_action_with_remote(
                         action,
                         success: false,
                         message: format!("Failed to open repo: {e}"),
+                        failure: None,
                     }];
                 }
             };
@@ -447,6 +448,7 @@ fn execute_action_with_remote(
                         action,
                         success: false,
                         message: "Cancelled by user".into(),
+                        failure: None,
                     });
                     break;
                 }
@@ -486,6 +488,7 @@ fn execute_action_with_remote(
                             action,
                             success: false,
                             message: format!("Failed to open repo: {e}"),
+                            failure: None,
                         }];
                     }
                 };
@@ -562,6 +565,7 @@ fn execute_action_with_remote(
                         action,
                         success: false,
                         message: format!("Failed to open repo: {e}"),
+                        failure: None,
                     }];
                 }
             };
@@ -692,6 +696,7 @@ fn execute_action_with_remote(
                         action,
                         success: false,
                         message: format!("Failed to open repo: {e}"),
+                        failure: None,
                     }];
                 }
             };
@@ -703,6 +708,7 @@ fn execute_action_with_remote(
                         action,
                         success: false,
                         message: "Cancelled by user".into(),
+                        failure: None,
                     });
                     break;
                 }
@@ -864,12 +870,11 @@ mod tests {
         assert_eq!(q.queued_len_for_test(), 1);
 
         op_tx
-            .send(vec![OperationResult {
-                branch_name: "a".into(),
-                action: BranchAction::DeleteLocal,
-                success: true,
-                message: "ok".into(),
-            }])
+            .send(vec![OperationResult::success(
+                "a",
+                BranchAction::DeleteLocal,
+                "ok",
+            )])
             .unwrap();
 
         let poll = q.poll();
@@ -908,6 +913,7 @@ mod tests {
                 action: BranchAction::Merge,
                 success: false,
                 message: "Cancelled by user".into(),
+                failure: None,
             }])
             .unwrap();
         assert!(wait_until(|| {
@@ -936,23 +942,14 @@ mod tests {
 
         op_tx
             .send(vec![
-                OperationResult {
-                    branch_name: "a".into(),
-                    action: BranchAction::DeleteLocal,
-                    success: true,
-                    message: "ok".into(),
-                },
-                OperationResult {
-                    branch_name: "b".into(),
-                    action: BranchAction::DeleteLocal,
-                    success: true,
-                    message: "ok".into(),
-                },
+                OperationResult::success("a", BranchAction::DeleteLocal, "ok"),
+                OperationResult::success("b", BranchAction::DeleteLocal, "ok"),
                 OperationResult {
                     branch_name: String::new(),
                     action: BranchAction::DeleteLocal,
                     success: false,
                     message: "Cancelled by user".into(),
+                    failure: None,
                 },
             ])
             .unwrap();
@@ -1026,17 +1023,13 @@ mod tests {
     #[test]
     fn completion_summary_counts_success_and_failure() {
         let results = vec![
-            OperationResult {
-                branch_name: "a".into(),
-                action: BranchAction::DeleteLocal,
-                success: true,
-                message: "ok".into(),
-            },
+            OperationResult::success("a", BranchAction::DeleteLocal, "ok"),
             OperationResult {
                 branch_name: "b".into(),
                 action: BranchAction::DeleteLocal,
                 success: false,
                 message: "failed".into(),
+                failure: None,
             },
         ];
         let summary = CompletionSummary::new(BranchAction::DeleteLocal, &results);

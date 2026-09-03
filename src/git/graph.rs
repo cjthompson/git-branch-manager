@@ -935,11 +935,7 @@ fn collect_ref_data(
         .map(str::to_string)
         .or_else(|| crate::git::branch::detect_base_branch(&repository, None).ok());
     data.base_branch = base_branch.clone();
-    let linked_worktrees = crate::git::worktree::list_worktrees(repo_path)
-        .into_iter()
-        .filter(|worktree| !worktree.is_main)
-        .filter_map(|worktree| worktree.branch)
-        .collect::<HashSet<_>>();
+    let linked_worktrees = crate::git::worktree::branches_checked_out_in_worktrees(repo_path);
     let mut local_refs = Vec::new();
     let mut remote_refs = Vec::new();
 

@@ -66,17 +66,13 @@ pub fn list_tags(repo: &Repository) -> Vec<TagInfo> {
 #[instrument(skip(repo))]
 pub fn delete_tag(repo: &Repository, tag_name: &str) -> OperationResult {
     match repo.tag_delete(tag_name) {
-        Ok(()) => OperationResult {
-            branch_name: tag_name.to_string(),
-            action: BranchAction::DeleteTag,
-            success: true,
-            message: format!("Deleted tag {tag_name}"),
-        },
+        Ok(()) => OperationResult::success(tag_name, BranchAction::DeleteTag, format!("Deleted tag {tag_name}")),
         Err(e) => OperationResult {
             branch_name: tag_name.to_string(),
             action: BranchAction::DeleteTag,
             success: false,
             message: format!("Failed: {e}"),
+            failure: None,
         },
     }
 }
@@ -111,11 +107,12 @@ pub fn delete_remote_tags_batch(repo_path: &Path, tag_names: &[String]) -> Vec<O
     if matches!(&out, Ok(o) if o.status.success()) {
         return tag_names
             .iter()
-            .map(|name| OperationResult {
-                branch_name: name.clone(),
-                action: BranchAction::DeleteTagAndRemote,
-                success: true,
-                message: format!("Deleted remote tag {name}"),
+            .map(|name| {
+                OperationResult::success(
+                    name,
+                    BranchAction::DeleteTagAndRemote,
+                    format!("Deleted remote tag {name}"),
+                )
             })
             .collect();
     }
@@ -132,17 +129,17 @@ pub fn delete_remote_tags_batch(repo_path: &Path, tag_names: &[String]) -> Vec<O
                 .output();
 
             match out {
-                Ok(o) if o.status.success() => OperationResult {
-                    branch_name: name.clone(),
-                    action: BranchAction::DeleteTagAndRemote,
-                    success: true,
-                    message: format!("Deleted remote tag {name}"),
-                },
+                Ok(o) if o.status.success() => OperationResult::success(
+                    name,
+                    BranchAction::DeleteTagAndRemote,
+                    format!("Deleted remote tag {name}"),
+                ),
                 _ => OperationResult {
                     branch_name: name.clone(),
                     action: BranchAction::DeleteTagAndRemote,
                     success: false,
                     message: format!("Failed to delete remote tag {name}"),
+                    failure: None,
                 },
             }
         })
@@ -160,23 +157,24 @@ pub fn push_tag(repo_path: &Path, tag_name: &str) -> OperationResult {
         .output();
 
     match out {
-        Ok(o) if o.status.success() => OperationResult {
-            branch_name: tag_name.to_string(),
-            action: BranchAction::PushTag,
-            success: true,
-            message: format!("Pushed tag {tag_name}"),
-        },
+        Ok(o) if o.status.success() => OperationResult::success(
+            tag_name,
+            BranchAction::PushTag,
+            format!("Pushed tag {tag_name}"),
+        ),
         Ok(o) => OperationResult {
             branch_name: tag_name.to_string(),
             action: BranchAction::PushTag,
             success: false,
             message: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            failure: None,
         },
         Err(e) => OperationResult {
             branch_name: tag_name.to_string(),
             action: BranchAction::PushTag,
             success: false,
             message: e.to_string(),
+            failure: None,
         },
     }
 }

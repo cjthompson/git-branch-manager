@@ -22,6 +22,7 @@ fn cancelled(branch_name: &str, action: BranchAction) -> OperationResult {
         action,
         success: false,
         message: "Cancelled".into(),
+        failure: None,
     }
 }
 
@@ -78,17 +79,17 @@ fn run_git_cancellable(
 pub fn delete_local(repo: &Repository, branch_name: &str) -> OperationResult {
     match repo.find_branch(branch_name, git2::BranchType::Local) {
         Ok(mut branch) => match branch.delete() {
-            Ok(()) => OperationResult {
-                branch_name: branch_name.to_string(),
-                action: BranchAction::DeleteLocal,
-                success: true,
-                message: format!("Deleted {branch_name}"),
-            },
+            Ok(()) => OperationResult::success(
+                branch_name,
+                BranchAction::DeleteLocal,
+                format!("Deleted {branch_name}"),
+            ),
             Err(e) => OperationResult {
                 branch_name: branch_name.to_string(),
                 action: BranchAction::DeleteLocal,
                 success: false,
                 message: format!("Failed to delete {branch_name}: {e}"),
+                failure: None,
             },
         },
         Err(e) => OperationResult {
@@ -96,6 +97,7 @@ pub fn delete_local(repo: &Repository, branch_name: &str) -> OperationResult {
             action: BranchAction::DeleteLocal,
             success: false,
             message: format!("Branch not found: {e}"),
+            failure: None,
         },
     }
 }
@@ -123,23 +125,24 @@ pub fn checkout_branch(
     }
 
     match result {
-        Ok(out) if out.status.success() => OperationResult {
-            branch_name: branch_name.to_string(),
+        Ok(out) if out.status.success() => OperationResult::success(
+            branch_name,
             action,
-            success: true,
-            message: format!("Checked out {branch_name}"),
-        },
+            format!("Checked out {branch_name}"),
+        ),
         Ok(out) => OperationResult {
             branch_name: branch_name.to_string(),
             action,
             success: false,
             message: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            failure: None,
         },
         Err(e) => OperationResult {
             branch_name: branch_name.to_string(),
             action,
             success: false,
             message: e.to_string(),
+            failure: None,
         },
     }
 }
@@ -173,23 +176,24 @@ fn run_fetch_cmd(repo_path: &Path, prune: bool, cancel: &AtomicBool) -> Operatio
 
     match run_git_cancellable(git_cmd(repo_path).args(&args), cancel) {
         None => cancelled("", action),
-        Some(Ok(out)) if out.status.success() => OperationResult {
-            branch_name: String::new(),
+        Some(Ok(out)) if out.status.success() => OperationResult::success(
+            String::new(),
             action,
-            success: true,
-            message: "Fetched all remotes".to_string(),
-        },
+            "Fetched all remotes".to_string(),
+        ),
         Some(Ok(out)) => OperationResult {
             branch_name: String::new(),
             action,
             success: false,
             message: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            failure: None,
         },
         Some(Err(e)) => OperationResult {
             branch_name: String::new(),
             action,
             success: false,
             message: e.to_string(),
+            failure: None,
         },
     }
 }
@@ -202,23 +206,24 @@ pub fn fast_forward(repo_path: &Path, branch_name: &str, cancel: &AtomicBool) ->
         cancel,
     ) {
         None => cancelled(branch_name, BranchAction::FastForward),
-        Some(Ok(o)) if o.status.success() => OperationResult {
-            branch_name: branch_name.to_string(),
-            action: BranchAction::FastForward,
-            success: true,
-            message: format!("Fast-forwarded {branch_name}"),
-        },
+        Some(Ok(o)) if o.status.success() => OperationResult::success(
+            branch_name,
+            BranchAction::FastForward,
+            format!("Fast-forwarded {branch_name}"),
+        ),
         Some(Ok(o)) => OperationResult {
             branch_name: branch_name.to_string(),
             action: BranchAction::FastForward,
             success: false,
             message: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            failure: None,
         },
         Some(Err(e)) => OperationResult {
             branch_name: branch_name.to_string(),
             action: BranchAction::FastForward,
             success: false,
             message: e.to_string(),
+            failure: None,
         },
     }
 }
@@ -233,23 +238,24 @@ pub fn pull_branch(
     if is_current {
         match run_git_cancellable(git_cmd(repo_path).args(["pull", "--ff-only"]), cancel) {
             None => cancelled(branch_name, BranchAction::Pull),
-            Some(Ok(o)) if o.status.success() => OperationResult {
-                branch_name: branch_name.to_string(),
-                action: BranchAction::Pull,
-                success: true,
-                message: format!("Pulled {branch_name}"),
-            },
+            Some(Ok(o)) if o.status.success() => OperationResult::success(
+                branch_name,
+                BranchAction::Pull,
+                format!("Pulled {branch_name}"),
+            ),
             Some(Ok(o)) => OperationResult {
                 branch_name: branch_name.to_string(),
                 action: BranchAction::Pull,
                 success: false,
                 message: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                failure: None,
             },
             Some(Err(e)) => OperationResult {
                 branch_name: branch_name.to_string(),
                 action: BranchAction::Pull,
                 success: false,
                 message: e.to_string(),
+                failure: None,
             },
         }
     } else {
@@ -264,23 +270,24 @@ pub fn push_branch(repo_path: &Path, branch_name: &str, cancel: &AtomicBool) -> 
         cancel,
     ) {
         None => cancelled(branch_name, BranchAction::Push),
-        Some(Ok(o)) if o.status.success() => OperationResult {
-            branch_name: branch_name.to_string(),
-            action: BranchAction::Push,
-            success: true,
-            message: format!("Pushed {branch_name}"),
-        },
+        Some(Ok(o)) if o.status.success() => OperationResult::success(
+            branch_name,
+            BranchAction::Push,
+            format!("Pushed {branch_name}"),
+        ),
         Some(Ok(o)) => OperationResult {
             branch_name: branch_name.to_string(),
             action: BranchAction::Push,
             success: false,
             message: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            failure: None,
         },
         Some(Err(e)) => OperationResult {
             branch_name: branch_name.to_string(),
             action: BranchAction::Push,
             success: false,
             message: e.to_string(),
+            failure: None,
         },
     }
 }
@@ -296,23 +303,24 @@ pub fn force_push_branch(
         cancel,
     ) {
         None => cancelled(branch_name, BranchAction::ForcePush),
-        Some(Ok(o)) if o.status.success() => OperationResult {
-            branch_name: branch_name.to_string(),
-            action: BranchAction::ForcePush,
-            success: true,
-            message: format!("Force pushed {branch_name}"),
-        },
+        Some(Ok(o)) if o.status.success() => OperationResult::success(
+            branch_name,
+            BranchAction::ForcePush,
+            format!("Force pushed {branch_name}"),
+        ),
         Some(Ok(o)) => OperationResult {
             branch_name: branch_name.to_string(),
             action: BranchAction::ForcePush,
             success: false,
             message: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            failure: None,
         },
         Some(Err(e)) => OperationResult {
             branch_name: branch_name.to_string(),
             action: BranchAction::ForcePush,
             success: false,
             message: e.to_string(),
+            failure: None,
         },
     }
 }
@@ -348,6 +356,7 @@ pub fn merge_branch(
             action,
             success: false,
             message: format!("Failed to checkout {base}"),
+            failure: None,
         }];
     }
 
@@ -366,12 +375,11 @@ pub fn merge_branch(
                     .args(["commit", "-m", &format!("Squash merge {branch_name}")])
                     .output();
             }
-            OperationResult {
-                branch_name: branch_name.to_string(),
+            OperationResult::success(
+                branch_name,
                 action,
-                success: true,
-                message: format!("Merged {branch_name} into {base}"),
-            }
+                format!("Merged {branch_name} into {base}"),
+            )
         }
         _ => {
             let _ = git_cmd(repo_path).args(["merge", "--abort"]).output();
@@ -380,6 +388,7 @@ pub fn merge_branch(
                 action,
                 success: false,
                 message: "Merge conflict \u{2014} aborted".to_string(),
+                failure: None,
             }
         }
     };
@@ -413,17 +422,17 @@ pub fn rebase_branch(
             action: BranchAction::Rebase,
             success: false,
             message: format!("Failed to checkout {branch_name}"),
+            failure: None,
         }];
     }
 
     let out = git_cmd(repo_path).args(["rebase", base]).output();
     let result = match out {
-        Ok(o) if o.status.success() => OperationResult {
-            branch_name: branch_name.to_string(),
-            action: BranchAction::Rebase,
-            success: true,
-            message: format!("Rebased {branch_name} onto {base}"),
-        },
+        Ok(o) if o.status.success() => OperationResult::success(
+            branch_name,
+            BranchAction::Rebase,
+            format!("Rebased {branch_name} onto {base}"),
+        ),
         _ => {
             let _ = git_cmd(repo_path).args(["rebase", "--abort"]).output();
             OperationResult {
@@ -431,6 +440,7 @@ pub fn rebase_branch(
                 action: BranchAction::Rebase,
                 success: false,
                 message: "Rebase conflict \u{2014} aborted".to_string(),
+                failure: None,
             }
         }
     };
@@ -454,23 +464,24 @@ pub fn checkout_remote_branch(repo_path: &Path, remote: &str, short_name: &str) 
         .output();
 
     match out {
-        Ok(o) if o.status.success() => OperationResult {
-            branch_name: short_name.to_string(),
-            action: BranchAction::CheckoutRemote,
-            success: true,
-            message: format!("Checked out {short_name} tracking {remote}/{short_name}"),
-        },
+        Ok(o) if o.status.success() => OperationResult::success(
+            short_name,
+            BranchAction::CheckoutRemote,
+            format!("Checked out {short_name} tracking {remote}/{short_name}"),
+        ),
         Ok(o) => OperationResult {
             branch_name: short_name.to_string(),
             action: BranchAction::CheckoutRemote,
             success: false,
             message: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            failure: None,
         },
         Err(e) => OperationResult {
             branch_name: short_name.to_string(),
             action: BranchAction::CheckoutRemote,
             success: false,
             message: e.to_string(),
+            failure: None,
         },
     }
 }
@@ -510,11 +521,12 @@ pub fn delete_remotes_batch_for_remote(
         Some(Ok(o)) if o.status.success() => {
             return branch_names
                 .iter()
-                .map(|name| OperationResult {
-                    branch_name: name.clone(),
-                    action: BranchAction::DeleteRemoteBranch,
-                    success: true,
-                    message: format!("Deleted remote {name}"),
+                .map(|name| {
+                    OperationResult::success(
+                        name,
+                        BranchAction::DeleteRemoteBranch,
+                        format!("Deleted remote {name}"),
+                    )
                 })
                 .collect()
         }
@@ -539,23 +551,24 @@ fn delete_remote(
         cancel,
     ) {
         None => cancelled(branch_name, BranchAction::DeleteRemoteBranch),
-        Some(Ok(o)) if o.status.success() => OperationResult {
-            branch_name: branch_name.to_string(),
-            action: BranchAction::DeleteRemoteBranch,
-            success: true,
-            message: format!("Deleted remote {branch_name}"),
-        },
+        Some(Ok(o)) if o.status.success() => OperationResult::success(
+            branch_name,
+            BranchAction::DeleteRemoteBranch,
+            format!("Deleted remote {branch_name}"),
+        ),
         Some(Ok(o)) => OperationResult {
             branch_name: branch_name.to_string(),
             action: BranchAction::DeleteRemoteBranch,
             success: false,
             message: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            failure: None,
         },
         Some(Err(e)) => OperationResult {
             branch_name: branch_name.to_string(),
             action: BranchAction::DeleteRemoteBranch,
             success: false,
             message: e.to_string(),
+            failure: None,
         },
     }
 }
@@ -602,23 +615,24 @@ pub fn fetch_remote(repo_path: &Path, remote: &str, cancel: &AtomicBool) -> Vec<
     vec![
         match run_git_cancellable(git_cmd(repo_path).args(["fetch", remote]), cancel) {
             None => cancelled(remote, BranchAction::FetchRemote),
-            Some(Ok(o)) if o.status.success() => OperationResult {
-                branch_name: remote.to_string(),
-                action: BranchAction::FetchRemote,
-                success: true,
-                message: format!("Fetched {remote}"),
-            },
+            Some(Ok(o)) if o.status.success() => OperationResult::success(
+                remote,
+                BranchAction::FetchRemote,
+                format!("Fetched {remote}"),
+            ),
             Some(Ok(o)) => OperationResult {
                 branch_name: remote.to_string(),
                 action: BranchAction::FetchRemote,
                 success: false,
                 message: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                failure: None,
             },
             Some(Err(e)) => OperationResult {
                 branch_name: remote.to_string(),
                 action: BranchAction::FetchRemote,
                 success: false,
                 message: e.to_string(),
+                failure: None,
             },
         },
     ]
@@ -635,23 +649,24 @@ pub fn pull_remote(
     vec![
         match run_git_cancellable(git_cmd(repo_path).args(["fetch", remote, &refspec]), cancel) {
             None => cancelled(short_name, BranchAction::PullRemote),
-            Some(Ok(o)) if o.status.success() => OperationResult {
-                branch_name: short_name.to_string(),
-                action: BranchAction::PullRemote,
-                success: true,
-                message: format!("Pulled {remote}/{short_name}"),
-            },
+            Some(Ok(o)) if o.status.success() => OperationResult::success(
+                short_name,
+                BranchAction::PullRemote,
+                format!("Pulled {remote}/{short_name}"),
+            ),
             Some(Ok(o)) => OperationResult {
                 branch_name: short_name.to_string(),
                 action: BranchAction::PullRemote,
                 success: false,
                 message: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                failure: None,
             },
             Some(Err(e)) => OperationResult {
                 branch_name: short_name.to_string(),
                 action: BranchAction::PullRemote,
                 success: false,
                 message: e.to_string(),
+                failure: None,
             },
         },
     ]
@@ -665,12 +680,11 @@ pub fn merge_remote_into_current(
 ) -> Vec<OperationResult> {
     let out = git_cmd(repo_path).args(["merge", full_ref]).output();
     vec![match out {
-        Ok(o) if o.status.success() => OperationResult {
-            branch_name: short_name.to_string(),
-            action: BranchAction::MergeRemoteIntoCurrent,
-            success: true,
-            message: format!("Merged {full_ref} into current"),
-        },
+        Ok(o) if o.status.success() => OperationResult::success(
+            short_name,
+            BranchAction::MergeRemoteIntoCurrent,
+            format!("Merged {full_ref} into current"),
+        ),
         _ => {
             let _ = git_cmd(repo_path).args(["merge", "--abort"]).output();
             OperationResult {
@@ -678,6 +692,7 @@ pub fn merge_remote_into_current(
                 action: BranchAction::MergeRemoteIntoCurrent,
                 success: false,
                 message: "Merge conflict \u{2014} aborted".to_string(),
+                failure: None,
             }
         }
     }]
@@ -691,12 +706,11 @@ pub fn cherry_pick_remote(
 ) -> Vec<OperationResult> {
     let out = git_cmd(repo_path).args(["cherry-pick", full_ref]).output();
     vec![match out {
-        Ok(o) if o.status.success() => OperationResult {
-            branch_name: short_name.to_string(),
-            action: BranchAction::CherryPickRemote,
-            success: true,
-            message: format!("Cherry-picked {full_ref}"),
-        },
+        Ok(o) if o.status.success() => OperationResult::success(
+            short_name,
+            BranchAction::CherryPickRemote,
+            format!("Cherry-picked {full_ref}"),
+        ),
         _ => {
             let _ = git_cmd(repo_path).args(["cherry-pick", "--abort"]).output();
             OperationResult {
@@ -704,6 +718,7 @@ pub fn cherry_pick_remote(
                 action: BranchAction::CherryPickRemote,
                 success: false,
                 message: "Cherry-pick conflict \u{2014} aborted".to_string(),
+                failure: None,
             }
         }
     }]
@@ -720,23 +735,24 @@ pub fn create_worktree(repo_path: &Path, branch_name: &str) -> OperationResult {
         .output();
 
     match out {
-        Ok(o) if o.status.success() => OperationResult {
-            branch_name: branch_name.to_string(),
-            action: BranchAction::Worktree,
-            success: true,
-            message: format!("Created worktree at {wt_str}"),
-        },
+        Ok(o) if o.status.success() => OperationResult::success(
+            branch_name,
+            BranchAction::Worktree,
+            format!("Created worktree at {wt_str}"),
+        ),
         Ok(o) => OperationResult {
             branch_name: branch_name.to_string(),
             action: BranchAction::Worktree,
             success: false,
             message: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            failure: None,
         },
         Err(e) => OperationResult {
             branch_name: branch_name.to_string(),
             action: BranchAction::Worktree,
             success: false,
             message: e.to_string(),
+            failure: None,
         },
     }
 }
@@ -757,23 +773,24 @@ pub fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> OperationResul
         .output();
 
     match out {
-        Ok(o) if o.status.success() => OperationResult {
-            branch_name: wt_str.to_string(),
-            action: BranchAction::WorktreeRemove,
-            success: true,
-            message: format!("Removed worktree {wt_str}"),
-        },
+        Ok(o) if o.status.success() => OperationResult::success(
+            wt_str.to_string(),
+            BranchAction::WorktreeRemove,
+            format!("Removed worktree {wt_str}"),
+        ),
         Ok(o) => OperationResult {
             branch_name: wt_str.to_string(),
             action: BranchAction::WorktreeRemove,
             success: false,
             message: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            failure: None,
         },
         Err(e) => OperationResult {
             branch_name: wt_str.to_string(),
             action: BranchAction::WorktreeRemove,
             success: false,
             message: e.to_string(),
+            failure: None,
         },
     }
 }
@@ -795,23 +812,24 @@ pub fn force_remove_worktree(repo_path: &Path, worktree_path: &Path) -> Operatio
         .output();
 
     match out {
-        Ok(o) if o.status.success() => OperationResult {
-            branch_name: wt_str.to_string(),
-            action: BranchAction::WorktreeForceRemove,
-            success: true,
-            message: format!("Force removed worktree {wt_str}"),
-        },
+        Ok(o) if o.status.success() => OperationResult::success(
+            wt_str.to_string(),
+            BranchAction::WorktreeForceRemove,
+            format!("Force removed worktree {wt_str}"),
+        ),
         Ok(o) => OperationResult {
             branch_name: wt_str.to_string(),
             action: BranchAction::WorktreeForceRemove,
             success: false,
             message: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            failure: None,
         },
         Err(e) => OperationResult {
             branch_name: wt_str.to_string(),
             action: BranchAction::WorktreeForceRemove,
             success: false,
             message: e.to_string(),
+            failure: None,
         },
     }
 }

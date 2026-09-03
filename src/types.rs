@@ -322,12 +322,71 @@ impl TagInfo {
 
 // --- Operation/Channel Types ---
 
+/// Why an operation failed, so the UI can offer targeted recovery instead of
+/// only showing the raw git error. Populated by classification helpers added
+/// in later tasks (e.g. a `classify_delete_error` in `git::operations`);
+/// until then, failing operations report `Other` or leave `failure: None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FailureCause {
+    /// The branch did not exist when the operation looked it up.
+    BranchNotFound,
+    /// The branch has commits not yet merged into the base branch; a plain
+    /// delete was refused.
+    NotMerged,
+    /// The branch is checked out in another worktree, so it cannot be
+    /// deleted from this one.
+    CheckedOutInWorktree { worktree_path: PathBuf },
+    /// Catch-all for an error that hasn't been classified into a specific
+    /// cause yet. Carries the raw message so nothing is lost.
+    Other { raw_message: String },
+}
+
 #[derive(Debug, Clone)]
 pub struct OperationResult {
     pub branch_name: String,
     pub action: BranchAction,
     pub success: bool,
     pub message: String,
+    /// Typed classification of why the operation failed. `None` on success,
+    /// or when the failure has not yet been classified (fall back to
+    /// `message` in that case).
+    pub failure: Option<FailureCause>,
+}
+
+impl OperationResult {
+    /// Build a successful result. `name` is the branch/tag/remote/worktree
+    /// identifier the operation targeted.
+    pub fn success(
+        name: impl Into<String>,
+        action: BranchAction,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            branch_name: name.into(),
+            action,
+            success: true,
+            message: message.into(),
+            failure: None,
+        }
+    }
+
+    /// Build a failed result with a typed cause. `fallback_message` populates
+    /// `message` for the existing `ui/results.rs` renderer, which only reads
+    /// `message` today.
+    pub fn failure(
+        name: impl Into<String>,
+        action: BranchAction,
+        cause: FailureCause,
+        fallback_message: impl Into<String>,
+    ) -> Self {
+        Self {
+            branch_name: name.into(),
+            action,
+            success: false,
+            message: fallback_message.into(),
+            failure: Some(cause),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
