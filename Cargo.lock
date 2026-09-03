@@ -694,6 +694,7 @@ dependencies = [
  "git2",
  "gleisbau",
  "ratatui",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

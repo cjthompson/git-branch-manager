@@ -266,7 +266,11 @@ fn load_with_gleisbau(
         options.include_remotes,
         options.base_branch.as_deref(),
     )?;
-    let settings = gleisbau_settings(options.include_remotes, options.line_style)?;
+    let settings = gleisbau_settings(
+        options.include_remotes,
+        options.line_style,
+        options.base_branch.as_deref(),
+    )?;
     let repository =
         gleisbau::Repository::open(repo_path).map_err(|error| error.message().to_string())?;
     let graph = gleisbau::graph::Builder::new()
@@ -878,6 +882,7 @@ fn compute_patch(repo_path: &Path, old_oid: &str, new_oid: &str) -> (Option<Stri
 fn gleisbau_settings(
     include_remotes: bool,
     line_style: GraphLineStyle,
+    base_branch: Option<&str>,
 ) -> Result<Rc<gleisbau::settings::Settings>, String> {
     use gleisbau::print::format::CommitFormat;
     use gleisbau::settings::{
@@ -889,6 +894,13 @@ fn gleisbau_settings(
         GraphLineStyle::Round => Characters::round(),
     };
 
+    let mut def = BranchSettingsDef::none();
+    if let Some(name) = base_branch {
+        let pattern = format!("^{}$", regex::escape(name));
+        def.persistence.insert(0, pattern.clone());
+        def.order.insert(0, pattern);
+    }
+
     Ok(Rc::new(Settings {
         reverse_commit_order: false,
         debug: false,
@@ -899,8 +911,7 @@ fn gleisbau_settings(
         wrapping: None,
         characters,
         branch_order: BranchOrder::ShortestFirst(true),
-        branches: BranchSettings::from(BranchSettingsDef::none())
-            .map_err(|error| error.to_string())?,
+        branches: BranchSettings::from(def).map_err(|error| error.to_string())?,
         merge_patterns: MergePatterns::default(),
     }))
 }
@@ -1306,9 +1317,33 @@ mod tests {
     fn round_line_style_uses_gleisbau_round_characters() {
         use gleisbau::settings::Characters;
 
-        let settings = gleisbau_settings(false, GraphLineStyle::Round).unwrap();
+        let settings = gleisbau_settings(false, GraphLineStyle::Round, None).unwrap();
 
         assert_eq!(settings.characters.chars, Characters::round().chars);
+    }
+
+    #[test]
+    fn gleisbau_settings_with_base_branch_puts_base_in_order_group_zero() {
+        let settings = gleisbau_settings(false, GraphLineStyle::Thin, Some("main")).unwrap();
+
+        assert_eq!(settings.branches.order[0].as_str(), "^main$");
+    }
+
+    #[test]
+    fn gleisbau_settings_without_base_branch_keeps_none_semantics() {
+        let settings = gleisbau_settings(false, GraphLineStyle::Thin, None).unwrap();
+
+        assert!(settings.branches.order.is_empty());
+    }
+
+    #[test]
+    fn gleisbau_settings_with_special_chars_escapes_base_branch_name() {
+        let settings =
+            gleisbau_settings(false, GraphLineStyle::Thin, Some("release/1.0")).unwrap();
+
+        let pattern = &settings.branches.order[0];
+        assert!(pattern.is_match("release/1.0"));
+        assert!(!pattern.is_match("release/10"));
     }
 
     #[test]
