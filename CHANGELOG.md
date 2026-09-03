@@ -13,6 +13,10 @@
 - Add #[derive(Default)] to GraphCommit
 - Add format_local_absolute helper
 
+### Force default branch into column 0 of the Graph view (P003)
+- Plumb base_branch into gleisbau_settings() (#graph, #git)
+- Add `regex = "1"` as direct dep in Cargo.toml (#graph, #deps)
+
 ## 2026-08-31
 
 ### Fixes
