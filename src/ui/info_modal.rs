@@ -176,10 +176,10 @@ fn graph_commit_fields(commit: &GraphCommit) -> Vec<InfoField> {
         });
     }
 
-    // NEW: Date row — absolute local time + relative age, unless epoch
-    if commit.authored_at.timestamp() != 0 {
-        let local = crate::types::format_local_absolute(&commit.authored_at);
-        let age = crate::types::format_age(&commit.authored_at);
+    // Date row — absolute local time + relative age, when the loader provided a date.
+    if let Some(authored_at) = commit.authored_at.as_ref() {
+        let local = crate::types::format_local_absolute(authored_at);
+        let age = crate::types::format_age(authored_at);
         fields.push(InfoField {
             label: "Date",
             value: format!("{local} ({age})"),
@@ -994,7 +994,7 @@ mod tests {
             fuzzy_squash_match: None,
             author_name: "Jane Doe".into(),
             author_email: "jane@example.com".into(),
-            authored_at: Utc::now() - Duration::hours(3),
+            authored_at: Some(Utc::now() - Duration::hours(3)),
         };
         let fields = graph_commit_fields(&commit);
         let labels: Vec<&str> = fields.iter().map(|f| f.label).collect();
@@ -1019,7 +1019,7 @@ mod tests {
             fuzzy_squash_match: None,
             author_name: "".into(),
             author_email: "".into(),
-            authored_at: Utc::now(),
+            authored_at: Some(Utc::now()),
         };
         let labels: Vec<&str> = graph_commit_fields(&commit)
             .iter()
@@ -1029,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_commit_fields_omits_date_row_when_authored_at_is_epoch() {
+    fn graph_commit_fields_shows_date_row_for_epoch_authored_at() {
         let commit = GraphCommit {
             oid: "x".into(),
             summary: "s".into(),
@@ -1041,7 +1041,29 @@ mod tests {
             fuzzy_squash_match: None,
             author_name: "X".into(),
             author_email: "x@y".into(),
-            authored_at: Utc.timestamp_opt(0, 0).unwrap(),
+            authored_at: Some(Utc.timestamp_opt(0, 0).unwrap()),
+        };
+        let labels: Vec<&str> = graph_commit_fields(&commit)
+            .iter()
+            .map(|f| f.label)
+            .collect();
+        assert!(labels.contains(&"Date"));
+    }
+
+    #[test]
+    fn graph_commit_fields_omits_date_row_when_authored_at_is_unknown() {
+        let commit = GraphCommit {
+            oid: "x".into(),
+            summary: "s".into(),
+            parents: vec![],
+            lane: None,
+            branch: None,
+            refs: vec![],
+            is_possible_squash_merge: false,
+            fuzzy_squash_match: None,
+            author_name: "X".into(),
+            author_email: "x@y".into(),
+            authored_at: None,
         };
         let labels: Vec<&str> = graph_commit_fields(&commit)
             .iter()

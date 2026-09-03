@@ -390,10 +390,15 @@ fn test_graph_both_loaders_agree_on_author_and_author_date() {
 
     let gleisbau = load_graph_with_squash_annotations(dir, GraphLoadOptions::default())
         .expect("gleisbau should succeed");
+    assert!(matches!(gleisbau.source, graph::GraphSource::Gleisbau));
 
     std::fs::write(dir.join(".git/shallow"), format!("{initial_oid}\n")).unwrap();
     let fallback = load_graph_with_squash_annotations(dir, GraphLoadOptions::default())
         .expect("fallback should succeed");
+    assert!(matches!(
+        fallback.source,
+        graph::GraphSource::GitCliFallback { .. }
+    ));
 
     assert_eq!(
         gleisbau.commits.len(),

@@ -76,9 +76,9 @@ pub struct GraphCommit {
     /// Author email from `git2::Signature::email()` / `%ae`.
     pub author_email: String,
     /// Author date (when the change was originally made) in UTC.
-    /// Git's "%aI" / `commit.author().when()`. Falls back to the Unix
-    /// epoch when git returns an unparseable time.
-    pub authored_at: DateTime<Utc>,
+    /// Git's "%aI" / `commit.author().when()`. `None` means the loader could
+    /// not parse or represent the author date.
+    pub authored_at: Option<DateTime<Utc>>,
 }
 
 /// A fuzzy (non-exact) possible-squash-merge signal for a single base commit,
@@ -310,10 +310,7 @@ fn load_with_gleisbau(
                 .to_string();
             let author = commit.author();
             let author_time = author.when();
-            let authored_at = Utc
-                .timestamp_opt(author_time.seconds(), 0)
-                .single()
-                .unwrap_or_else(|| Utc.timestamp_opt(0, 0).unwrap());
+            let authored_at = Utc.timestamp_opt(author_time.seconds(), 0).single();
             let lane = info
                 .branch_trace
                 .and_then(|trace| graph.layout.track_visual(trace))
@@ -379,7 +376,9 @@ fn load_with_git_cli(
         "--decorate",
         "--oneline",
         "--no-color",
-        "--format=%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%s",
+        // NUL cannot occur in Git commit headers, while control bytes such as
+        // unit separator are valid in author names and email addresses.
+        "--format=%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
         &max_count,
     ]);
     if options.include_remotes {
@@ -408,7 +407,7 @@ fn load_with_git_cli(
         };
 
         let graph = line[..record_start].to_string();
-        let fields: Vec<_> = line[record_start + 1..].splitn(6, '\x1f').collect();
+        let fields: Vec<_> = line[record_start + 1..].splitn(6, '\0').collect();
         if fields.len() != 6 || fields[0].is_empty() {
             return Err(format!("could not parse git log record: {line}"));
         }
@@ -420,8 +419,8 @@ fn load_with_git_cli(
             .position(|character| character == '*')
             .map(|index| index / 2);
         let authored_at = DateTime::parse_from_rfc3339(fields[4])
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc.timestamp_opt(0, 0).unwrap());
+            .ok()
+            .map(|dt| dt.with_timezone(&Utc));
         commits.push(GraphCommit {
             oid: oid.clone(),
             summary: fields[5].to_string(),
@@ -1224,12 +1223,11 @@ mod tests {
     }
 
     #[test]
-    fn graph_commit_default_has_empty_author_fields_and_epoch_date() {
-        use chrono::TimeZone;
+    fn graph_commit_default_has_empty_author_fields_and_unknown_date() {
         let c = GraphCommit::default();
         assert_eq!(c.author_name, "");
         assert_eq!(c.author_email, "");
-        assert_eq!(c.authored_at, Utc.timestamp_opt(0, 0).unwrap());
+        assert_eq!(c.authored_at, None);
     }
 
     #[test]
@@ -1275,7 +1273,7 @@ mod tests {
         let tip = snapshot.commits.last().expect("graph non-empty");
         assert_eq!(tip.author_name, "CLI Bot");
         assert_eq!(tip.author_email, "cli@example.com");
-        assert!(tip.authored_at.timestamp() > 0);
+        assert!(tip.authored_at.is_some());
     }
 
     #[test]
@@ -1307,10 +1305,63 @@ mod tests {
             .unwrap();
 
         let snapshot = load_graph_with_squash_annotations(dir, GraphLoadOptions::default()).unwrap();
+        assert!(matches!(
+            snapshot.source,
+            crate::git::graph::GraphSource::Gleisbau
+        ));
         let tip = snapshot.commits.last().expect("graph non-empty");
         assert_eq!(tip.author_name, "Gleisbau Bot");
         assert_eq!(tip.author_email, "gleisbau@example.com");
-        assert!(tip.authored_at.timestamp() > 0);
+        assert!(tip.authored_at.is_some());
+    }
+
+    #[test]
+    fn git_cli_loader_preserves_control_characters_in_author_fields() {
+        use crate::git::graph::{load_graph_with_squash_annotations, GraphLoadOptions};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let init = std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(init.status.success(), "git init failed");
+
+        let author_name = "CLI\x1fBot";
+        let author_email = "cli\x1f@example.com";
+        for (key, value) in [("user.email", author_email), ("user.name", author_name)] {
+            let configured = std::process::Command::new("git")
+                .args(["config", key, value])
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(configured.status.success(), "git config {key} failed");
+        }
+        let committed = std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "tip"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(committed.status.success(), "git commit failed");
+
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let head_oid = String::from_utf8(head.stdout).unwrap().trim().to_string();
+        std::fs::write(dir.join(".git/shallow"), format!("{head_oid}\n")).unwrap();
+
+        let snapshot =
+            load_graph_with_squash_annotations(dir, GraphLoadOptions::default()).unwrap();
+        assert!(matches!(
+            snapshot.source,
+            crate::git::graph::GraphSource::GitCliFallback { .. }
+        ));
+        let tip = snapshot.commits.last().expect("graph non-empty");
+        assert_eq!(tip.author_name, author_name);
+        assert_eq!(tip.author_email, author_email);
     }
 
     #[test]
