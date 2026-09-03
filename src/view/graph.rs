@@ -249,6 +249,7 @@ mod tests {
                     }],
                     is_possible_squash_merge: false,
                     fuzzy_squash_match: None,
+                    ..GraphCommit::default()
                 },
                 GraphCommit {
                     oid: "2222222222222222222222222222222222222222".into(),
@@ -259,6 +260,7 @@ mod tests {
                     refs: vec![],
                     is_possible_squash_merge: false,
                     fuzzy_squash_match: None,
+                    ..GraphCommit::default()
                 },
             ],
             lines: vec![

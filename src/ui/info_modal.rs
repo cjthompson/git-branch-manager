@@ -160,6 +160,32 @@ fn graph_commit_fields(commit: &GraphCommit) -> Vec<InfoField> {
         });
     }
 
+    // NEW: Author row — single combined "Name <email>" format
+    let has_author_name = !commit.author_name.is_empty();
+    let has_author_email = !commit.author_email.is_empty();
+    if has_author_name || has_author_email {
+        let author_value = match (has_author_name, has_author_email) {
+            (true, true) => format!("{} <{}>", commit.author_name, commit.author_email),
+            (true, false) => commit.author_name.clone(),
+            (false, true) => commit.author_email.clone(),
+            (false, false) => unreachable!(),
+        };
+        fields.push(InfoField {
+            label: "Author",
+            value: author_value,
+        });
+    }
+
+    // NEW: Date row — absolute local time + relative age, unless epoch
+    if commit.authored_at.timestamp() != 0 {
+        let local = crate::types::format_local_absolute(&commit.authored_at);
+        let age = crate::types::format_age(&commit.authored_at);
+        fields.push(InfoField {
+            label: "Date",
+            value: format!("{local} ({age})"),
+        });
+    }
+
     if let Some(branch) = &commit.branch {
         fields.push(InfoField {
             label: "Branch",
@@ -932,7 +958,7 @@ fn draw_info_modal_narrow(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use chrono::{Duration, TimeZone, Utc};
 
     #[test]
     fn info_field_accessors_match_built_fields() {
@@ -953,5 +979,74 @@ mod tests {
             );
         }
         assert_eq!(row.info_field(fields.len()), None);
+    }
+
+    #[test]
+    fn graph_commit_fields_includes_author_and_date_rows() {
+        let commit = GraphCommit {
+            oid: "abcdef1234567".into(),
+            summary: "test".into(),
+            parents: vec![],
+            lane: None,
+            branch: None,
+            refs: vec![],
+            is_possible_squash_merge: false,
+            fuzzy_squash_match: None,
+            author_name: "Jane Doe".into(),
+            author_email: "jane@example.com".into(),
+            authored_at: Utc::now() - Duration::hours(3),
+        };
+        let fields = graph_commit_fields(&commit);
+        let labels: Vec<&str> = fields.iter().map(|f| f.label).collect();
+        assert!(labels.contains(&"Author"), "expected Author field, got {labels:?}");
+        assert!(labels.contains(&"Date"), "expected Date field, got {labels:?}");
+        let author = fields.iter().find(|f| f.label == "Author").unwrap();
+        assert_eq!(author.value, "Jane Doe <jane@example.com>");
+        let date = fields.iter().find(|f| f.label == "Date").unwrap();
+        assert!(date.value.contains("ago"), "expected relative age, got: {}", date.value);
+    }
+
+    #[test]
+    fn graph_commit_fields_omits_author_row_when_both_name_and_email_empty() {
+        let commit = GraphCommit {
+            oid: "x".into(),
+            summary: "s".into(),
+            parents: vec![],
+            lane: None,
+            branch: None,
+            refs: vec![],
+            is_possible_squash_merge: false,
+            fuzzy_squash_match: None,
+            author_name: "".into(),
+            author_email: "".into(),
+            authored_at: Utc::now(),
+        };
+        let labels: Vec<&str> = graph_commit_fields(&commit)
+            .iter()
+            .map(|f| f.label)
+            .collect();
+        assert!(!labels.contains(&"Author"));
+    }
+
+    #[test]
+    fn graph_commit_fields_omits_date_row_when_authored_at_is_epoch() {
+        let commit = GraphCommit {
+            oid: "x".into(),
+            summary: "s".into(),
+            parents: vec![],
+            lane: None,
+            branch: None,
+            refs: vec![],
+            is_possible_squash_merge: false,
+            fuzzy_squash_match: None,
+            author_name: "X".into(),
+            author_email: "x@y".into(),
+            authored_at: Utc.timestamp_opt(0, 0).unwrap(),
+        };
+        let labels: Vec<&str> = graph_commit_fields(&commit)
+            .iter()
+            .map(|f| f.label)
+            .collect();
+        assert!(!labels.contains(&"Date"));
     }
 }

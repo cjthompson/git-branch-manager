@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
+use chrono::{DateTime, TimeZone, Utc};
+
 use crate::git::cache::BranchCache;
 
 /// An app-owned graph payload. It deliberately contains no repository handles
@@ -50,7 +52,7 @@ pub enum GraphSource {
     GitCliFallback { cause: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GraphCommit {
     pub oid: String,
     pub summary: String,
@@ -69,6 +71,14 @@ pub struct GraphCommit {
     /// `is_possible_squash_merge == true` — Option 6 is additive and defers
     /// to the exact-match tier.
     pub fuzzy_squash_match: Option<FuzzySquashMatch>,
+    /// Author name from `git2::Signature::name()` / `%an`.
+    pub author_name: String,
+    /// Author email from `git2::Signature::email()` / `%ae`.
+    pub author_email: String,
+    /// Author date (when the change was originally made) in UTC.
+    /// Git's "%aI" / `commit.author().when()`. Falls back to the Unix
+    /// epoch when git returns an unparseable time.
+    pub authored_at: DateTime<Utc>,
 }
 
 /// A fuzzy (non-exact) possible-squash-merge signal for a single base commit,
@@ -285,14 +295,21 @@ fn load_with_gleisbau(
         .iter()
         .map(|info| {
             let oid = info.oid.to_string();
-            let summary = graph
+            let commit = graph
                 .repository
                 .find_commit(info.oid)
-                .map_err(|error| error.message().to_string())?
+                .map_err(|error| error.message().to_string())?;
+            let summary = commit
                 .summary()
                 .map_err(|error| error.message().to_string())?
                 .unwrap_or_default()
                 .to_string();
+            let author = commit.author();
+            let author_time = author.when();
+            let authored_at = Utc
+                .timestamp_opt(author_time.seconds(), 0)
+                .single()
+                .unwrap_or_else(|| Utc.timestamp_opt(0, 0).unwrap());
             let lane = info
                 .branch_trace
                 .and_then(|trace| graph.layout.track_visual(trace))
@@ -307,6 +324,9 @@ fn load_with_gleisbau(
                 refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
                 is_possible_squash_merge: false,
                 fuzzy_squash_match: None,
+                author_name: author.name().unwrap_or("").to_string(),
+                author_email: author.email().unwrap_or("").to_string(),
+                authored_at,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -355,7 +375,7 @@ fn load_with_git_cli(
         "--decorate",
         "--oneline",
         "--no-color",
-        "--format=%x1e%H%x1f%P%x1f%s",
+        "--format=%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%s",
         &max_count,
     ]);
     if options.include_remotes {
@@ -384,8 +404,8 @@ fn load_with_git_cli(
         };
 
         let graph = line[..record_start].to_string();
-        let fields: Vec<_> = line[record_start + 1..].splitn(3, '\x1f').collect();
-        if fields.len() != 3 || fields[0].is_empty() {
+        let fields: Vec<_> = line[record_start + 1..].splitn(6, '\x1f').collect();
+        if fields.len() != 6 || fields[0].is_empty() {
             return Err(format!("could not parse git log record: {line}"));
         }
 
@@ -395,15 +415,21 @@ fn load_with_git_cli(
             .chars()
             .position(|character| character == '*')
             .map(|index| index / 2);
+        let authored_at = DateTime::parse_from_rfc3339(fields[4])
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc.timestamp_opt(0, 0).unwrap());
         commits.push(GraphCommit {
             oid: oid.clone(),
-            summary: fields[2].to_string(),
+            summary: fields[5].to_string(),
             parents: fields[1].split_whitespace().map(str::to_string).collect(),
             lane,
             branch: None,
             refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
             is_possible_squash_merge: false,
             fuzzy_squash_match: None,
+            author_name: fields[2].to_string(),
+            author_email: fields[3].to_string(),
+            authored_at,
         });
         lines.push(GraphLine {
             graph,
@@ -1182,12 +1208,98 @@ mod tests {
             oid: oid.into(),
             summary: oid.into(),
             parents: parents.iter().map(|parent| (*parent).into()).collect(),
-            lane: None,
-            branch: None,
-            refs: Vec::new(),
-            is_possible_squash_merge: false,
-            fuzzy_squash_match: None,
+            ..GraphCommit::default()
         }
+    }
+
+    #[test]
+    fn graph_commit_default_has_empty_author_fields_and_epoch_date() {
+        use chrono::TimeZone;
+        let c = GraphCommit::default();
+        assert_eq!(c.author_name, "");
+        assert_eq!(c.author_email, "");
+        assert_eq!(c.authored_at, Utc.timestamp_opt(0, 0).unwrap());
+    }
+
+    #[test]
+    fn git_cli_loader_parses_author_and_author_date_from_format() {
+        use crate::git::graph::{load_graph_with_squash_annotations, GraphLoadOptions};
+
+        // Build a repo where gleisbau fails (shallow). Forces CLI fallback.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "cli@example.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "CLI Bot"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "tip"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let head_oid = String::from_utf8(head.stdout).unwrap().trim().to_string();
+        std::fs::write(dir.join(".git/shallow"), format!("{head_oid}\n")).unwrap();
+
+        let snapshot = load_graph_with_squash_annotations(dir, GraphLoadOptions::default()).unwrap();
+        assert!(matches!(
+            snapshot.source,
+            crate::git::graph::GraphSource::GitCliFallback { .. }
+        ));
+        let tip = snapshot.commits.last().expect("graph non-empty");
+        assert_eq!(tip.author_name, "CLI Bot");
+        assert_eq!(tip.author_email, "cli@example.com");
+        assert!(tip.authored_at.timestamp() > 0);
+    }
+
+    #[test]
+    fn gleisbau_loader_populates_author_and_author_date() {
+        use crate::git::graph::{load_graph_with_squash_annotations, GraphLoadOptions};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let init = std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(init.status.success(), "git init failed");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "gleisbau@example.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Gleisbau Bot"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "tip"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        let snapshot = load_graph_with_squash_annotations(dir, GraphLoadOptions::default()).unwrap();
+        let tip = snapshot.commits.last().expect("graph non-empty");
+        assert_eq!(tip.author_name, "Gleisbau Bot");
+        assert_eq!(tip.author_email, "gleisbau@example.com");
+        assert!(tip.authored_at.timestamp() > 0);
     }
 
     #[test]

@@ -866,6 +866,7 @@ mod tests {
                 }],
                 is_possible_squash_merge: false,
                 fuzzy_squash_match: None,
+                ..GraphCommit::default()
             }],
             lines: vec![GraphLine {
                 graph: "*".into(),
@@ -945,6 +946,7 @@ mod tests {
                 }],
                 is_possible_squash_merge: false,
                 fuzzy_squash_match: None,
+                ..GraphCommit::default()
             }],
             lines: vec![GraphLine {
                 graph: "*".into(),
@@ -1014,6 +1016,7 @@ mod tests {
                 }],
                 is_possible_squash_merge: false,
                 fuzzy_squash_match: None,
+                ..GraphCommit::default()
             }],
             lines: vec![GraphLine {
                 graph: "*".into(),
@@ -1086,6 +1089,7 @@ mod tests {
                 ],
                 is_possible_squash_merge: false,
                 fuzzy_squash_match: None,
+                ..GraphCommit::default()
             }],
             lines: vec![GraphLine {
                 graph: "*".into(),
@@ -1170,6 +1174,7 @@ mod tests {
             ],
             is_possible_squash_merge: false,
             fuzzy_squash_match: None,
+            ..GraphCommit::default()
         };
         let text: String = ref_pane_spans(&commit, 30, false, &Theme::dark(), &SymbolSet::ascii())
             .iter()
@@ -1196,6 +1201,7 @@ mod tests {
             refs: vec![],
             is_possible_squash_merge: false,
             fuzzy_squash_match: None,
+            ..GraphCommit::default()
         };
         let live = GraphCommit {
             oid: "live".into(),
@@ -1211,6 +1217,7 @@ mod tests {
             }],
             is_possible_squash_merge: false,
             fuzzy_squash_match: None,
+            ..GraphCommit::default()
         };
         let theme = Theme::dark();
         let symbols = SymbolSet::ascii();
@@ -1251,6 +1258,7 @@ mod tests {
                     refs: vec![],
                     is_possible_squash_merge: false,
                     fuzzy_squash_match: None,
+                    ..GraphCommit::default()
                 },
                 GraphCommit {
                     oid: "abcdef1234567890".into(),
@@ -1261,6 +1269,7 @@ mod tests {
                     refs: vec![],
                     is_possible_squash_merge: false,
                     fuzzy_squash_match: None,
+                    ..GraphCommit::default()
                 },
             ],
             lines: vec![
@@ -1313,6 +1322,7 @@ mod tests {
                     refs: vec![],
                     is_possible_squash_merge: false,
                     fuzzy_squash_match: None,
+                    ..GraphCommit::default()
                 },
                 GraphCommit {
                     oid: "2222222222222222".into(),
@@ -1323,6 +1333,7 @@ mod tests {
                     refs: vec![],
                     is_possible_squash_merge: false,
                     fuzzy_squash_match: None,
+                    ..GraphCommit::default()
                 },
             ],
             lines: vec![
@@ -1374,6 +1385,7 @@ mod tests {
                     refs: vec![],
                     is_possible_squash_merge: false,
                     fuzzy_squash_match: None,
+                    ..GraphCommit::default()
                 },
                 GraphCommit {
                     oid: "2222222222222222".into(),
@@ -1384,6 +1396,7 @@ mod tests {
                     refs: vec![],
                     is_possible_squash_merge: true,
                     fuzzy_squash_match: None,
+                    ..GraphCommit::default()
                 },
             ],
             lines: vec![
@@ -1586,6 +1599,7 @@ mod tests {
             refs: vec![],
             is_possible_squash_merge: false,
             fuzzy_squash_match: None,
+            ..GraphCommit::default()
         };
         let lanes_by_oid = HashMap::from([("feature-parent", Some(3))]);
         let origin_lane = merge_origin_lane(Some(&merge), &lanes_by_oid);

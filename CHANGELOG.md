@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-02
+
+### Graph Commit Details: Author + Local-Timezone Date (P004)
+- Final acceptance pass
+- Modal renders Author + Date rows
+- Cross-loader agreement test for author + date
+- git CLI fallback loader populates author + author date
+- gleisbau loader populates author + author date
+- Add author + date fields to GraphCommit
+- Refactor 25 test fixtures to use ..GraphCommit::default()
+- Add #[derive(Default)] to GraphCommit
+- Add format_local_absolute helper
+
 ## 2026-08-31
 
 ### Fixes

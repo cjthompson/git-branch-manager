@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -534,6 +534,14 @@ pub fn format_age_short(date: &DateTime<Utc>) -> String {
     format!("{years}y")
 }
 
+/// Format `date` in the user's local timezone, including the UTC offset.
+/// Example output: `"2026-09-02 14:23:45 -07:00"`.
+pub fn format_local_absolute(date: &DateTime<Utc>) -> String {
+    date.with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S %:z")
+        .to_string()
+}
+
 fn plural(n: i64, unit: &str) -> String {
     if n == 1 {
         format!("{n} {unit} ago")
@@ -593,6 +601,34 @@ mod tests {
     fn format_age_short_years() {
         let date = Utc::now() - chrono::Duration::days(400);
         assert_eq!(format_age_short(&date), "1y");
+    }
+
+    #[test]
+    fn format_local_absolute_renders_in_local_timezone_with_offset() {
+        use chrono::{Local, TimeZone};
+        let date = Utc.with_ymd_and_hms(2026, 9, 2, 21, 23, 45).unwrap();
+        let rendered = format_local_absolute(&date);
+
+        // Compute the expected rendering using the same Local timezone the
+        // implementation uses — works in any offset including half/quarter-hour
+        // zones (India +05:30, Nepal +05:45, Newfoundland -03:30, Iran +03:30, etc.).
+        let expected_local = date.with_timezone(&Local);
+        let expected_prefix = expected_local.format("%Y-%m-%d %H:%M:%S ").to_string();
+        assert!(
+            rendered.starts_with(&expected_prefix),
+            "expected local prefix {expected_prefix:?}, got {rendered:?}"
+        );
+        assert!(
+            rendered.len() == expected_prefix.len() + 6,
+            "expected trailing 6-char offset, got {rendered:?}"
+        );
+
+        // Final 6 chars must be a UTC offset like -07:00, +05:30, +00:00
+        let suffix = &rendered[rendered.len() - 6..];
+        assert!(
+            (suffix.starts_with('+') || suffix.starts_with('-')) && suffix.contains(':'),
+            "expected ±HH:MM suffix, got: {suffix}"
+        );
     }
 
     #[test]

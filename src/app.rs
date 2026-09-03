@@ -3681,6 +3681,7 @@ mod tests {
                 refs,
                 is_possible_squash_merge: false,
                 fuzzy_squash_match: None,
+                ..graph::GraphCommit::default()
             }],
             lines: vec![graph::GraphLine {
                 graph: "*".into(),
@@ -3888,6 +3889,7 @@ mod tests {
                     refs: vec![],
                     is_possible_squash_merge: false,
                     fuzzy_squash_match: None,
+                    ..graph::GraphCommit::default()
                 },
                 graph::GraphCommit {
                     oid: "2222222222222222222222222222222222222222".into(),
@@ -3898,6 +3900,7 @@ mod tests {
                     refs: vec![],
                     is_possible_squash_merge: false,
                     fuzzy_squash_match: None,
+                    ..graph::GraphCommit::default()
                 },
             ],
             lines: vec![
@@ -5106,6 +5109,7 @@ mod tests {
                 }],
                 is_possible_squash_merge: false,
                 fuzzy_squash_match: None,
+                ..graph::GraphCommit::default()
             }],
             lines: vec![graph::GraphLine {
                 graph: "*".into(),
@@ -5139,6 +5143,7 @@ mod tests {
                 refs: vec![],
                 is_possible_squash_merge: false,
                 fuzzy_squash_match: None,
+                ..graph::GraphCommit::default()
             }],
             lines: vec![graph::GraphLine {
                 graph: "*".into(),
@@ -5205,6 +5210,7 @@ mod tests {
                 refs: vec![],
                 is_possible_squash_merge: false,
                 fuzzy_squash_match: None,
+                ..graph::GraphCommit::default()
             }],
             lines: vec![graph::GraphLine {
                 graph: "*".into(),

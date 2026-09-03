@@ -378,6 +378,49 @@ fn test_graph_base_branch_owns_first_parent_chain_with_retained_merged_ref() {
 }
 
 #[test]
+fn test_graph_both_loaders_agree_on_author_and_author_date() {
+    use git_branch_manager::git::graph::{load_graph_with_squash_annotations, GraphLoadOptions};
+
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    let initial_oid = repo.head().unwrap().target().unwrap();
+    run_git(dir, &["config", "user.email", "agree@example.com"]);
+    run_git(dir, &["config", "user.name", "Agree Bot"]);
+    run_git(dir, &["commit", "--allow-empty", "-m", "comparison tip"]);
+
+    let gleisbau = load_graph_with_squash_annotations(dir, GraphLoadOptions::default())
+        .expect("gleisbau should succeed");
+
+    std::fs::write(dir.join(".git/shallow"), format!("{initial_oid}\n")).unwrap();
+    let fallback = load_graph_with_squash_annotations(dir, GraphLoadOptions::default())
+        .expect("fallback should succeed");
+
+    assert_eq!(
+        gleisbau.commits.len(),
+        fallback.commits.len(),
+        "commit count differs between loaders"
+    );
+    for (g, f) in gleisbau.commits.iter().zip(fallback.commits.iter()) {
+        assert_eq!(g.oid, f.oid);
+        assert_eq!(
+            g.author_name, f.author_name,
+            "author_name mismatch on {}",
+            g.oid
+        );
+        assert_eq!(
+            g.author_email, f.author_email,
+            "author_email mismatch on {}",
+            g.oid
+        );
+        assert_eq!(
+            g.authored_at, f.authored_at,
+            "authored_at mismatch on {}",
+            g.oid
+        );
+    }
+}
+
+#[test]
 fn test_graph_local_branch_owns_track_before_matching_remote() {
     let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
 
