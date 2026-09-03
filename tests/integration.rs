@@ -426,6 +426,197 @@ fn test_graph_both_loaders_agree_on_author_and_author_date() {
 }
 
 #[test]
+fn test_graph_default_branch_renders_in_column_zero() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/long-branch"]);
+    for i in 0..8 {
+        run_git(
+            dir,
+            &["commit", "--allow-empty", "-m", &format!("feature commit {i}")],
+        );
+    }
+
+    run_git(dir, &["checkout", "main"]);
+    for i in 0..3 {
+        run_git(
+            dir,
+            &["commit", "--allow-empty", "-m", &format!("main commit {i}")],
+        );
+    }
+
+    run_git(dir, &["checkout", "-b", "release/y"]);
+    run_git(dir, &["commit", "--allow-empty", "-m", "release commit 0"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let options = graph::GraphLoadOptions {
+        base_branch: Some("main".into()),
+        ..graph::GraphLoadOptions::default()
+    };
+    let snapshot = graph::load_graph_with_squash_annotations(dir, options)
+        .expect("graph loader should place the default branch in column 0");
+
+    let main_commits: Vec<_> = snapshot
+        .commits
+        .iter()
+        .filter(|commit| commit.summary.starts_with("main commit "))
+        .collect();
+    assert_eq!(main_commits.len(), 3, "all 3 main commits should be in the graph");
+    for commit in main_commits {
+        assert_eq!(
+            commit.lane,
+            Some(0),
+            "main commit {:?} should sit in column 0",
+            commit.summary
+        );
+    }
+
+    let feature_commit = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "feature commit 0")
+        .expect("feature commit 0 should be in graph");
+    assert_ne!(
+        feature_commit.lane,
+        Some(0),
+        "the longer feature branch should not trivially land in column 0"
+    );
+}
+
+#[test]
+fn test_graph_base_branch_with_special_chars_lands_in_column_zero() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "release/1.0"]);
+    for i in 0..3 {
+        run_git(
+            dir,
+            &[
+                "commit",
+                "--allow-empty",
+                "-m",
+                &format!("release1.0 commit {i}"),
+            ],
+        );
+    }
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["checkout", "-b", "release1X0"]);
+    run_git(dir, &["commit", "--allow-empty", "-m", "release1X0 commit 0"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let options = graph::GraphLoadOptions {
+        base_branch: Some("release/1.0".into()),
+        ..graph::GraphLoadOptions::default()
+    };
+    let snapshot = graph::load_graph_with_squash_annotations(dir, options)
+        .expect("graph loader should place the special-char base branch in column 0");
+
+    let base_commits: Vec<_> = snapshot
+        .commits
+        .iter()
+        .filter(|commit| commit.summary.starts_with("release1.0 commit "))
+        .collect();
+    assert_eq!(
+        base_commits.len(),
+        3,
+        "all 3 release/1.0 commits should be in the graph"
+    );
+    for commit in base_commits {
+        assert_eq!(
+            commit.lane,
+            Some(0),
+            "release/1.0 commit {:?} should sit in column 0",
+            commit.summary
+        );
+    }
+
+    let sibling_commit = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "release1X0 commit 0")
+        .expect("release1X0 commit should be in graph");
+    assert_ne!(
+        sibling_commit.lane,
+        Some(0),
+        "an unescaped regex must not let release1X0 match the release/1.0 base pattern"
+    );
+}
+
+#[test]
+fn test_graph_base_branch_lands_in_column_zero_with_diverged_remote() {
+    let (tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    let base_dir = tmpdir.path();
+    let remote_dir = base_dir.join("remote.git");
+
+    // Advance origin/main independently via a second clone, so work_dir's
+    // local main and origin/main diverge from a shared ancestor.
+    let advance_dir = base_dir.join("advance");
+    run_git(
+        base_dir,
+        &["clone", remote_dir.to_str().unwrap(), "advance"],
+    );
+    run_git(&advance_dir, &["config", "user.name", "Test User"]);
+    run_git(&advance_dir, &["config", "user.email", "test@example.com"]);
+    run_git(&advance_dir, &["commit", "--allow-empty", "-m", "remote ahead"]);
+    run_git(&advance_dir, &["push", "origin", "main"]);
+
+    // Pull origin/main's new tip into work_dir's remote-tracking ref without
+    // touching local main.
+    run_git(&work_dir, &["fetch", "origin"]);
+
+    // Diverge local main from origin/main by adding local-only commits.
+    run_git(
+        &work_dir,
+        &["commit", "--allow-empty", "-m", "main commit 0"],
+    );
+    run_git(
+        &work_dir,
+        &["commit", "--allow-empty", "-m", "main commit 1"],
+    );
+
+    let options = graph::GraphLoadOptions {
+        include_remotes: true,
+        base_branch: Some("main".into()),
+        ..graph::GraphLoadOptions::default()
+    };
+    let snapshot = graph::load_graph_with_squash_annotations(&work_dir, options)
+        .expect("graph loader should place local main in column 0 despite a diverged remote");
+
+    let local_main_commits: Vec<_> = snapshot
+        .commits
+        .iter()
+        .filter(|commit| commit.summary.starts_with("main commit "))
+        .collect();
+    assert_eq!(
+        local_main_commits.len(),
+        2,
+        "both local main commits should be in the graph"
+    );
+    for commit in local_main_commits {
+        assert_eq!(
+            commit.lane,
+            Some(0),
+            "local main commit {:?} should sit in column 0",
+            commit.summary
+        );
+    }
+
+    let remote_ahead_commit = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.summary == "remote ahead")
+        .expect("origin/main's diverged commit should be in graph");
+    assert_ne!(
+        remote_ahead_commit.lane,
+        Some(0),
+        "the diverged origin/main track must not also claim column 0"
+    );
+}
+
+#[test]
 fn test_graph_local_branch_owns_track_before_matching_remote() {
     let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
 
@@ -1474,8 +1665,8 @@ fn test_checkout_branch_with_stash() {
 /// plus remote-only and local+remote branches for testing.
 ///
 /// Returns (tmpdir, work_dir path, Repository for the clone).
-fn setup_remote_test_repo() -> (tempfile::TempDir, std::path::PathBuf, git2::Repository) {
-    let tmpdir = tempfile::tempdir().expect("failed to create tmpdir");
+fn setup_remote_test_repo() -> (TestDir, std::path::PathBuf, git2::Repository) {
+    let tmpdir = TestDir::new(tempfile::tempdir().expect("failed to create tmpdir"));
     let base_dir = tmpdir.path();
 
     // Bare remote

@@ -273,23 +273,56 @@ fn load_with_gleisbau(
     )?;
     let repository =
         gleisbau::Repository::open(repo_path).map_err(|error| error.message().to_string())?;
-    let graph = gleisbau::graph::Builder::new()
+    let mut graph = gleisbau::graph::Builder::new()
         .with_repository(repository)
         .with_settings(Rc::clone(&settings))
         .with_max_count(options.max_count)
         .build()?;
-    let heights = vec![1; graph.layout.commit_count()];
+
+    // Gleisbau intentionally strips "origin/" before applying branch order
+    // patterns, so ^main$ puts both main and origin/main in the same order
+    // group. When those refs diverge, ShortestFirst can then place the remote
+    // track in column zero. Keep the remote commits in the graph, but make
+    // the matching remote base track non-matching for this layout pass.
+    let remote_base_index = if options.include_remotes {
+        options.base_branch.as_deref().and_then(|base| {
+            let remote_name = format!("origin/{base}");
+            graph
+                .tracks
+                .all_branches
+                .iter()
+                .position(|branch| branch.is_remote && branch.name == remote_name)
+        })
+    } else {
+        None
+    };
+    let layout = if let Some(index) = remote_base_index {
+        let original_name = graph.tracks.all_branches[index].name.clone();
+        let layout_name = format!("__gbm_remote_base__/{original_name}");
+        graph.tracks.all_branches[index].name = layout_name;
+        let layout = gleisbau::layout::layout_track_range(
+            &graph.tracks,
+            0..graph.tracks.commits.len(),
+            &settings,
+        );
+        graph.tracks.all_branches[index].name = original_name;
+        layout?
+    } else {
+        graph.layout
+    };
+
+    let heights = vec![1; layout.commit_count()];
     let rendered = gleisbau::print::unicode::print_graph_terminal(
         &settings,
         &graph.tracks,
-        &graph.layout,
+        &layout,
         &heights,
     );
     let mut line_to_commit = HashMap::new();
     for (relative_index, line_index) in rendered.commit2line.iter().copied().enumerate() {
         line_to_commit.insert(
             line_index,
-            graph.layout.commit_index_start() + relative_index,
+            layout.commit_index_start() + relative_index,
         );
     }
 
@@ -313,7 +346,7 @@ fn load_with_gleisbau(
             let authored_at = Utc.timestamp_opt(author_time.seconds(), 0).single();
             let lane = info
                 .branch_trace
-                .and_then(|trace| graph.layout.track_visual(trace))
+                .and_then(|trace| layout.track_visual(trace))
                 .and_then(|visual| visual.column);
 
             Ok(GraphCommit {
