@@ -79,6 +79,13 @@ pub fn render_graph_view(
         (None, inner)
     };
 
+    // Render a one-line banner whenever the graph data was produced by the
+    // git-CLI fallback path instead of gleisbau. `snapshot.source` carries the
+    // underlying cause string (compile-time exclusion, runtime build error,
+    // gleisbau disabled via config, etc.) — we surface it verbatim so the user
+    // sees *why* they're on the degraded path without needing to scroll logs.
+    // Suppressed on single-line viewports so the rows still get a chance to
+    // render; on taller panes the banner takes the top row above the graph.
     if let (Some(banner_area), Some(cause)) = (banner_area, fallback) {
         frame.render_widget(
             Paragraph::new(Line::from(vec![

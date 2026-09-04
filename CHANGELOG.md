@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-09-06
+
+### Force default branch into column 0 of the Graph view (P003)
+- Verify: cargo build / cargo test / cargo clippy / manual visual check of Graph view (#verification)
+
+## 2026-09-04
+
+### Force default branch into column 0 of the Graph view (P003)
+- Bump Cargo.toml version to 0.9.0-dev3 and run cargo build (#release)
+- Add source-code comment above the fallback banner in src/ui/graph_render.rs (#graph, #ui)
+
+## 2026-09-03
+
+### Force default branch into column 0 of the Graph view (P003)
+- Add 3 integration tests for column-0 placement in tests/integration.rs (basic, special chars, diverged remote) (#graph, #tests)
+
 ## 2026-09-02
 
 ### Graph Commit Details: Author + Local-Timezone Date (P004)
