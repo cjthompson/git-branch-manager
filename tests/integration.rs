@@ -253,8 +253,9 @@ fn test_load_graph_preserves_merge_lanes_and_local_refs() {
         ],
     );
 
-    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
-        .expect("graph loader should handle an ordinary merged local branch");
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+            .expect("graph loader should handle an ordinary merged local branch");
 
     assert!(matches!(snapshot.source, graph::GraphSource::Gleisbau));
     assert!(snapshot
@@ -290,8 +291,9 @@ fn test_graph_branch_labels_follow_visual_branch_tracks() {
         &["merge", "--no-ff", "release/0.3", "-m", "merge release/0.3"],
     );
 
-    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
-        .expect("graph loader should preserve live branch tracks");
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+            .expect("graph loader should preserve live branch tracks");
     let release_commit = snapshot
         .commits
         .iter()
@@ -436,7 +438,12 @@ fn test_graph_default_branch_renders_in_column_zero() {
     for i in 0..8 {
         run_git(
             dir,
-            &["commit", "--allow-empty", "-m", &format!("feature commit {i}")],
+            &[
+                "commit",
+                "--allow-empty",
+                "-m",
+                &format!("feature commit {i}"),
+            ],
         );
     }
 
@@ -464,7 +471,11 @@ fn test_graph_default_branch_renders_in_column_zero() {
         .iter()
         .filter(|commit| commit.summary.starts_with("main commit "))
         .collect();
-    assert_eq!(main_commits.len(), 3, "all 3 main commits should be in the graph");
+    assert_eq!(
+        main_commits.len(),
+        3,
+        "all 3 main commits should be in the graph"
+    );
     for commit in main_commits {
         assert_eq!(
             commit.lane,
@@ -506,7 +517,10 @@ fn test_graph_base_branch_with_special_chars_lands_in_column_zero() {
 
     run_git(dir, &["checkout", "main"]);
     run_git(dir, &["checkout", "-b", "release1X0"]);
-    run_git(dir, &["commit", "--allow-empty", "-m", "release1X0 commit 0"]);
+    run_git(
+        dir,
+        &["commit", "--allow-empty", "-m", "release1X0 commit 0"],
+    );
     run_git(dir, &["checkout", "main"]);
 
     let options = graph::GraphLoadOptions {
@@ -562,7 +576,10 @@ fn test_graph_base_branch_lands_in_column_zero_with_diverged_remote() {
     );
     run_git(&advance_dir, &["config", "user.name", "Test User"]);
     run_git(&advance_dir, &["config", "user.email", "test@example.com"]);
-    run_git(&advance_dir, &["commit", "--allow-empty", "-m", "remote ahead"]);
+    run_git(
+        &advance_dir,
+        &["commit", "--allow-empty", "-m", "remote ahead"],
+    );
     run_git(&advance_dir, &["push", "origin", "main"]);
 
     // Pull origin/main's new tip into work_dir's remote-tracking ref without
@@ -682,8 +699,9 @@ fn test_graph_does_not_expose_a_deleted_merge_branch_as_a_live_ref() {
     );
     run_git(dir, &["branch", "-D", "worktree-agent-deleted"]);
 
-    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
-        .expect("graph loader should handle deleted merge branches");
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+            .expect("graph loader should handle deleted merge branches");
     let deleted_commit = snapshot
         .commits
         .iter()
@@ -702,8 +720,11 @@ fn test_graph_does_not_expose_a_deleted_merge_branch_as_a_live_ref() {
 #[test]
 fn test_graph_labels_deleted_merge_branch_from_conventional_subject() {
     let tmpdir = setup_graph_label_fixture();
-    let snapshot = graph::load_graph_with_squash_annotations(tmpdir.path(), graph::GraphLoadOptions::default())
-        .expect("graph loader should preserve the composed fixture");
+    let snapshot = graph::load_graph_with_squash_annotations(
+        tmpdir.path(),
+        graph::GraphLoadOptions::default(),
+    )
+    .expect("graph loader should preserve the composed fixture");
     let deleted_commit = snapshot
         .commits
         .iter()
@@ -722,8 +743,11 @@ fn test_graph_labels_deleted_merge_branch_from_conventional_subject() {
 #[test]
 fn test_graph_label_fixture_labels_nested_and_first_parent_tracks() {
     let tmpdir = setup_graph_label_fixture();
-    let snapshot = graph::load_graph_with_squash_annotations(tmpdir.path(), graph::GraphLoadOptions::default())
-        .expect("graph loader should preserve the composed fixture");
+    let snapshot = graph::load_graph_with_squash_annotations(
+        tmpdir.path(),
+        graph::GraphLoadOptions::default(),
+    )
+    .expect("graph loader should preserve the composed fixture");
 
     let nested_commit = snapshot
         .commits
@@ -799,8 +823,9 @@ fn test_load_graph_includes_remote_refs_only_when_requested() {
     run_git(&work_dir, &["checkout", "main"]);
     run_git(&work_dir, &["branch", "-D", "remote-only"]);
 
-    let local_only = graph::load_graph_with_squash_annotations(&work_dir, graph::GraphLoadOptions::default())
-        .expect("local graph load should succeed");
+    let local_only =
+        graph::load_graph_with_squash_annotations(&work_dir, graph::GraphLoadOptions::default())
+            .expect("local graph load should succeed");
     assert!(!local_only
         .commits
         .iter()
@@ -905,8 +930,9 @@ fn test_graph_refs_mark_only_linked_worktrees() {
         &["worktree", "add", &linked_path_string, "feature/linked"],
     );
 
-    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
-        .expect("graph load should include linked worktree metadata");
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+            .expect("graph load should include linked worktree metadata");
     let linked = snapshot
         .commits
         .iter()
@@ -933,8 +959,9 @@ fn test_load_graph_caps_history_at_five_hundred_commits() {
         run_git(dir, &["commit", "--allow-empty", "-m", &message]);
     }
 
-    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
-        .expect("bounded graph load should succeed");
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+            .expect("bounded graph load should succeed");
     assert_eq!(snapshot.commits.len(), 500);
     assert_eq!(snapshot.max_count, 500);
 }
@@ -946,8 +973,9 @@ fn test_load_graph_uses_cli_fallback_for_shallow_repository() {
     let head = repo.head().unwrap().target().unwrap();
     std::fs::write(dir.join(".git/shallow"), format!("{head}\n")).unwrap();
 
-    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
-        .expect("git CLI fallback should handle a shallow repository");
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+            .expect("git CLI fallback should handle a shallow repository");
 
     assert!(matches!(
         snapshot.source,
@@ -3200,6 +3228,70 @@ fn test_remove_worktree_reports_exact_file_count_parity() {
     );
 }
 
+/// `force_remove_worktree`'s dirty-tree path skips the clean-check (which
+/// returns before any `prog_tx.send`) — this is the one branch where a
+/// regression could silently drop every per-file progress tick.
+#[test]
+fn test_force_remove_worktree_dirty_reports_exact_file_count_parity() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["branch", "wt-dirty-parity"]);
+    run_git(
+        dir,
+        &[
+            "worktree",
+            "add",
+            ".worktrees/wt-dirty-parity",
+            "wt-dirty-parity",
+        ],
+    );
+    let wt_path = dir.join(".worktrees").join("wt-dirty-parity");
+
+    // Modify a TRACKED file so the tree is dirty — force_remove_worktree must
+    // still stream a per-file tick for every file, including this one.
+    std::fs::write(wt_path.join("README.md"), "# Modified in worktree\n").unwrap();
+    for i in 0..5 {
+        std::fs::write(wt_path.join(format!("extra{i}.txt")), b"x").unwrap();
+    }
+
+    let expected_file_total = count_files_for_test(&wt_path);
+    assert!(expected_file_total > 0);
+
+    let (prog_tx, prog_rx) = std::sync::mpsc::channel();
+    let cancel = AtomicBool::new(false);
+    let partial = AtomicBool::new(false);
+
+    let result =
+        operations::force_remove_worktree(dir, &wt_path, (0, 1), &prog_tx, &cancel, &partial);
+    assert!(
+        result.success,
+        "force_remove_worktree should succeed on dirty worktree: {}",
+        result.message
+    );
+
+    let per_file_ticks: Vec<(usize, usize)> = prog_rx
+        .try_iter()
+        .filter_map(|u| parse_file_progress(&u.current_item))
+        .collect();
+
+    assert!(
+        !per_file_ticks.is_empty(),
+        "expected at least one per-file progress tick on the dirty force-remove path"
+    );
+    assert!(
+        per_file_ticks
+            .iter()
+            .all(|(_, total)| *total == expected_file_total),
+        "every per-file tick must report the same file_total: {per_file_ticks:?}"
+    );
+    let max_done = per_file_ticks.iter().map(|(done, _)| *done).max().unwrap();
+    assert_eq!(
+        max_done, expected_file_total,
+        "the final per-file tick must report done == file_total exactly (no off-by-one)"
+    );
+}
+
 #[test]
 fn test_remove_worktree_mid_delete_cancellation_leaves_partial_state() {
     let (tmpdir, _repo) = setup_test_repo();
@@ -3259,6 +3351,54 @@ fn test_remove_worktree_mid_delete_cancellation_leaves_partial_state() {
     assert!(
         remaining > 0 && remaining < total_before,
         "some files must be removed, some must remain: {remaining}/{total_before}"
+    );
+}
+
+#[test]
+fn test_force_remove_worktree_reports_every_progress_increment_no_gaps() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["branch", "wt-progress"]);
+    run_git(
+        dir,
+        &["worktree", "add", ".worktrees/wt-progress", "wt-progress"],
+    );
+    let wt_path = dir.join(".worktrees").join("wt-progress");
+
+    // 100 extra files keeps file_total comfortably under 200, so
+    // batch_size = (file_total / 200).max(1) == 1 (remove_worktree_impl,
+    // src/git/operations.rs) and every single file removal emits its own tick.
+    for i in 0..100 {
+        std::fs::write(wt_path.join(format!("extra{i}.txt")), b"x").unwrap();
+    }
+
+    let expected_file_total = count_files_for_test(&wt_path);
+    assert!(expected_file_total > 0);
+
+    let (prog_tx, prog_rx) = std::sync::mpsc::channel();
+    let cancel = AtomicBool::new(false);
+    let partial = AtomicBool::new(false);
+
+    let result =
+        operations::force_remove_worktree(dir, &wt_path, (0, 1), &prog_tx, &cancel, &partial);
+    assert!(
+        result.success,
+        "force_remove_worktree should succeed: {}",
+        result.message
+    );
+
+    let mut dones: Vec<usize> = prog_rx
+        .try_iter()
+        .filter_map(|u| parse_file_progress(&u.current_item))
+        .map(|(done, _)| done)
+        .collect();
+    dones.sort_unstable();
+
+    let expected: Vec<usize> = (1..=expected_file_total).collect();
+    assert_eq!(
+        dones, expected,
+        "per-file progress ticks must cover every increment 1..=file_total with no gaps"
     );
 }
 
@@ -3787,10 +3927,7 @@ fn test_squash_scenario_02_multi_commit_branch_squashed_into_one_base_commit() {
 
     let repo = git2::Repository::open(dir).unwrap();
     let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
-    let feature = branches
-        .iter()
-        .find(|b| b.name == "feature/multi")
-        .unwrap();
+    let feature = branches.iter().find(|b| b.name == "feature/multi").unwrap();
     assert_eq!(feature.merge_status, MergeStatus::LocalSquashMerged);
 }
 
@@ -3870,7 +4007,12 @@ fn test_squash_scenario_04_branch_with_internal_merge_commit_then_squash_merged(
     run_git(dir, &["checkout", "feature/topology"]);
     run_git(
         dir,
-        &["merge", "feature/topology-sub", "-m", "merge sub into topology"],
+        &[
+            "merge",
+            "feature/topology-sub",
+            "-m",
+            "merge sub into topology",
+        ],
     );
 
     run_git(dir, &["checkout", "main"]);
@@ -3941,10 +4083,7 @@ fn test_squash_scenario_05_partial_landing_via_individual_cherry_picks() {
     )
     .expect("graph load should succeed");
     assert!(
-        snapshot
-            .commits
-            .iter()
-            .all(|c| !c.is_possible_squash_merge),
+        snapshot.commits.iter().all(|c| !c.is_possible_squash_merge),
         "partial cherry-pick coverage must not produce any possible-squash annotation \
          (known limitation: no single base commit's diff equals the branch's full aggregate diff)"
     );
@@ -4045,12 +4184,7 @@ fn test_squash_scenario_06_reordered_commits_and_hunk_order_insensitivity() {
             .stdout(std::process::Stdio::piped())
             .spawn()
             .expect("git patch-id should spawn");
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(diff_text)
-            .unwrap();
+        child.stdin.as_mut().unwrap().write_all(diff_text).unwrap();
         let out = child.wait_with_output().unwrap();
         String::from_utf8_lossy(&out.stdout)
             .split_whitespace()
@@ -4159,7 +4293,10 @@ fn test_squash_scenario_08a_conflict_resolution_extra_lines_fuzzy_positive() {
     let squash_content = "l1-b\nl2-b\nl3-b\nl4-b\nl5-b\nl6-b\nl7-resolved\nl8-main\n";
     std::fs::write(dir.join("f8a.txt"), squash_content).unwrap();
     run_git(dir, &["add", "f8a.txt"]);
-    run_git(dir, &["commit", "-m", "squash landing with extra resolution edit"]);
+    run_git(
+        dir,
+        &["commit", "-m", "squash landing with extra resolution edit"],
+    );
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
     // Expect A: not flagged under exact patch-id match (known false negative).
@@ -4229,7 +4366,14 @@ fn test_squash_scenario_08b_true_conflicting_hunks_manually_resolved() {
     run_git(dir, &["checkout", "main"]);
     let main_parent_content = "one-MAIN\ntwo-MAIN\nthree\nfour\nfive\n";
     std::fs::write(dir.join("f8b.txt"), main_parent_content).unwrap();
-    run_git(dir, &["commit", "-am", "main changes lines 1-2 independently (true conflict)"]);
+    run_git(
+        dir,
+        &[
+            "commit",
+            "-am",
+            "main changes lines 1-2 independently (true conflict)",
+        ],
+    );
     let main_parent = git_output(dir, &["rev-parse", "HEAD"]);
 
     // This is a true git-level conflict, so `git merge --squash` exits
@@ -4322,7 +4466,10 @@ fn test_squash_scenario_08c_merge_tree_confirmation_check() {
     let squash_content = "l1-b\nl2-b\nl3-b\nl4-b\nl5-b\nl6-b\nl7-resolved\nl8-main\n";
     std::fs::write(dir.join("f8c.txt"), squash_content).unwrap();
     run_git(dir, &["add", "f8c.txt"]);
-    run_git(dir, &["commit", "-m", "squash landing with extra resolution edit"]);
+    run_git(
+        dir,
+        &["commit", "-m", "squash landing with extra resolution edit"],
+    );
 
     let merge_tree_output = Command::new("git")
         .current_dir(dir)
@@ -4679,13 +4826,21 @@ fn test_squash_scenario_10b_rename_and_content_change() {
     let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();
 
-    std::fs::write(dir.join("original2.txt"), "line one\nline two\nline three\n").unwrap();
+    std::fs::write(
+        dir.join("original2.txt"),
+        "line one\nline two\nline three\n",
+    )
+    .unwrap();
     run_git(dir, &["add", "original2.txt"]);
     run_git(dir, &["commit", "-m", "add original2.txt"]);
 
     run_git(dir, &["checkout", "-b", "feature/rename-and-change"]);
     run_git(dir, &["mv", "original2.txt", "renamed2.txt"]);
-    std::fs::write(dir.join("renamed2.txt"), "line one\nline two CHANGED\nline three\n").unwrap();
+    std::fs::write(
+        dir.join("renamed2.txt"),
+        "line one\nline two CHANGED\nline three\n",
+    )
+    .unwrap();
     run_git(dir, &["commit", "-am", "rename and change content"]);
 
     run_git(dir, &["checkout", "main"]);
@@ -4733,7 +4888,9 @@ fn test_squash_scenario_10c_executable_bit_only_change() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(dir.join("script.sh")).unwrap().permissions();
+        let mut perms = std::fs::metadata(dir.join("script.sh"))
+            .unwrap()
+            .permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(dir.join("script.sh"), perms).unwrap();
     }
@@ -4828,16 +4985,8 @@ fn test_squash_scenario_11_whitespace_negative_unrelated() {
     let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();
 
-    std::fs::write(
-        dir.join("ws-a.txt"),
-        "alpha one\nalpha two\nalpha three\n",
-    )
-    .unwrap();
-    std::fs::write(
-        dir.join("ws-b.txt"),
-        "beta one\nbeta two\nbeta three\n",
-    )
-    .unwrap();
+    std::fs::write(dir.join("ws-a.txt"), "alpha one\nalpha two\nalpha three\n").unwrap();
+    std::fs::write(dir.join("ws-b.txt"), "beta one\nbeta two\nbeta three\n").unwrap();
     run_git(dir, &["add", "."]);
     run_git(dir, &["commit", "-m", "add ws-a.txt and ws-b.txt"]);
 
@@ -4847,16 +4996,22 @@ fn test_squash_scenario_11_whitespace_negative_unrelated() {
         "alpha one   \nalpha two\nalpha three\n",
     )
     .unwrap();
-    run_git(dir, &["commit", "-am", "branch: trailing whitespace on ws-a.txt"]);
+    run_git(
+        dir,
+        &["commit", "-am", "branch: trailing whitespace on ws-a.txt"],
+    );
 
     run_git(dir, &["checkout", "main"]);
     // An independent, unrelated whitespace-only change on a *different* file.
-    std::fs::write(
-        dir.join("ws-b.txt"),
-        "beta one   \nbeta two\nbeta three\n",
-    )
-    .unwrap();
-    run_git(dir, &["commit", "-am", "main: unrelated trailing whitespace on ws-b.txt"]);
+    std::fs::write(dir.join("ws-b.txt"), "beta one   \nbeta two\nbeta three\n").unwrap();
+    run_git(
+        dir,
+        &[
+            "commit",
+            "-am",
+            "main: unrelated trailing whitespace on ws-b.txt",
+        ],
+    );
     let unrelated_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
     let snapshot = graph::load_graph_with_squash_annotations(
@@ -4915,7 +5070,14 @@ fn test_squash_scenario_12_empty_net_zero_branch_and_base_commit() {
     run_git(dir, &["add", "other-temp.txt"]);
     run_git(dir, &["commit", "-m", "add other temp content"]);
     run_git(dir, &["rm", "other-temp.txt"]);
-    run_git(dir, &["commit", "-m", "remove other temp content (net zero, unrelated)"]);
+    run_git(
+        dir,
+        &[
+            "commit",
+            "-m",
+            "remove other temp content (net zero, unrelated)",
+        ],
+    );
     let empty_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
     let snapshot = graph::load_graph_with_squash_annotations(
@@ -4937,10 +5099,7 @@ fn test_squash_scenario_12_empty_net_zero_branch_and_base_commit() {
          another empty-diff branch — empty diffs are explicitly excluded (None), never matched"
     );
     assert!(
-        snapshot
-            .commits
-            .iter()
-            .all(|c| !c.is_possible_squash_merge),
+        snapshot.commits.iter().all(|c| !c.is_possible_squash_merge),
         "no commit in this fixture should be flagged: both diffs involved are empty"
     );
 
@@ -4966,7 +5125,13 @@ fn test_squash_scenario_13_reverted_branch_net_zero_but_no_specific_squash_point
     // base commit's diff to match against.
     let (tmpdir, repo) = setup_test_repo();
     let dir = tmpdir.path();
-    let base_tree = repo.head().unwrap().peel_to_tree().unwrap().id().to_string();
+    let base_tree = repo
+        .head()
+        .unwrap()
+        .peel_to_tree()
+        .unwrap()
+        .id()
+        .to_string();
 
     run_git(dir, &["checkout", "-b", "feature/reverted"]);
     std::fs::write(dir.join("temp2.txt"), "temp content 2\n").unwrap();
@@ -5026,7 +5191,14 @@ fn test_squash_scenario_14_duplicate_independently_recreated_patch() {
 
     run_git(dir, &["checkout", "main"]);
     std::fs::write(dir.join("dup.txt"), "after\n").unwrap();
-    run_git(dir, &["commit", "-am", "main: independently make the identical fix"]);
+    run_git(
+        dir,
+        &[
+            "commit",
+            "-am",
+            "main: independently make the identical fix",
+        ],
+    );
     let independent_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
     let snapshot = graph::load_graph_with_squash_annotations(
@@ -5065,7 +5237,14 @@ fn test_squash_scenario_14_duplicate_independently_recreated_patch() {
     // small-diff `MIN_UNION_SIZE_FOR_FUZZY` gate.
     let branch_diff = git_output(
         dir,
-        &["diff", "--binary", "--full-index", "main~1", "feature/duplicate-fix", "--"],
+        &[
+            "diff",
+            "--binary",
+            "--full-index",
+            "main~1",
+            "feature/duplicate-fix",
+            "--",
+        ],
     );
     let base_diff = git_output(
         dir,
@@ -5119,7 +5298,16 @@ fn test_squash_scenario_15_criss_cross_multiple_merge_bases() {
     // chain.
     let criss_merge_2 = git_output(
         dir,
-        &["commit-tree", &merged_tree, "-p", &b_tip, "-p", &a_tip, "-m", "merge a into b"],
+        &[
+            "commit-tree",
+            &merged_tree,
+            "-p",
+            &b_tip,
+            "-p",
+            &a_tip,
+            "-m",
+            "merge a into b",
+        ],
     );
     run_git(dir, &["branch", "-f", "criss-b", &criss_merge_2]);
 
@@ -5193,10 +5381,7 @@ fn test_squash_scenario_16_shallow_out_of_window_history_max_count_boundary() {
         "the squash landing commit should be outside the displayed window"
     );
     assert!(
-        snapshot
-            .commits
-            .iter()
-            .all(|c| !c.is_possible_squash_merge),
+        snapshot.commits.iter().all(|c| !c.is_possible_squash_merge),
         "Algorithm A must fail closed (no false positive) outside its displayed window"
     );
 
@@ -5219,7 +5404,10 @@ fn test_squash_scenario_17_local_base_vs_remote_base_divergence() {
     run_git(&remote_dir, &["init", "--bare", "-b", "main"]);
 
     let work_dir = base.path().join("work");
-    run_git(base.path(), &["clone", remote_dir.to_str().unwrap(), "work"]);
+    run_git(
+        base.path(),
+        &["clone", remote_dir.to_str().unwrap(), "work"],
+    );
     run_git(&work_dir, &["config", "user.name", "Test User"]);
     run_git(&work_dir, &["config", "user.email", "test@example.com"]);
     std::fs::write(work_dir.join("README.md"), "# Test\n").unwrap();
@@ -5237,12 +5425,21 @@ fn test_squash_scenario_17_local_base_vs_remote_base_divergence() {
     // A second clone squash-merges the feature branch and pushes to origin,
     // without `work` ever fetching it locally into `main`.
     let second_dir = base.path().join("second");
-    run_git(base.path(), &["clone", remote_dir.to_str().unwrap(), "second"]);
+    run_git(
+        base.path(),
+        &["clone", remote_dir.to_str().unwrap(), "second"],
+    );
     run_git(&second_dir, &["config", "user.name", "Second User"]);
     run_git(&second_dir, &["config", "user.email", "second@example.com"]);
     run_git(&second_dir, &["fetch", "origin", "feature/divergence"]);
-    run_git(&second_dir, &["merge", "--squash", "origin/feature/divergence"]);
-    run_git(&second_dir, &["commit", "-m", "squash merge feature/divergence"]);
+    run_git(
+        &second_dir,
+        &["merge", "--squash", "origin/feature/divergence"],
+    );
+    run_git(
+        &second_dir,
+        &["commit", "-m", "squash merge feature/divergence"],
+    );
     run_git(&second_dir, &["push", "origin", "main"]);
 
     // `work`'s local main is still behind; only fetch (not merge/pull).
@@ -5283,11 +5480,17 @@ fn test_squash_scenario_18_branch_advances_after_cached_as_squash_merged() {
     std::fs::write(work_dir.join("stale.txt"), "stale content\n").unwrap();
     run_git(&work_dir, &["add", "stale.txt"]);
     run_git(&work_dir, &["commit", "-m", "feature commit"]);
-    run_git(&work_dir, &["push", "-u", "origin", "feature/cache-staleness"]);
+    run_git(
+        &work_dir,
+        &["push", "-u", "origin", "feature/cache-staleness"],
+    );
 
     run_git(&work_dir, &["checkout", "main"]);
     run_git(&work_dir, &["merge", "--squash", "feature/cache-staleness"]);
-    run_git(&work_dir, &["commit", "-m", "squash merge feature/cache-staleness"]);
+    run_git(
+        &work_dir,
+        &["commit", "-m", "squash merge feature/cache-staleness"],
+    );
     run_git(&work_dir, &["push", "origin", "main"]);
 
     let repo = git2::Repository::open(&work_dir).unwrap();
@@ -5347,7 +5550,11 @@ fn test_squash_scenario_19_large_history_performance_characterization() {
     const BRANCH_COUNT: usize = 50;
 
     for i in 0..BASE_COMMITS {
-        std::fs::write(dir.join(format!("base-{i}.txt")), format!("base content {i}\n")).unwrap();
+        std::fs::write(
+            dir.join(format!("base-{i}.txt")),
+            format!("base content {i}\n"),
+        )
+        .unwrap();
         run_git(dir, &["add", "."]);
         run_git(dir, &["commit", "-m", &format!("base commit {i}")]);
     }
@@ -5484,7 +5691,10 @@ fn test_squash_scenario_20b_squash_omits_a_trivial_branch_change() {
         "alpha-x\nbeta-x\ngamma-x\ndelta-x\nepsilon-x\nzeta-x\ndebug: on\n",
     )
     .unwrap();
-    run_git(dir, &["commit", "-am", "branch changes 6 lines plus enables debug"]);
+    run_git(
+        dir,
+        &["commit", "-am", "branch changes 6 lines plus enables debug"],
+    );
 
     run_git(dir, &["checkout", "main"]);
     run_git(dir, &["merge", "--squash", "feature/20b"]);
@@ -5566,7 +5776,10 @@ fn test_squash_scenario_20c_autoformatter_noise_during_squash() {
     }
     std::fs::write(dir.join("f20c.txt"), formatted_lines.join("\n") + "\n").unwrap();
     run_git(dir, &["add", "f20c.txt"]);
-    run_git(dir, &["commit", "-m", "squash landing plus autoformatter noise"]);
+    run_git(
+        dir,
+        &["commit", "-m", "squash landing plus autoformatter noise"],
+    );
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
     let snapshot = graph::load_graph_with_squash_annotations(
@@ -5636,7 +5849,14 @@ fn test_squash_scenario_20d_coincidentally_similar_but_unrelated_negative_contro
         "fn one() {\n    println!(\"one\");\n}\nfn two() {}\nfn three() {}\nfn four() {}\n",
     )
     .unwrap();
-    run_git(dir, &["commit", "-am", "branch: implement fn one with similar boilerplate"]);
+    run_git(
+        dir,
+        &[
+            "commit",
+            "-am",
+            "branch: implement fn one with similar boilerplate",
+        ],
+    );
 
     run_git(dir, &["checkout", "main"]);
     std::fs::write(
@@ -5646,7 +5866,11 @@ fn test_squash_scenario_20d_coincidentally_similar_but_unrelated_negative_contro
     .unwrap();
     run_git(
         dir,
-        &["commit", "-am", "main: unrelated commit, implement fn three with similar boilerplate"],
+        &[
+            "commit",
+            "-am",
+            "main: unrelated commit, implement fn three with similar boilerplate",
+        ],
     );
     let unrelated_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
@@ -5720,7 +5944,10 @@ fn test_squash_scenario_21_structural_graph_render_not_blocked_by_squash_enrichm
          enrichment runs asynchronously and is gated by the reload generation"
     );
     assert!(
-        snapshot.commits.iter().all(|c| c.fuzzy_squash_match.is_none()),
+        snapshot
+            .commits
+            .iter()
+            .all(|c| c.fuzzy_squash_match.is_none()),
         "no fuzzy squash matches should be set on the fresh structural snapshot"
     );
 }
@@ -5759,8 +5986,7 @@ fn test_squash_scenario_21b_completed_enrichment_updates_squash_marker() {
 
     // Run enrichment synchronously, as `spawn_possible_squash_enrichment`
     // would do on its background thread.
-    let updates =
-        graph::compute_possible_squash_updates(dir, &snapshot, Some("main"));
+    let updates = graph::compute_possible_squash_updates(dir, &snapshot, Some("main"));
     graph::apply_squash_enrichment(&mut snapshot, &updates);
 
     assert!(
