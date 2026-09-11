@@ -34,6 +34,9 @@ impl FilterSet {
                 "merge:local-merged" => fs.statuses.push(MergeStatus::LocalMerged),
                 "merge:remote-squash" => fs.statuses.push(MergeStatus::RemoteSquashMerged),
                 "merge:local-squash" => fs.statuses.push(MergeStatus::LocalSquashMerged),
+                "merge:cherry" => fs.statuses.push(MergeStatus::CherryPicked),
+                "merge:remote-cherry" => fs.statuses.push(MergeStatus::RemoteCherryPicked),
+                "merge:local-cherry" => fs.statuses.push(MergeStatus::LocalCherryPicked),
                 "merge:unmerged" => fs.statuses.push(MergeStatus::Unmerged),
                 "pr:yes" => fs.pr_yes = true,
                 "pr:no" => fs.pr_no = true,
@@ -127,6 +130,21 @@ pub fn merge_tokens() -> Vec<FilterTokenDef> {
             key: 'L',
             label: "Local-squash",
             token: "merge:local-squash",
+        },
+        FilterTokenDef {
+            key: 'c',
+            label: "Cherry-picked",
+            token: "merge:cherry",
+        },
+        FilterTokenDef {
+            key: 'C',
+            label: "Remote cherry-picked",
+            token: "merge:remote-cherry",
+        },
+        FilterTokenDef {
+            key: 'h',
+            label: "Local cherry-picked",
+            token: "merge:local-cherry",
         },
         FilterTokenDef {
             key: 'u',
@@ -393,6 +411,9 @@ mod tests {
                 ('l', "Local-merged", "merge:local-merged"),
                 ('R', "Remote-squash", "merge:remote-squash"),
                 ('L', "Local-squash", "merge:local-squash"),
+                ('c', "Cherry-picked", "merge:cherry"),
+                ('C', "Remote cherry-picked", "merge:remote-cherry"),
+                ('h', "Local cherry-picked", "merge:local-cherry"),
                 ('u', "Unmerged", "merge:unmerged"),
             ]
         );
@@ -466,6 +487,9 @@ mod tests {
                 "merge:local-merged",
                 "merge:remote-squash",
                 "merge:local-squash",
+                "merge:cherry",
+                "merge:remote-cherry",
+                "merge:local-cherry",
                 "merge:unmerged",
             ]
         );

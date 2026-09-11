@@ -415,6 +415,51 @@ the same implementation task only if that decoupling work has landed by the
 time this task runs; otherwise, record it as a currently-failing
 characterization test with a comment pointing back to that follow-up task.
 
+## Cherry-pick scenarios
+
+Detection lives in `git::merge_detection::is_cherry_picked` and the
+`git::cherry_loader::spawn_cherry_checker` background worker pool. Detection
+is fail-closed: an empty `git cherry` output counts as fully cherry-picked
+(no commits unique to the branch, branch tip already reachable from base),
+a `+` line in any other output counts as NOT cherry-picked.
+
+### 22. Full cherry-pick of a single-commit branch
+
+A feature branch with one commit is cherry-picked onto base. `is_cherry_picked`
+returns `true`; `cherry_loader` emits `LocalCherryPicked` (or `CherryPicked`
+if both local and remote base match).
+
+### 23. Full cherry-pick of a multi-commit branch
+
+A feature branch with multiple commits is cherry-picked onto base one commit
+at a time. Every original branch commit is annotated as
+`is_cherry_picked_commit = true` in the Graph view; the loader reports the
+branch as `LocalCherryPicked` once all commits have landed.
+
+### 24. Partial cherry-pick must NOT trigger the marker
+
+A branch with commits c1/c2/c3 only lands c1 and c2 via cherry-pick; c3 is
+left. `is_cherry_picked` returns `false`; in the Graph view, c3 is NOT
+annotated as cherry-picked; the branch's `MergeStatus` remains `Unmerged`
+(or whatever the merge-status path resolves to).
+
+### 25. Cherry-pick of an amended commit
+
+After `git commit --amend`, the original branch tip's tree stays the same,
+so `git cherry`'s patch-id comparison still recognizes it as landed. The
+detection result is the same as Scenario 22 — fully cherry-picked.
+
+### 26. Interaction with already-squash-merged branch
+
+A branch that was squash-merged AND whose commits were also individually
+cherry-picked must NOT be double-reported. The `cherry_loader` returns
+`CherryPicked` only when neither local nor remote squash check succeeds;
+the squash loader reports `SquashMerged` first, so the cherry result is
+dropped in favor of the squash status. The Graph view's
+`is_cherry_picked_commit` and `is_possible_squash_merge` flags are
+independent (squash wins the merge-status column, cherry wins the per-commit
+graph marker for commits whose patch-ids match base).
+
 ## Implementation task scope
 
 A single follow-up task should:

@@ -20,13 +20,19 @@ use git2::{Oid, Repository};
 
 use crate::git::branch;
 use crate::git::cache::BranchCache;
-use crate::git::merge_detection::{build_reachable_set_from_repo, is_squash_merged, BaseReachable};
+use crate::git::merge_detection::{
+    build_reachable_set_from_repo, is_cherry_picked, is_squash_merged, BaseReachable,
+};
 use crate::types::{CacheAudit, CacheFix, DiagKind, Discrepancy, MergeStatus};
 
 /// Number of worker threads used to run `is_squash_merged` concurrently
 /// during an audit. Mirrors `squash_loader::SQUASH_WORKER_COUNT` — bound by
 /// subprocess fork/exec overhead, not CPU parallelism.
 const AUDIT_SQUASH_WORKER_COUNT: usize = 4;
+
+/// Number of worker threads used to run `is_cherry_picked` concurrently
+/// during an audit. Mirrors `cherry_loader::CHERRY_WORKER_COUNT`.
+const AUDIT_CHERRY_WORKER_COUNT: usize = 4;
 
 /// Shared read-only context for one audit pass.
 struct AuditCtx<'a> {
@@ -121,6 +127,47 @@ pub fn audit_cache(
         for result in run_squash_candidates(repo_path, base_branch, squash_candidates) {
             record_merge_status(&ctx, &result.name, result.tip, result.status, &mut audit);
         }
+
+        // Phase 2b (parallel): cherry-pick truth. We only record discrepancies
+        // for branches whose cache currently shows a cherry-related status —
+        // the squash phase has already audited every other branch, and
+        // double-reporting it here would create duplicate discrepancies.
+        let cherry_candidates: Vec<CherryCandidate> = locals
+            .iter()
+            .filter_map(|(name, tip)| {
+                let tip_str = tip.to_string();
+                let cached = cache.lookup(name, &tip_str)?;
+                let is_cherry = matches!(
+                    cached,
+                    MergeStatus::CherryPicked
+                        | MergeStatus::LocalCherryPicked
+                        | MergeStatus::RemoteCherryPicked
+                );
+                if !is_cherry {
+                    return None;
+                }
+                Some(CherryCandidate {
+                    branch_name: name.clone(),
+                    commit_hash: tip_str,
+                    merge_base: ctx
+                        .base_oid
+                        .and_then(|b| ctx.repo.merge_base(*tip, b).ok())
+                        .map(|o| o.to_string()),
+                })
+            })
+            .collect();
+        for result in run_cherry_candidates(repo_path, base_branch, cherry_candidates) {
+            let tip_oid = git2::Oid::from_str(&result.commit_hash).ok();
+            if let Some(tip_oid) = tip_oid {
+                record_merge_status(
+                    &ctx,
+                    &result.branch_name,
+                    tip_oid,
+                    result.recomputed_status,
+                    &mut audit,
+                );
+            }
+        }
     }
 
     // Orphans: cached merge-status rows whose branch (local or remote) no
@@ -159,6 +206,18 @@ struct SquashCandidateResult {
     name: String,
     tip: Oid,
     status: MergeStatus,
+}
+
+struct CherryCandidate {
+    branch_name: String,
+    commit_hash: String,
+    merge_base: Option<String>,
+}
+
+struct CherryCandidateResult {
+    branch_name: String,
+    commit_hash: String,
+    recomputed_status: MergeStatus,
 }
 
 /// Resolve squash-merge truth for every candidate using a fixed worker pool,
@@ -225,6 +284,77 @@ fn run_squash_candidates(
     drop(tx);
 
     let results: Vec<SquashCandidateResult> = rx.iter().collect();
+    for handle in handles {
+        let _ = handle.join();
+    }
+    results
+}
+
+/// Resolve cherry-pick truth for every candidate using a fixed worker pool,
+/// mirroring `cherry_loader::spawn_cherry_checker`'s queue-based dispatch.
+fn run_cherry_candidates(
+    repo_path: &Path,
+    base_branch: &str,
+    candidates: Vec<CherryCandidate>,
+) -> Vec<CherryCandidateResult> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let queue: Arc<Mutex<VecDeque<CherryCandidate>>> =
+        Arc::new(Mutex::new(VecDeque::from(candidates)));
+    let (tx, rx): (_, Receiver<CherryCandidateResult>) = mpsc::channel();
+    let repo_path: PathBuf = repo_path.to_path_buf();
+
+    let mut handles = Vec::with_capacity(AUDIT_CHERRY_WORKER_COUNT);
+    for _ in 0..AUDIT_CHERRY_WORKER_COUNT {
+        let queue = Arc::clone(&queue);
+        let tx = tx.clone();
+        let repo_path = repo_path.clone();
+        let base_branch = base_branch.to_string();
+        handles.push(std::thread::spawn(move || loop {
+            let next = queue.lock().unwrap().pop_front();
+            let Some(candidate) = next else { break };
+
+            let local_cherry = is_cherry_picked(
+                &repo_path,
+                &base_branch,
+                &candidate.branch_name,
+                Some(&candidate.commit_hash),
+                candidate.merge_base.as_deref(),
+            );
+
+            let remote_base = format!("origin/{base_branch}");
+            let remote_cherry = is_cherry_picked(
+                &repo_path,
+                &remote_base,
+                &candidate.branch_name,
+                Some(&candidate.commit_hash),
+                None,
+            );
+
+            let recomputed_is_cherry = local_cherry || remote_cherry;
+            let recomputed_status = if recomputed_is_cherry {
+                MergeStatus::CherryPicked
+            } else {
+                MergeStatus::Unmerged
+            };
+
+            if tx
+                .send(CherryCandidateResult {
+                    branch_name: candidate.branch_name,
+                    commit_hash: candidate.commit_hash,
+                    recomputed_status,
+                })
+                .is_err()
+            {
+                break;
+            }
+        }));
+    }
+    drop(tx);
+
+    let results: Vec<CherryCandidateResult> = rx.iter().collect();
     for handle in handles {
         let _ = handle.join();
     }
@@ -436,6 +566,9 @@ fn status_label(status: MergeStatus) -> &'static str {
         MergeStatus::SquashMerged
         | MergeStatus::LocalSquashMerged
         | MergeStatus::RemoteSquashMerged => "squash-merged",
+        MergeStatus::CherryPicked
+        | MergeStatus::LocalCherryPicked
+        | MergeStatus::RemoteCherryPicked => "cherry-picked",
         MergeStatus::Unmerged => "unmerged",
         MergeStatus::Pending => "pending",
     }

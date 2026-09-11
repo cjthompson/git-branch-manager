@@ -18,6 +18,9 @@ pub enum MergeStatus {
     RemoteMerged,       // merged into origin/<base>, local base not fast-forwarded
     LocalSquashMerged,  // squash-merged into local base only
     RemoteSquashMerged, // squash-merged into origin/<base> only
+    CherryPicked,
+    LocalCherryPicked,
+    RemoteCherryPicked,
     Unmerged,
     Pending,
 }
@@ -425,6 +428,12 @@ pub struct ProgressUpdate {
 
 #[derive(Debug, Clone)]
 pub struct SquashResult {
+    pub branch_name: String,
+    pub status: MergeStatus,
+}
+
+#[derive(Debug, Clone)]
+pub struct CherryResult {
     pub branch_name: String,
     pub status: MergeStatus,
 }

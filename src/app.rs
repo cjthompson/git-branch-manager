@@ -13,7 +13,8 @@ use ratatui::Terminal;
 
 use git_branch_manager::config::Config;
 use git_branch_manager::git::{
-    branch, cache, diagnostics, graph, operations, pr_loader, squash_loader, tags, worktree,
+    branch, cache, cherry_loader, diagnostics, graph, operations, pr_loader, squash_loader, tags,
+    worktree,
 };
 use git_branch_manager::job_queue::{ActionJobQueue, JobEvent};
 use git_branch_manager::symbols::SymbolSet;
@@ -93,6 +94,9 @@ pub struct App {
     pub squash_checked: usize,
     pub squash_total: usize,
     pub remote_squash_rx: Option<Receiver<SquashResult>>,
+    pub cherry_rx: Option<Receiver<CherryResult>>,
+    pub cherry_checked: usize,
+    pub cherry_total: usize,
     pub remote_enrich_rx: Option<Receiver<RemoteEnrichResult>>,
     pub worktree_enrich_rx: Option<Receiver<WorktreeEnrichResult>>,
     pub pr_rx: Option<Receiver<PrMap>>,
@@ -322,6 +326,9 @@ impl App {
             squash_checked: 0,
             squash_total: 0,
             remote_squash_rx: None,
+            cherry_rx: None,
+            cherry_checked: 0,
+            cherry_total: 0,
             remote_enrich_rx: None,
             worktree_enrich_rx: None,
             pr_rx: None,
@@ -526,6 +533,7 @@ impl App {
                     let repo_path = self.repo_path.clone();
                     let base_branch = self.base_branch.clone();
                     let cache_for_squash = cache::BranchCache::load(&repo_path);
+                    let cache_for_cherry = cache::BranchCache::load(&repo_path);
                     if let Ok(repo) = git2::Repository::open(&repo_path) {
                         // MergeBaseCommits is sent before MergeStatuses, so merge_base_commit
                         // is populated here. A Pending branch with no merge base is disjoint
@@ -564,12 +572,24 @@ impl App {
 
                         self.squash_total = candidates.len();
                         self.squash_checked = 0;
+                        let cherry_candidates = candidates.clone();
                         if !candidates.is_empty() {
                             self.squash_rx = Some(squash_loader::spawn_squash_checker(
                                 repo_path.clone(),
-                                base_branch,
+                                base_branch.clone(),
                                 candidates,
                                 cache_for_squash,
+                            ));
+                        }
+
+                        self.cherry_total = cherry_candidates.len();
+                        self.cherry_checked = 0;
+                        if !cherry_candidates.is_empty() {
+                            self.cherry_rx = Some(cherry_loader::spawn_cherry_checker(
+                                repo_path.clone(),
+                                base_branch.clone(),
+                                cherry_candidates,
+                                cache_for_cherry,
                             ));
                         }
                     }
@@ -637,6 +657,35 @@ impl App {
         }
         if had_squash_results {
             // Squash detection just resolved branch statuses; re-correlate worktrees.
+            self.refresh_worktree_merge_status();
+            self.remotes.rebuild_display_indices();
+        }
+
+        // Cherry-pick results (cap 32 per tick, mirrors squash cadence)
+        let cherry_results = drain_channel(&mut self.cherry_rx, 32, &mut dirty);
+        let had_cherry_results = !cherry_results.is_empty();
+        for result in cherry_results {
+            self.cherry_checked += 1;
+            if let Some(b) = self
+                .branches
+                .items_mut()
+                .iter_mut()
+                .find(|b| b.name == result.branch_name)
+            {
+                b.merge_status = result.status;
+            }
+            if !matches!(result.status, MergeStatus::Unmerged | MergeStatus::Pending) {
+                if let Some(r) = self
+                    .remotes
+                    .items_mut()
+                    .iter_mut()
+                    .find(|r| r.short_name == result.branch_name)
+                {
+                    r.merge_status = result.status;
+                }
+            }
+        }
+        if had_cherry_results {
             self.refresh_worktree_merge_status();
             self.remotes.rebuild_display_indices();
         }
@@ -3158,6 +3207,7 @@ impl App {
         };
 
         let new_cache = cache::BranchCache::load(&repo_path);
+        let cache_for_cherry = cache::BranchCache::load(&repo_path);
 
         // list_branches_phase1 already filled merge bases; skip disjoint branches
         // (no merge base) and carry the precomputed merge base into the squash check.
@@ -3183,12 +3233,25 @@ impl App {
         // Spawn squash checker
         self.squash_total = candidates.len();
         self.squash_checked = 0;
+        let cherry_candidates = candidates.clone();
         if !candidates.is_empty() {
             self.squash_rx = Some(squash_loader::spawn_squash_checker(
                 repo_path.clone(),
-                base_branch,
+                base_branch.clone(),
                 candidates,
                 new_cache,
+            ));
+        }
+
+        // Spawn cherry-pick checker
+        self.cherry_total = cherry_candidates.len();
+        self.cherry_checked = 0;
+        if !cherry_candidates.is_empty() {
+            self.cherry_rx = Some(cherry_loader::spawn_cherry_checker(
+                repo_path.clone(),
+                base_branch.clone(),
+                cherry_candidates,
+                cache_for_cherry,
             ));
         }
 
@@ -5790,6 +5853,7 @@ mod tests {
                 oid: "2222222222222222222222222222222222222222".into(),
                 is_possible_squash_merge: true,
                 fuzzy_squash_match: None,
+                is_cherry_picked_commit: false,
             }],
         })
         .expect("send stale enrichment");
@@ -5856,6 +5920,7 @@ mod tests {
                 oid: "3333333333333333333333333333333333333333".into(),
                 is_possible_squash_merge: true,
                 fuzzy_squash_match: None,
+                is_cherry_picked_commit: false,
             }],
         })
         .expect("send matching enrichment");

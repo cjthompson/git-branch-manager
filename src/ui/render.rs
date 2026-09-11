@@ -454,9 +454,9 @@ fn default_status_text(ctx: &RenderContext) -> String {
     }
 }
 
-/// Counts `(total, selected, merged, squashed)` for a branch-like list view.
+/// Counts `(total, selected, merged, squashed, cherry_picked)` for a branch-like list view.
 /// Works for any item type whose `ViewItem::merge_status` is populated.
-fn branch_like_summary<T: ViewItem>(state: &ListState<T>) -> (usize, usize, usize, usize) {
+fn branch_like_summary<T: ViewItem>(state: &ListState<T>) -> (usize, usize, usize, usize, usize) {
     let total = state.items().len();
     let selected = state.selected().iter().filter(|&&s| s).count();
     let merged = state
@@ -469,7 +469,12 @@ fn branch_like_summary<T: ViewItem>(state: &ListState<T>) -> (usize, usize, usiz
         .iter()
         .filter(|i| i.merge_status() == Some(&MergeStatus::SquashMerged))
         .count();
-    (total, selected, merged, squashed)
+    let cherry_picked = state
+        .items()
+        .iter()
+        .filter(|i| i.merge_status() == Some(&MergeStatus::CherryPicked))
+        .count();
+    (total, selected, merged, squashed, cherry_picked)
 }
 
 /// Formats a branch-like status bar line from a noun, summary counts, and the
@@ -477,12 +482,12 @@ fn branch_like_summary<T: ViewItem>(state: &ListState<T>) -> (usize, usize, usiz
 /// noun and the shortcut list differ between them.
 fn format_branch_like(
     noun: &str,
-    summary: (usize, usize, usize, usize),
+    summary: (usize, usize, usize, usize, usize),
     shortcuts: &str,
 ) -> String {
-    let (total, selected, merged, squashed) = summary;
+    let (total, selected, merged, squashed, cherry_picked) = summary;
     format!(
-        " {total} {noun} | {selected} selected | {merged} merged | {squashed} squashed \u{2014} {shortcuts}"
+        " {total} {noun} | {selected} selected | {merged} merged | {squashed} squashed | {cherry_picked} cherry-picked \u{2014} {shortcuts}"
     )
 }
 
@@ -514,30 +519,32 @@ mod tests {
             branch("b", MergeStatus::SquashMerged),
             branch("c", MergeStatus::Unmerged),
             branch("d", MergeStatus::Merged),
+            branch("e", MergeStatus::CherryPicked),
         ]);
         // Select the first two.
         state.selected_mut()[0] = true;
         state.selected_mut()[1] = true;
 
-        let (total, selected, merged, squashed) = branch_like_summary(&state);
-        assert_eq!(total, 4);
+        let (total, selected, merged, squashed, cherry_picked) = branch_like_summary(&state);
+        assert_eq!(total, 5);
         assert_eq!(selected, 2);
         assert_eq!(merged, 2);
         assert_eq!(squashed, 1);
+        assert_eq!(cherry_picked, 1);
     }
 
     #[test]
     fn branch_like_summary_empty() {
         let state: ListState<BranchInfo> = ListState::new(vec![]);
-        assert_eq!(branch_like_summary(&state), (0, 0, 0, 0));
+        assert_eq!(branch_like_summary(&state), (0, 0, 0, 0, 0));
     }
 
     #[test]
     fn format_branch_like_preserves_shape() {
-        let text = format_branch_like("branches", (4, 2, 2, 1), "[/]search [q]uit");
+        let text = format_branch_like("branches", (4, 2, 2, 1, 1), "[/]search [q]uit");
         assert_eq!(
             text,
-            " 4 branches | 2 selected | 2 merged | 1 squashed \u{2014} [/]search [q]uit"
+            " 4 branches | 2 selected | 2 merged | 1 squashed | 1 cherry-picked \u{2014} [/]search [q]uit"
         );
     }
 }

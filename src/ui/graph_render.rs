@@ -196,6 +196,18 @@ fn render_graph_rows(
                 );
             }
         }
+        if !is_merge && commit.is_some_and(|commit| commit.is_cherry_picked_commit) {
+            if let Some(marker_index) = graph_line
+                .graph
+                .chars()
+                .position(|character| matches!(character, '*' | '●' | 'o' | '○'))
+            {
+                dag[marker_index] = Span::styled(
+                    symbols.graph_cherry_commit,
+                    selected_style(theme.cherry_picked, selected, theme),
+                );
+            }
+        }
         let mut detail = Vec::new();
         if let Some(commit) = commit {
             detail.push(Span::raw(" "));

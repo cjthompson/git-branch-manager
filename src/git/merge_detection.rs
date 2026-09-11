@@ -308,3 +308,66 @@ pub fn is_squash_merged(
         None => false,
     }
 }
+
+/// True when every commit unique to `branch_name` relative to `merge_base`
+/// has already landed in `base_branch` via individual cherry-picks.
+///
+/// Unlike `is_squash_merged`, this needs no synthetic `commit-tree`: `git
+/// cherry <base> <branchish> <limit>` already walks every real commit between
+/// `limit` (exclusive) and `branchish`, prefixing each line with `-` (its
+/// patch-id is already reachable from `base_branch`) or `+` (it is not).
+/// Every non-empty line must start with `-` for the branch to count as fully
+/// cherry-picked; a single `+` (or any git failure) fails closed to `false`,
+/// mirroring `is_squash_merged`'s fail-closed semantics.
+#[instrument(skip(repo_path))]
+pub fn is_cherry_picked(
+    repo_path: &Path,
+    base_branch: &str,
+    branch_name: &str,
+    commit_hash: Option<&str>,
+    merge_base: Option<&str>,
+) -> bool {
+    let git = |args: &[&str]| -> Option<String> {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if out.status.success() {
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else {
+            None
+        }
+    };
+
+    let branchish = commit_hash.unwrap_or(branch_name);
+
+    let ancestor = match merge_base {
+        Some(mb) if !mb.is_empty() => mb.to_string(),
+        _ => match git(&["merge-base", base_branch, branchish]) {
+            Some(a) if !a.is_empty() => a,
+            _ => return false,
+        },
+    };
+
+    match git(&["cherry", base_branch, branchish, &ancestor]) {
+        Some(result) => {
+            for line in result.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if !line.starts_with('-') {
+                    return false;
+                }
+            }
+            // Empty output (no lines to evaluate) means there are no commits
+            // unique to the branch in the (tip, merge-base] window — every
+            // commit reachable from branchish via that window has its
+            // patch-id already in upstream. Counts as fully cherry-picked.
+            true
+        }
+        None => false,
+    }
+}

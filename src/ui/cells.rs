@@ -105,6 +105,33 @@ fn merge_status_labels(
             ),
             theme.squash_merged.add_modifier(Modifier::ITALIC),
         ),
+        MergeStatus::CherryPicked => (
+            format!("cherry-picked {}", symbols.status_cherry_picked),
+            format!("cp {}", symbols.status_cherry_picked),
+            theme.cherry_picked,
+        ),
+        MergeStatus::LocalCherryPicked => (
+            format!(
+                "local-cherry {}{}",
+                symbols.status_cherry_picked, symbols.status_local_suffix
+            ),
+            format!(
+                "lc {}{}",
+                symbols.status_cherry_picked, symbols.status_local_suffix
+            ),
+            theme.cherry_picked.add_modifier(Modifier::ITALIC),
+        ),
+        MergeStatus::RemoteCherryPicked => (
+            format!(
+                "remote-cherry {}{}",
+                symbols.status_cherry_picked, symbols.status_remote_suffix
+            ),
+            format!(
+                "rc {}{}",
+                symbols.status_cherry_picked, symbols.status_remote_suffix
+            ),
+            theme.cherry_picked.add_modifier(Modifier::ITALIC),
+        ),
         MergeStatus::Unmerged => (
             format!("unmerged {}", symbols.status_unmerged),
             format!("u {}", symbols.status_unmerged),

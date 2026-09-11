@@ -35,6 +35,7 @@ pub struct GraphEnrichmentUpdate {
     pub oid: String,
     pub is_possible_squash_merge: bool,
     pub fuzzy_squash_match: Option<FuzzySquashMatch>,
+    pub is_cherry_picked_commit: bool,
 }
 
 /// Channel message carrying the full set of squash-merge enrichment updates
@@ -71,6 +72,10 @@ pub struct GraphCommit {
     /// `is_possible_squash_merge == true` — Option 6 is additive and defers
     /// to the exact-match tier.
     pub fuzzy_squash_match: Option<FuzzySquashMatch>,
+    /// True when this commit landed in base via an individual cherry-pick,
+    /// as detected by `git cherry`. Defaults to false (none of the
+    /// pre-cherry-detection snapshots set it).
+    pub is_cherry_picked_commit: bool,
     /// Author name from `git2::Signature::name()` / `%an`.
     pub author_name: String,
     /// Author email from `git2::Signature::email()` / `%ae`.
@@ -212,8 +217,11 @@ pub fn load_graph_with_squash_annotations(
     options: GraphLoadOptions,
 ) -> Result<GraphSnapshot, GraphLoadError> {
     let mut snapshot = load_graph(repo_path, options.clone())?;
-    let updates =
+    let mut updates =
         compute_possible_squash_updates(repo_path, &snapshot, options.base_branch.as_deref());
+    let cherry_updates =
+        compute_cherry_pick_updates(repo_path, &snapshot, options.base_branch.as_deref());
+    merge_enrichment_updates(&mut updates, cherry_updates);
     apply_squash_enrichment(&mut snapshot, &updates);
     Ok(snapshot)
 }
@@ -231,11 +239,14 @@ pub fn spawn_possible_squash_enrichment(
 ) -> Receiver<GraphEnrichmentMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let updates = compute_possible_squash_updates(
+        let mut updates = compute_possible_squash_updates(
             &repo_path,
             &snapshot,
             requested_base.as_deref(),
         );
+        let cherry_updates =
+            compute_cherry_pick_updates(&repo_path, &snapshot, requested_base.as_deref());
+        merge_enrichment_updates(&mut updates, cherry_updates);
         let _ = tx.send(GraphEnrichmentMsg {
             generation,
             updates,
@@ -358,6 +369,7 @@ fn load_with_gleisbau(
                 refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
                 is_possible_squash_merge: false,
                 fuzzy_squash_match: None,
+                is_cherry_picked_commit: false,
                 author_name: author.name().unwrap_or("").to_string(),
                 author_email: author.email().unwrap_or("").to_string(),
                 authored_at,
@@ -463,6 +475,7 @@ fn load_with_git_cli(
             refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
             is_possible_squash_merge: false,
             fuzzy_squash_match: None,
+            is_cherry_picked_commit: false,
             author_name: fields[2].to_string(),
             author_email: fields[3].to_string(),
             authored_at,
@@ -637,6 +650,7 @@ pub fn compute_possible_squash_updates(
             oid: commit.oid.clone(),
             is_possible_squash_merge: matching_base_oids.contains(&commit.oid),
             fuzzy_squash_match: fuzzy_by_oid.get(&commit.oid).cloned(),
+            is_cherry_picked_commit: false,
         })
         .collect();
     cache.save();
@@ -655,8 +669,116 @@ pub fn apply_squash_enrichment(snapshot: &mut GraphSnapshot, updates: &[GraphEnr
         {
             commit.is_possible_squash_merge = update.is_possible_squash_merge;
             commit.fuzzy_squash_match = update.fuzzy_squash_match.clone();
+            commit.is_cherry_picked_commit = update.is_cherry_picked_commit;
         }
     }
+}
+
+/// For every displayed, diverged non-base branch tip, run `git cherry` once
+/// against its merge-base with `base_branch` and emit a
+/// `GraphEnrichmentUpdate` per OID whose line starts with `-` (already
+/// landed via cherry-pick).
+///
+/// One cheap `git cherry` subprocess per displayed branch tip, not a
+/// per-commit diff. Mirrors the base-branch/branch-tip relationship
+/// detection logic of `compute_possible_squash_updates`.
+fn compute_cherry_pick_updates(
+    repo_path: &Path,
+    snapshot: &GraphSnapshot,
+    requested_base: Option<&str>,
+) -> Vec<GraphEnrichmentUpdate> {
+    let base_branch = requested_base.map(str::to_string).or_else(|| {
+        let repository = git2::Repository::open(repo_path).ok()?;
+        crate::git::branch::detect_base_branch(&repository, None).ok()
+    });
+    let Some(base_branch) = base_branch else {
+        return Vec::new();
+    };
+    let Some(base_tip) = snapshot.commits.iter().find_map(|commit| {
+        commit
+            .refs
+            .iter()
+            .any(|reference| {
+                reference.kind == GraphRefKind::LocalBranch && reference.name == base_branch
+            })
+            .then(|| commit.oid.clone())
+    }) else {
+        return Vec::new();
+    };
+
+    let mut cherry_picked: HashSet<String> = HashSet::new();
+
+    let displayed_branch_tips = snapshot.commits.iter().filter(|commit| {
+        commit.refs.iter().any(|reference| {
+            reference.kind == GraphRefKind::LocalBranch && reference.name != base_branch
+        })
+    });
+
+    for tip in displayed_branch_tips {
+        let merge_base = match displayed_branch_relation(&snapshot.commits, &base_tip, &tip.oid) {
+            DisplayedBranchRelation::Diverged { merge_base } => merge_base,
+            DisplayedBranchRelation::RegularlyMerged | DisplayedBranchRelation::Ineligible => {
+                continue;
+            }
+        };
+        let tip_str = tip.oid.as_str();
+        let git_cherry = |args: &[&str]| -> Option<String> {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(repo_path)
+                .stdin(Stdio::null())
+                .output()
+                .ok()?;
+            if out.status.success() {
+                Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+            } else {
+                None
+            }
+        };
+        let result = match git_cherry(&["cherry", &base_branch, tip_str, &merge_base]) {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
+        for line in result.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // Format: "<status> <commit_hash> <subject>"
+            let mut parts = line.splitn(3, char::is_whitespace);
+            let status = parts.next().unwrap_or("");
+            let oid = parts.next().unwrap_or("");
+            if status.starts_with('-') && !oid.is_empty() {
+                cherry_picked.insert(oid.to_string());
+            }
+        }
+    }
+
+    let mut updates: Vec<GraphEnrichmentUpdate> = Vec::new();
+    for commit in &snapshot.commits {
+        if cherry_picked.contains(&commit.oid) {
+            updates.push(GraphEnrichmentUpdate {
+                oid: commit.oid.clone(),
+                is_possible_squash_merge: false,
+                fuzzy_squash_match: None,
+                is_cherry_picked_commit: true,
+            });
+        }
+    }
+    updates
+}
+
+fn merge_enrichment_updates(base: &mut Vec<GraphEnrichmentUpdate>, extra: Vec<GraphEnrichmentUpdate>) {
+    use std::collections::HashMap;
+    let mut by_oid: HashMap<String, GraphEnrichmentUpdate> =
+        base.drain(..).map(|u| (u.oid.clone(), u)).collect();
+    for u in extra {
+        by_oid
+            .entry(u.oid.clone())
+            .and_modify(|existing| existing.is_cherry_picked_commit = u.is_cherry_picked_commit)
+            .or_insert(u);
+    }
+    *base = by_oid.into_values().collect();
 }
 
 #[derive(Debug, PartialEq, Eq)]

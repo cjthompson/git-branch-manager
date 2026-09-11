@@ -11,6 +11,8 @@ pub struct SymbolSet {
     pub graph_commit: &'static str,
     /// Marker for a base commit that may be a squash-merge landing commit.
     pub graph_squash_commit: &'static str,
+    /// Marker for a branch-tip commit that landed via individual cherry-picks.
+    pub graph_cherry_commit: &'static str,
     /// Marker for a merge commit in the Graph tab.
     pub graph_merge: &'static str,
     /// Left-facing merge connector used by the Powerline graph renderer.
@@ -22,6 +24,7 @@ pub struct SymbolSet {
     pub status_merged: &'static str,
     pub status_in_sync: &'static str,
     pub status_squash_merged: &'static str,
+    pub status_cherry_picked: &'static str,
     pub status_unmerged: &'static str,
     pub status_local_suffix: &'static str,
     pub status_remote_suffix: &'static str,
@@ -49,6 +52,7 @@ impl SymbolSet {
             current_branch: "*",
             graph_commit: "o",
             graph_squash_commit: "~",
+            graph_cherry_commit: "c",
             graph_merge: "+",
             graph_arrow_left: "<",
             graph_arrow_right: ">",
@@ -57,6 +61,7 @@ impl SymbolSet {
             status_merged: "+",
             status_in_sync: "=",
             status_squash_merged: "~",
+            status_cherry_picked: "c",
             status_unmerged: "-",
             status_local_suffix: "^",
             status_remote_suffix: "v",
@@ -77,6 +82,7 @@ impl SymbolSet {
             current_branch: "\u{25cf}",       // black circle
             graph_commit: "\u{25cf}",         // black circle
             graph_squash_commit: "\u{2248}",  // almost equal to
+            graph_cherry_commit: "\u{2605}",  // black star
             graph_merge: "\u{25cb}",          // white circle
             graph_arrow_left: "\u{25c0}",     // black left-pointing triangle
             graph_arrow_right: "\u{25b6}",    // black right-pointing triangle
@@ -85,6 +91,7 @@ impl SymbolSet {
             status_merged: "\u{2714}",        // heavy check mark
             status_in_sync: "\u{2261}",       // identical to (≡)
             status_squash_merged: "\u{2248}", // almost equal to
+            status_cherry_picked: "\u{2605}", // black star
             status_unmerged: "\u{2718}",      // heavy ballot X
             status_local_suffix: "\u{2191}",  // ↑ upwards arrow
             status_remote_suffix: "\u{2193}", // ↓ downwards arrow
@@ -105,6 +112,7 @@ impl SymbolSet {
             current_branch: "\u{e0a0}",       // powerline branch
             graph_commit: "\u{25cf}",         // medium filled circle
             graph_squash_commit: "\u{2248}",  // almost equal to
+            graph_cherry_commit: "\u{f005}",  // nerd font fa-star
             graph_merge: "\u{f407}",          // nerd font git-merge
             graph_arrow_left: "\u{25c0}",     // black left-pointing triangle
             graph_arrow_right: "\u{25b6}",    // black right-pointing triangle
@@ -113,6 +121,7 @@ impl SymbolSet {
             status_merged: "\u{f126}",        // nerd font code-fork (merged)
             status_in_sync: "\u{f441}",       // nerd font nf-dev-equals
             status_squash_merged: "\u{25cf}", // solid circle (squash-merged)
+            status_cherry_picked: "\u{f005}", // nerd font fa-star
             status_unmerged: "\u{f00d}",      // nerd font x-mark
             status_local_suffix: "\u{2191}",  // ↑ upwards arrow
             status_remote_suffix: "\u{2193}", // ↓ downwards arrow
@@ -270,6 +279,25 @@ mod tests {
             assert_ne!(set.graph_squash_commit, set.graph_commit);
             assert_ne!(set.graph_squash_commit, set.graph_merge);
             assert_eq!(ratatui::text::Span::raw(set.graph_squash_commit).width(), 1);
+        }
+    }
+
+    #[test]
+    fn cherry_commit_markers_are_distinct_and_width_safe() {
+        for symbols in [SymbolSet::ascii(), SymbolSet::unicode(), SymbolSet::powerline()] {
+            assert_ne!(symbols.graph_cherry_commit, symbols.status_squash_merged);
+            assert_ne!(symbols.status_cherry_picked, symbols.status_squash_merged);
+            assert_ne!(symbols.graph_cherry_commit, symbols.graph_squash_commit);
+            assert_ne!(symbols.graph_cherry_commit, symbols.graph_commit);
+            assert_ne!(symbols.graph_cherry_commit, symbols.graph_merge);
+            assert_eq!(
+                ratatui::text::Span::raw(symbols.graph_cherry_commit).width(),
+                1
+            );
+            assert_eq!(
+                ratatui::text::Span::raw(symbols.status_cherry_picked).width(),
+                1
+            );
         }
     }
 }

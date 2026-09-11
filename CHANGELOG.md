@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-11
+
+### Tasks
+- feat: mark cherry-picked commits (#cherry-pick, #merge-detection, #ui, #symbols)
+
 ## 2026-09-10
 
 ### Plan: Specific, Recoverable Branch-Delete Failures (P005)

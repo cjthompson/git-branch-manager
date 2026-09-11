@@ -414,7 +414,7 @@ pub fn select_merged<T: ViewItem>(state: &mut ListState<T>) {
             continue;
         }
         if let Some(status) = state.items[i].merge_status() {
-            if matches!(status, MergeStatus::Merged | MergeStatus::SquashMerged) {
+            if matches!(status, MergeStatus::Merged | MergeStatus::SquashMerged | MergeStatus::CherryPicked) {
                 state.selected[i] = true;
             }
         }

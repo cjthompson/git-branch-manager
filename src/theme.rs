@@ -5,6 +5,7 @@ pub struct Theme {
     pub name: &'static str,
     pub merged: Style,
     pub squash_merged: Style,
+    pub cherry_picked: Style,
     /// Style for branches whose tip is literally the base tip (no integration
     /// event). Distinct from `merged` so users can tell "no work was done" from
     /// "work was integrated".
@@ -41,6 +42,7 @@ impl Theme {
             name: "dark",
             merged: Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
             squash_merged: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            cherry_picked: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             in_sync: Style::new()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::ITALIC),
@@ -88,6 +90,7 @@ impl Theme {
             squash_merged: Style::new()
                 .fg(Color::Indexed(172))
                 .add_modifier(Modifier::BOLD), // dark orange
+            cherry_picked: Style::new().fg(Color::Indexed(30)).add_modifier(Modifier::BOLD), // teal
             in_sync: Style::new()
                 .fg(Color::Indexed(245))
                 .add_modifier(Modifier::ITALIC), // muted gray
@@ -144,6 +147,7 @@ impl Theme {
             name: "solarized",
             merged: Style::new().fg(green).add_modifier(Modifier::BOLD),
             squash_merged: Style::new().fg(yellow).add_modifier(Modifier::BOLD),
+            cherry_picked: Style::new().fg(cyan),
             in_sync: Style::new().fg(base01).add_modifier(Modifier::ITALIC),
             unmerged: Style::new().fg(red),
             primary_text: Style::new().fg(base0).add_modifier(Modifier::BOLD),
@@ -194,6 +198,7 @@ impl Theme {
             name: "dracula",
             merged: Style::new().fg(green).add_modifier(Modifier::BOLD),
             squash_merged: Style::new().fg(yellow).add_modifier(Modifier::BOLD),
+            cherry_picked: Style::new().fg(cyan),
             in_sync: Style::new()
                 .fg(Color::Indexed(245))
                 .add_modifier(Modifier::ITALIC),

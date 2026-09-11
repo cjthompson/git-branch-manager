@@ -90,8 +90,11 @@ pub fn merge_status_rank(status: &MergeStatus) -> u8 {
         MergeStatus::LocalMerged => 4,
         MergeStatus::RemoteSquashMerged => 5,
         MergeStatus::LocalSquashMerged => 6,
-        MergeStatus::Unmerged => 7,
-        MergeStatus::Pending => 8,
+        MergeStatus::CherryPicked => 7,
+        MergeStatus::RemoteCherryPicked => 8,
+        MergeStatus::LocalCherryPicked => 9,
+        MergeStatus::Unmerged => 10,
+        MergeStatus::Pending => 11,
     }
 }
 
@@ -335,8 +338,11 @@ mod tests {
         assert_eq!(merge_status_rank(&MergeStatus::LocalMerged), 4);
         assert_eq!(merge_status_rank(&MergeStatus::RemoteSquashMerged), 5);
         assert_eq!(merge_status_rank(&MergeStatus::LocalSquashMerged), 6);
-        assert_eq!(merge_status_rank(&MergeStatus::Unmerged), 7);
-        assert_eq!(merge_status_rank(&MergeStatus::Pending), 8);
+        assert_eq!(merge_status_rank(&MergeStatus::CherryPicked), 7);
+        assert_eq!(merge_status_rank(&MergeStatus::RemoteCherryPicked), 8);
+        assert_eq!(merge_status_rank(&MergeStatus::LocalCherryPicked), 9);
+        assert_eq!(merge_status_rank(&MergeStatus::Unmerged), 10);
+        assert_eq!(merge_status_rank(&MergeStatus::Pending), 11);
     }
 
     #[test]

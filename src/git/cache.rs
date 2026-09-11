@@ -361,6 +361,9 @@ impl BranchCache {
             "remote_merged" => MergeStatus::RemoteMerged,
             "local_squash_merged" => MergeStatus::LocalSquashMerged,
             "remote_squash_merged" => MergeStatus::RemoteSquashMerged,
+            "cherry_picked" => MergeStatus::CherryPicked,
+            "local_cherry_picked" => MergeStatus::LocalCherryPicked,
+            "remote_cherry_picked" => MergeStatus::RemoteCherryPicked,
             "unmerged" => MergeStatus::Unmerged,
             _ => {
                 self.record_miss();
@@ -385,7 +388,9 @@ impl BranchCache {
             | MergeStatus::LocalMerged
             | MergeStatus::RemoteMerged
             | MergeStatus::LocalSquashMerged
-            | MergeStatus::RemoteSquashMerged => {
+            | MergeStatus::RemoteSquashMerged
+            | MergeStatus::LocalCherryPicked
+            | MergeStatus::RemoteCherryPicked => {
                 if entry.commit_hash == current_commit_hash {
                     self.record_hit();
                     span.record("hit", true);
@@ -453,6 +458,9 @@ impl BranchCache {
             MergeStatus::RemoteMerged => "remote_merged",
             MergeStatus::LocalSquashMerged => "local_squash_merged",
             MergeStatus::RemoteSquashMerged => "remote_squash_merged",
+            MergeStatus::CherryPicked => "cherry_picked",
+            MergeStatus::LocalCherryPicked => "local_cherry_picked",
+            MergeStatus::RemoteCherryPicked => "remote_cherry_picked",
             MergeStatus::Unmerged => "unmerged",
             MergeStatus::Pending => {
                 span.record("inserted", false);
