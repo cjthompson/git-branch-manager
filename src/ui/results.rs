@@ -4,7 +4,22 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use super::shared::centered_rect;
 use crate::theme::Theme;
-use crate::types::OperationResult;
+use crate::types::{FailureCause, OperationResult};
+
+/// Per-row recovery hint derived from a typed `FailureCause`. `None`
+/// means "no recovery on this screen" — either `BranchNotFound` (the
+/// branch is already gone, the row will vanish on next refresh) or
+/// `Other` (a generic libgit2 error that needs human investigation).
+fn recovery_hint(failure: Option<&FailureCause>) -> Option<&'static str> {
+    match failure {
+        Some(FailureCause::NotMerged) => Some("(press ! to force-delete)"),
+        Some(FailureCause::CheckedOutInWorktree { is_main: false, .. }) => {
+            Some("(press r to remove worktree + delete)")
+        }
+        Some(FailureCause::CheckedOutInWorktree { is_main: true, .. }) => None,
+        Some(FailureCause::BranchNotFound) | Some(FailureCause::Other { .. }) | None => None,
+    }
+}
 
 pub fn draw_results(frame: &mut Frame, results: &[OperationResult], theme: &Theme) {
     let area = frame.area();
@@ -18,7 +33,7 @@ pub fn draw_results(frame: &mut Frame, results: &[OperationResult], theme: &Them
                 ("FAIL", theme.error, theme.error)
             };
 
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(status, style),
                 Span::raw("  "),
                 Span::styled(
@@ -27,19 +42,51 @@ pub fn draw_results(frame: &mut Frame, results: &[OperationResult], theme: &Them
                 ),
                 Span::raw("  "),
                 Span::styled(r.message.clone(), message_style),
-            ])
+            ];
+            if let Some(hint) = recovery_hint(r.failure.as_ref()) {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(hint, theme.dim));
+            }
+            Line::from(spans)
         })
         .collect();
 
     lines.push(Line::from(""));
     let key_style = Style::default().fg(theme.title.fg.unwrap_or(Color::White));
-    lines.push(Line::from(vec![
-        Span::styled("Press ", theme.dim),
-        Span::styled("Enter", key_style),
-        Span::styled(" or ", theme.dim),
-        Span::styled("Esc", key_style),
-        Span::styled(" to continue", theme.dim),
-    ]));
+    // Advertise `!`/`r` recovery keys only when at least one row is
+    // actually recoverable — keeps the footer honest and prevents the
+    // "press ! to force-delete" hint from appearing on rows where it
+    // would do nothing.
+    let has_force_recoverable = results
+        .iter()
+        .any(|r| matches!(&r.failure, Some(FailureCause::NotMerged)));
+    let has_worktree_recoverable = results
+        .iter()
+        .any(|r| {
+            matches!(
+                &r.failure,
+                Some(FailureCause::CheckedOutInWorktree {
+                    is_main: false,
+                    ..
+                })
+            )
+        });
+    let mut footer_spans = vec![Span::styled("Press ", theme.dim)];
+    if has_force_recoverable {
+        footer_spans.push(Span::styled("!", key_style));
+        footer_spans.push(Span::styled(" force", theme.dim));
+        footer_spans.push(Span::raw("  "));
+    }
+    if has_worktree_recoverable {
+        footer_spans.push(Span::styled("r", key_style));
+        footer_spans.push(Span::styled(" remove worktree", theme.dim));
+        footer_spans.push(Span::raw("  "));
+    }
+    footer_spans.push(Span::styled("Enter", key_style));
+    footer_spans.push(Span::styled("/", theme.dim));
+    footer_spans.push(Span::styled("Esc", key_style));
+    footer_spans.push(Span::styled(" to continue", theme.dim));
+    lines.push(Line::from(footer_spans));
 
     // Calculate dynamic width based on maximum content width
     let content_max_width: usize = lines

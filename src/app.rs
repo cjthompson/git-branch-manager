@@ -26,7 +26,7 @@ use git_branch_manager::ui::cells::{
 use git_branch_manager::ui::info_modal::{InfoHitRegion, InfoModalFocus, InfoModalRow};
 use git_branch_manager::ui::list_render::CellContext;
 use git_branch_manager::ui::menu::MenuItem;
-use git_branch_manager::ui::render::{Overlay, RenderContext};
+use git_branch_manager::ui::render::{ConfirmExtraKey, Overlay, RenderContext};
 use git_branch_manager::ui::shared::{abbreviate_path, prefix_style, truncate, truncate_left};
 use git_branch_manager::ui::toast::Toast;
 use git_branch_manager::view::branches::BranchesViewDef;
@@ -769,11 +769,23 @@ impl App {
             action,
             remote,
             results,
+            failures,
             return_view,
             ..
         }) = job_poll.event
         {
             self.refresh_after_job(action, return_view);
+
+            // Plan P005 §5: when the job produced any typed failures,
+            // auto-open the Results overlay so the user sees the cause
+            // and can press `!`/`r` to recover without scrolling past
+            // successes. Success-only completion stays non-modal — the
+            // transient `CompletionSummary` in the status area is the
+            // only feedback. `failures` already excludes `BranchNotFound`
+            // (treated as "already gone" success — see §9).
+            if !failures.is_empty() {
+                self.overlay = Some(Overlay::Results { results: failures });
+            }
 
             // When DeleteLocalAndRemote completes, immediately filter confirmed remote
             // deletions from the in-memory remotes list so they don't appear until a fetch.
@@ -1191,6 +1203,8 @@ impl App {
                 action,
                 targets,
                 remote,
+                reason,
+                extra_keys,
             }) => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     self.job_queue.enqueue_or_start_with_remote(
@@ -1203,11 +1217,39 @@ impl App {
                 KeyCode::Char('n') | KeyCode::Esc => {
                     // Cancel -- don't put overlay back
                 }
+                KeyCode::Char(c) => {
+                    // Plan P005 §6: an extra-key press (e.g. `!` for
+                    // force-delete, `r` for worktree cascade) swaps the
+                    // pending action and re-installs the overlay with
+                    // the same pre-flight context so the user can
+                    // iterate without leaving the confirm flow.
+                    if let Some(extra) = extra_keys.iter().find(|e| e.key == c) {
+                        let swapped = extra.action;
+                        let extra_targets = extra.targets.clone();
+                        self.overlay = Some(Overlay::Confirm {
+                            action: swapped,
+                            targets: extra_targets,
+                            remote,
+                            reason,
+                            extra_keys,
+                        });
+                    } else {
+                        self.overlay = Some(Overlay::Confirm {
+                            action,
+                            targets,
+                            remote,
+                            reason,
+                            extra_keys,
+                        });
+                    }
+                }
                 _ => {
                     self.overlay = Some(Overlay::Confirm {
                         action,
                         targets,
                         remote,
+                        reason,
+                        extra_keys,
                     });
                 }
             },
@@ -1442,6 +1484,48 @@ impl App {
                 KeyCode::Enter | KeyCode::Esc => {
                     // Operation completion already refreshed the backing view;
                     // closing results should only reveal the refreshed list.
+                }
+                KeyCode::Char('!') => {
+                    let targets: Vec<String> = results
+                        .iter()
+                        .filter(|result| {
+                            matches!(&result.failure, Some(FailureCause::NotMerged))
+                        })
+                        .map(|result| result.branch_name.clone())
+                        .collect();
+                    if targets.is_empty() {
+                        self.overlay = Some(Overlay::Results { results });
+                    } else {
+                        self.job_queue.enqueue_or_start(
+                            BranchAction::DeleteLocalForce,
+                            targets,
+                            self.return_view,
+                        );
+                    }
+                }
+                KeyCode::Char('r') => {
+                    let targets: Vec<String> = results
+                        .iter()
+                        .filter(|result| {
+                            matches!(
+                                &result.failure,
+                                Some(FailureCause::CheckedOutInWorktree {
+                                    is_main: false,
+                                    ..
+                                })
+                            )
+                        })
+                        .map(|result| result.branch_name.clone())
+                        .collect();
+                    if targets.is_empty() {
+                        self.overlay = Some(Overlay::Results { results });
+                    } else {
+                        self.job_queue.enqueue_or_start(
+                            BranchAction::DeleteBranchAndRemoveWorktree,
+                            targets,
+                            self.return_view,
+                        );
+                    }
                 }
                 _ => {
                     self.overlay = Some(Overlay::Results { results });
@@ -2184,6 +2268,21 @@ impl App {
                 remote: tracking_remote,
             },
             MenuItem {
+                label: "Force-delete local".into(),
+                enabled: !branch.is_base && !branch.is_current,
+                reason: if branch.is_current {
+                    Some("current".into())
+                } else if branch.is_base {
+                    Some("base".into())
+                } else {
+                    None
+                },
+                shortcut: Some('!'),
+                action: BranchAction::DeleteLocalForce,
+                target: branch.name.clone(),
+                remote: None,
+            },
+            MenuItem {
                 label: "Fast-forward".into(),
                 enabled: !branch.is_current && has_remote,
                 reason: if branch.is_current {
@@ -2565,11 +2664,27 @@ impl App {
             return;
         }
 
-        self.overlay = Some(Overlay::Confirm {
-            action,
-            targets: vec![item.target],
-            remote: item.remote,
-        });
+        let targets = vec![item.target];
+        if action == BranchAction::DeleteLocal {
+            let (reason, extra_keys) = self.build_delete_preflight(&targets);
+            self.open_confirm_with_reason(
+                action,
+                self.return_view,
+                targets,
+                item.remote,
+                reason,
+                extra_keys,
+            );
+        } else {
+            self.open_confirm_with_reason(
+                action,
+                self.return_view,
+                targets,
+                item.remote,
+                None,
+                Vec::new(),
+            );
+        }
     }
 
     // ---- View-level action helpers ----
@@ -2581,7 +2696,124 @@ impl App {
         } else {
             BranchAction::DeleteLocal
         };
-        self.open_confirm(action, ViewId::Branches, targets);
+        // Plan P005 §6: walk the targets for pre-flight conditions
+        // (unmerged commits, checked out in a non-main worktree) so the
+        // Confirm overlay can show the user *why* plain delete is risky
+        // and offer a one-key recovery (`!` force-delete, `r` cascade).
+        // Only meaningful for local-only deletes — `DeleteLocalAndRemote`
+        // already implies force-delete semantics on the remote side.
+        let (reason, extra_keys) = if include_remote {
+            (None, Vec::new())
+        } else {
+            self.build_delete_preflight(&targets)
+        };
+        self.open_confirm_with_reason(
+            action,
+            ViewId::Branches,
+            targets,
+            None,
+            reason,
+            extra_keys,
+        );
+    }
+
+    /// Build the Confirm overlay's pre-flight reason block and
+    /// alternate-action keys (plan P005 §6). Returns `(None, [])` when
+    /// no target triggers a pre-flight — the overlay renders the
+    /// classic `[y]es [n]o` only.
+    fn build_delete_preflight(
+        &self,
+        targets: &[String],
+    ) -> (Option<String>, Vec<ConfirmExtraKey>) {
+        let mut reasons: Vec<String> = Vec::new();
+        let mut unmerged_targets = Vec::new();
+        let mut worktree_targets = Vec::new();
+        let mut force_cascade = false;
+
+        for name in targets {
+            let branch = self
+                .branches
+                .items()
+                .iter()
+                .find(|branch| branch.name == *name);
+            if let Some(branch) = branch {
+                match branch.merge_status {
+                    MergeStatus::Unmerged => {
+                        reasons.push(format!(
+                            "Branch {name} has unique commits not on {}",
+                            branch.base_branch
+                        ));
+                        unmerged_targets.push(name.clone());
+                    }
+                    MergeStatus::Pending => {
+                        reasons.push(format!(
+                            "Branch {name} merge status is still being computed; Git will verify safe deletion"
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(worktree) = self
+                .worktrees
+                .items()
+                .iter()
+                .find(|worktree| worktree.branch.as_deref() == Some(name.as_str()))
+            {
+                reasons.push(format!(
+                    "Branch {name} is checked out in {}",
+                    worktree.path.display()
+                ));
+                if !worktree.is_main {
+                    worktree_targets.push(name.clone());
+                    let is_dirty = !worktree.wt_status.is_clean();
+                    force_cascade |= is_dirty;
+                    if is_dirty {
+                        reasons.push(format!(
+                            "Worktree {} has uncommitted changes",
+                            worktree.path.display()
+                        ));
+                    }
+                }
+            }
+        }
+
+        let mut extra_keys: Vec<ConfirmExtraKey> = Vec::new();
+        if !unmerged_targets.is_empty() {
+            extra_keys.push(ConfirmExtraKey {
+                key: '!',
+                label: "force-delete".into(),
+                action: BranchAction::DeleteLocalForce,
+                targets: unmerged_targets.clone(),
+            });
+        }
+        if !worktree_targets.is_empty() {
+            let force = force_cascade
+                || worktree_targets
+                    .iter()
+                    .any(|name| unmerged_targets.contains(name));
+            extra_keys.push(ConfirmExtraKey {
+                key: 'r',
+                label: if force {
+                    "force-remove worktree + delete".into()
+                } else {
+                    "remove worktree + delete".into()
+                },
+                action: if force {
+                    BranchAction::DeleteBranchAndRemoveWorktreeForce
+                } else {
+                    BranchAction::DeleteBranchAndRemoveWorktree
+                },
+                targets: worktree_targets,
+            });
+        }
+
+        let reason = if reasons.is_empty() {
+            None
+        } else {
+            Some(reasons.join(", OR\n  "))
+        };
+        (reason, extra_keys)
     }
 
     fn push_selected_branches(&mut self) {
@@ -2641,6 +2873,30 @@ impl App {
         targets: Vec<String>,
         remote: Option<String>,
     ) {
+        self.open_confirm_with_reason(
+            action,
+            return_view,
+            targets,
+            remote,
+            None,
+            Vec::new(),
+        );
+    }
+
+    /// Full pre-flight entry point: open the Confirm overlay with a
+    /// pre-built reason block and alternate-action keys (plan P005 §6).
+    /// Used by `delete_selected_branches` after walking the targets for
+    /// unmerged commits and worktree-checked-out branches.
+    #[allow(clippy::too_many_arguments)]
+    fn open_confirm_with_reason(
+        &mut self,
+        action: BranchAction,
+        return_view: ViewId,
+        targets: Vec<String>,
+        remote: Option<String>,
+        reason: Option<String>,
+        extra_keys: Vec<ConfirmExtraKey>,
+    ) {
         if targets.is_empty() {
             return;
         }
@@ -2649,6 +2905,8 @@ impl App {
             action,
             targets,
             remote,
+            reason,
+            extra_keys,
         });
     }
 
@@ -2698,6 +2956,16 @@ impl App {
         match self.active_view {
             ViewId::Graph if self.graph.snapshot().is_none() && !self.graph.is_loading() => {
                 self.spawn_graph_load(self.graph.max_count(), self.graph.includes_remotes());
+            }
+            ViewId::Branches
+                if self.worktrees.items().is_empty()
+                    && !self.worktrees.loading
+                    && self.config.load_worktrees_on_launch != Some(false) =>
+            {
+                // Branch-delete pre-flight needs worktree ownership and
+                // working-tree status. Load it lazily when Branches becomes
+                // visible, while preserving the opt-out for large repos.
+                self.spawn_worktree_load();
             }
             ViewId::Tags if self.tags.items().is_empty() && !self.tags.loading => {
                 self.spawn_tag_load();
@@ -2972,15 +3240,15 @@ impl App {
     }
 
     fn refresh_after_job(&mut self, action: BranchAction, origin: ViewId) {
-        if origin != ViewId::Graph {
-            self.refresh_view_data(origin);
-            return;
-        }
-
         for view in graph_affected_views(action) {
             self.refresh_view_data(*view);
         }
-        self.refresh_view_data(ViewId::Graph);
+        if origin != ViewId::Graph && !graph_affected_views(action).contains(&origin) {
+            self.refresh_view_data(origin);
+        }
+        if origin == ViewId::Graph {
+            self.refresh_view_data(ViewId::Graph);
+        }
     }
 
     fn start_fetch(&mut self, prune: bool) {
@@ -3233,8 +3501,23 @@ fn graph_affected_views(action: BranchAction) -> &'static [ViewId] {
         | BranchAction::MergeRemoteIntoCurrent
         | BranchAction::CherryPickRemote => &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees],
         BranchAction::WorktreeRemove | BranchAction::WorktreeForceRemove => &[ViewId::Worktrees],
-        BranchAction::WorktreeRemoveAndDeleteBranch => &[ViewId::Branches, ViewId::Worktrees],
+        BranchAction::WorktreeRemoveAndDeleteBranch => {
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees]
+        }
         BranchAction::WorktreeRemoveAndDeleteBranchRemote => {
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees]
+        }
+        // P005 #067: new cascade-by-name variants. They are reached from the
+        // Branches view's Confirm/Results overlay (`!`/`r` recovery keys and
+        // the menu), and touch worktrees; the Remote variant also needs the
+        // Remotes view so menu discovery stays consistent with the
+        // path-based siblings above.
+        BranchAction::DeleteLocalForce => &[ViewId::Branches, ViewId::Remotes],
+        BranchAction::DeleteBranchAndRemoveWorktree
+        | BranchAction::DeleteBranchAndRemoveWorktreeForce => {
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees]
+        }
+        BranchAction::DeleteBranchAndRemoveWorktreeRemote => {
             &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees]
         }
         BranchAction::ViewRemotePR => &[],
@@ -4482,6 +4765,80 @@ mod tests {
     }
 
     #[test]
+    fn branch_origin_delete_refreshes_remote_and_worktree_views() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("README.md"), "base\n").unwrap();
+        run_git(dir, &["add", "README.md"]);
+        run_git(dir, &["commit", "-m", "initial"]);
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.remotes.loading = false;
+        app.worktrees.loading = false;
+
+        let (op_tx, op_rx) = mpsc::channel();
+        let (_prog_tx, prog_rx) = mpsc::channel();
+        app.job_queue.inject_running_for_test(
+            git_branch_manager::job_queue::ActionJob {
+                action: BranchAction::DeleteBranchAndRemoveWorktreeForce,
+                targets: vec!["feature/delete".into()],
+                remote: None,
+                return_view: ViewId::Branches,
+            },
+            op_rx,
+            prog_rx,
+            Arc::new(AtomicBool::new(false)),
+        );
+        op_tx
+            .send(vec![OperationResult::success(
+                "feature/delete",
+                BranchAction::DeleteBranchAndRemoveWorktreeForce,
+                "Deleted feature/delete",
+            )])
+            .unwrap();
+
+        app.drain_channels();
+
+        assert!(app.remotes.loading);
+        assert!(app.worktrees.loading);
+    }
+
+    #[test]
+    fn branches_view_lazily_loads_worktrees_for_delete_preflight() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.active_view = ViewId::Branches;
+        app.worktrees.loading = false;
+
+        app.ensure_view_loaded();
+
+        assert!(app.worktrees.loading);
+    }
+
+    #[test]
+    fn branches_view_respects_worktree_load_opt_out() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let config = Config {
+            load_worktrees_on_launch: Some(false),
+            ..Config::default()
+        };
+        let mut app = App::new(tmpdir.path().to_path_buf(), "main".into(), config);
+        app.active_view = ViewId::Branches;
+        app.worktrees.loading = false;
+
+        app.ensure_view_loaded();
+
+        assert!(!app.worktrees.loading);
+    }
+
+    #[test]
     fn local_remote_delete_keeps_remote_when_remote_deletion_fails() {
         let mut app = graph_app(vec![graph_ref(
             "feature/local",
@@ -4727,6 +5084,278 @@ mod tests {
             app.overlay.is_none(),
             "confirmed-action completion is non-modal"
         );
+    }
+
+    /// Companion to `confirmed_action_completion_is_non_modal`: when the
+    /// background job returns a typed failure, the Results overlay must
+    /// auto-open so the user sees the cause and the recovery keys
+    /// (`!`/`r` once those are wired in #072). Plan P005 §5 + §9.
+    #[test]
+    fn failed_confirmed_action_opens_results_overlay() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("README.md"), "base\n").unwrap();
+        run_git(dir, &["add", "README.md"]);
+        run_git(dir, &["commit", "-m", "initial"]);
+        run_git(dir, &["branch", "-M", "main"]);
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+
+        let branch_name = "feature/delete-fail";
+        let (op_tx, op_rx) = mpsc::channel();
+        let (_prog_tx, prog_rx) = mpsc::channel();
+        app.job_queue.inject_running_for_test(
+            git_branch_manager::job_queue::ActionJob {
+                action: BranchAction::DeleteLocal,
+                targets: vec![branch_name.to_string()],
+                remote: None,
+                return_view: ViewId::Branches,
+            },
+            op_rx,
+            prog_rx,
+            Arc::new(AtomicBool::new(false)),
+        );
+        op_tx
+            .send(vec![OperationResult::failure(
+                branch_name,
+                BranchAction::DeleteLocal,
+                FailureCause::Other {
+                    raw_message: "could not delete because reasons".into(),
+                },
+                "Failed to delete feature/delete-fail: could not delete because reasons",
+            )])
+            .unwrap();
+
+        app.drain_channels();
+
+        match &app.overlay {
+            Some(Overlay::Results { results }) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].branch_name, branch_name);
+                assert!(matches!(
+                    results[0].failure,
+                    Some(FailureCause::Other { .. })
+                ));
+            }
+            other => panic!("expected Overlay::Results after a failed job, got {other:?}"),
+        }
+    }
+
+    /// `BranchNotFound` is treated as success for overlay purposes (plan
+    /// P005 §9): the row will vanish on the next refresh, so we suppress
+    /// the modal so the user isn't interrupted by something already
+    /// resolved on disk.
+    #[test]
+    fn branch_not_found_failure_does_not_open_overlay() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("README.md"), "base\n").unwrap();
+        run_git(dir, &["add", "README.md"]);
+        run_git(dir, &["commit", "-m", "initial"]);
+        run_git(dir, &["branch", "-M", "main"]);
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+
+        let branch_name = "feature/already-gone";
+        let (op_tx, op_rx) = mpsc::channel();
+        let (_prog_tx, prog_rx) = mpsc::channel();
+        app.job_queue.inject_running_for_test(
+            git_branch_manager::job_queue::ActionJob {
+                action: BranchAction::DeleteLocal,
+                targets: vec![branch_name.to_string()],
+                remote: None,
+                return_view: ViewId::Branches,
+            },
+            op_rx,
+            prog_rx,
+            Arc::new(AtomicBool::new(false)),
+        );
+        op_tx
+            .send(vec![OperationResult::failure(
+                branch_name,
+                BranchAction::DeleteLocal,
+                FailureCause::BranchNotFound,
+                format!("Branch not found: {branch_name}"),
+            )])
+            .unwrap();
+
+        app.drain_channels();
+
+        assert!(
+            app.overlay.is_none(),
+            "BranchNotFound must not auto-open the Results overlay"
+        );
+    }
+
+    #[test]
+    fn results_force_key_starts_force_delete_for_only_unmerged_failures() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.return_view = ViewId::Branches;
+        app.overlay = Some(Overlay::Results {
+            results: vec![
+                OperationResult::failure(
+                    "feature/unmerged",
+                    BranchAction::DeleteLocal,
+                    FailureCause::NotMerged,
+                    "not merged",
+                ),
+                OperationResult::failure(
+                    "feature/other",
+                    BranchAction::DeleteLocal,
+                    FailureCause::Other {
+                        raw_message: "other".into(),
+                    },
+                    "other",
+                ),
+            ],
+        });
+
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Char('!'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert!(app.overlay.is_none());
+        assert_eq!(
+            app.job_queue.current_action_for_test(),
+            Some(BranchAction::DeleteLocalForce)
+        );
+    }
+
+    #[test]
+    fn results_worktree_key_starts_safe_cascade_for_linked_worktree_failures() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.return_view = ViewId::Branches;
+        app.overlay = Some(Overlay::Results {
+            results: vec![OperationResult::failure(
+                "feature/worktree",
+                BranchAction::DeleteLocal,
+                FailureCause::CheckedOutInWorktree {
+                    worktree_path: PathBuf::from("/repo/.worktrees/feature-worktree"),
+                    is_main: false,
+                },
+                "checked out elsewhere",
+            )],
+        });
+
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Char('r'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert!(app.overlay.is_none());
+        assert_eq!(
+            app.job_queue.current_action_for_test(),
+            Some(BranchAction::DeleteBranchAndRemoveWorktree)
+        );
+    }
+
+    #[test]
+    fn delete_confirm_shows_force_key_for_unmerged_branch() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut item = branch("feature/x", TrackingStatus::Local);
+        item.merge_status = MergeStatus::Unmerged;
+        app.branches.set_items(vec![item]);
+
+        app.delete_selected_branches(false);
+
+        let Some(Overlay::Confirm {
+            action, extra_keys, ..
+        }) = app.overlay.as_ref()
+        else {
+            panic!("expected confirm overlay, got {:?}", app.overlay);
+        };
+        assert_eq!(*action, BranchAction::DeleteLocal);
+        let force = extra_keys
+            .iter()
+            .find(|key| key.key == '!')
+            .expect("expected a `!` force-delete extra key");
+        assert_eq!(force.action, BranchAction::DeleteLocalForce);
+        assert_eq!(force.targets, vec!["feature/x".to_string()]);
+    }
+
+    #[test]
+    fn delete_confirm_shows_worktree_key_for_linked_branch() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut item = branch("feature/y", TrackingStatus::Local);
+        item.merge_status = MergeStatus::Merged;
+        app.branches.set_items(vec![item]);
+        app.worktrees.set_items(vec![worktree("feature/y")]);
+
+        app.delete_selected_branches(false);
+
+        let Some(Overlay::Confirm { extra_keys, .. }) = app.overlay.as_ref() else {
+            panic!("expected confirm overlay, got {:?}", app.overlay);
+        };
+        let cascade = extra_keys
+            .iter()
+            .find(|key| key.key == 'r')
+            .expect("expected an `r` remove-worktree extra key");
+        assert_eq!(cascade.action, BranchAction::DeleteBranchAndRemoveWorktree);
+        assert_eq!(cascade.targets, vec!["feature/y".to_string()]);
+    }
+
+    #[test]
+    fn delete_confirm_force_delete_menu_opens_confirm() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.branches
+            .set_items(vec![branch("feature/z", TrackingStatus::Local)]);
+
+        let item = app
+            .build_branch_menu()
+            .into_iter()
+            .find(|item| item.label == "Force-delete local")
+            .expect("expected a `Force-delete local` menu entry");
+        assert_eq!(item.shortcut, Some('!'));
+        assert!(item.enabled);
+
+        app.execute_menu_action(item);
+
+        let Some(Overlay::Confirm {
+            action,
+            targets,
+            reason,
+            extra_keys,
+            ..
+        }) = app.overlay.as_ref()
+        else {
+            panic!("expected confirm overlay, got {:?}", app.overlay);
+        };
+        assert_eq!(*action, BranchAction::DeleteLocalForce);
+        assert_eq!(*targets, vec!["feature/z".to_string()]);
+        assert!(reason.is_none());
+        assert!(extra_keys.is_empty());
     }
 
     #[test]

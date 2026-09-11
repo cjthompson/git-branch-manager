@@ -2,7 +2,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-use crate::types::{BranchAction, OperationResult, ProgressUpdate};
+use crate::git::worktree;
+use crate::types::{BranchAction, FailureCause, OperationResult, ProgressUpdate};
 use git2::Repository;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -75,31 +76,160 @@ fn run_git_cancellable(
     }
 }
 
+/// Classify a `find_branch` failure into a typed [`FailureCause`].
+fn classify_branch_error(err: &git2::Error) -> FailureCause {
+    if err.code() == git2::ErrorCode::NotFound {
+        FailureCause::BranchNotFound
+    } else {
+        FailureCause::Other {
+            raw_message: err.message().to_string(),
+        }
+    }
+}
+
+fn command_failure_text(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else {
+        stderr
+    }
+}
+
+fn classify_delete_command_error(repo_path: &Path, branch_name: &str, raw: &str) -> FailureCause {
+    let lower = raw.to_ascii_lowercase();
+    let checked_out_hint = lower.contains("used by worktree")
+        || lower.contains("checked out")
+        || lower.contains("checked-out");
+
+    if checked_out_hint {
+        // Use the caller-excluding lookup: if `branch_name` is checked out
+        // in *this* worktree (repo_path itself), that's not a recoverable
+        // "checked out elsewhere" case — it falls through to `Other` below,
+        // preserving the raw git message.
+        match worktree::try_other_worktree_for_branch(repo_path, branch_name) {
+            Ok(Some(worktree)) => {
+                return FailureCause::CheckedOutInWorktree {
+                    worktree_path: worktree.path,
+                    is_main: worktree.is_main,
+                };
+            }
+            Ok(None) => {}
+            Err(lookup_error) => {
+                return FailureCause::Other {
+                    raw_message: format!("{raw} (worktree lookup failed: {lookup_error})"),
+                };
+            }
+        }
+    }
+
+    if lower.contains("not fully merged") || lower.contains("not merged") {
+        FailureCause::NotMerged
+    } else if lower.contains("not found") || lower.contains("does not exist") {
+        FailureCause::BranchNotFound
+    } else {
+        FailureCause::Other {
+            raw_message: raw.to_string(),
+        }
+    }
+}
+
+fn delete_failure_result(
+    branch_name: &str,
+    action: BranchAction,
+    cause: FailureCause,
+    fallback_message: impl Into<String>,
+) -> OperationResult {
+    if matches!(&cause, FailureCause::BranchNotFound) {
+        OperationResult {
+            branch_name: branch_name.to_string(),
+            action,
+            // An already-deleted branch satisfies the user's requested end
+            // state. Keep the typed cause for diagnostics, but do not turn a
+            // harmless race into failure UX.
+            success: true,
+            message: format!("Branch {branch_name} already gone"),
+            failure: Some(cause),
+        }
+    } else {
+        OperationResult::failure(branch_name, action, cause, fallback_message)
+    }
+}
+
+fn delete_local_with_mode(
+    repo: &Repository,
+    branch_name: &str,
+    force: bool,
+) -> OperationResult {
+    let action = if force {
+        BranchAction::DeleteLocalForce
+    } else {
+        BranchAction::DeleteLocal
+    };
+    let verb = if force { "Force-deleted" } else { "Deleted" };
+    let failure_verb = if force { "force-delete" } else { "delete" };
+
+    match repo.find_branch(branch_name, git2::BranchType::Local) {
+        Ok(_) => {
+            let Some(repo_path) = repo.workdir() else {
+                return OperationResult::failure(
+                    branch_name,
+                    action,
+                    FailureCause::Other {
+                        raw_message: "cannot delete a branch from a bare repository".into(),
+                    },
+                    format!("Failed to {failure_verb} {branch_name}: bare repository"),
+                );
+            };
+            let flag = if force { "-D" } else { "-d" };
+            match git_cmd(repo_path).args(["branch", flag, branch_name]).output() {
+                Ok(output) if output.status.success() => OperationResult::success(
+                    branch_name,
+                    action,
+                    format!("{verb} {branch_name}"),
+                ),
+                Ok(output) => {
+                    let raw = command_failure_text(&output);
+                    let cause = classify_delete_command_error(repo_path, branch_name, &raw);
+                    delete_failure_result(
+                        branch_name,
+                        action,
+                        cause,
+                        format!("Failed to {failure_verb} {branch_name}: {raw}"),
+                    )
+                }
+                Err(error) => OperationResult::failure(
+                    branch_name,
+                    action,
+                    FailureCause::Other {
+                        raw_message: error.to_string(),
+                    },
+                    format!("Failed to {failure_verb} {branch_name}: {error}"),
+                ),
+            }
+        }
+        Err(e) => {
+            let cause = classify_branch_error(&e);
+            delete_failure_result(
+                branch_name,
+                action,
+                cause,
+                format!("Failed to {failure_verb} {branch_name}: {e}"),
+            )
+        }
+    }
+}
+
+/// Delete a local branch with Git's safe `-d` merge check.
 #[instrument(skip(repo))]
 pub fn delete_local(repo: &Repository, branch_name: &str) -> OperationResult {
-    match repo.find_branch(branch_name, git2::BranchType::Local) {
-        Ok(mut branch) => match branch.delete() {
-            Ok(()) => OperationResult::success(
-                branch_name,
-                BranchAction::DeleteLocal,
-                format!("Deleted {branch_name}"),
-            ),
-            Err(e) => OperationResult {
-                branch_name: branch_name.to_string(),
-                action: BranchAction::DeleteLocal,
-                success: false,
-                message: format!("Failed to delete {branch_name}: {e}"),
-                failure: None,
-            },
-        },
-        Err(e) => OperationResult {
-            branch_name: branch_name.to_string(),
-            action: BranchAction::DeleteLocal,
-            success: false,
-            message: format!("Branch not found: {e}"),
-            failure: None,
-        },
-    }
+    delete_local_with_mode(repo, branch_name, false)
+}
+
+/// Force-delete a local branch with Git's `-D` override for the merge check.
+#[instrument(skip(repo))]
+pub fn delete_local_force(repo: &Repository, branch_name: &str) -> OperationResult {
+    delete_local_with_mode(repo, branch_name, true)
 }
 
 #[instrument(skip(repo, repo_path))]

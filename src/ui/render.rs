@@ -34,6 +34,23 @@ use super::settings::{draw_settings, settings_rows};
 use super::status_bar;
 use super::toast::{draw_toast, Toast};
 
+/// One alternate-action key in the Confirm overlay footer (plan P005
+/// §6). Pressing `key` swaps the Confirm's `action` for `action` and
+/// re-installs the overlay so the user can iterate between safe and
+/// force variants without re-pressing the trigger.
+///
+/// The label is the user-visible description rendered after the key in
+/// the footer (`[!] force-delete`, `[r] remove worktree + delete`).
+#[derive(Debug, Clone)]
+pub struct ConfirmExtraKey {
+    pub key: char,
+    pub label: String,
+    pub action: BranchAction,
+    /// Targets affected by this alternate action. Recovery keys may apply to
+    /// only the subset of a multi-target delete that triggered the cause.
+    pub targets: Vec<String>,
+}
+
 /// Overlay state for the top-level renderer.
 #[derive(Debug, Clone)]
 pub enum Overlay {
@@ -53,6 +70,15 @@ pub enum Overlay {
         action: BranchAction,
         targets: Vec<String>,
         remote: Option<String>,
+        /// Optional pre-flight reason rendered above the target list,
+        /// built by `App::build_delete_preflight` (plan P005 §6) when a
+        /// target has unmerged commits or is checked out in a worktree.
+        reason: Option<String>,
+        /// Alternate-action keys (`!` for force-delete, `r` for
+        /// worktree cascade). Pressing one swaps `action` and
+        /// re-installs the overlay with the same reason so the user can
+        /// iterate without restarting the confirm flow.
+        extra_keys: Vec<ConfirmExtraKey>,
     },
     Executing {
         label: String,
@@ -303,9 +329,13 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 );
             }
             Overlay::Confirm {
-                action, targets, ..
+                action,
+                targets,
+                reason,
+                extra_keys,
+                ..
             } => {
-                draw_confirm(frame, *action, targets, ctx.theme);
+                draw_confirm(frame, *action, targets, reason.as_deref(), extra_keys, ctx.theme);
             }
             Overlay::Executing { label, progress } => {
                 draw_executing(frame, label, progress.as_ref(), ctx.theme);

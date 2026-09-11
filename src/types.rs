@@ -48,6 +48,10 @@ pub type PrMap = HashMap<String, PrInfo>;
 pub enum BranchAction {
     // Local branch actions
     DeleteLocal,
+    /// Skip the merge-status gate; bypass `BranchInfo.merge_status` and
+    /// call `git2::Branch::delete` unconditionally. Reached from the
+    /// Confirm overlay's `!` extra key and from the menu's force entry.
+    DeleteLocalForce,
     DeleteLocalAndRemote,
     Checkout,
     Fetch,
@@ -78,12 +82,24 @@ pub enum BranchAction {
     WorktreeForceRemove,
     WorktreeRemoveAndDeleteBranch,
     WorktreeRemoveAndDeleteBranchRemote,
+    /// Cascade by **branch name** (vs the path-based variants above):
+    /// remove the linked worktree holding this branch, then delete the branch
+    /// itself. The worker resolves the path via `git worktree list`.
+    /// Reached from the Branches view's `r` recovery key in the
+    /// Confirm/Results overlays.
+    DeleteBranchAndRemoveWorktree,
+    /// Same cascade, but force-removes the worktree first (handles dirty
+    /// working trees) before deleting the branch.
+    DeleteBranchAndRemoveWorktreeForce,
+    /// Cascade plus remote push-delete of the now-gone branch.
+    DeleteBranchAndRemoveWorktreeRemote,
 }
 
 impl BranchAction {
     pub fn label(&self) -> &'static str {
         match self {
             Self::DeleteLocal => "Delete local",
+            Self::DeleteLocalForce => "Force-delete local",
             Self::DeleteLocalAndRemote => "Delete local + remote",
             Self::Checkout => "Checkout",
             Self::Fetch => "Fetch all",
@@ -112,6 +128,13 @@ impl BranchAction {
             Self::WorktreeRemoveAndDeleteBranch => "Remove worktree + branch",
             Self::WorktreeRemoveAndDeleteBranchRemote => {
                 "Remove worktree + branch (local + remote)"
+            }
+            Self::DeleteBranchAndRemoveWorktree => "Remove worktree + delete branch",
+            Self::DeleteBranchAndRemoveWorktreeForce => {
+                "Force-remove worktree + delete branch"
+            }
+            Self::DeleteBranchAndRemoveWorktreeRemote => {
+                "Remove worktree + delete branch (local + remote)"
             }
         }
     }
@@ -333,9 +356,13 @@ pub enum FailureCause {
     /// The branch has commits not yet merged into the base branch; a plain
     /// delete was refused.
     NotMerged,
-    /// The branch is checked out in another worktree, so it cannot be
-    /// deleted from this one.
-    CheckedOutInWorktree { worktree_path: PathBuf },
+    /// The branch is checked out in a worktree, so it cannot be deleted from
+    /// this one. Primary worktrees are reported too, but cannot be removed as
+    /// part of recovery.
+    CheckedOutInWorktree {
+        worktree_path: PathBuf,
+        is_main: bool,
+    },
     /// Catch-all for an error that hasn't been classified into a specific
     /// cause yet. Carries the raw message so nothing is lost.
     Other { raw_message: String },
@@ -792,5 +819,78 @@ mod tests {
         assert_eq!(BranchAction::Checkout.label(), "Checkout");
         assert_eq!(BranchAction::PushTag.label(), "Push tag");
         assert_eq!(BranchAction::WorktreeRemove.label(), "Remove worktree");
+    }
+
+    #[test]
+    fn operation_result_success_sets_success_true_and_no_failure_cause() {
+        let result = OperationResult::success(
+            "feature/success",
+            BranchAction::DeleteLocal,
+            "Deleted feature/success",
+        );
+        assert!(result.success);
+        assert!(result.failure.is_none());
+        assert_eq!(result.branch_name, "feature/success");
+        assert_eq!(result.message, "Deleted feature/success");
+        assert_eq!(result.action, BranchAction::DeleteLocal);
+    }
+
+    #[test]
+    fn operation_result_failure_sets_success_false_and_typed_cause() {
+        let result = OperationResult::failure(
+            "feature/failure",
+            BranchAction::DeleteLocal,
+            FailureCause::NotMerged,
+            "Failed to delete feature/failure: not merged",
+        );
+        assert!(!result.success);
+        assert_eq!(result.branch_name, "feature/failure");
+        assert_eq!(
+            result.message,
+            "Failed to delete feature/failure: not merged"
+        );
+        assert_eq!(result.failure, Some(FailureCause::NotMerged));
+        assert_eq!(result.action, BranchAction::DeleteLocal);
+    }
+
+    #[test]
+    fn operation_result_success_and_failure_invariant_matches_failure_option() {
+        // `success` and `failure.is_some()` must never agree: success carries
+        // no cause, failure always carries one.
+        let success = OperationResult::success("b", BranchAction::DeleteLocal, "ok");
+        assert_eq!(success.success, success.failure.is_none());
+
+        let failure = OperationResult::failure(
+            "b",
+            BranchAction::DeleteLocal,
+            FailureCause::BranchNotFound,
+            "fallback",
+        );
+        assert_eq!(failure.success, failure.failure.is_none());
+    }
+
+    #[test]
+    fn operation_result_failure_preserves_checked_out_in_worktree_payload() {
+        let worktree_path = PathBuf::from("/repo/.worktrees/feature-linked");
+        let cause = FailureCause::CheckedOutInWorktree {
+            worktree_path: worktree_path.clone(),
+            is_main: false,
+        };
+        let result = OperationResult::failure(
+            "feature/linked",
+            BranchAction::DeleteLocal,
+            cause,
+            "checked out elsewhere",
+        );
+        match result.failure {
+            Some(FailureCause::CheckedOutInWorktree {
+                worktree_path: got_path,
+                is_main,
+            }) => {
+                assert_eq!(got_path, worktree_path);
+                assert!(!is_main);
+            }
+            other => panic!("expected CheckedOutInWorktree payload, got {other:?}"),
+        }
     }
 }

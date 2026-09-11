@@ -5,7 +5,7 @@ use git_branch_manager::git::{
     branch, cache, diagnostics, fuzzy_match, graph, merge_detection, operations, squash_loader,
     status, tags, worktree,
 };
-use git_branch_manager::types::{ChangedFileKind, DiagKind, MergeStatus};
+use git_branch_manager::types::{ChangedFileKind, DiagKind, FailureCause, MergeStatus};
 
 /// A temp directory for tests. Deletes itself on drop, EXCEPT when the
 /// `GBM_KEEP_TEST_REPOS` env var is set — then it leaks the directory and prints
@@ -1511,9 +1511,73 @@ fn test_delete_local_nonexistent() {
 
     let result = operations::delete_local(&repo, "does-not-exist");
     assert!(
-        !result.success,
-        "delete_local on nonexistent branch should return success: false"
+        result.success,
+        "an already-gone branch should satisfy the requested delete"
     );
+    assert!(matches!(result.failure, Some(FailureCause::BranchNotFound)));
+}
+
+#[test]
+fn test_delete_local_requires_merge_but_force_delete_bypasses_it() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/unmerged-delete"]);
+    std::fs::write(dir.join("wip.txt"), "wip\n").unwrap();
+    run_git(dir, &["add", "wip.txt"]);
+    run_git(dir, &["commit", "-m", "wip"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let safe = operations::delete_local(&repo, "feature/unmerged-delete");
+    assert!(!safe.success, "safe deletion must reject an unmerged branch");
+    assert!(matches!(safe.failure, Some(FailureCause::NotMerged)));
+
+    let forced = operations::delete_local_force(&repo, "feature/unmerged-delete");
+    assert!(forced.success, "force deletion should remove the branch: {forced:?}");
+    assert!(matches!(forced.action, git_branch_manager::types::BranchAction::DeleteLocalForce));
+    assert!(repo
+        .find_branch("feature/unmerged-delete", git2::BranchType::Local)
+        .is_err());
+}
+
+#[test]
+fn test_delete_local_classifies_primary_and_linked_worktree_failures() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    let primary = operations::delete_local(&repo, "main");
+    assert!(!primary.success, "the checked-out primary branch is not removable");
+    // Intentional behavior change (P005 review): `main` is checked out in the
+    // primary worktree, which IS the caller's own worktree (repo_path ==
+    // dir here). classify_delete_command_error now uses
+    // try_other_worktree_for_branch, which excludes the caller's own
+    // worktree, so this case falls through to `Other` with the raw git
+    // message preserved rather than being misreported as a recoverable
+    // "checked out elsewhere". `is_main: true` was never actionable via the
+    // Results overlay's `r` recovery key (see app.rs), so this is not a
+    // user-visible regression.
+    assert!(matches!(primary.failure, Some(FailureCause::Other { .. })));
+
+    run_git(dir, &["branch", "feature/linked-delete"]);
+    run_git(
+        dir,
+        &[
+            "worktree",
+            "add",
+            ".worktrees/feature-linked-delete",
+            "feature/linked-delete",
+        ],
+    );
+
+    let linked = operations::delete_local(&repo, "feature/linked-delete");
+    assert!(!linked.success, "a linked worktree branch is not removable");
+    match linked.failure {
+        Some(FailureCause::CheckedOutInWorktree {
+            worktree_path,
+            is_main: false,
+        }) => assert!(worktree_path.ends_with(".worktrees/feature-linked-delete")),
+        other => panic!("expected linked worktree cause, got {other:?}"),
+    }
 }
 
 #[test]
@@ -2981,6 +3045,137 @@ fn test_list_worktrees_main_only() {
         main_wt.commit_hash.len(),
         7,
         "commit_hash should be 7 chars"
+    );
+}
+
+#[test]
+fn test_worktree_lookup_includes_primary_and_reports_command_errors() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    let primary = worktree::try_worktree_for_branch(dir, "main")
+        .expect("primary worktree lookup should run")
+        .expect("primary worktree should be found");
+    assert!(primary.is_main);
+    assert_eq!(primary.branch.as_deref(), Some("main"));
+
+    let missing = worktree::try_list_worktrees(std::path::Path::new(
+        "/definitely/not/a/git/repository",
+    ));
+    assert!(missing.is_err(), "worktree command failures must be observable");
+}
+
+#[test]
+fn test_branches_checked_out_in_worktrees_excludes_primary() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["branch", "feature/linked-checkout"]);
+    run_git(
+        dir,
+        &[
+            "worktree",
+            "add",
+            ".worktrees/feature-linked-checkout",
+            "feature/linked-checkout",
+        ],
+    );
+
+    let checked_out = worktree::branches_checked_out_in_worktrees(dir);
+    assert!(
+        checked_out.contains("feature/linked-checkout"),
+        "linked worktree's branch should be reported"
+    );
+    assert!(
+        !checked_out.contains("main"),
+        "the primary worktree's branch is excluded, even though it is checked out"
+    );
+
+    run_git(
+        dir,
+        &["worktree", "remove", ".worktrees/feature-linked-checkout"],
+    );
+}
+
+#[test]
+fn test_branches_checked_out_in_worktrees_empty_with_only_primary() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    let checked_out = worktree::branches_checked_out_in_worktrees(dir);
+    assert!(
+        checked_out.is_empty(),
+        "with only the primary worktree present, nothing is reported"
+    );
+}
+
+#[test]
+fn test_branches_checked_out_in_worktrees_best_effort_on_command_failure() {
+    let checked_out = worktree::branches_checked_out_in_worktrees(std::path::Path::new(
+        "/definitely/not/a/git/repository",
+    ));
+    assert!(
+        checked_out.is_empty(),
+        "best-effort callers must degrade to an empty set, not panic, on inspection failure"
+    );
+}
+
+#[test]
+fn test_worktree_path_for_branch_excludes_callers_own_worktree() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // "main" is checked out in the primary worktree, which IS the caller
+    // (repo_path == dir). worktree_path_for_branch answers "checked out in
+    // some OTHER worktree", so this must be None, not the primary's own path.
+    let path = worktree::worktree_path_for_branch(dir, "main");
+    assert!(
+        path.is_none(),
+        "the caller's own worktree must not be reported as an 'other' worktree"
+    );
+}
+
+#[test]
+fn test_worktree_path_for_branch_finds_linked_worktree_other_than_caller() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["branch", "feature/linked-path"]);
+    run_git(
+        dir,
+        &[
+            "worktree",
+            "add",
+            ".worktrees/feature-linked-path",
+            "feature/linked-path",
+        ],
+    );
+
+    let path = worktree::worktree_path_for_branch(dir, "feature/linked-path")
+        .expect("linked worktree should be found");
+    assert!(path.ends_with(".worktrees/feature-linked-path"));
+
+    run_git(dir, &["worktree", "remove", ".worktrees/feature-linked-path"]);
+}
+
+#[test]
+fn test_try_other_worktree_for_branch_none_vs_err() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // Not checked out anywhere else: Ok(None), distinct from a lookup failure.
+    let not_checked_out =
+        worktree::try_other_worktree_for_branch(dir, "does-not-exist-anywhere");
+    assert!(matches!(not_checked_out, Ok(None)));
+
+    // An unreadable/non-existent repo path: Err(_), distinguishable from Ok(None).
+    let inspection_failed = worktree::try_other_worktree_for_branch(
+        std::path::Path::new("/definitely/not/a/git/repository"),
+        "main",
+    );
+    assert!(
+        inspection_failed.is_err(),
+        "command failure must be observable as Err, not conflated with 'not checked out'"
     );
 }
 

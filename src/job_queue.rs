@@ -17,7 +17,7 @@ use std::sync::Arc;
 use chrono::{DateTime, TimeDelta, Utc};
 
 use crate::git::{operations, tags, worktree};
-use crate::types::{BranchAction, OperationResult, ProgressUpdate};
+use crate::types::{BranchAction, FailureCause, OperationResult, ProgressUpdate};
 use crate::view::ViewId;
 
 /// How long a completed job's summary lingers in the status area.
@@ -60,18 +60,40 @@ struct DrainingJob {
 pub struct CompletionSummary {
     pub label: String,
     pub success_count: usize,
+    /// Count of successful results plus `BranchNotFound` results, which are
+    /// treated as "already gone" success — no overlay, no summary failure.
+    /// See plan P005 §9.
     pub fail_count: usize,
+    /// Failed results excluding `BranchNotFound`. The UI uses this to
+    /// decide whether to auto-open the Results overlay (§5) and the
+    /// footer renders recovery keys only when at least one row is
+    /// recoverable.
+    pub failures: Vec<OperationResult>,
     expires_at: DateTime<Utc>,
 }
 
 impl CompletionSummary {
     fn new(action: BranchAction, results: &[OperationResult]) -> Self {
-        let success_count = results.iter().filter(|r| r.success).count();
-        let fail_count = results.len() - success_count;
+        let success_count = results
+            .iter()
+            .filter(|r| {
+                r.success
+                    || matches!(&r.failure, Some(crate::types::FailureCause::BranchNotFound))
+            })
+            .count();
+        let failures: Vec<OperationResult> = results
+            .iter()
+            .filter(|r| {
+                !r.success && !matches!(&r.failure, Some(crate::types::FailureCause::BranchNotFound))
+            })
+            .cloned()
+            .collect();
+        let fail_count = failures.len();
         Self {
             label: action.label().to_string(),
             success_count,
             fail_count,
+            failures,
             expires_at: Utc::now() + TimeDelta::seconds(SUMMARY_LINGER_SECS),
         }
     }
@@ -91,6 +113,11 @@ pub struct JobEvent {
     pub remote: Option<String>,
     pub return_view: ViewId,
     pub results: Vec<OperationResult>,
+    /// Failed results excluding `BranchNotFound`. Mirrors
+    /// [`CompletionSummary::failures`] so the caller doesn't need a
+    /// separate accessor in the same tick. Non-empty triggers the
+    /// Results overlay auto-open (plan P005 §5).
+    pub failures: Vec<OperationResult>,
 }
 
 /// Result of one [`ActionJobQueue::poll`] call.
@@ -244,7 +271,9 @@ impl ActionJobQueue {
             Some(Ok(results)) => {
                 let DrainingJob { job, .. } = self.draining.take().unwrap();
                 self.targets_done_before_current += job.targets.len();
-                self.last_summary = Some(CompletionSummary::new(job.action, &results));
+                let summary = CompletionSummary::new(job.action, &results);
+                let failures = summary.failures.clone();
+                self.last_summary = Some(summary);
                 self.try_advance();
                 dirty = true;
                 event = Some(JobEvent {
@@ -253,6 +282,7 @@ impl ActionJobQueue {
                     remote: job.remote,
                     return_view: job.return_view,
                     results,
+                    failures,
                 });
             }
             Some(Err(TryRecvError::Disconnected)) => {
@@ -283,7 +313,9 @@ impl ActionJobQueue {
                 Some(Ok(results)) => {
                     let RunningJob { job, .. } = self.current.take().unwrap();
                     self.targets_done_before_current += job.targets.len();
-                    self.last_summary = Some(CompletionSummary::new(job.action, &results));
+                    let summary = CompletionSummary::new(job.action, &results);
+                    let failures = summary.failures.clone();
+                    self.last_summary = Some(summary);
                     self.try_advance();
                     dirty = true;
                     Some(JobEvent {
@@ -292,6 +324,7 @@ impl ActionJobQueue {
                         remote: job.remote,
                         return_view: job.return_view,
                         results,
+                        failures,
                     })
                 }
                 _ => None,
@@ -413,6 +446,143 @@ impl ActionJobQueue {
 // ---- Action Execution (runs on background thread) ----
 
 #[allow(clippy::too_many_arguments)]
+fn execute_branch_name_cascade(
+    action: BranchAction,
+    item_names: &[String],
+    repo_path: &Path,
+    remote: Option<&str>,
+    prog_tx: &Sender<ProgressUpdate>,
+    cancel_flag: &Arc<AtomicBool>,
+) -> Vec<OperationResult> {
+    let repo = match git2::Repository::open(repo_path) {
+        Ok(repo) => repo,
+        Err(error) => {
+            return vec![OperationResult {
+                branch_name: String::new(),
+                action,
+                success: false,
+                message: format!("Failed to open repo: {error}"),
+                failure: None,
+            }];
+        }
+    };
+
+    let all_worktrees = match worktree::try_list_worktrees(repo_path) {
+        Ok(worktrees) => worktrees,
+        Err(error) => {
+            return item_names
+                .iter()
+                .map(|name| {
+                    OperationResult::failure(
+                        name,
+                        action,
+                        FailureCause::Other {
+                            raw_message: error.clone(),
+                        },
+                        format!("Cannot inspect worktrees for {name}: {error}"),
+                    )
+                })
+                .collect();
+        }
+    };
+
+    let force = action == BranchAction::DeleteBranchAndRemoveWorktreeForce;
+    let remove_remote = action == BranchAction::DeleteBranchAndRemoveWorktreeRemote;
+    let mut results = Vec::new();
+    let mut locally_deleted = Vec::new();
+
+    for (index, name) in item_names.iter().enumerate() {
+        if cancel_flag.load(Ordering::Relaxed) {
+            results.push(OperationResult {
+                branch_name: String::new(),
+                action,
+                success: false,
+                message: "Cancelled by user".into(),
+                failure: None,
+            });
+            break;
+        }
+        let _ = prog_tx.send(ProgressUpdate {
+            completed: index,
+            total: item_names.len(),
+            current_item: name.clone(),
+        });
+
+        let Some(worktree) = all_worktrees
+            .iter()
+            .find(|worktree| worktree.branch.as_deref() == Some(name.as_str()))
+        else {
+            // The worktree may have disappeared after the pre-flight. Still
+            // attempt the branch deletion; its own safe/force checks remain
+            // authoritative and classify any race for the Results overlay.
+            let delete_result = if force {
+                operations::delete_local_force(&repo, name)
+            } else {
+                operations::delete_local(&repo, name)
+            };
+            if delete_result.success {
+                locally_deleted.push(name.clone());
+            }
+            results.push(delete_result);
+            continue;
+        };
+
+        if worktree.is_main {
+            results.push(OperationResult::failure(
+                name,
+                action,
+                FailureCause::CheckedOutInWorktree {
+                    worktree_path: worktree.path.clone(),
+                    is_main: true,
+                },
+                format!(
+                    "Cannot remove the primary worktree at {}",
+                    worktree.path.display()
+                ),
+            ));
+            continue;
+        }
+
+        let remove_result = if force {
+            operations::force_remove_worktree(repo_path, &worktree.path)
+        } else {
+            operations::remove_worktree(repo_path, &worktree.path)
+        };
+        let removed = remove_result.success;
+        results.push(remove_result);
+
+        if removed {
+            let delete_result = if force {
+                operations::delete_local_force(&repo, name)
+            } else {
+                operations::delete_local(&repo, name)
+            };
+            if delete_result.success {
+                locally_deleted.push(name.clone());
+            }
+            results.push(delete_result);
+        }
+    }
+
+    if remove_remote && !locally_deleted.is_empty() && !cancel_flag.load(Ordering::Relaxed) {
+        let remote_name = remote.unwrap_or("origin");
+        let _ = prog_tx.send(ProgressUpdate {
+            completed: locally_deleted.len(),
+            total: item_names.len(),
+            current_item: "Deleting remote branches...".into(),
+        });
+        results.extend(operations::delete_remotes_batch_for_remote(
+            repo_path,
+            remote_name,
+            &locally_deleted,
+            cancel_flag,
+        ));
+    }
+
+    results
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute_action_with_remote(
     action: BranchAction,
     item_names: &[String],
@@ -427,7 +597,9 @@ fn execute_action_with_remote(
     let mut results = Vec::new();
 
     match action {
-        BranchAction::DeleteLocal | BranchAction::DeleteLocalAndRemote => {
+        BranchAction::DeleteLocal
+        | BranchAction::DeleteLocalForce
+        | BranchAction::DeleteLocalAndRemote => {
             let repo = match git2::Repository::open(repo_path) {
                 Ok(r) => r,
                 Err(e) => {
@@ -457,7 +629,11 @@ fn execute_action_with_remote(
                     total,
                     current_item: name.clone(),
                 });
-                let result = operations::delete_local(&repo, name);
+                let result = if action == BranchAction::DeleteLocalForce {
+                    operations::delete_local_force(&repo, name)
+                } else {
+                    operations::delete_local(&repo, name)
+                };
                 if result.success {
                     locally_deleted.push(name.clone());
                 }
@@ -766,6 +942,25 @@ fn execute_action_with_remote(
                 ));
             }
         }
+        BranchAction::DeleteBranchAndRemoveWorktree
+        | BranchAction::DeleteBranchAndRemoveWorktreeForce
+        | BranchAction::DeleteBranchAndRemoveWorktreeRemote => {
+            results.extend(match action {
+                BranchAction::DeleteBranchAndRemoveWorktree
+                | BranchAction::DeleteBranchAndRemoveWorktreeForce
+                | BranchAction::DeleteBranchAndRemoveWorktreeRemote => {
+                    execute_branch_name_cascade(
+                        action,
+                        item_names,
+                        repo_path,
+                        remote,
+                        prog_tx,
+                        cancel_flag,
+                    )
+                }
+                _ => unreachable!("matched new delete action"),
+            });
+        }
         BranchAction::Fetch | BranchAction::FetchPrune => {
             let result = if action == BranchAction::FetchPrune {
                 operations::fetch_prune(repo_path, cancel_flag)
@@ -1031,9 +1226,15 @@ mod tests {
                 message: "failed".into(),
                 failure: None,
             },
+            OperationResult::failure(
+                "c",
+                BranchAction::DeleteLocal,
+                FailureCause::BranchNotFound,
+                "already gone",
+            ),
         ];
         let summary = CompletionSummary::new(BranchAction::DeleteLocal, &results);
-        assert_eq!(summary.success_count, 1);
+        assert_eq!(summary.success_count, 2);
         assert_eq!(summary.fail_count, 1);
         assert!(!summary.is_expired());
     }
@@ -1106,6 +1307,169 @@ mod tests {
     }
 
     #[test]
+    fn execute_action_delete_local_force_removes_unmerged_branch() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("README.md"), "base\n").unwrap();
+        run_git(dir, &["add", "README.md"]);
+        run_git(dir, &["commit", "-m", "initial"]);
+        run_git(dir, &["checkout", "-b", "force-delete"]);
+        std::fs::write(dir.join("wip.txt"), "wip\n").unwrap();
+        run_git(dir, &["add", "wip.txt"]);
+        run_git(dir, &["commit", "-m", "wip"]);
+        run_git(dir, &["checkout", "main"]);
+
+        let (prog_tx, _prog_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let results = execute_action_with_remote(
+            BranchAction::DeleteLocalForce,
+            &["force-delete".into()],
+            dir,
+            "main",
+            false,
+            None,
+            &prog_tx,
+            &cancel,
+        );
+
+        assert_eq!(results.len(), 1, "force delete should produce one result");
+        assert!(results[0].success, "{results:?}");
+        assert_eq!(results[0].action, BranchAction::DeleteLocalForce);
+        assert!(git2::Repository::open(dir)
+            .unwrap()
+            .find_branch("force-delete", git2::BranchType::Local)
+            .is_err());
+    }
+
+    #[test]
+    fn execute_action_branch_cascade_resolves_worktree_by_branch_name() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("README.md"), "base\n").unwrap();
+        run_git(dir, &["add", "README.md"]);
+        run_git(dir, &["commit", "-m", "initial"]);
+        run_git(dir, &["branch", "cascade-clean"]);
+        run_git(
+            dir,
+            &["worktree", "add", ".worktrees/cascade-clean", "cascade-clean"],
+        );
+        let wt_path = dir.join(".worktrees/cascade-clean");
+
+        let (prog_tx, _prog_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let results = execute_action_with_remote(
+            BranchAction::DeleteBranchAndRemoveWorktree,
+            &["cascade-clean".into()],
+            dir,
+            "main",
+            false,
+            None,
+            &prog_tx,
+            &cancel,
+        );
+
+        assert!(results
+            .iter()
+            .any(|r| r.action == BranchAction::WorktreeRemove && r.success),
+            "{results:?}"
+        );
+        assert!(results
+            .iter()
+            .any(|r| r.action == BranchAction::DeleteLocal && r.success),
+            "{results:?}"
+        );
+        assert!(!wt_path.exists());
+        assert!(git2::Repository::open(dir)
+            .unwrap()
+            .find_branch("cascade-clean", git2::BranchType::Local)
+            .is_err());
+    }
+
+    #[test]
+    fn execute_action_force_cascade_removes_dirty_worktree_and_branch() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("README.md"), "base\n").unwrap();
+        run_git(dir, &["add", "README.md"]);
+        run_git(dir, &["commit", "-m", "initial"]);
+        run_git(dir, &["branch", "cascade-dirty"]);
+        run_git(
+            dir,
+            &["worktree", "add", ".worktrees/cascade-dirty", "cascade-dirty"],
+        );
+        let wt_path = dir.join(".worktrees/cascade-dirty");
+        std::fs::write(wt_path.join("untracked.txt"), "discard me\n").unwrap();
+
+        let (prog_tx, _prog_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let results = execute_action_with_remote(
+            BranchAction::DeleteBranchAndRemoveWorktreeForce,
+            &["cascade-dirty".into()],
+            dir,
+            "main",
+            false,
+            None,
+            &prog_tx,
+            &cancel,
+        );
+
+        assert!(results
+            .iter()
+            .any(|r| r.action == BranchAction::WorktreeForceRemove && r.success),
+            "{results:?}"
+        );
+        assert!(results
+            .iter()
+            .any(|r| r.action == BranchAction::DeleteLocalForce && r.success),
+            "{results:?}"
+        );
+        assert!(!wt_path.exists());
+        assert!(git2::Repository::open(dir)
+            .unwrap()
+            .find_branch("cascade-dirty", git2::BranchType::Local)
+            .is_err());
+    }
+
+    #[test]
+    fn execute_action_cascade_rejects_primary_worktree() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("README.md"), "base\n").unwrap();
+        run_git(dir, &["add", "README.md"]);
+        run_git(dir, &["commit", "-m", "initial"]);
+
+        let (prog_tx, _prog_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let results = execute_action_with_remote(
+            BranchAction::DeleteBranchAndRemoveWorktreeForce,
+            &["main".into()],
+            dir,
+            "main",
+            false,
+            None,
+            &prog_tx,
+            &cancel,
+        );
+
+        assert!(results.iter().any(|result| matches!(
+            &result.failure,
+            Some(FailureCause::CheckedOutInWorktree { is_main: true, .. })
+        )));
+    }
+
+    #[test]
     fn execute_action_worktree_remove_and_delete_branch_remote() {
         let base_tmp = tempfile::tempdir().expect("temp base dir");
         let base_dir = base_tmp.path();
@@ -1173,8 +1537,77 @@ mod tests {
             .is_err());
 
         run_git(&work_dir, &["fetch", "--prune"]);
-        assert!(repo
+    assert!(repo
             .find_branch("origin/wt-remote-branch", git2::BranchType::Remote)
+            .is_err());
+    }
+
+    #[test]
+    fn execute_action_branch_name_cascade_remote_deletes_tracking_branch() {
+        let base_tmp = tempfile::tempdir().expect("temp base dir");
+        let base_dir = base_tmp.path();
+
+        let remote_dir = base_dir.join("remote.git");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        run_git(&remote_dir, &["init", "--bare", "-b", "main"]);
+
+        run_git(base_dir, &["clone", remote_dir.to_str().unwrap(), "work"]);
+        let work_dir = base_dir.join("work");
+        run_git(&work_dir, &["config", "user.name", "Test User"]);
+        run_git(&work_dir, &["config", "user.email", "test@example.com"]);
+        std::fs::write(work_dir.join("README.md"), "# Test\n").unwrap();
+        run_git(&work_dir, &["add", "."]);
+        run_git(&work_dir, &["commit", "-m", "Initial commit"]);
+        run_git(&work_dir, &["push", "-u", "origin", "main"]);
+
+        run_git(&work_dir, &["checkout", "-b", "branch-name-remote"]);
+        std::fs::write(work_dir.join("feature.txt"), "content\n").unwrap();
+        run_git(&work_dir, &["add", "feature.txt"]);
+        run_git(&work_dir, &["commit", "-m", "feature commit"]);
+        run_git(&work_dir, &["push", "-u", "origin", "branch-name-remote"]);
+        run_git(&work_dir, &["checkout", "main"]);
+        run_git(
+            &work_dir,
+            &[
+                "worktree",
+                "add",
+                ".worktrees/branch-name-remote",
+                "branch-name-remote",
+            ],
+        );
+        let wt_path = work_dir.join(".worktrees/branch-name-remote");
+
+        let (prog_tx, _prog_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let results = execute_action_with_remote(
+            BranchAction::DeleteBranchAndRemoveWorktreeRemote,
+            &["branch-name-remote".into()],
+            &work_dir,
+            "main",
+            false,
+            Some("origin"),
+            &prog_tx,
+            &cancel,
+        );
+
+        assert!(results
+            .iter()
+            .any(|r| r.action == BranchAction::WorktreeRemove && r.success));
+        assert!(results
+            .iter()
+            .any(|r| r.action == BranchAction::DeleteLocal && r.success));
+        assert!(results
+            .iter()
+            .any(|r| r.action == BranchAction::DeleteRemoteBranch && r.success));
+        assert!(!wt_path.exists());
+
+        let repo = git2::Repository::open(&work_dir).unwrap();
+        assert!(repo
+            .find_branch("branch-name-remote", git2::BranchType::Local)
+            .is_err());
+        run_git(&work_dir, &["fetch", "--prune"]);
+        assert!(repo
+            .find_branch("origin/branch-name-remote", git2::BranchType::Remote)
             .is_err());
     }
 

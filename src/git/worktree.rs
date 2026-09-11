@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use std::sync::mpsc::{self, Receiver};
 use tracing::{field, info_span, instrument, Span};
 
-fn git_command_output(dir: &Path, args: &[&str]) -> Option<Output> {
+fn git_command_output(dir: &Path, args: &[&str]) -> Result<Output, String> {
     let span = info_span!(
         "git_command",
         dir = ?dir,
@@ -40,7 +40,7 @@ fn git_command_output(dir: &Path, args: &[&str]) -> Option<Output> {
             span.record("stderr_bytes", output.stderr.len() as u64);
             span.record("success", true);
             span.record("result_state", "success");
-            Some(output)
+            Ok(output)
         }
         Ok(output) => {
             span.record(
@@ -51,18 +51,24 @@ fn git_command_output(dir: &Path, args: &[&str]) -> Option<Output> {
             span.record("stderr_bytes", output.stderr.len() as u64);
             span.record("success", false);
             span.record("result_state", "nonzero_exit");
-            None
+            Err(format!(
+                "git {:?} exited with {}: {}",
+                args,
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
         }
-        Err(_) => {
+        Err(error) => {
             span.record("success", false);
             span.record("result_state", "spawn_error");
-            None
+            Err(format!("failed to run git {:?}: {error}", args))
         }
     }
 }
 
 fn git_out(dir: &Path, args: &[&str]) -> String {
     git_command_output(dir, args)
+        .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
 }
@@ -80,16 +86,16 @@ fn git_out(dir: &Path, args: &[&str]) -> String {
         result_state = field::Empty,
     )
 )]
-pub fn list_worktrees(repo_path: &Path) -> Vec<WorktreeInfo> {
+pub fn try_list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeInfo>, String> {
     let span = Span::current();
     let output = match git_command_output(repo_path, &["worktree", "list", "--porcelain"]) {
-        Some(output) => output,
-        None => {
+        Ok(output) => output,
+        Err(error) => {
             span.record("stdout_bytes", 0);
             span.record("parsed_worktree_count", 0);
             span.record("parse_result", "skipped");
             span.record("result_state", "command_failed");
-            return vec![];
+            return Err(error);
         }
     };
     span.record("stdout_bytes", output.stdout.len() as u64);
@@ -99,7 +105,7 @@ pub fn list_worktrees(repo_path: &Path) -> Vec<WorktreeInfo> {
         span.record("parsed_worktree_count", 0);
         span.record("parse_result", "empty");
         span.record("result_state", "empty");
-        return vec![];
+        return Ok(vec![]);
     }
 
     let parse_span = info_span!(
@@ -178,7 +184,14 @@ pub fn list_worktrees(repo_path: &Path) -> Vec<WorktreeInfo> {
     span.record("parsed_worktree_count", worktrees.len() as u64);
     span.record("parse_result", "success");
     span.record("result_state", "success");
-    worktrees
+    Ok(worktrees)
+}
+
+/// Best-effort compatibility wrapper for display paths that can recover from
+/// a missing worktree list by rendering no rows. Delete pre-flight and worker
+/// recovery paths use [`try_list_worktrees`] so command failures stay visible.
+pub fn list_worktrees(repo_path: &Path) -> Vec<WorktreeInfo> {
+    try_list_worktrees(repo_path).unwrap_or_default()
 }
 
 /// Spawn a background thread that enriches worktrees with working tree status and age.
@@ -285,11 +298,12 @@ fn head_commit_date(dir: &Path) -> DateTime<Utc> {
         .unwrap_or_else(Utc::now)
 }
 
-/// Short names of every branch currently checked out in a non-main worktree.
-///
-/// Used to detect branches that can't be deleted (or need `--force`) because
-/// they're checked out elsewhere. Mirrors the filter `list_worktrees` callers
-/// previously inlined themselves.
+/// Short names of every branch checked out in a non-**main** worktree — this
+/// filters by `!is_main`, not by "not the caller's own worktree". If the
+/// caller itself is running from a linked (non-main) worktree, that
+/// worktree's own branch is still included here. Callers that need to
+/// exclude the caller's own worktree specifically (e.g. destructive delete
+/// pre-flight) should use [`try_other_worktree_for_branch`] instead.
 pub fn branches_checked_out_in_worktrees(repo_path: &Path) -> HashSet<String> {
     list_worktrees(repo_path)
         .into_iter()
@@ -298,10 +312,67 @@ pub fn branches_checked_out_in_worktrees(repo_path: &Path) -> HashSet<String> {
         .collect()
 }
 
-/// The non-main worktree path that has `branch` checked out, if any.
+/// True when `worktree_path` refers to the same on-disk worktree as
+/// `repo_path` — i.e. the worktree the caller itself is running from.
+/// Canonicalizes both sides so relative segments, symlinks (e.g. macOS's
+/// `/var` -> `/private/var`), and trailing slashes don't produce false
+/// negatives. Falls back to a direct comparison if either path can't be
+/// canonicalized (e.g. it no longer exists on disk).
+pub fn is_current_worktree(repo_path: &Path, worktree_path: &Path) -> bool {
+    match (repo_path.canonicalize(), worktree_path.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => repo_path == worktree_path,
+    }
+}
+
+/// Find the worktree that has `branch` checked out, including the primary
+/// worktree **and** the caller's own worktree at `repo_path` if it matches.
+/// The `Result` is important for destructive pre-flight: an unavailable
+/// worktree listing must not look like a branch is unowned. Use
+/// [`try_other_worktree_for_branch`] when the caller's own worktree should
+/// be excluded from the match (e.g. "is this checked out somewhere I could
+/// act on", not "is this checked out at all").
+pub fn try_worktree_for_branch(
+    repo_path: &Path,
+    branch: &str,
+) -> Result<Option<WorktreeInfo>, String> {
+    try_list_worktrees(repo_path).map(|worktrees| {
+        worktrees
+            .into_iter()
+            .find(|worktree| worktree.branch.as_deref() == Some(branch))
+    })
+}
+
+/// Find a worktree — other than the caller's own — that has `branch`
+/// checked out. Unlike [`try_worktree_for_branch`], the worktree located at
+/// `repo_path` itself is excluded, so this answers "is this branch checked
+/// out somewhere else I could recover from", not "is this branch checked
+/// out at all". Used by destructive delete pre-flight: a branch checked out
+/// in the caller's *own* worktree isn't a recoverable-elsewhere case (you
+/// can't remove the worktree you're running from), so it must not be
+/// reported as `CheckedOutInWorktree`.
+pub fn try_other_worktree_for_branch(
+    repo_path: &Path,
+    branch: &str,
+) -> Result<Option<WorktreeInfo>, String> {
+    try_list_worktrees(repo_path).map(|worktrees| {
+        worktrees.into_iter().find(|worktree| {
+            worktree.branch.as_deref() == Some(branch)
+                && !is_current_worktree(repo_path, &worktree.path)
+        })
+    })
+}
+
+/// Best-effort path lookup for "is `branch` checked out in some *other*
+/// worktree" (excludes the caller's own worktree at `repo_path` — see
+/// [`try_other_worktree_for_branch`]). Retained for non-destructive callers
+/// that only need a path and can tolerate collapsing lookup failure into
+/// `None`. Destructive/recovery paths should call
+/// [`try_other_worktree_for_branch`] directly when they need to distinguish
+/// "not checked out elsewhere" from "could not inspect worktrees".
 pub fn worktree_path_for_branch(repo_path: &Path, branch: &str) -> Option<PathBuf> {
-    list_worktrees(repo_path)
-        .into_iter()
-        .find(|worktree| !worktree.is_main && worktree.branch.as_deref() == Some(branch))
+    try_other_worktree_for_branch(repo_path, branch)
+        .ok()
+        .flatten()
         .map(|worktree| worktree.path)
 }

@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-09-10
+
+### Plan: Specific, Recoverable Branch-Delete Failures (P005)
+- UX for "doesn't exist anymore"
+- Worktree data dependency on Branches view
+- Recovery actions — ! and r
+
+### Fixes
+- Address P005 typed-failure and worktree lookup review findings
+
+## 2026-09-07
+
+### Plan: Specific, Recoverable Branch-Delete Failures (P005)
+- Pre-flight reason in Confirm overlay
+- Failure surface — auto-open Results
+- Pre-flight in delete_local
+- New BranchAction variants
+- Typed failure cause
+- Hoist the worktree→branch lookup
+
 ## 2026-09-06
 
 ### Force default branch into column 0 of the Graph view (P003)
