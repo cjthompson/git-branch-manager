@@ -1,8 +1,8 @@
 use ratatui::prelude::*;
 use ratatui::style::Modifier;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
-use super::shared::centered_rect;
+use super::shared::{block_panel, centered_rect, key_hint};
 use crate::theme::Theme;
 use crate::types::{FailureCause, OperationResult};
 
@@ -36,10 +36,7 @@ pub fn draw_results(frame: &mut Frame, results: &[OperationResult], theme: &Them
             let mut spans = vec![
                 Span::styled(status, style),
                 Span::raw("  "),
-                Span::styled(
-                    r.branch_name.clone(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(r.branch_name.clone(), theme.primary_text),
                 Span::raw("  "),
                 Span::styled(r.message.clone(), message_style),
             ];
@@ -52,7 +49,9 @@ pub fn draw_results(frame: &mut Frame, results: &[OperationResult], theme: &Them
         .collect();
 
     lines.push(Line::from(""));
-    let key_style = Style::default().fg(theme.title.fg.unwrap_or(Color::White));
+    let key_style = Style::default()
+        .fg(theme.accent_fg())
+        .add_modifier(Modifier::BOLD);
     // Advertise `!`/`r` recovery keys only when at least one row is
     // actually recoverable — keeps the footer honest and prevents the
     // "press ! to force-delete" hint from appearing on rows where it
@@ -71,21 +70,20 @@ pub fn draw_results(frame: &mut Frame, results: &[OperationResult], theme: &Them
                 })
             )
         });
-    let mut footer_spans = vec![Span::styled("Press ", theme.dim)];
+    let mut footer_spans: Vec<Span> = Vec::new();
     if has_force_recoverable {
-        footer_spans.push(Span::styled("!", key_style));
-        footer_spans.push(Span::styled(" force", theme.dim));
+        footer_spans.extend(key_hint('!', "force", theme));
         footer_spans.push(Span::raw("  "));
     }
     if has_worktree_recoverable {
-        footer_spans.push(Span::styled("r", key_style));
-        footer_spans.push(Span::styled(" remove worktree", theme.dim));
+        footer_spans.extend(key_hint('r', "remove worktree", theme));
         footer_spans.push(Span::raw("  "));
     }
+    footer_spans.push(Span::styled("[", theme.dim));
     footer_spans.push(Span::styled("Enter", key_style));
-    footer_spans.push(Span::styled("/", theme.dim));
+    footer_spans.push(Span::styled("]/[", theme.dim));
     footer_spans.push(Span::styled("Esc", key_style));
-    footer_spans.push(Span::styled(" to continue", theme.dim));
+    footer_spans.push(Span::styled("] to continue", theme.dim));
     lines.push(Line::from(footer_spans));
 
     // Calculate dynamic width based on maximum content width
@@ -104,7 +102,7 @@ pub fn draw_results(frame: &mut Frame, results: &[OperationResult], theme: &Them
         .min(area.width.saturating_sub(2));
 
     // Calculate height accounting for text wrapping
-    let inner_width = width.saturating_sub(2) as usize;
+    let inner_width = width.saturating_sub(4) as usize; // 2 for borders + 2 for block_panel's horizontal padding
     let wrapped_height: usize = lines
         .iter()
         .map(|l| {
@@ -124,12 +122,7 @@ pub fn draw_results(frame: &mut Frame, results: &[OperationResult], theme: &Them
     let rect = centered_rect(width, modal_height, area);
 
     let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title("Results")
-                .title_style(theme.title)
-                .borders(Borders::ALL),
-        )
+        .block(block_panel(theme).title("Results").title_style(theme.title))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(Clear, rect);

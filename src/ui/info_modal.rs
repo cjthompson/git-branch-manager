@@ -1,12 +1,12 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+    Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
     ScrollbarState,
 };
 
 use super::menu::MenuItem;
-use super::shared::centered_rect_pct;
+use super::shared::{block_panel, centered_rect_pct};
 use crate::git::graph::{GraphCommit, GraphRefKind};
 use crate::symbols::SymbolSet;
 use crate::theme::Theme;
@@ -621,19 +621,13 @@ fn draw_info_modal_wide(
 
     // Render info pane on the left. The RIGHT border is the vertical
     // separator between the info and actions columns.
-    let block = Block::default()
+    let block = block_panel(theme)
         .title(title)
         .title_alignment(Alignment::Left)
         .title_style(theme.title)
         .borders(Borders::LEFT | Borders::TOP | Borders::BOTTOM | Borders::RIGHT);
+    let info_inner = block.inner(info_rect);
     frame.render_widget(block, info_rect);
-
-    let info_inner = Rect {
-        x: info_rect.x + 1,
-        y: info_rect.y + 1,
-        width: info_rect.width.saturating_sub(2),
-        height: info_rect.height.saturating_sub(1),
-    };
 
     // Reserve the bottom row of the info pane for the copied-confirmation message.
     let content_height = info_inner.height.saturating_sub(1);
@@ -702,19 +696,13 @@ fn draw_info_modal_wide(
     }
 
     // Render actions pane on the right
-    let block = Block::default()
+    let block = block_panel(theme)
         .title("Actions")
         .title_alignment(Alignment::Left)
         .title_style(theme.title)
         .borders(Borders::RIGHT | Borders::TOP | Borders::BOTTOM);
+    let actions_inner = block.inner(actions_rect);
     frame.render_widget(block, actions_rect);
-
-    let actions_inner = Rect {
-        x: actions_rect.x + 1,
-        y: actions_rect.y + 1,
-        width: actions_rect.width.saturating_sub(1),
-        height: actions_rect.height.saturating_sub(1),
-    };
 
     let list_items: Vec<ListItem> = items
         .iter()
@@ -742,7 +730,7 @@ fn draw_info_modal_wide(
                 spans.push(Span::styled(
                     ch.to_string(),
                     if item.enabled {
-                        theme.title
+                        item_style.patch(theme.title)
                     } else {
                         item_style
                     },
@@ -791,7 +779,7 @@ fn draw_info_modal_narrow(
     // Info section (wrapped to the content width: borders + scrollbar = 3).
     // Info lines come first, so each FieldSpan's start_line is also its index
     // within all_lines.
-    let content_width = modal_rect.width.saturating_sub(3) as usize;
+    let content_width = modal_rect.width.saturating_sub(5) as usize;   // 2 borders + 1 scrollbar + 2 padding
     let selected_field = (focus == InfoModalFocus::Info).then_some(info_cursor);
     let (info_lines, field_spans) = build_info_lines(fields, theme, content_width, selected_field);
     all_lines.extend(info_lines);
@@ -832,7 +820,7 @@ fn draw_info_modal_narrow(
             spans.push(Span::styled(
                 ch.to_string(),
                 if item.enabled {
-                    theme.title
+                    item_style.patch(theme.title)
                 } else {
                     item_style
                 },
@@ -862,19 +850,18 @@ fn draw_info_modal_narrow(
 
     let total_lines = all_lines.len() as u16;
 
-    let block = Block::default()
+    let block = block_panel(theme)
         .title(title)
         .title_alignment(Alignment::Left)
-        .title_style(theme.title)
-        .borders(Borders::ALL);
-
+        .title_style(theme.title);
+    let block_inner = block.inner(modal_rect);
     frame.render_widget(block, modal_rect);
 
     let inner = Rect {
-        x: modal_rect.x + 1,
-        y: modal_rect.y + 1,
-        width: modal_rect.width.saturating_sub(3), // -2 for borders, -1 for scrollbar
-        height: modal_rect.height.saturating_sub(2),
+        x: block_inner.x,
+        y: block_inner.y,
+        width: block_inner.width.saturating_sub(1), // reserve the scrollbar column
+        height: block_inner.height,
     };
 
     // Reserve the bottom inner row for the copied-confirmation message.

@@ -2779,6 +2779,14 @@ impl App {
         let mut worktree_targets = Vec::new();
         let mut force_cascade = false;
 
+        // Derive a target width for path abbreviation from the terminal's
+        // current size, mirroring confirm.rs's ~60%-of-modal-width sizing,
+        // so long worktree paths in the reason block fit on one line
+        // instead of relying solely on word-wrap. Falls back to a sane
+        // default (80 cols) if the terminal size can't be queried.
+        let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
+        let target_width = ((term_width as usize * 60 / 100).saturating_sub(4)).max(20);
+
         for name in targets {
             let branch = self
                 .branches
@@ -2809,9 +2817,9 @@ impl App {
                 .iter()
                 .find(|worktree| worktree.branch.as_deref() == Some(name.as_str()))
             {
+                let path_display = abbreviate_path(&worktree.path, target_width);
                 reasons.push(format!(
-                    "Branch {name} is checked out in {}",
-                    worktree.path.display()
+                    "Branch {name} is checked out in {path_display}"
                 ));
                 if !worktree.is_main {
                     worktree_targets.push(name.clone());
@@ -2819,8 +2827,7 @@ impl App {
                     force_cascade |= is_dirty;
                     if is_dirty {
                         reasons.push(format!(
-                            "Worktree {} has uncommitted changes",
-                            worktree.path.display()
+                            "Worktree {path_display} has uncommitted changes"
                         ));
                     }
                 }
@@ -5419,6 +5426,49 @@ mod tests {
         assert_eq!(*targets, vec!["feature/z".to_string()]);
         assert!(reason.is_none());
         assert!(extra_keys.is_empty());
+    }
+
+    #[test]
+    fn build_delete_preflight_abbreviates_long_worktree_path_to_target_width() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+
+        // Mirror build_delete_preflight's own target-width derivation so the
+        // assertion holds regardless of whether stdout is a TTY in this run.
+        let term_width = crossterm::terminal::size()
+            .map(|(w, _)| w)
+            .unwrap_or(80);
+        let target_width = ((term_width as usize * 60 / 100).saturating_sub(4)).max(20);
+
+        let mut wt = worktree("feature/y");
+        let long_path =
+            "/Users/chris/dev/git-branch-manager/.claude/worktrees/feat";
+        assert!(
+            long_path.chars().count() > target_width,
+            "fixture path must exceed the computed budget for this test to be meaningful"
+        );
+        wt.path = PathBuf::from(long_path);
+        app.worktrees.set_items(vec![wt]);
+
+        let (reason, _extra_keys) = app.build_delete_preflight(&["feature/y".to_string()]);
+
+        let reason = reason.expect("expected a preflight reason for a checked-out worktree");
+        assert!(
+            reason.contains("is checked out in"),
+            "got: {reason:?}"
+        );
+        // The raw, unabbreviated path must not appear verbatim in the reason.
+        assert!(
+            !reason.contains(long_path),
+            "path should have been abbreviated, got: {reason:?}"
+        );
+        // The final path component ("feat") must stay fully visible per
+        // abbreviate_path's "keep the tail" contract.
+        assert!(reason.contains("feat"), "got: {reason:?}");
     }
 
     #[test]

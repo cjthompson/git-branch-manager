@@ -1,10 +1,10 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use crate::theme::Theme;
 use crate::types::ProgressUpdate;
 
-use super::shared::{centered_rect, render_progress_bar};
+use super::shared::{block_panel, centered_rect, render_progress_bar, truncate_left};
 
 /// Renders the executing/progress overlay.
 ///
@@ -18,16 +18,11 @@ pub fn draw_executing(
 ) {
     let area = frame.area();
 
-    let has_progress = progress.is_some();
     let width = 50u16.min(area.width);
-    let height = if has_progress { 7u16 } else { 5u16 };
-    let height = height.min(area.height);
-    let rect = centered_rect(width, height, area);
 
-    let block = Block::default()
+    let block = block_panel(theme)
         .title("Running")
-        .title_style(theme.title)
-        .borders(Borders::ALL);
+        .title_style(theme.title);
 
     let display_label = if label.is_empty() {
         "Working..."
@@ -35,7 +30,7 @@ pub fn draw_executing(
         label
     };
 
-    let inner_width = width.saturating_sub(2) as usize; // account for borders
+    let inner_width = width.saturating_sub(4) as usize; // 2 for borders + 2 for block_panel's horizontal padding
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -48,14 +43,7 @@ pub fn draw_executing(
         lines.push(Line::from(Span::styled(bar, theme.primary_text)));
 
         // Line 3: current item name
-        let item_display = if progress.current_item.len() > inner_width {
-            format!(
-                "...{}",
-                &progress.current_item[progress.current_item.len() - (inner_width - 3)..]
-            )
-        } else {
-            progress.current_item.clone()
-        };
+        let item_display = truncate_left(progress.current_item.as_str(), inner_width.saturating_sub(3));
         lines.push(Line::from(Span::styled(item_display, theme.secondary_text)));
 
         // Line 4: cancel hint
@@ -67,9 +55,27 @@ pub fn draw_executing(
         lines.push(Line::from(Span::styled("Esc to cancel", theme.dim)));
     }
 
+    // Height tracks actual content (accounting for word-wrap on a long
+    // label) rather than a fixed 5/7-row guess, so it always fits content + 2 borders.
+    let wrapped_height: usize = lines
+        .iter()
+        .map(|l| {
+            let chars: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
+            if chars == 0 {
+                1
+            } else {
+                chars.div_ceil(inner_width.max(1))
+            }
+        })
+        .sum();
+    let height = ((wrapped_height as u16) + 2).min(area.height); // +2 for borders
+
+    let rect = centered_rect(width, height, area);
+
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .alignment(Alignment::Center);
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: false });
 
     frame.render_widget(Clear, rect);
     frame.render_widget(paragraph, rect);

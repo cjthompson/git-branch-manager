@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use ratatui::prelude::*;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::{Block, Borders, Padding};
 
 use crate::theme::Theme;
 
@@ -148,6 +149,32 @@ pub fn render_progress_bar(inner_width: usize, completed: usize, total: usize) -
     )
 }
 
+/// Returns the canonical `[x] label` hint spans used across overlay footers
+/// and menu rows: dim brackets around a bold-accent key, followed by a
+/// dim-styled label. Shared by confirm/menu/info-modal/status-bar hint text
+/// so every overlay renders shortcut hints identically.
+pub fn key_hint(key: char, label: &str, theme: &Theme) -> Vec<Span<'static>> {
+    let key_style = Style::default()
+        .fg(theme.accent_fg())
+        .add_modifier(Modifier::BOLD);
+    vec![
+        Span::styled("[", theme.dim),
+        Span::styled(key.to_string(), key_style),
+        Span::styled(format!("] {label}"), theme.dim),
+    ]
+}
+
+/// Returns a bordered `Block` with the theme's dim border color and 1-column
+/// horizontal padding, giving every overlay a consistent surface. Callers
+/// chain `.title(...)`/`.title_style(...)`/`.borders(...)` afterward as
+/// needed (e.g. to override to a partial border set for split panes).
+pub fn block_panel(theme: &Theme) -> Block<'_> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.dim)
+        .padding(Padding::horizontal(1))
+}
+
 /// Returns a centered rectangle with absolute width and height within the provided area.
 pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let w = width.min(area.width);
@@ -261,6 +288,22 @@ mod tests {
     }
 
     #[test]
+    fn truncate_left_handles_non_ascii_without_panicking() {
+        // Regression for a latent panic in draw_executing (ui/executing.rs),
+        // which calls truncate_left on a branch's current_item name. Branch
+        // names can contain multi-byte UTF-8 (e.g. accented/CJK characters);
+        // truncate_left must slice on char boundaries, not bytes.
+        let s = "feature/日本語-emoji-🚀-café-branch";
+        let result = truncate_left(s, 10);
+        assert!(result.chars().count() <= 10, "got: {result:?}");
+        assert!(result.starts_with('\u{2026}'), "got: {result:?}");
+
+        // Also verify the short-circuit path (no truncation needed) doesn't panic.
+        let short = "日本語";
+        assert_eq!(truncate_left(short, 10), "日本語");
+    }
+
+    #[test]
     fn abbreviate_path_fits_unchanged() {
         let p = std::path::Path::new("/Users/chris/dev/proj/feat");
         assert_eq!(abbreviate_path(p, 100), "/Users/chris/dev/proj/feat");
@@ -369,5 +412,64 @@ mod tests {
     fn render_progress_bar_zero_total_does_not_panic() {
         let bar = render_progress_bar(20, 0, 0);
         assert!(bar.ends_with(" 0/0"));
+    }
+
+    #[test]
+    fn key_hint_produces_three_styled_spans() {
+        let theme = Theme::dark();
+        let spans = key_hint('d', "delete", &theme);
+
+        assert_eq!(spans.len(), 3);
+
+        assert_eq!(spans[0].content.as_ref(), "[");
+        assert_eq!(spans[0].style, theme.dim);
+
+        assert_eq!(spans[1].content.as_ref(), "d");
+        assert_eq!(
+            spans[1].style,
+            Style::default()
+                .fg(theme.accent_fg())
+                .add_modifier(Modifier::BOLD)
+        );
+
+        assert_eq!(spans[2].content.as_ref(), "] delete");
+        assert_eq!(spans[2].style, theme.dim);
+    }
+
+    #[test]
+    fn block_panel_inner_accounts_for_border_and_padding() {
+        let theme = Theme::dark();
+        let block = block_panel(&theme);
+
+        // Borders::ALL removes 1 cell per side; padding adds 1 more on
+        // left/right only (Padding::horizontal(1), no vertical padding).
+        let area = Rect::new(0, 0, 20, 10);
+        let inner = block.inner(area);
+        assert_eq!(inner, Rect::new(2, 1, 16, 8));
+    }
+
+    #[test]
+    fn block_panel_draws_all_four_borders_in_theme_dim_style() {
+        let theme = Theme::dark();
+        let block = block_panel(&theme);
+
+        let area = Rect::new(0, 0, 10, 5);
+        let mut buf = Buffer::empty(area);
+        block.render(area, &mut buf);
+
+        // Top-left corner: a border glyph styled with the theme's dim fg.
+        let corner = buf.cell((0, 0)).unwrap();
+        assert_ne!(
+            corner.symbol(),
+            " ",
+            "expected a border glyph at the top-left corner"
+        );
+        assert_eq!(corner.fg, theme.dim.fg.unwrap());
+
+        // Borders::ALL: mid-point of every edge should be a non-blank glyph.
+        assert_ne!(buf.cell((5, 0)).unwrap().symbol(), " ", "top border missing");
+        assert_ne!(buf.cell((5, 4)).unwrap().symbol(), " ", "bottom border missing");
+        assert_ne!(buf.cell((0, 2)).unwrap().symbol(), " ", "left border missing");
+        assert_ne!(buf.cell((9, 2)).unwrap().symbol(), " ", "right border missing");
     }
 }

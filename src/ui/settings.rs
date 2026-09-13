@@ -1,12 +1,12 @@
 use ratatui::prelude::*;
 use ratatui::style::Modifier;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 
 use crate::config::Config;
 use crate::symbols::SymbolSet;
 use crate::theme::Theme;
 
-use super::shared::centered_rect;
+use super::shared::{block_panel, centered_rect};
 
 /// A settings row definition with current value display.
 pub struct SettingsRow {
@@ -81,10 +81,7 @@ pub fn draw_settings(frame: &mut Frame, cursor: usize, rows: &[SettingsRow], the
     let height = (rows.len() as u16 + 4).min(area.height); // +4 for borders + instructions
     let rect = centered_rect(width, height, area);
 
-    let block = Block::default()
-        .title(" Settings ")
-        .title_style(theme.title)
-        .borders(Borders::ALL);
+    let block = block_panel(theme).title(" Settings ").title_style(theme.title);
 
     let inner = block.inner(rect);
     frame.render_widget(Clear, rect);
@@ -107,10 +104,14 @@ pub fn draw_settings(frame: &mut Frame, cursor: usize, rows: &[SettingsRow], the
         .collect();
 
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  \u{2190}/\u{2192} cycle   Esc close",
-        theme.dim,
-    )));
+    let key_style = Style::default()
+        .fg(theme.accent_fg())
+        .add_modifier(Modifier::BOLD);
+    lines.push(Line::from(vec![
+        Span::styled("  \u{2190}/\u{2192} cycle   ", theme.dim),
+        Span::styled("Esc", key_style),
+        Span::styled(" close", theme.dim),
+    ]));
 
     frame.render_widget(Paragraph::new(lines), inner);
 }

@@ -1,11 +1,11 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use crate::theme::Theme;
 use crate::types::BranchAction;
 
 use super::render::ConfirmExtraKey;
-use super::shared::centered_rect;
+use super::shared::{block_panel, centered_rect, key_hint};
 
 /// Renders a confirmation dialog overlay.
 ///
@@ -29,7 +29,10 @@ pub fn draw_confirm(
     let count = target_names.len();
 
     let mut lines = vec![
-        Line::from(format!("{} {} item(s)?", action_label, count)),
+        Line::from(Span::styled(
+            format!("{action_label} {count} item(s)?"),
+            theme.title,
+        )),
         Line::from(""),
     ];
 
@@ -40,7 +43,7 @@ pub fn draw_confirm(
         for raw_line in reason_text.split('\n') {
             lines.push(Line::from(Span::styled(
                 format!("  {}", raw_line),
-                theme.dim,
+                theme.secondary_text,
             )));
         }
         lines.push(Line::from(""));
@@ -54,7 +57,7 @@ pub fn draw_confirm(
     }
 
     lines.push(Line::from(""));
-    let key_style = Style::default().fg(theme.accent_fg());
+    let key_style = Style::default().fg(theme.accent_fg()).add_modifier(Modifier::BOLD);
     let mut footer = vec![
         Span::styled("[", theme.dim),
         Span::styled("y", key_style),
@@ -65,9 +68,8 @@ pub fn draw_confirm(
     // Append the alternate-action hints so the user can see what `!`
     // and `r` would do at a glance.
     for extra in extra_keys {
-        footer.push(Span::raw("  ["));
-        footer.push(Span::styled(extra.key.to_string(), key_style));
-        footer.push(Span::styled(format!("] {}", extra.label), theme.dim));
+        footer.push(Span::raw("  "));
+        footer.extend(key_hint(extra.key, &extra.label, theme));
     }
     lines.push(Line::from(footer));
 
@@ -126,13 +128,15 @@ pub fn draw_confirm(
         })
         .max()
         .unwrap_or(0) as u16;
+    let width_cap = (area.width * 80 / 100).min(100);
     let width = (content_max_width + 4)
         .max(40)
-        .min(area.width.saturating_sub(2));
+        .min(area.width.saturating_sub(2))
+        .min(width_cap);
 
     // Simulate wrapping at the actual inner width so the height accounts for
     // any lines that still wrap (e.g. very long paths in narrow terminals).
-    let inner_width = width.saturating_sub(2) as usize;
+    let inner_width = width.saturating_sub(4) as usize; // 2 for borders + 2 for block_panel's horizontal padding
     let wrapped_height: usize = lines
         .iter()
         .map(|l| {
@@ -144,15 +148,14 @@ pub fn draw_confirm(
             }
         })
         .sum();
-    let content_height = (wrapped_height as u16) + 2; // +2 for borders
+    let content_height = (wrapped_height as u16) + 2 + 2; // +2 borders, +2 word-wrap slack (ratatui's Wrap{trim:false} is word-wrap, not char-wrap, so the div_ceil simulation above can under-count)
     let height = content_height.min(max_height).min(area.height);
 
     let rect = centered_rect(width, height, area);
 
-    let block = Block::default()
+    let block = block_panel(theme)
         .title(format!("Confirm {}", action_label))
-        .title_style(theme.title)
-        .borders(Borders::ALL);
+        .title_style(theme.title);
 
     let paragraph = Paragraph::new(lines)
         .block(block)

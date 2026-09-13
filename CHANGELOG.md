@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-12
+
+### Plan: Fix modal layout, contrast, and key-hint styling (P006)
+- Tier 1: must-fix overlay bugs (theme.dim fg, confirm.rs bracket, question line, executing.rs panic)
+- Tier 2: cross-overlay consolidation (key_hint + block_panel helpers, refactor 5 sites, fix cursor-row bg hole)
+- Tier 3: overlay-specific readability fixes (wrap estimation, secondary_text, abbreviate_path, results/filter/help/executing/settings polish)
+- Tier 4: regression tests (theme.dim fg, key_hint + block_panel, build_delete_preflight, executing non-ASCII)
+
 ## 2026-09-11
 
 ### Tasks

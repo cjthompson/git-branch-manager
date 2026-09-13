@@ -1,11 +1,11 @@
 use ratatui::prelude::*;
 use ratatui::style::Modifier;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use crate::theme::Theme;
 use crate::view::filter::{FilterSet, FilterTokenDef};
 
-use super::shared::centered_rect;
+use super::shared::{block_panel, centered_rect};
 
 /// Renders the generic filter builder overlay.
 ///
@@ -28,7 +28,7 @@ pub fn draw_filter(
         .fg(theme.accent_fg())
         .add_modifier(Modifier::BOLD);
     let active_style = Style::default()
-        .fg(ratatui::style::Color::Green)
+        .fg(theme.selected.fg.unwrap_or(ratatui::style::Color::Green))
         .add_modifier(Modifier::BOLD);
     let label_style = Style::default();
 
@@ -76,17 +76,26 @@ pub fn draw_filter(
         Span::styled("  close", label_style),
     ]));
 
+    let content_max_width = lines
+        .iter()
+        .map(|l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0) as u16;
     let content_height = lines.len() as u16 + 2; // +2 for borders
-    let width = 36u16.min(area.width);
+    let width = (content_max_width + 4)
+        .max(36)
+        .min(area.width.saturating_sub(2));
     let height = content_height.min(area.height);
     let rect = centered_rect(width, height, area);
 
-    let block = Block::default()
-        .title(title)
-        .title_style(theme.title)
-        .borders(Borders::ALL);
+    let block = block_panel(theme).title(title).title_style(theme.title);
 
-    let paragraph = Paragraph::new(lines).block(block);
+    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
 
     frame.render_widget(Clear, rect);
     frame.render_widget(paragraph, rect);

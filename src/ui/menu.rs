@@ -1,9 +1,11 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
+use ratatui::widgets::{Clear, List, ListItem};
 
 use crate::symbols::SymbolSet;
 use crate::theme::Theme;
 use crate::types::BranchAction;
+
+use super::shared::block_panel;
 
 /// A single item in the context menu overlay.
 #[derive(Debug, Clone)]
@@ -67,7 +69,7 @@ pub fn draw_menu(
                 spans.push(Span::styled(
                     ch.to_string(),
                     if item.enabled {
-                        theme.title
+                        item_style.patch(theme.title)
                     } else {
                         item_style
                     },
@@ -85,10 +87,9 @@ pub fn draw_menu(
         })
         .collect();
 
-    let block = Block::default()
+    let block = block_panel(theme)
         .title("Actions")
-        .title_style(theme.title)
-        .borders(Borders::ALL);
+        .title_style(theme.title);
 
     let list = List::new(list_items).block(block);
     frame.render_widget(Clear, rect);

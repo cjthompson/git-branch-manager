@@ -1,11 +1,11 @@
 use ratatui::prelude::*;
 use ratatui::style::Modifier;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 
 use crate::theme::Theme;
 use crate::view::ViewId;
 
-use super::shared::centered_rect;
+use super::shared::{block_panel, centered_rect};
 
 /// Common keybindings shown for all views.
 const COMMON_KEYS: &[(&str, &str)] = &[
@@ -124,10 +124,13 @@ pub fn draw_help(frame: &mut Frame, active_view: ViewId, theme: &Theme) {
     let col_width = 38u16;
     let separator = "  \u{2502}  "; // " | "
 
-    // Use two-column layout if terminal is wide enough and too short for single column
+    // Two-column layout is the default whenever the terminal is wide enough
+    // to fit both columns plus the separator; fall back to single-column
+    // only when the terminal is too narrow. (Previously this was inverted:
+    // single-column was the default and two-column only kicked in when the
+    // terminal was too short for single-column.)
     let content_height_single = all_lines.len() as u16 + 2;
-    let use_two_cols = area.width >= col_width * 2 + separator.len() as u16 + 4
-        && area.height < content_height_single;
+    let use_two_cols = area.width >= col_width * 2 + separator.chars().count() as u16 + 4;
 
     if use_two_cols {
         let mid = all_lines.len().div_ceil(2);
@@ -142,7 +145,7 @@ pub fn draw_help(frame: &mut Frame, active_view: ViewId, theme: &Theme) {
                 let pad = col_width as usize - left_text.chars().count().min(col_width as usize);
                 spans.push(Span::raw(" ".repeat(pad)));
                 // Separator
-                let sep_style = Style::default().add_modifier(Modifier::DIM);
+                let sep_style = theme.dim;
                 spans.push(Span::styled(separator.to_string(), sep_style));
                 // Right column
                 if let Some(right_entry) = right.get(i) {
@@ -152,14 +155,11 @@ pub fn draw_help(frame: &mut Frame, active_view: ViewId, theme: &Theme) {
             })
             .collect();
 
-        let width = (col_width * 2 + separator.len() as u16 + 4).min(area.width);
+        let width = (col_width * 2 + separator.len() as u16 + 6).min(area.width);
         let height = (mid as u16 + 2).min(area.height);
         let rect = centered_rect(width, height, area);
 
-        let block = Block::default()
-            .title("Help")
-            .title_style(theme.title)
-            .borders(Borders::ALL);
+        let block = block_panel(theme).title("Help").title_style(theme.title);
         let paragraph = Paragraph::new(lines).block(block);
         frame.render_widget(Clear, rect);
         frame.render_widget(paragraph, rect);
@@ -169,14 +169,11 @@ pub fn draw_help(frame: &mut Frame, active_view: ViewId, theme: &Theme) {
             .iter()
             .map(|entry| Line::from(render_help_entry(entry, key_style, theme)))
             .collect();
-        let width = (col_width + 4).min(area.width);
+        let width = (col_width + 6).min(area.width);
         let height = content_height_single.min(area.height);
         let rect = centered_rect(width, height, area);
 
-        let block = Block::default()
-            .title("Help")
-            .title_style(theme.title)
-            .borders(Borders::ALL);
+        let block = block_panel(theme).title("Help").title_style(theme.title);
         let paragraph = Paragraph::new(lines).block(block);
         frame.render_widget(Clear, rect);
         frame.render_widget(paragraph, rect);

@@ -57,7 +57,7 @@ impl Theme {
             pinned_row: Style::new().add_modifier(Modifier::DIM),
             checked_row: Style::new().bg(Color::Indexed(236)),
             error: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-            dim: Style::new().add_modifier(Modifier::DIM),
+            dim: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
             status_bar: Style::new().bg(Color::DarkGray).fg(Color::White),
             title: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             header: Style::new()
@@ -107,7 +107,7 @@ impl Theme {
             pinned_row: Style::new().add_modifier(Modifier::DIM),
             checked_row: Style::new().bg(Color::Indexed(229)),
             error: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-            dim: Style::new().add_modifier(Modifier::DIM),
+            dim: Style::new().fg(Color::Indexed(245)).add_modifier(Modifier::DIM),
             status_bar: Style::new().bg(Color::Indexed(252)).fg(Color::Black),
             title: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
             header: Style::new()
@@ -160,7 +160,7 @@ impl Theme {
             pinned_row: Style::new().add_modifier(Modifier::DIM),
             checked_row: Style::new().bg(Color::Indexed(22)),
             error: Style::new().fg(red).add_modifier(Modifier::BOLD),
-            dim: Style::new().add_modifier(Modifier::DIM),
+            dim: Style::new().fg(base01).add_modifier(Modifier::DIM),
             status_bar: Style::new().bg(Color::Indexed(235)).fg(base0),
             title: Style::new().fg(blue).add_modifier(Modifier::BOLD),
             header: Style::new()
@@ -213,7 +213,7 @@ impl Theme {
             pinned_row: Style::new().add_modifier(Modifier::DIM),
             checked_row: Style::new().bg(Color::Indexed(22)),
             error: Style::new().fg(red).add_modifier(Modifier::BOLD),
-            dim: Style::new().add_modifier(Modifier::DIM),
+            dim: Style::new().fg(Color::Indexed(245)).add_modifier(Modifier::DIM),
             status_bar: Style::new().bg(Color::Indexed(236)).fg(fg),
             title: Style::new().fg(purple).add_modifier(Modifier::BOLD),
             header: Style::new()
@@ -330,6 +330,26 @@ mod tests {
             assert_ne!(
                 theme.ahead.fg, theme.behind.fg,
                 "{} theme should color ahead/behind differently",
+                theme.name
+            );
+        }
+    }
+
+    #[test]
+    fn dim_style_has_a_foreground_color_in_every_theme() {
+        // Regression: `dim_fg()` and `key_hint`/`block_panel` (ui/shared.rs)
+        // rely on `theme.dim.fg` being set — a theme that forgot to set it
+        // would silently fall back to `dim_fg()`'s DarkGray default instead
+        // of failing loudly.
+        for theme in [
+            Theme::dark(),
+            Theme::light(),
+            Theme::solarized(),
+            Theme::dracula(),
+        ] {
+            assert!(
+                theme.dim.fg.is_some(),
+                "{} theme's `dim` style must set an fg color",
                 theme.name
             );
         }
