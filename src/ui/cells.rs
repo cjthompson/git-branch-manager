@@ -105,6 +105,11 @@ fn merge_status_labels(
             ),
             theme.squash_merged.add_modifier(Modifier::ITALIC),
         ),
+        MergeStatus::LikelySquashMerged => (
+            format!("possible-squash {}", symbols.status_squash_merged),
+            format!("ps {}", symbols.status_squash_merged),
+            theme.squash_merged.add_modifier(Modifier::DIM),
+        ),
         MergeStatus::CherryPicked => (
             format!("cherry-picked {}", symbols.status_cherry_picked),
             format!("cp {}", symbols.status_cherry_picked),

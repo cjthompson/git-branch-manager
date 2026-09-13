@@ -566,6 +566,7 @@ fn status_label(status: MergeStatus) -> &'static str {
         MergeStatus::SquashMerged
         | MergeStatus::LocalSquashMerged
         | MergeStatus::RemoteSquashMerged => "squash-merged",
+        MergeStatus::LikelySquashMerged => "possible-squash-merged",
         MergeStatus::CherryPicked
         | MergeStatus::LocalCherryPicked
         | MergeStatus::RemoteCherryPicked => "cherry-picked",

@@ -574,6 +574,7 @@ mod tests {
                 base_branch: "main".into(),
                 merge_base_commit: None,
                 pr: None,
+                squash_confidence: None,
             },
             BranchInfo {
                 name: "feature/a".into(),
@@ -587,6 +588,7 @@ mod tests {
                 base_branch: "main".into(),
                 merge_base_commit: None,
                 pr: None,
+                squash_confidence: None,
             },
             BranchInfo {
                 name: "feature/b".into(),
@@ -600,6 +602,7 @@ mod tests {
                 base_branch: "main".into(),
                 merge_base_commit: None,
                 pr: None,
+                squash_confidence: None,
             },
         ]
     }
@@ -922,6 +925,15 @@ mod tests {
         assert!(!state.selected()[0]); // main (pinned)
         assert!(!state.selected()[1]); // unmerged
         assert!(state.selected()[2]); // merged
+    }
+
+    #[test]
+    fn select_merged_excludes_likely_squash_merged() {
+        let mut branches = sample_branches();
+        branches[1].merge_status = MergeStatus::LikelySquashMerged;
+        let mut state = ListState::new(branches);
+        select_merged(&mut state);
+        assert!(!state.selected()[1]);
     }
 
     // --- Sorting tests ---

@@ -1,4 +1,5 @@
-use crate::types::{BranchInfo, MergeStatus};
+use crate::git::fuzzy_match;
+use crate::types::{BranchInfo, MergeStatus, SquashConfidence};
 use git2::Repository;
 use std::collections::HashSet;
 use std::path::Path;
@@ -370,4 +371,104 @@ pub fn is_cherry_picked(
         }
         None => false,
     }
+}
+
+/// Confirm that replaying `branchish` onto `base_branch` produces base's tree.
+/// Fail closed on conflicts, missing refs, unsupported git, or other failures.
+fn merge_tree_confirms(repo_path: &Path, base_branch: &str, branchish: &str) -> bool {
+    let git = |args: &[&str]| -> Option<String> {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if out.status.success() {
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else {
+            None
+        }
+    };
+
+    let base_tree = match git(&["rev-parse", &format!("{base_branch}^{{tree}}")]) {
+        Some(t) if !t.is_empty() => t,
+        _ => return false,
+    };
+    let written_tree = match git(&["merge-tree", "--write-tree", base_branch, branchish]) {
+        Some(t) if !t.is_empty() => t,
+        _ => return false,
+    };
+    written_tree == base_tree
+}
+
+/// Compute a raw diff compatible with `fuzzy_match::score`.
+fn compute_diff(repo_path: &Path, merge_base: &str, refish: &str) -> Option<Vec<u8>> {
+    let out = Command::new("git")
+        .current_dir(repo_path)
+        .args([
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            merge_base,
+            refish,
+            "--",
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() || out.stdout.is_empty() {
+        return None;
+    }
+    Some(out.stdout)
+}
+
+/// Return a confidence classification for content that is likely already
+/// represented in the base branch when exact patch-id matching is absent.
+#[instrument(skip(repo_path))]
+pub fn likely_squash_merged(
+    repo_path: &Path,
+    base_branch: &str,
+    branch_name: &str,
+    commit_hash: Option<&str>,
+    merge_base: Option<&str>,
+) -> Option<SquashConfidence> {
+    let git = |args: &[&str]| -> Option<String> {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if out.status.success() {
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else {
+            None
+        }
+    };
+
+    let branchish = commit_hash.unwrap_or(branch_name);
+    let ancestor = match merge_base {
+        Some(mb) if !mb.is_empty() => {
+            match git(&["rev-parse", "--verify", &format!("{mb}^{{commit}}")]) {
+                Some(a) if !a.is_empty() => a,
+                _ => return None,
+            }
+        }
+        _ => match git(&["merge-base", base_branch, branchish]) {
+            Some(a) if !a.is_empty() => a,
+            _ => return None,
+        },
+    };
+
+    if merge_tree_confirms(repo_path, base_branch, branchish) {
+        return Some(SquashConfidence::MergeTreeConfirmed);
+    }
+
+    let branch_diff = compute_diff(repo_path, &ancestor, branchish)?;
+    let base_diff = compute_diff(repo_path, &ancestor, base_branch)?;
+    let fscore = fuzzy_match::score(&branch_diff, &base_diff)?;
+    let similarity_percent = fuzzy_match::classify(&fscore)?;
+    Some(SquashConfidence::FuzzyMatch { similarity_percent })
 }

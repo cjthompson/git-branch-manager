@@ -509,6 +509,7 @@ mod tests {
             base_branch: "main".into(),
             merge_base_commit: None,
             pr: None,
+            squash_confidence: None,
         }
     }
 

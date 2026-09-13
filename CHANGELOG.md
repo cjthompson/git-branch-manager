@@ -1,6 +1,17 @@
 # Changelog
 
+## 2026-09-13
+
+### Likely squash-merge detection (P007)
+- UI & safety surfacing
+
 ## 2026-09-12
+
+### Likely squash-merge detection (P007)
+- Concurrency precedence guard
+- Wire likely_squash_merged into squash_loader
+- Add merge_detection::likely_squash_merged heuristic function
+- Types & exhaustive-match wiring
 
 ### Plan: Fix modal layout, contrast, and key-hint styling (P006)
 - Tier 1: must-fix overlay bugs (theme.dim fg, confirm.rs bracket, question line, executing.rs panic)

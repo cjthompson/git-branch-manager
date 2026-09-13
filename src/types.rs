@@ -18,11 +18,18 @@ pub enum MergeStatus {
     RemoteMerged,       // merged into origin/<base>, local base not fast-forwarded
     LocalSquashMerged,  // squash-merged into local base only
     RemoteSquashMerged, // squash-merged into origin/<base> only
+    LikelySquashMerged,
     CherryPicked,
     LocalCherryPicked,
     RemoteCherryPicked,
     Unmerged,
     Pending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SquashConfidence {
+    MergeTreeConfirmed,
+    FuzzyMatch { similarity_percent: u8 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,6 +254,7 @@ pub struct BranchInfo {
     /// Short (8-char) commit hash of the merge-base with the base branch
     pub merge_base_commit: Option<String>,
     pub pr: Option<PrInfo>,
+    pub squash_confidence: Option<SquashConfidence>,
 }
 
 impl BranchInfo {
@@ -279,6 +287,7 @@ pub struct RemoteBranchInfo {
     /// so the A/B column shows the `disjoint` marker instead of the counts.
     pub disjoint: bool,
     pub pr: Option<PrInfo>,
+    pub squash_confidence: Option<SquashConfidence>,
 }
 
 impl RemoteBranchInfo {
@@ -430,6 +439,7 @@ pub struct ProgressUpdate {
 pub struct SquashResult {
     pub branch_name: String,
     pub status: MergeStatus,
+    pub confidence: Option<SquashConfidence>,
 }
 
 #[derive(Debug, Clone)]
@@ -770,6 +780,7 @@ mod tests {
             base_branch: "main".into(),
             merge_base_commit: None,
             pr: None,
+            squash_confidence: None,
         };
         assert!(b.is_pinned());
     }
@@ -788,6 +799,7 @@ mod tests {
             base_branch: "main".into(),
             merge_base_commit: None,
             pr: None,
+            squash_confidence: None,
         };
         assert!(!b.is_pinned());
     }

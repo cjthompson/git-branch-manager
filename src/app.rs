@@ -31,7 +31,7 @@ use git_branch_manager::ui::render::{ConfirmExtraKey, Overlay, RenderContext};
 use git_branch_manager::ui::shared::{abbreviate_path, prefix_style, truncate, truncate_left};
 use git_branch_manager::ui::toast::Toast;
 use git_branch_manager::view::branches::BranchesViewDef;
-use git_branch_manager::view::column::ColumnDef;
+use git_branch_manager::view::column::{apply_merge_status_if_confident, ColumnDef};
 use git_branch_manager::view::filter::{FilterSet, FilterTokenDef};
 use git_branch_manager::view::graph::GraphState;
 use git_branch_manager::view::list_state::{self, ListState};
@@ -639,7 +639,9 @@ impl App {
                 .iter_mut()
                 .find(|b| b.name == result.branch_name)
             {
-                b.merge_status = result.status;
+                if apply_merge_status_if_confident(&mut b.merge_status, result.status) {
+                    b.squash_confidence = result.confidence;
+                }
             }
             // Propagate squash-merge status to the matching remote branch. The remote
             // enricher marks ahead>0 branches as Unmerged; squash detection on the local
@@ -651,7 +653,9 @@ impl App {
                     .iter_mut()
                     .find(|r| r.short_name == result.branch_name)
                 {
-                    r.merge_status = result.status;
+                    if apply_merge_status_if_confident(&mut r.merge_status, result.status) {
+                        r.squash_confidence = result.confidence;
+                    }
                 }
             }
         }
@@ -672,7 +676,9 @@ impl App {
                 .iter_mut()
                 .find(|b| b.name == result.branch_name)
             {
-                b.merge_status = result.status;
+                if apply_merge_status_if_confident(&mut b.merge_status, result.status) {
+                    b.squash_confidence = None;
+                }
             }
             if !matches!(result.status, MergeStatus::Unmerged | MergeStatus::Pending) {
                 if let Some(r) = self
@@ -681,7 +687,9 @@ impl App {
                     .iter_mut()
                     .find(|r| r.short_name == result.branch_name)
                 {
-                    r.merge_status = result.status;
+                    if apply_merge_status_if_confident(&mut r.merge_status, result.status) {
+                        r.squash_confidence = None;
+                    }
                 }
             }
         }
@@ -698,7 +706,9 @@ impl App {
                 .iter_mut()
                 .find(|b| b.full_ref == result.branch_name)
             {
-                b.merge_status = result.status;
+                if apply_merge_status_if_confident(&mut b.merge_status, result.status) {
+                    b.squash_confidence = result.confidence;
+                }
             }
         }
 
@@ -710,7 +720,9 @@ impl App {
                 .iter_mut()
                 .find(|b| b.full_ref == result.full_ref)
             {
-                b.merge_status = result.merge_status;
+                if apply_merge_status_if_confident(&mut b.merge_status, result.merge_status) {
+                    b.squash_confidence = None;
+                }
                 b.ahead = result.ahead;
                 b.behind = result.behind;
                 b.disjoint = result.disjoint;
@@ -2802,6 +2814,13 @@ impl App {
                         ));
                         unmerged_targets.push(name.clone());
                     }
+                    MergeStatus::LikelySquashMerged => {
+                        reasons.push(format!(
+                            "Branch {name} is only a possible (unconfirmed) squash match for {}",
+                            branch.base_branch
+                        ));
+                        unmerged_targets.push(name.clone());
+                    }
                     MergeStatus::Pending => {
                         reasons.push(format!(
                             "Branch {name} merge status is still being computed; Git will verify safe deletion"
@@ -3977,6 +3996,7 @@ mod tests {
             behind: None,
             disjoint: false,
             pr: None,
+            squash_confidence: None,
         }
     }
 
@@ -3993,6 +4013,7 @@ mod tests {
             base_branch: "main".into(),
             merge_base_commit: None,
             pr: None,
+            squash_confidence: None,
         }
     }
 
@@ -4009,6 +4030,7 @@ mod tests {
             behind: None,
             disjoint: false,
             pr: None,
+            squash_confidence: None,
         }
     }
 
@@ -4109,6 +4131,7 @@ mod tests {
             base_branch: "main".into(),
             merge_base_commit: Some("ac13ef04".into()),
             pr: None,
+            squash_confidence: None,
         };
 
         let rows = render_branch_row(&item, 0, false, false, &[0, 1], &ctx);
@@ -4219,6 +4242,262 @@ mod tests {
 
         assert!(!app.graph.is_loading());
         assert!(app.toast.is_none());
+    }
+
+    #[test]
+    fn squash_result_then_remote_enrich_does_not_regress_status() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.branches
+            .set_items(vec![branch("feature/x", TrackingStatus::Local)]);
+        app.remotes
+            .set_items(vec![remote("origin/feature/x", "feature/x")]);
+
+        let (squash_tx, squash_rx) = mpsc::channel();
+        squash_tx
+            .send(SquashResult {
+                branch_name: "feature/x".into(),
+                status: MergeStatus::SquashMerged,
+                confidence: None,
+            })
+            .unwrap();
+        app.squash_rx = Some(squash_rx);
+        app.drain_channels();
+
+        assert_eq!(
+            app.remotes.items()[0].merge_status,
+            MergeStatus::SquashMerged
+        );
+
+        let (enrich_tx, enrich_rx) = mpsc::channel();
+        enrich_tx
+            .send(RemoteEnrichResult {
+                full_ref: "origin/feature/x".into(),
+                merge_status: MergeStatus::Unmerged,
+                ahead: Some(3),
+                behind: Some(1),
+                disjoint: false,
+            })
+            .unwrap();
+        app.remote_enrich_rx = Some(enrich_rx);
+        app.drain_channels();
+
+        assert_eq!(
+            app.remotes.items()[0].merge_status,
+            MergeStatus::SquashMerged,
+            "stale remote_enrich result must not regress an already-confirmed squash status"
+        );
+        assert_eq!(app.remotes.items()[0].ahead, Some(3));
+        assert_eq!(app.remotes.items()[0].behind, Some(1));
+    }
+
+    #[test]
+    fn accepted_cherry_result_clears_local_likely_confidence() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut local = branch("feature/x", TrackingStatus::Local);
+        local.merge_status = MergeStatus::LikelySquashMerged;
+        local.squash_confidence = Some(SquashConfidence::FuzzyMatch {
+            similarity_percent: 82,
+        });
+        app.branches.set_items(vec![local]);
+
+        let mut remote = remote("origin/feature/x", "feature/x");
+        remote.merge_status = MergeStatus::LikelySquashMerged;
+        remote.squash_confidence = Some(SquashConfidence::MergeTreeConfirmed);
+        app.remotes.set_items(vec![remote]);
+
+        let (cherry_tx, cherry_rx) = mpsc::channel();
+        cherry_tx
+            .send(CherryResult {
+                branch_name: "feature/x".into(),
+                status: MergeStatus::CherryPicked,
+            })
+            .unwrap();
+        app.cherry_rx = Some(cherry_rx);
+        app.drain_channels();
+
+        assert_eq!(
+            app.branches.items()[0].merge_status,
+            MergeStatus::CherryPicked
+        );
+        assert_eq!(app.branches.items()[0].squash_confidence, None);
+        assert_eq!(
+            app.remotes.items()[0].merge_status,
+            MergeStatus::CherryPicked
+        );
+        assert_eq!(
+            app.remotes.items()[0].squash_confidence,
+            None,
+            "accepted cherry propagation must clear stale squash evidence too"
+        );
+    }
+
+    #[test]
+    fn accepted_remote_enrich_result_clears_likely_confidence_and_updates_metadata() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut remote = remote("origin/feature/x", "feature/x");
+        remote.merge_status = MergeStatus::LikelySquashMerged;
+        remote.squash_confidence = Some(SquashConfidence::MergeTreeConfirmed);
+        app.remotes.set_items(vec![remote]);
+
+        let (enrich_tx, enrich_rx) = mpsc::channel();
+        enrich_tx
+            .send(RemoteEnrichResult {
+                full_ref: "origin/feature/x".into(),
+                merge_status: MergeStatus::Merged,
+                ahead: Some(4),
+                behind: Some(2),
+                disjoint: true,
+            })
+            .unwrap();
+        app.remote_enrich_rx = Some(enrich_rx);
+        app.drain_channels();
+
+        let remote = &app.remotes.items()[0];
+        assert_eq!(remote.merge_status, MergeStatus::Merged);
+        assert_eq!(
+            remote.squash_confidence, None,
+            "an accepted non-squash status must clear stale heuristic evidence"
+        );
+        assert_eq!(remote.ahead, Some(4));
+        assert_eq!(remote.behind, Some(2));
+        assert!(remote.disjoint);
+    }
+
+    #[test]
+    fn rejected_unmerged_squash_result_preserves_local_likely_confidence() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut local = branch("feature/x", TrackingStatus::Local);
+        local.merge_status = MergeStatus::LikelySquashMerged;
+        local.squash_confidence = Some(SquashConfidence::FuzzyMatch {
+            similarity_percent: 82,
+        });
+        app.branches.set_items(vec![local]);
+
+        let (squash_tx, squash_rx) = mpsc::channel();
+        squash_tx
+            .send(SquashResult {
+                branch_name: "feature/x".into(),
+                status: MergeStatus::Unmerged,
+                confidence: None,
+            })
+            .unwrap();
+        app.squash_rx = Some(squash_rx);
+        app.drain_channels();
+
+        assert_eq!(
+            app.branches.items()[0].merge_status,
+            MergeStatus::LikelySquashMerged
+        );
+        assert_eq!(
+            app.branches.items()[0].squash_confidence,
+            Some(SquashConfidence::FuzzyMatch {
+                similarity_percent: 82,
+            }),
+            "rejecting a weaker status must reject its confidence transition too"
+        );
+    }
+
+    #[test]
+    fn rejected_unmerged_remote_squash_result_preserves_likely_confidence() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut remote = remote("origin/feature/x", "feature/x");
+        remote.merge_status = MergeStatus::LikelySquashMerged;
+        remote.squash_confidence = Some(SquashConfidence::FuzzyMatch {
+            similarity_percent: 79,
+        });
+        app.remotes.set_items(vec![remote]);
+
+        let (squash_tx, squash_rx) = mpsc::channel();
+        squash_tx
+            .send(SquashResult {
+                branch_name: "origin/feature/x".into(),
+                status: MergeStatus::Unmerged,
+                confidence: None,
+            })
+            .unwrap();
+        app.remote_squash_rx = Some(squash_rx);
+        app.drain_channels();
+
+        assert_eq!(
+            app.remotes.items()[0].merge_status,
+            MergeStatus::LikelySquashMerged
+        );
+        assert_eq!(
+            app.remotes.items()[0].squash_confidence,
+            Some(SquashConfidence::FuzzyMatch {
+                similarity_percent: 79,
+            }),
+            "a rejected direct remote result must preserve its existing evidence"
+        );
+    }
+
+    #[test]
+    fn rejected_propagated_likely_result_does_not_attach_confidence_to_exact_status() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.branches
+            .set_items(vec![branch("feature/x", TrackingStatus::Local)]);
+        let mut remote = remote("origin/feature/x", "feature/x");
+        remote.merge_status = MergeStatus::SquashMerged;
+        app.remotes.set_items(vec![remote]);
+
+        let (squash_tx, squash_rx) = mpsc::channel();
+        squash_tx
+            .send(SquashResult {
+                branch_name: "feature/x".into(),
+                status: MergeStatus::LikelySquashMerged,
+                confidence: Some(SquashConfidence::MergeTreeConfirmed),
+            })
+            .unwrap();
+        app.squash_rx = Some(squash_rx);
+        app.drain_channels();
+
+        assert_eq!(
+            app.branches.items()[0].merge_status,
+            MergeStatus::LikelySquashMerged
+        );
+        assert_eq!(
+            app.branches.items()[0].squash_confidence,
+            Some(SquashConfidence::MergeTreeConfirmed)
+        );
+        assert_eq!(
+            app.remotes.items()[0].merge_status,
+            MergeStatus::SquashMerged
+        );
+        assert_eq!(
+            app.remotes.items()[0].squash_confidence,
+            None,
+            "rejected heuristic evidence must not be attached to an exact status"
+        );
     }
 
     #[test]
@@ -5094,6 +5373,7 @@ mod tests {
                 number: 123,
                 status: PrStatus::Open,
             }),
+            squash_confidence: None,
         }]);
 
         std::fs::write(dir.join("feature.txt"), "new\n").unwrap();
@@ -5472,6 +5752,28 @@ mod tests {
     }
 
     #[test]
+    fn build_delete_preflight_requires_force_for_likely_squash_merged() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut b = branch("feature/x", TrackingStatus::Local);
+        b.merge_status = MergeStatus::LikelySquashMerged;
+        app.branches.set_items(vec![b]);
+
+        let (reason, extra_keys) = app.build_delete_preflight(&["feature/x".to_string()]);
+
+        assert!(reason.is_some(), "an unconfirmed match must produce a preflight warning");
+        assert!(reason.unwrap().contains("possible"));
+        assert!(
+            extra_keys.iter().any(|k| k.key == '!'),
+            "deleting a possible-but-unconfirmed squash match must require the force key"
+        );
+    }
+
+    #[test]
     fn worktree_branch_cell_left_truncates_to_column_width() {
         let theme = Theme::dark();
         let symbols = SymbolSet::ascii();
@@ -5614,6 +5916,7 @@ mod tests {
             base_branch: "main".into(),
             merge_base_commit: None,
             pr: None,
+            squash_confidence: None,
         }]);
         app.open_context_menu();
 
@@ -5686,6 +5989,7 @@ mod tests {
             base_branch: "main".into(),
             merge_base_commit: None,
             pr: None,
+            squash_confidence: None,
         }]);
 
         let items = app.build_worktree_menu();
@@ -5722,6 +6026,7 @@ mod tests {
             base_branch: "main".into(),
             merge_base_commit: None,
             pr: None,
+            squash_confidence: None,
         }]);
 
         let items = app.build_worktree_menu();

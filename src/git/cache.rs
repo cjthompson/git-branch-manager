@@ -462,6 +462,11 @@ impl BranchCache {
             MergeStatus::LocalCherryPicked => "local_cherry_picked",
             MergeStatus::RemoteCherryPicked => "remote_cherry_picked",
             MergeStatus::Unmerged => "unmerged",
+            MergeStatus::LikelySquashMerged => {
+                span.record("inserted", false);
+                span.record("result_state", "skipped_likely_squash_merged");
+                return;
+            }
             MergeStatus::Pending => {
                 span.record("inserted", false);
                 span.record("result_state", "skipped_pending");
@@ -710,6 +715,17 @@ mod tests {
         assert_eq!(
             cache.lookup("feature/x", "def456"),
             Some(MergeStatus::Merged)
+        );
+    }
+
+    #[test]
+    fn cache_never_inserts_likely_squash_merged() {
+        let (_dir, mut cache) = temp_cache();
+        cache.insert("feature/x", &MergeStatus::LikelySquashMerged, "abc123");
+        assert_eq!(
+            cache.lookup("feature/x", "abc123"),
+            None,
+            "a heuristic likely-squash-merge result must never be cached"
         );
     }
 

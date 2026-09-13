@@ -1,6 +1,6 @@
 use crate::git::cache::BranchCache;
-use crate::git::merge_detection::is_squash_merged;
-use crate::types::{MergeStatus, SquashResult};
+use crate::git::merge_detection::{is_squash_merged, likely_squash_merged};
+use crate::types::{MergeStatus, SquashConfidence, SquashResult};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
@@ -21,6 +21,34 @@ struct WorkerResult {
     branch_name: String,
     commit_hash: String,
     status: MergeStatus,
+    confidence: Option<SquashConfidence>,
+}
+
+/// Rank confidence signals from strongest to weakest.
+fn confidence_rank(c: &SquashConfidence) -> (u8, u8) {
+    match c {
+        SquashConfidence::MergeTreeConfirmed => (0, 0),
+        SquashConfidence::FuzzyMatch { similarity_percent } => (1, u8::MAX - similarity_percent),
+    }
+}
+
+/// Choose the strongest signal from local and remote heuristic checks.
+fn strongest_confidence(
+    a: Option<SquashConfidence>,
+    b: Option<SquashConfidence>,
+) -> Option<SquashConfidence> {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            if confidence_rank(&a) <= confidence_rank(&b) {
+                Some(a)
+            } else {
+                Some(b)
+            }
+        }
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
 }
 
 /// Spawn a background thread that checks each candidate branch for squash-merge status.
@@ -28,8 +56,10 @@ struct WorkerResult {
 /// Runs is_squash_merged twice per branch — once against the local base and once against
 /// origin/<base> — to distinguish LocalSquashMerged / RemoteSquashMerged / SquashMerged.
 ///
-/// Cache-hit candidates are resolved on the calling (cache-owner) thread with no
-/// subprocess cost. Cache-miss candidates are handed to a fixed pool of
+/// Cache-hit candidates other than `Unmerged` are resolved on the calling
+/// (cache-owner) thread with no subprocess cost. A same-tip cached `Unmerged`
+/// is rechecked because the base may have advanced since it was cached.
+/// Cache misses and cached `Unmerged` candidates are handed to a fixed pool of
 /// `SQUASH_WORKER_COUNT` worker threads pulling from a shared queue; workers run
 /// `is_squash_merged` purely (no cache access) and send raw results back over an
 /// internal channel to this thread, which is the sole owner of `cache`
@@ -61,22 +91,24 @@ pub fn spawn_squash_checker(
             let _entered = span.enter();
 
             if let Some(cached_status) = cache.lookup(&branch_name, &commit_hash) {
-                span.record("cache_hit", true);
-                let is_squash = !matches!(cached_status, MergeStatus::Unmerged);
-                span.record("squash", is_squash);
-                if tx
-                    .send(SquashResult {
-                        branch_name,
-                        status: cached_status,
-                    })
-                    .is_err()
-                {
-                    if unsaved_inserts > 0 {
-                        cache.save();
+                if !matches!(cached_status, MergeStatus::Unmerged) {
+                    span.record("cache_hit", true);
+                    span.record("squash", true);
+                    if tx
+                        .send(SquashResult {
+                            branch_name,
+                            status: cached_status,
+                            confidence: None,
+                        })
+                        .is_err()
+                    {
+                        if unsaved_inserts > 0 {
+                            cache.save();
+                        }
+                        return; // Receiver dropped
                     }
-                    return; // Receiver dropped
+                    continue;
                 }
-                continue;
             }
             span.record("cache_hit", false);
             misses.push_back((branch_name, commit_hash, merge_base));
@@ -142,11 +174,32 @@ pub fn spawn_squash_checker(
                         None,
                     );
 
-                    let status = match (local_squash, remote_squash) {
-                        (true, true) => MergeStatus::SquashMerged,
-                        (false, true) => MergeStatus::RemoteSquashMerged,
-                        (true, false) => MergeStatus::LocalSquashMerged,
-                        (false, false) => MergeStatus::Unmerged,
+                    let (status, confidence) = match (local_squash, remote_squash) {
+                        (true, true) => (MergeStatus::SquashMerged, None),
+                        (false, true) => (MergeStatus::RemoteSquashMerged, None),
+                        (true, false) => (MergeStatus::LocalSquashMerged, None),
+                        (false, false) => {
+                            let local_confidence = likely_squash_merged(
+                                &repo_path,
+                                &base_branch,
+                                &branch_name,
+                                Some(&commit_hash),
+                                merge_base.as_deref(),
+                            );
+                            let remote_confidence = likely_squash_merged(
+                                &repo_path,
+                                &remote_base,
+                                &branch_name,
+                                Some(&commit_hash),
+                                None,
+                            );
+                            match strongest_confidence(local_confidence, remote_confidence) {
+                                Some(confidence) => {
+                                    (MergeStatus::LikelySquashMerged, Some(confidence))
+                                }
+                                None => (MergeStatus::Unmerged, None),
+                            }
+                        }
                     };
                     span.record("squash", !matches!(status, MergeStatus::Unmerged));
                     drop(_entered);
@@ -156,6 +209,7 @@ pub fn spawn_squash_checker(
                             branch_name,
                             commit_hash,
                             status,
+                            confidence,
                         })
                         .is_err()
                     {
@@ -176,6 +230,7 @@ pub fn spawn_squash_checker(
             branch_name,
             commit_hash,
             status,
+            confidence,
         }) = worker_rx.recv()
         {
             cache.insert(&branch_name, &status, &commit_hash);
@@ -189,6 +244,7 @@ pub fn spawn_squash_checker(
                 .send(SquashResult {
                     branch_name,
                     status,
+                    confidence,
                 })
                 .is_err()
             {

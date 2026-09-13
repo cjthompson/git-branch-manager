@@ -251,6 +251,7 @@ mod tests {
             base_branch: "main".into(),
             merge_base_commit: None,
             pr: None,
+            squash_confidence: None,
         };
         assert_eq!(b.display_name(), "feature/x");
         assert!(b.is_pinned()); // is_current = true
@@ -274,6 +275,7 @@ mod tests {
             behind: Some(2),
             disjoint: false,
             pr: None,
+            squash_confidence: None,
         };
         assert_eq!(r.display_name(), "origin/main");
         assert!(r.is_pinned());

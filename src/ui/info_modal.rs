@@ -278,6 +278,13 @@ fn branch_fields(b: &BranchInfo) -> Vec<InfoField> {
         value: merge_status_str(&b.merge_status).to_string(),
     });
 
+    if let Some(confidence) = &b.squash_confidence {
+        fields.push(InfoField {
+            label: "Confidence",
+            value: squash_confidence_str(confidence),
+        });
+    }
+
     fields.push(InfoField {
         label: "Base Branch",
         value: b.base_branch.clone(),
@@ -347,6 +354,13 @@ fn remote_fields(r: &RemoteBranchInfo) -> Vec<InfoField> {
         label: "Merge Status",
         value: merge_status_str(&r.merge_status).to_string(),
     });
+
+    if let Some(confidence) = &r.squash_confidence {
+        fields.push(InfoField {
+            label: "Confidence",
+            value: squash_confidence_str(confidence),
+        });
+    }
 
     fields.push(InfoField {
         label: "Last Commit",
@@ -471,11 +485,21 @@ fn merge_status_str(status: &MergeStatus) -> &'static str {
         MergeStatus::RemoteMerged => "Remote Merged",
         MergeStatus::LocalSquashMerged => "Local Squash Merged",
         MergeStatus::RemoteSquashMerged => "Remote Squash Merged",
+        MergeStatus::LikelySquashMerged => "Possible Squash Merge",
         MergeStatus::CherryPicked => "Cherry Picked",
         MergeStatus::LocalCherryPicked => "Local Cherry Picked",
         MergeStatus::RemoteCherryPicked => "Remote Cherry Picked",
         MergeStatus::Unmerged => "Unmerged",
         MergeStatus::Pending => "Pending",
+    }
+}
+
+fn squash_confidence_str(confidence: &SquashConfidence) -> String {
+    match confidence {
+        SquashConfidence::MergeTreeConfirmed => "Merge-tree confirmed".to_string(),
+        SquashConfidence::FuzzyMatch { similarity_percent } => {
+            format!("Fuzzy match ({similarity_percent}%)")
+        }
     }
 }
 
@@ -1064,5 +1088,75 @@ mod tests {
             .map(|f| f.label)
             .collect();
         assert!(!labels.contains(&"Date"));
+    }
+
+    #[test]
+    fn branch_fields_includes_confidence_when_likely_squash_merged() {
+        let b = BranchInfo {
+            name: "feature/x".into(),
+            is_current: false,
+            is_base: false,
+            tracking: TrackingStatus::Local,
+            ahead: None,
+            behind: None,
+            last_commit_date: Utc::now(),
+            merge_status: MergeStatus::LikelySquashMerged,
+            base_branch: "main".into(),
+            merge_base_commit: None,
+            pr: None,
+            squash_confidence: Some(SquashConfidence::FuzzyMatch {
+                similarity_percent: 82,
+            }),
+        };
+        let fields = branch_fields(&b);
+        let confidence_field = fields
+            .iter()
+            .find(|f| f.label == "Confidence")
+            .expect("Confidence field should be present");
+        assert_eq!(confidence_field.value, "Fuzzy match (82%)");
+    }
+
+    #[test]
+    fn branch_fields_omits_confidence_when_none() {
+        let b = BranchInfo {
+            name: "feature/y".into(),
+            is_current: false,
+            is_base: false,
+            tracking: TrackingStatus::Local,
+            ahead: None,
+            behind: None,
+            last_commit_date: Utc::now(),
+            merge_status: MergeStatus::Unmerged,
+            base_branch: "main".into(),
+            merge_base_commit: None,
+            pr: None,
+            squash_confidence: None,
+        };
+        let fields = branch_fields(&b);
+        assert!(!fields.iter().any(|f| f.label == "Confidence"));
+    }
+
+    #[test]
+    fn remote_fields_includes_confidence_when_present() {
+        let r = RemoteBranchInfo {
+            full_ref: "origin/feature/x".into(),
+            remote: "origin".into(),
+            short_name: "feature/x".into(),
+            has_local: false,
+            is_base: false,
+            last_commit_date: Utc::now(),
+            merge_status: MergeStatus::LikelySquashMerged,
+            ahead: None,
+            behind: None,
+            disjoint: false,
+            pr: None,
+            squash_confidence: Some(SquashConfidence::MergeTreeConfirmed),
+        };
+        let fields = remote_fields(&r);
+        let confidence_field = fields
+            .iter()
+            .find(|f| f.label == "Confidence")
+            .expect("Confidence field should be present");
+        assert_eq!(confidence_field.value, "Merge-tree confirmed");
     }
 }

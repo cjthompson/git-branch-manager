@@ -93,8 +93,9 @@ pub fn merge_status_rank(status: &MergeStatus) -> u8 {
         MergeStatus::CherryPicked => 7,
         MergeStatus::RemoteCherryPicked => 8,
         MergeStatus::LocalCherryPicked => 9,
-        MergeStatus::Unmerged => 10,
-        MergeStatus::Pending => 11,
+        MergeStatus::LikelySquashMerged => 10,
+        MergeStatus::Unmerged => 11,
+        MergeStatus::Pending => 12,
     }
 }
 
@@ -103,6 +104,22 @@ pub fn merge_status_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
     let rank_a = a.merge_status().map_or(u8::MAX, merge_status_rank);
     let rank_b = b.merge_status().map_or(u8::MAX, merge_status_rank);
     rank_a.cmp(&rank_b)
+}
+
+/// Overwrite `current` with `new_status` only when `new_status` is at least
+/// as confident as whatever is already there (lower `merge_status_rank` =
+/// more confident/definitive). Background result channels (`squash_rx`,
+/// `cherry_rx`, `remote_squash_rx`, `remote_enrich_rx`) race against each
+/// other and can deliver results for the same branch out of order; a later,
+/// less-confident result must not clobber an already-confirmed status.
+/// Returns whether the new status was accepted.
+pub fn apply_merge_status_if_confident(current: &mut MergeStatus, new_status: MergeStatus) -> bool {
+    if merge_status_rank(&new_status) <= merge_status_rank(current) {
+        *current = new_status;
+        true
+    } else {
+        false
+    }
 }
 
 /// Build the shared merge-status column ("Merge" in every view). The name is a
@@ -165,6 +182,7 @@ mod tests {
             base_branch: "main".into(),
             merge_base_commit: None,
             pr: None,
+            squash_confidence: None,
         }
     }
 
@@ -181,6 +199,7 @@ mod tests {
             behind: None,
             disjoint: false,
             pr: None,
+            squash_confidence: None,
         }
     }
 
@@ -341,8 +360,9 @@ mod tests {
         assert_eq!(merge_status_rank(&MergeStatus::CherryPicked), 7);
         assert_eq!(merge_status_rank(&MergeStatus::RemoteCherryPicked), 8);
         assert_eq!(merge_status_rank(&MergeStatus::LocalCherryPicked), 9);
-        assert_eq!(merge_status_rank(&MergeStatus::Unmerged), 10);
-        assert_eq!(merge_status_rank(&MergeStatus::Pending), 11);
+        assert_eq!(merge_status_rank(&MergeStatus::LikelySquashMerged), 10);
+        assert_eq!(merge_status_rank(&MergeStatus::Unmerged), 11);
+        assert_eq!(merge_status_rank(&MergeStatus::Pending), 12);
     }
 
     #[test]
@@ -361,6 +381,40 @@ mod tests {
         a.merge_status = MergeStatus::Unmerged;
         b.merge_status = MergeStatus::Pending;
         assert_eq!(merge_status_cmp(&a, &b), Ordering::Less);
+    }
+
+    #[test]
+    fn apply_merge_status_if_confident_allows_more_confident_overwrite() {
+        let mut current = MergeStatus::Unmerged;
+        assert!(apply_merge_status_if_confident(
+            &mut current,
+            MergeStatus::SquashMerged
+        ));
+        assert_eq!(current, MergeStatus::SquashMerged);
+    }
+
+    #[test]
+    fn apply_merge_status_if_confident_allows_equal_rank_overwrite() {
+        let mut current = MergeStatus::LocalSquashMerged;
+        assert!(apply_merge_status_if_confident(
+            &mut current,
+            MergeStatus::LocalSquashMerged
+        ));
+        assert_eq!(current, MergeStatus::LocalSquashMerged);
+    }
+
+    #[test]
+    fn apply_merge_status_if_confident_rejects_less_confident_overwrite() {
+        let mut current = MergeStatus::SquashMerged;
+        assert!(!apply_merge_status_if_confident(
+            &mut current,
+            MergeStatus::Unmerged
+        ));
+        assert_eq!(
+            current,
+            MergeStatus::SquashMerged,
+            "a stale, less-confident result must not regress an already-confirmed status"
+        );
     }
 
     #[test]

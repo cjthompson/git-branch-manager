@@ -38,6 +38,7 @@ impl FilterSet {
                 "merge:remote-cherry" => fs.statuses.push(MergeStatus::RemoteCherryPicked),
                 "merge:local-cherry" => fs.statuses.push(MergeStatus::LocalCherryPicked),
                 "merge:unmerged" => fs.statuses.push(MergeStatus::Unmerged),
+                "merge:possible-squash" => fs.statuses.push(MergeStatus::LikelySquashMerged),
                 "pr:yes" => fs.pr_yes = true,
                 "pr:no" => fs.pr_no = true,
                 "sync:ahead" => fs.sync_ahead = true,
@@ -151,6 +152,11 @@ pub fn merge_tokens() -> Vec<FilterTokenDef> {
             label: "Unmerged",
             token: "merge:unmerged",
         },
+        FilterTokenDef {
+            key: 'x',
+            label: "Possible squash",
+            token: "merge:possible-squash",
+        },
     ]
 }
 
@@ -257,6 +263,12 @@ mod tests {
     fn parse_status_unmerged() {
         let fs = FilterSet::parse("merge:unmerged");
         assert_eq!(fs.statuses, vec![MergeStatus::Unmerged]);
+    }
+
+    #[test]
+    fn parse_status_possible_squash() {
+        let fs = FilterSet::parse("merge:possible-squash");
+        assert_eq!(fs.statuses, vec![MergeStatus::LikelySquashMerged]);
     }
 
     #[test]
@@ -415,6 +427,7 @@ mod tests {
                 ('C', "Remote cherry-picked", "merge:remote-cherry"),
                 ('h', "Local cherry-picked", "merge:local-cherry"),
                 ('u', "Unmerged", "merge:unmerged"),
+                ('x', "Possible squash", "merge:possible-squash"),
             ]
         );
     }
@@ -491,6 +504,7 @@ mod tests {
                 "merge:remote-cherry",
                 "merge:local-cherry",
                 "merge:unmerged",
+                "merge:possible-squash",
             ]
         );
     }

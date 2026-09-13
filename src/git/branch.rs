@@ -214,6 +214,7 @@ pub fn list_remote_branches_phase1(
             behind: None,
             disjoint: false,
             pr: None,
+            squash_confidence: None,
         });
     }
 
@@ -963,6 +964,7 @@ fn collect_branch_metadata(
             base_branch: base_branch.to_string(),
             merge_base_commit,
             pr: None,
+            squash_confidence: None,
         });
     }
 
