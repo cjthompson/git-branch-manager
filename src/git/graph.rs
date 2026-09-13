@@ -34,6 +34,9 @@ pub struct GraphSnapshot {
 pub struct GraphEnrichmentUpdate {
     pub oid: String,
     pub is_possible_squash_merge: bool,
+    /// Local branch names whose aggregate diff exactly matches this base
+    /// commit. Empty unless `is_possible_squash_merge` is true.
+    pub possible_squash_merge_sources: Vec<String>,
     pub fuzzy_squash_match: Option<FuzzySquashMatch>,
     pub is_cherry_picked_commit: bool,
 }
@@ -66,6 +69,10 @@ pub struct GraphCommit {
     /// True when this displayed base-branch commit has the same stable Git
     /// patch ID as the aggregate patch of a displayed, non-merged local branch.
     pub is_possible_squash_merge: bool,
+    /// Local branches whose aggregate diffs exactly match this base commit.
+    /// The list is sorted for a stable compact Graph label and details-modal
+    /// presentation. It is empty unless `is_possible_squash_merge` is true.
+    pub possible_squash_merge_sources: Vec<String>,
     /// Set when this commit's diff is a *near*-match (not exact) for a
     /// displayed branch tip's aggregate diff, per the Option 6 fuzzy/possible
     /// tier (`git::fuzzy_match`). Never set on a commit that already has
@@ -368,6 +375,7 @@ fn load_with_gleisbau(
                 branch: None,
                 refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
                 is_possible_squash_merge: false,
+                possible_squash_merge_sources: Vec::new(),
                 fuzzy_squash_match: None,
                 is_cherry_picked_commit: false,
                 author_name: author.name().unwrap_or("").to_string(),
@@ -474,6 +482,7 @@ fn load_with_git_cli(
             branch: None,
             refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
             is_possible_squash_merge: false,
+            possible_squash_merge_sources: Vec::new(),
             fuzzy_squash_match: None,
             is_cherry_picked_commit: false,
             author_name: fields[2].to_string(),
@@ -552,18 +561,27 @@ pub fn compute_possible_squash_updates(
         })
         .collect::<Vec<_>>();
 
-    let displayed_branch_tips = snapshot
-        .commits
-        .iter()
-        .filter(|commit| {
-            commit.refs.iter().any(|reference| {
+    let mut displayed_branch_names_by_tip = HashMap::<String, Vec<String>>::new();
+    for commit in &snapshot.commits {
+        let names = commit
+            .refs
+            .iter()
+            .filter(|reference| {
                 reference.kind == GraphRefKind::LocalBranch && reference.name != base_branch
             })
-        })
-        .map(|commit| commit.oid.clone())
-        .collect::<HashSet<_>>();
+            .map(|reference| reference.name.clone());
+        displayed_branch_names_by_tip
+            .entry(commit.oid.clone())
+            .or_default()
+            .extend(names);
+    }
+    displayed_branch_names_by_tip.retain(|_, names| {
+        names.sort();
+        names.dedup();
+        !names.is_empty()
+    });
 
-    for tip in displayed_branch_tips {
+    for (tip, source_names) in displayed_branch_names_by_tip {
         let merge_base = match displayed_branch_relation(&snapshot.commits, &base_tip, &tip) {
             DisplayedBranchRelation::Diverged { merge_base } => merge_base,
             DisplayedBranchRelation::RegularlyMerged | DisplayedBranchRelation::Ineligible => {
@@ -571,14 +589,14 @@ pub fn compute_possible_squash_updates(
             }
         };
         jobs.push(PatchJob {
-            target: PatchTarget::BranchTip,
+            target: PatchTarget::BranchTip { source_names },
             old_oid: merge_base,
             new_oid: tip,
         });
     }
 
     let mut base_oids_by_patch = HashMap::<String, Vec<String>>::new();
-    let mut branch_patch_ids = HashSet::new();
+    let mut source_names_by_patch = HashMap::<String, Vec<String>>::new();
     // Retained alongside patch IDs so pairs whose patch IDs don't exactly
     // match can still be scored by the Option 6 fuzzy tier below, without a
     // second `git diff` subprocess per job.
@@ -597,9 +615,12 @@ pub fn compute_possible_squash_updates(
                     base_diffs.push((oid, diff_text));
                 }
             }
-            PatchTarget::BranchTip => {
+            PatchTarget::BranchTip { source_names } => {
                 if let Some(patch_id) = result.patch_id {
-                    branch_patch_ids.insert(patch_id);
+                    let names = source_names_by_patch.entry(patch_id).or_default();
+                    names.extend(source_names);
+                    names.sort();
+                    names.dedup();
                 }
                 if let Some(diff_text) = result.diff_text {
                     branch_diffs.push(diff_text);
@@ -608,10 +629,21 @@ pub fn compute_possible_squash_updates(
         }
     }
 
-    let matching_base_oids = branch_patch_ids
-        .iter()
-        .filter_map(|patch_id| base_oids_by_patch.get(patch_id))
-        .flatten()
+    let mut source_names_by_base_oid = HashMap::<String, Vec<String>>::new();
+    for (patch_id, source_names) in source_names_by_patch {
+        let Some(base_oids) = base_oids_by_patch.get(&patch_id) else {
+            continue;
+        };
+        for oid in base_oids {
+            let names = source_names_by_base_oid.entry(oid.clone()).or_default();
+            names.extend(source_names.iter().cloned());
+            names.sort();
+            names.dedup();
+        }
+    }
+    let matching_base_oids = source_names_by_base_oid
+        .keys()
+        .cloned()
         .collect::<HashSet<_>>();
 
     // Option 6: for base commits that didn't get an exact patch-id match,
@@ -649,6 +681,10 @@ pub fn compute_possible_squash_updates(
         .map(|commit| GraphEnrichmentUpdate {
             oid: commit.oid.clone(),
             is_possible_squash_merge: matching_base_oids.contains(&commit.oid),
+            possible_squash_merge_sources: source_names_by_base_oid
+                .get(&commit.oid)
+                .cloned()
+                .unwrap_or_default(),
             fuzzy_squash_match: fuzzy_by_oid.get(&commit.oid).cloned(),
             is_cherry_picked_commit: false,
         })
@@ -668,6 +704,7 @@ pub fn apply_squash_enrichment(snapshot: &mut GraphSnapshot, updates: &[GraphEnr
             .find(|commit| commit.oid == update.oid)
         {
             commit.is_possible_squash_merge = update.is_possible_squash_merge;
+            commit.possible_squash_merge_sources = update.possible_squash_merge_sources.clone();
             commit.fuzzy_squash_match = update.fuzzy_squash_match.clone();
             commit.is_cherry_picked_commit = update.is_cherry_picked_commit;
         }
@@ -760,6 +797,7 @@ fn compute_cherry_pick_updates(
             updates.push(GraphEnrichmentUpdate {
                 oid: commit.oid.clone(),
                 is_possible_squash_merge: false,
+                possible_squash_merge_sources: Vec::new(),
                 fuzzy_squash_match: None,
                 is_cherry_picked_commit: true,
             });
@@ -883,7 +921,7 @@ struct PatchJob {
 
 enum PatchTarget {
     BaseCommit(String),
-    BranchTip,
+    BranchTip { source_names: Vec<String> },
 }
 
 struct PatchResult {

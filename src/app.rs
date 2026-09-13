@@ -6207,6 +6207,7 @@ mod tests {
             updates: vec![graph::GraphEnrichmentUpdate {
                 oid: "2222222222222222222222222222222222222222".into(),
                 is_possible_squash_merge: true,
+                possible_squash_merge_sources: vec![],
                 fuzzy_squash_match: None,
                 is_cherry_picked_commit: false,
             }],
@@ -6274,6 +6275,7 @@ mod tests {
             updates: vec![graph::GraphEnrichmentUpdate {
                 oid: "3333333333333333333333333333333333333333".into(),
                 is_possible_squash_merge: true,
+                possible_squash_merge_sources: vec![],
                 fuzzy_squash_match: None,
                 is_cherry_picked_commit: false,
             }],

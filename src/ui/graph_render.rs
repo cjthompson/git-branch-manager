@@ -407,62 +407,54 @@ fn render_ref_names(
     selected: bool,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
-    let mut rendered = Vec::new();
-    let mut remaining = width;
-
-    for (index, reference) in refs.into_iter().enumerate() {
-        let separator_width = if index == 0 { 0 } else { 2 };
-        if remaining < separator_width {
-            break;
-        }
-
-        let available = remaining - separator_width;
-        if available == 0 {
-            break;
-        }
-
-        if separator_width > 0 {
-            rendered.push(ref_pane_space(separator_width, selected, theme));
-        }
-
-        let reference_width = reference.width();
-        if reference_width <= available {
-            rendered.push(reference);
-            remaining = available - reference_width;
-            continue;
-        }
-
-        let skip = offset.min(reference_width - available);
-        rendered.extend(truncate_spans(skip_spans(vec![reference], skip), available));
-        break;
+    let Some((first, remaining)) = refs.split_first() else {
+        return Vec::new();
+    };
+    if first.width() >= width || remaining.is_empty() {
+        return truncate_spans(skip_spans(vec![first.clone()], offset), width);
     }
 
+    let mut rendered = vec![first.clone()];
+    let remaining_width = width.saturating_sub(first.width() + 2);
+    if remaining_width == 0 {
+        return rendered;
+    }
+    rendered.push(ref_pane_space(2, selected, theme));
+    rendered.extend(truncate_spans(
+        skip_spans(joined_ref_spans(remaining.to_vec(), selected, theme), offset),
+        remaining_width,
+    ));
     rendered
 }
 
 fn max_ref_scroll_offset(refs: &[Span<'static>], width: usize) -> usize {
-    let mut remaining = width;
-
-    for (index, reference) in refs.iter().enumerate() {
-        let separator_width = if index == 0 { 0 } else { 2 };
-        if remaining < separator_width {
-            break;
-        }
-
-        let available = remaining - separator_width;
-        if available == 0 {
-            break;
-        }
-
-        let reference_width = reference.width();
-        if reference_width > available {
-            return reference_width - available;
-        }
-
-        remaining = available - reference_width;
+    let Some((first, remaining)) = refs.split_first() else {
+        return 0;
+    };
+    if first.width() >= width || remaining.is_empty() {
+        return first.width().saturating_sub(width);
     }
 
-    0
+    let remaining_width = width.saturating_sub(first.width() + 2);
+    let separators_width = remaining.len().saturating_sub(1) * 2;
+    spans_width(remaining)
+        .saturating_add(separators_width)
+        .saturating_sub(remaining_width)
+}
+
+fn joined_ref_spans(
+    refs: Vec<Span<'static>>,
+    selected: bool,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (index, reference) in refs.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(ref_pane_space(2, selected, theme));
+        }
+        spans.push(reference);
+    }
+    spans
 }
 
 #[cfg(test)]
@@ -562,6 +554,7 @@ fn ref_pane_parts(
     ));
     spans.push(ref_pane_space(1, selected, theme));
 
+    let squash_source_spans = possible_squash_source_spans(commit, selected, theme, symbols);
     if refs.is_empty() {
         let branch = commit.branch.as_ref().map(|branch| {
             Span::styled(
@@ -569,7 +562,9 @@ fn ref_pane_parts(
                 selected_style(theme.dim, selected, theme),
             )
         });
-        return (spans, branch.into_iter().collect());
+        let mut ref_spans: Vec<_> = branch.into_iter().collect();
+        ref_spans.extend(squash_source_spans);
+        return (spans, ref_spans);
     }
 
     let local_names: HashSet<&str> = refs
@@ -592,7 +587,31 @@ fn ref_pane_parts(
             selected_style(ref_style(reference.kind, theme), selected, theme),
         ));
     }
+    ref_spans.extend(squash_source_spans);
     (spans, ref_spans)
+}
+
+fn possible_squash_source_spans(
+    commit: &GraphCommit,
+    selected: bool,
+    theme: &Theme,
+    symbols: &SymbolSet,
+) -> Vec<Span<'static>> {
+    if !commit.is_possible_squash_merge {
+        return Vec::new();
+    }
+    let Some((first, rest)) = commit.possible_squash_merge_sources.split_first() else {
+        return Vec::new();
+    };
+    let suffix = if rest.is_empty() {
+        String::new()
+    } else {
+        format!(" +{}", rest.len())
+    };
+    vec![Span::styled(
+        format!("{} {first}{suffix}", symbols.status_squash_merged),
+        selected_style(theme.squash_merged, selected, theme),
+    )]
 }
 
 const STATE_WIDTH: usize = 5;
@@ -1195,14 +1214,86 @@ mod tests {
             fuzzy_squash_match: None,
             ..GraphCommit::default()
         };
-        let text: String = ref_pane_spans(&commit, 30, false, &Theme::dark(), &SymbolSet::ascii())
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
+        let text: String =
+            ref_pane_spans(&commit, 30, false, &Theme::dark(), &SymbolSet::ascii())
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
         assert!(text.starts_with("*@#"));
         assert!(text.contains("+9 WT"));
         assert!(!text.contains("origin/main"));
         assert!(!text.contains("Merged"));
+    }
+
+    #[test]
+    fn ref_pane_shows_compact_possible_squash_sources() {
+        let commit = GraphCommit {
+            oid: "landing".into(),
+            summary: "squash landing".into(),
+            parents: vec![],
+            lane: Some(0),
+            branch: Some(crate::git::graph::GraphBranchLabel {
+                name: "main".into(),
+                target_oid: "landing".into(),
+                kind: GraphRefKind::LocalBranch,
+            }),
+            refs: vec![],
+            is_possible_squash_merge: true,
+            possible_squash_merge_sources: vec!["feature/auth".into(), "feature/login".into()],
+            fuzzy_squash_match: None,
+            ..GraphCommit::default()
+        };
+
+        let text: String = ref_pane_spans(&commit, 30, false, &Theme::dark(), &SymbolSet::ascii())
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(text.contains("main  ~ feature/auth +1"), "got: {text}");
+    }
+
+    #[test]
+    fn ref_pane_hides_possible_squash_sources_without_an_exact_match() {
+        let commit = GraphCommit {
+            oid: "near-match".into(),
+            summary: "near squash landing".into(),
+            parents: vec![],
+            lane: Some(0),
+            branch: None,
+            refs: vec![],
+            is_possible_squash_merge: false,
+            possible_squash_merge_sources: vec!["feature/login".into()],
+            fuzzy_squash_match: Some(crate::git::graph::FuzzySquashMatch {
+                similarity_percent: 90,
+            }),
+            ..GraphCommit::default()
+        };
+
+        let text: String =
+            ref_pane_spans(&commit, 30, false, &Theme::dark(), &SymbolSet::ascii())
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+
+        assert!(!text.contains("feature/login"), "got: {text}");
+    }
+
+    #[test]
+    fn ref_pane_scroll_reaches_squash_source_after_long_real_refs() {
+        let theme = Theme::dark();
+        let refs = vec![
+            Span::raw("main"),
+            Span::raw("plan/p008-modal-system-redesign"),
+            Span::styled("≈ plan/p007-likely-squash-merge-detection", theme.squash_merged),
+        ];
+        let source_offset = "plan/p008-modal-system-redesign  ".len();
+
+        let text: String = render_ref_names(refs, 20, source_offset, false, &theme)
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(text.contains("main  ≈ plan/p007"), "got: {text}");
     }
 
     #[test]

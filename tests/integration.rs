@@ -3445,6 +3445,11 @@ fn test_squash_scenario_01_baseline_single_commit_clean_squash() {
         landing.is_possible_squash_merge,
         "clean single-commit squash should be flagged (Algorithm A)"
     );
+    assert_eq!(
+        landing.possible_squash_merge_sources,
+        vec!["feature/baseline"],
+        "the Graph landing commit should retain the exact-match source branch"
+    );
     assert!(
         landing.fuzzy_squash_match.is_none(),
         "exact match must not also get a fuzzy annotation"
@@ -3459,6 +3464,43 @@ fn test_squash_scenario_01_baseline_single_commit_clean_squash() {
         .find(|b| b.name == "feature/baseline")
         .unwrap();
     assert_eq!(feature.merge_status, MergeStatus::LocalSquashMerged);
+}
+
+#[test]
+fn test_squash_landing_lists_all_matching_local_branch_names() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/login"]);
+    std::fs::write(dir.join("login.txt"), "login content\n").unwrap();
+    run_git(dir, &["add", "login.txt"]);
+    run_git(dir, &["commit", "-m", "add login"]);
+    run_git(dir, &["branch", "feature/auth"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/login"]);
+    run_git(dir, &["commit", "-m", "squash login"]);
+    let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
+
+    let snapshot = graph::load_graph_with_squash_annotations(
+        dir,
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..graph::GraphLoadOptions::default()
+        },
+    )
+    .expect("graph load should succeed");
+    let landing = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.oid == squash_oid)
+        .expect("squash landing should be displayed");
+
+    assert_eq!(
+        landing.possible_squash_merge_sources,
+        vec!["feature/auth", "feature/login"],
+        "all local branches at a matching tip are useful candidates, in stable order"
+    );
 }
 
 #[test]
@@ -5522,6 +5564,7 @@ fn test_squash_scenario_21c_stale_enrichment_does_not_overwrite_newer_snapshot()
             .map(|c| graph::GraphEnrichmentUpdate {
                 oid: c.oid.clone(),
                 is_possible_squash_merge: true,
+                possible_squash_merge_sources: vec![],
                 fuzzy_squash_match: None,
                 is_cherry_picked_commit: false,
             })

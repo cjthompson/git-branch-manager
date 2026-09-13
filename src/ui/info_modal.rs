@@ -217,6 +217,12 @@ fn graph_commit_fields(commit: &GraphCommit) -> Vec<InfoField> {
             label: "Possible Squash Merge",
             value: "yes".into(),
         });
+        if !commit.possible_squash_merge_sources.is_empty() {
+            fields.push(InfoField {
+                label: "Possible Squash Merge From",
+                value: commit.possible_squash_merge_sources.join(", "),
+            });
+        }
     }
 
     fields
@@ -1005,6 +1011,7 @@ mod tests {
             branch: None,
             refs: vec![],
             is_possible_squash_merge: false,
+            possible_squash_merge_sources: vec![],
             fuzzy_squash_match: None,
             is_cherry_picked_commit: false,
             author_name: "Jane Doe".into(),
@@ -1022,6 +1029,32 @@ mod tests {
     }
 
     #[test]
+    fn graph_commit_fields_lists_all_possible_squash_sources() {
+        let commit = GraphCommit {
+            oid: "abcdef1234567".into(),
+            summary: "squash landing".into(),
+            parents: vec![],
+            lane: None,
+            branch: None,
+            refs: vec![],
+            is_possible_squash_merge: true,
+            possible_squash_merge_sources: vec!["feature/auth".into(), "feature/login".into()],
+            fuzzy_squash_match: None,
+            is_cherry_picked_commit: false,
+            author_name: String::new(),
+            author_email: String::new(),
+            authored_at: None,
+        };
+
+        let fields = graph_commit_fields(&commit);
+        let sources = fields
+            .iter()
+            .find(|field| field.label == "Possible Squash Merge From")
+            .expect("source field should be present for an exact squash match");
+        assert_eq!(sources.value, "feature/auth, feature/login");
+    }
+
+    #[test]
     fn graph_commit_fields_omits_author_row_when_both_name_and_email_empty() {
         let commit = GraphCommit {
             oid: "x".into(),
@@ -1031,6 +1064,7 @@ mod tests {
             branch: None,
             refs: vec![],
             is_possible_squash_merge: false,
+            possible_squash_merge_sources: vec![],
             fuzzy_squash_match: None,
             is_cherry_picked_commit: false,
             author_name: "".into(),
@@ -1054,6 +1088,7 @@ mod tests {
             branch: None,
             refs: vec![],
             is_possible_squash_merge: false,
+            possible_squash_merge_sources: vec![],
             fuzzy_squash_match: None,
             is_cherry_picked_commit: false,
             author_name: "X".into(),
@@ -1077,6 +1112,7 @@ mod tests {
             branch: None,
             refs: vec![],
             is_possible_squash_merge: false,
+            possible_squash_merge_sources: vec![],
             fuzzy_squash_match: None,
             is_cherry_picked_commit: false,
             author_name: "X".into(),
