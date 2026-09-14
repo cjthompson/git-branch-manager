@@ -167,13 +167,14 @@ pub fn key_hint_str(key: &str, label: &str, theme: &Theme) -> Vec<Span<'static>>
     ]
 }
 
-/// Returns a bordered `Block` with the theme's dim border color and 1-column
-/// horizontal padding, giving every overlay a consistent surface. Callers
-/// chain `.title(...)`/`.title_style(...)`/`.borders(...)` afterward as
+/// Returns a bordered `Block` with the theme's modal border and surface styles
+/// plus 1-column horizontal padding, giving every overlay a consistent panel.
+/// Callers chain `.title(...)`/`.title_style(...)`/`.borders(...)` afterward as
 /// needed (e.g. to override to a partial border set for split panes).
 pub fn block_panel(theme: &Theme) -> Block<'_> {
     Block::default()
         .borders(Borders::ALL)
+        .style(theme.modal_surface)
         .border_style(theme.modal_border)
         .padding(Padding::horizontal(1))
 }
@@ -425,18 +426,13 @@ mod tests {
         assert_eq!(spans.len(), 3);
 
         assert_eq!(spans[0].content.as_ref(), "[");
-        assert_eq!(spans[0].style, theme.dim);
+        assert_eq!(spans[0].style, theme.modal_footer);
 
         assert_eq!(spans[1].content.as_ref(), "d");
-        assert_eq!(
-            spans[1].style,
-            Style::default()
-                .fg(theme.accent_fg())
-                .add_modifier(Modifier::BOLD)
-        );
+        assert_eq!(spans[1].style, theme.modal_key);
 
         assert_eq!(spans[2].content.as_ref(), "] delete");
-        assert_eq!(spans[2].style, theme.dim);
+        assert_eq!(spans[2].style, theme.modal_footer);
     }
 
     #[test]
@@ -452,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn block_panel_draws_all_four_borders_in_theme_dim_style() {
+    fn block_panel_draws_all_four_borders_with_modal_border_and_surface_styles() {
         let theme = Theme::dark();
         let block = block_panel(&theme);
 
@@ -460,19 +456,36 @@ mod tests {
         let mut buf = Buffer::empty(area);
         block.render(area, &mut buf);
 
-        // Top-left corner: a border glyph styled with the theme's dim fg.
+        // Top-left corner: a border glyph styled with the theme's modal border fg.
         let corner = buf.cell((0, 0)).unwrap();
         assert_ne!(
             corner.symbol(),
             " ",
             "expected a border glyph at the top-left corner"
         );
-        assert_eq!(corner.fg, theme.dim.fg.unwrap());
+        assert_eq!(corner.fg, theme.modal_border.fg.unwrap());
+        assert_eq!(corner.bg, theme.modal_surface.bg.unwrap());
 
         // Borders::ALL: mid-point of every edge should be a non-blank glyph.
-        assert_ne!(buf.cell((5, 0)).unwrap().symbol(), " ", "top border missing");
-        assert_ne!(buf.cell((5, 4)).unwrap().symbol(), " ", "bottom border missing");
-        assert_ne!(buf.cell((0, 2)).unwrap().symbol(), " ", "left border missing");
-        assert_ne!(buf.cell((9, 2)).unwrap().symbol(), " ", "right border missing");
+        assert_ne!(
+            buf.cell((5, 0)).unwrap().symbol(),
+            " ",
+            "top border missing"
+        );
+        assert_ne!(
+            buf.cell((5, 4)).unwrap().symbol(),
+            " ",
+            "bottom border missing"
+        );
+        assert_ne!(
+            buf.cell((0, 2)).unwrap().symbol(),
+            " ",
+            "left border missing"
+        );
+        assert_ne!(
+            buf.cell((9, 2)).unwrap().symbol(),
+            " ",
+            "right border missing"
+        );
     }
 }

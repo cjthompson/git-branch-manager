@@ -13,7 +13,9 @@ use git_branch_manager::{
         info_modal::{InfoHitRegion, InfoModalFocus, InfoModalRow},
         list_render::{CellContext, RowRenderer},
         menu::MenuItem,
-        modal::{draw_modal_shell, ModalActionRow, ModalFooter, ModalScroll, ModalSpec},
+        modal::{
+            draw_modal_shell, ModalActionRow, ModalAreas, ModalFooter, ModalScroll, ModalSpec,
+        },
         render::{draw, Overlay, RenderContext},
         results::ResultsFocus,
     },
@@ -26,6 +28,7 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Color, Style},
+    text::{Line, Span},
     widgets::Paragraph,
     Terminal,
 };
@@ -246,7 +249,7 @@ fn render_overlay_buffer(overlay: &mut Overlay, width: u16, height: u16, theme: 
                 active_view: ViewId::Branches,
                 overlay: Some(overlay),
                 toast: None,
-                theme: &theme,
+                theme,
                 symbols: &symbols,
                 config: &config,
                 info_copied_msg: None,
@@ -281,6 +284,45 @@ fn render_overlay_buffer(overlay: &mut Overlay, width: u16, height: u16, theme: 
         .unwrap();
 
     terminal.backend().buffer().clone()
+}
+
+fn render_modal_semantic_sample(theme: &Theme) -> (Buffer, ModalAreas) {
+    let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    let mut modal_areas = None;
+
+    terminal
+        .draw(|frame| {
+            let areas = draw_modal_shell(
+                frame,
+                &ModalSpec::new(
+                    "Modal semantic sample",
+                    ModalFooter::hints(&[("Esc", "Close")]),
+                    44,
+                    10,
+                ),
+                theme,
+            );
+            modal_areas = Some(areas);
+            frame.render_widget(
+                Paragraph::new(vec![
+                    ModalActionRow::new(Some('r'), "Run command", "Selected detail")
+                        .render(true, theme),
+                    ModalActionRow::new(Some('u'), "Unavailable action", "Cannot run now")
+                        .render_with_availability(false, false, theme),
+                    Line::from(Span::styled(
+                        "Warning: requires attention",
+                        theme.modal_warning,
+                    )),
+                ]),
+                areas.body,
+            );
+        })
+        .unwrap();
+
+    (
+        terminal.backend().buffer().clone(),
+        modal_areas.expect("modal shell must report its areas"),
+    )
 }
 
 #[test]
@@ -813,6 +855,47 @@ fn assert_cell_foreground(buffer: &Buffer, x: u16, y: u16, style: Style) {
     );
 }
 
+fn assert_rendered_foreground(
+    buffer: &Buffer,
+    text: &str,
+    style: Style,
+    role: &str,
+    theme_name: &str,
+) {
+    let (x, y) = text_cell(buffer, text);
+    assert_eq!(
+        buffer[(x, y)].fg,
+        style.fg.unwrap_or(Color::Reset),
+        "{role} {text:?} has the wrong foreground in {theme_name}"
+    );
+}
+
+fn contrast_ratio(foreground: Color, background: Color) -> f64 {
+    let foreground_luminance = relative_luminance(foreground);
+    let background_luminance = relative_luminance(background);
+    (foreground_luminance.max(background_luminance) + 0.05)
+        / (foreground_luminance.min(background_luminance) + 0.05)
+}
+
+fn relative_luminance(color: Color) -> f64 {
+    fn linearize(channel: u8) -> f64 {
+        let channel = f64::from(channel) / 255.0;
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    let (red, green, blue) = match color {
+        Color::Rgb(red, green, blue) => (red, green, blue),
+        Color::Black => (0, 0, 0),
+        Color::White => (255, 255, 255),
+        other => panic!("contrast helper only supports RGB colors, got {other:?}"),
+    };
+    0.2126 * linearize(red) + 0.7152 * linearize(green) + 0.0722 * linearize(blue)
+}
+
 fn text_cell(buffer: &Buffer, text: &str) -> (u16, u16) {
     for y in 0..buffer.area().height {
         let row = row_contents(buffer, y);
@@ -849,7 +932,10 @@ fn shell_pins_footer_when_body_is_taller_than_viewport() {
     assert_eq!(modal_areas.unwrap().footer, Rect::new(7, 6, 26, 1));
     assert!(row_contents(buffer, 0).contains("Example"));
     assert!(row_contents(buffer, 6).contains("[Esc] Close"));
-    assert_cell_style(buffer, 8, 6, theme.modal_key);
+    let footer_key = &buffer[(8, 6)];
+    assert_eq!(footer_key.fg, theme.modal_key.fg.unwrap());
+    assert_eq!(footer_key.bg, theme.modal_surface.bg.unwrap());
+    assert_eq!(footer_key.modifier, theme.modal_key.add_modifier);
     assert!(row_contents(buffer, 5).contains("five"));
     assert!(!buffer
         .content()
@@ -975,6 +1061,7 @@ fn unavailable_action_rows_mute_each_semantic_span_in_menu_and_info_modal() {
                 available_text,
                 unavailable_text,
                 theme.modal_action_unavailable,
+                theme.modal_surface,
             );
         }
 
@@ -1002,6 +1089,7 @@ fn unavailable_action_rows_mute_each_semantic_span_in_menu_and_info_modal() {
                 available_text,
                 unavailable_text,
                 theme.modal_action_unavailable,
+                theme.modal_surface,
             );
         }
     }
@@ -1012,6 +1100,7 @@ fn assert_unavailable_cell_differs(
     available_text: &str,
     unavailable_text: &str,
     unavailable_style: Style,
+    surface_style: Style,
 ) {
     let (available_x, available_y) = text_cell(buffer, available_text);
     let (unavailable_x, unavailable_y) = text_cell(buffer, unavailable_text);
@@ -1025,8 +1114,8 @@ fn assert_unavailable_cell_differs(
     );
     assert_eq!(
         unavailable.bg,
-        Color::Reset,
-        "disabled row must not receive selected background"
+        surface_style.bg.unwrap_or(Color::Reset),
+        "disabled row must inherit the modal surface, not selected background"
     );
     assert!(
         unavailable
@@ -1120,6 +1209,213 @@ fn every_built_in_theme_supplies_the_modal_semantic_palette() {
             theme.modal_action_selected.bg.is_some(),
             "{} needs selected-row bg",
             theme.name
+        );
+    }
+}
+
+#[test]
+fn built_in_themes_use_the_approved_accented_modal_palette() {
+    let palettes = [
+        (
+            "dark",
+            Theme::dark(),
+            Color::Rgb(29, 59, 74),
+            Color::Rgb(0, 114, 168),
+        ),
+        (
+            "light",
+            Theme::light(),
+            Color::Rgb(219, 234, 246),
+            Color::Rgb(133, 189, 232),
+        ),
+        (
+            "solarized",
+            Theme::solarized(),
+            Color::Rgb(11, 61, 75),
+            Color::Rgb(11, 111, 141),
+        ),
+        (
+            "dracula",
+            Theme::dracula(),
+            Color::Rgb(59, 61, 79),
+            Color::Rgb(106, 109, 157),
+        ),
+    ];
+
+    for (name, theme, expected_surface, expected_selected) in palettes {
+        assert_eq!(theme.name, name);
+        assert_eq!(
+            theme.modal_surface.bg,
+            Some(expected_surface),
+            "{name} theme's modal surface changed"
+        );
+        assert_eq!(
+            theme.modal_action_selected.bg,
+            Some(expected_selected),
+            "{name} theme's selected action background changed"
+        );
+    }
+}
+
+#[test]
+fn shared_shell_gives_every_theme_an_elevated_surface_and_legible_modal_semantics() {
+    for theme in [
+        Theme::dark(),
+        Theme::light(),
+        Theme::solarized(),
+        Theme::dracula(),
+    ] {
+        let surface = theme
+            .modal_surface
+            .bg
+            .expect("each built-in theme needs an explicit modal surface");
+        assert_ne!(
+            surface,
+            Color::Reset,
+            "{} theme's modal surface must not be the terminal default",
+            theme.name
+        );
+
+        let (buffer, areas) = render_modal_semantic_sample(&theme);
+        let blank_body_cell = &buffer[(areas.body.x, areas.body.y + 3)];
+        assert_eq!(
+            blank_body_cell.bg, surface,
+            "{} theme's shared shell must paint its body surface",
+            theme.name
+        );
+
+        for (role, text, style) in [
+            ("title", "Modal semantic sample", theme.modal_title),
+            ("footer", "Close", theme.modal_footer),
+            ("footer key", "Esc", theme.modal_key),
+            ("body key", "[r]", theme.modal_key),
+            ("body command", "Run command", theme.modal_command),
+            ("body detail", "Selected detail", theme.modal_secondary),
+            ("unavailable key", "[u]", theme.modal_action_unavailable),
+            (
+                "unavailable command",
+                "Unavailable action",
+                theme.modal_action_unavailable,
+            ),
+            (
+                "unavailable detail",
+                "Cannot run now",
+                theme.modal_action_unavailable,
+            ),
+            (
+                "warning",
+                "Warning: requires attention",
+                theme.modal_warning,
+            ),
+        ] {
+            assert_rendered_foreground(&buffer, text, style, role, theme.name);
+        }
+
+        for text in ["Modal semantic sample", "Close", "Esc"] {
+            let (x, y) = text_cell(&buffer, text);
+            let cell = &buffer[(x, y)];
+            assert_eq!(
+                cell.bg, surface,
+                "{text} must retain the modal surface in {}",
+                theme.name
+            );
+            assert_ne!(
+                cell.fg, surface,
+                "{text} must remain readable on the modal surface in {}",
+                theme.name
+            );
+        }
+
+        let selected_background = theme
+            .modal_action_selected
+            .bg
+            .expect("selected actions need a background");
+        assert_ne!(
+            selected_background, surface,
+            "{} theme's selected action must stand apart from the modal surface",
+            theme.name
+        );
+        for text in ["[r]", "Run command", "Selected detail"] {
+            let (x, y) = text_cell(&buffer, text);
+            let cell = &buffer[(x, y)];
+            assert_eq!(
+                cell.bg, selected_background,
+                "{text} must retain the selected action background in {}",
+                theme.name
+            );
+            assert_ne!(
+                cell.fg, selected_background,
+                "{text} must remain readable while selected in {}",
+                theme.name
+            );
+        }
+
+        // Normal text and every selected action span use the normal-text
+        // 4.5:1 threshold, including secondary detail.
+        const NORMAL_TEXT_CONTRAST: f64 = 4.5;
+        for (role, style) in [
+            ("title", theme.modal_title),
+            ("footer", theme.modal_footer),
+            ("key", theme.modal_key),
+            ("command", theme.modal_command),
+            ("detail", theme.modal_secondary),
+            ("unavailable", theme.modal_action_unavailable),
+        ] {
+            let ratio = contrast_ratio(style.fg.unwrap(), surface);
+            assert!(
+                ratio >= NORMAL_TEXT_CONTRAST,
+                "{role} must meet {NORMAL_TEXT_CONTRAST}:1 on {} surface; measured {ratio:.4}:1",
+                theme.name,
+            );
+        }
+
+        for (role, style) in [
+            ("key", theme.modal_key),
+            ("command", theme.modal_command),
+            ("detail", theme.modal_secondary),
+        ] {
+            let ratio = contrast_ratio(style.fg.unwrap(), selected_background);
+            assert!(
+                ratio >= NORMAL_TEXT_CONTRAST,
+                "selected {role} must meet {NORMAL_TEXT_CONTRAST}:1 in {} theme; measured {ratio:.4}:1",
+                theme.name,
+            );
+        }
+
+        let (unavailable_x, unavailable_y) = text_cell(&buffer, "Unavailable action");
+        let unavailable = &buffer[(unavailable_x, unavailable_y)];
+        assert_eq!(
+            unavailable.bg, surface,
+            "unavailable actions must stay on the modal surface in {}",
+            theme.name
+        );
+        assert_ne!(
+            unavailable.fg, surface,
+            "unavailable actions must remain visible in {}",
+            theme.name
+        );
+
+        let (warning_x, warning_y) = text_cell(&buffer, "Warning: requires attention");
+        let warning = &buffer[(warning_x, warning_y)];
+        assert_eq!(warning.bg, theme.modal_warning.bg.unwrap());
+        assert_ne!(
+            warning.fg, warning.bg,
+            "warnings need foreground contrast in {}",
+            theme.name
+        );
+        assert_ne!(
+            warning.bg, surface,
+            "warnings need a distinct background in {}",
+            theme.name
+        );
+        let warning_ratio = contrast_ratio(
+            theme.modal_warning.fg.unwrap(),
+            theme.modal_warning.bg.unwrap(),
+        );
+        assert!(
+            warning_ratio >= NORMAL_TEXT_CONTRAST,
+            "warning must meet {NORMAL_TEXT_CONTRAST}:1 in {} theme; measured {warning_ratio:.4}:1",
+            theme.name,
         );
     }
 }

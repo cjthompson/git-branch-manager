@@ -35,6 +35,7 @@ pub struct Theme {
     pub toast_border: Style,
     pub toast_text: Style,
     pub modal_border: Style,
+    pub modal_surface: Style,
     pub modal_title: Style,
     pub modal_footer: Style,
     pub modal_key: Style,
@@ -92,22 +93,39 @@ impl Theme {
             toast_text: Style::new()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::ITALIC),
-            modal_border: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
-            modal_title: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            modal_footer: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
-            modal_key: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            modal_branch: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            modal_worktree: Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
+            modal_border: Style::new()
+                .fg(Color::Rgb(200, 200, 200))
+                .add_modifier(Modifier::DIM),
+            modal_surface: Style::new().bg(Color::Rgb(29, 59, 74)),
+            modal_title: Style::new()
+                .fg(Color::Rgb(139, 233, 253))
+                .add_modifier(Modifier::BOLD),
+            modal_footer: Style::new()
+                .fg(Color::Rgb(200, 200, 200))
+                .add_modifier(Modifier::DIM),
+            modal_key: Style::new()
+                .fg(Color::Rgb(248, 248, 242))
+                .add_modifier(Modifier::BOLD),
+            modal_branch: Style::new()
+                .fg(Color::Rgb(248, 248, 242))
+                .add_modifier(Modifier::BOLD),
+            modal_worktree: Style::new()
+                .fg(Color::Rgb(248, 248, 242))
+                .add_modifier(Modifier::BOLD),
             modal_commit: Style::new().fg(Color::Yellow),
-            modal_command: Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
+            modal_command: Style::new()
+                .fg(Color::Rgb(248, 248, 242))
+                .add_modifier(Modifier::BOLD),
             modal_success: Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
             modal_failure: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-            modal_secondary: Style::new().fg(Color::DarkGray),
+            modal_secondary: Style::new().fg(Color::Rgb(248, 248, 242)),
             modal_action_unavailable: Style::new()
-                .fg(Color::Indexed(243))
+                .fg(Color::Rgb(200, 200, 200))
                 .add_modifier(Modifier::DIM),
-            modal_action_selected: Style::new().bg(Color::Indexed(24)),
-            modal_warning: Style::new().fg(Color::White).bg(Color::Red),
+            modal_action_selected: Style::new().bg(Color::Rgb(0, 114, 168)),
+            modal_warning: Style::new()
+                .fg(Color::Rgb(23, 23, 23))
+                .bg(Color::Rgb(255, 85, 85)),
         }
     }
 
@@ -165,27 +183,40 @@ impl Theme {
                 .fg(Color::Indexed(172))
                 .add_modifier(Modifier::ITALIC),
             modal_border: Style::new()
-                .fg(Color::Indexed(245))
+                .fg(Color::Rgb(80, 80, 80))
                 .add_modifier(Modifier::DIM),
-            modal_title: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            modal_surface: Style::new().bg(Color::Rgb(219, 234, 246)),
+            modal_title: Style::new()
+                .fg(Color::Rgb(0, 95, 175))
+                .add_modifier(Modifier::BOLD),
             modal_footer: Style::new()
-                .fg(Color::Indexed(245))
+                .fg(Color::Rgb(80, 80, 80))
                 .add_modifier(Modifier::DIM),
-            modal_key: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
-            modal_branch: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
-            modal_worktree: Style::new().fg(Color::Black).add_modifier(Modifier::BOLD),
+            modal_key: Style::new()
+                .fg(Color::Rgb(32, 32, 32))
+                .add_modifier(Modifier::BOLD),
+            modal_branch: Style::new()
+                .fg(Color::Rgb(32, 32, 32))
+                .add_modifier(Modifier::BOLD),
+            modal_worktree: Style::new()
+                .fg(Color::Rgb(32, 32, 32))
+                .add_modifier(Modifier::BOLD),
             modal_commit: Style::new().fg(Color::Indexed(172)),
-            modal_command: Style::new().fg(Color::Black).add_modifier(Modifier::BOLD),
+            modal_command: Style::new()
+                .fg(Color::Rgb(32, 32, 32))
+                .add_modifier(Modifier::BOLD),
             modal_success: Style::new()
                 .fg(Color::Indexed(28))
                 .add_modifier(Modifier::BOLD),
             modal_failure: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-            modal_secondary: Style::new().fg(Color::DarkGray),
+            modal_secondary: Style::new().fg(Color::Rgb(32, 32, 32)),
             modal_action_unavailable: Style::new()
-                .fg(Color::Indexed(245))
+                .fg(Color::Rgb(80, 80, 80))
                 .add_modifier(Modifier::DIM),
-            modal_action_selected: Style::new().bg(Color::Indexed(153)),
-            modal_warning: Style::new().fg(Color::Black).bg(Color::Indexed(224)),
+            modal_action_selected: Style::new().bg(Color::Rgb(133, 189, 232)),
+            modal_warning: Style::new()
+                .fg(Color::Rgb(32, 32, 32))
+                .bg(Color::Rgb(255, 215, 175)),
         }
     }
 
@@ -239,20 +270,37 @@ impl Theme {
             toast_text: Style::new()
                 .fg(Color::Indexed(136))
                 .add_modifier(Modifier::ITALIC),
-            modal_border: Style::new().fg(base01).add_modifier(Modifier::DIM),
-            modal_title: Style::new().fg(blue).add_modifier(Modifier::BOLD),
-            modal_footer: Style::new().fg(base01).add_modifier(Modifier::DIM),
-            modal_key: Style::new().fg(blue).add_modifier(Modifier::BOLD),
-            modal_branch: Style::new().fg(cyan).add_modifier(Modifier::BOLD),
-            modal_worktree: Style::new().fg(base0).add_modifier(Modifier::BOLD),
+            modal_border: Style::new()
+                .fg(Color::Rgb(188, 188, 188))
+                .add_modifier(Modifier::DIM),
+            modal_surface: Style::new().bg(Color::Rgb(11, 61, 75)),
+            modal_title: Style::new()
+                .fg(Color::Rgb(77, 182, 255))
+                .add_modifier(Modifier::BOLD),
+            modal_footer: Style::new()
+                .fg(Color::Rgb(188, 188, 188))
+                .add_modifier(Modifier::DIM),
+            modal_key: Style::new()
+                .fg(Color::Rgb(230, 230, 230))
+                .add_modifier(Modifier::BOLD),
+            modal_branch: Style::new()
+                .fg(Color::Rgb(230, 230, 230))
+                .add_modifier(Modifier::BOLD),
+            modal_worktree: Style::new()
+                .fg(Color::Rgb(230, 230, 230))
+                .add_modifier(Modifier::BOLD),
             modal_commit: Style::new().fg(yellow),
-            modal_command: Style::new().fg(base0).add_modifier(Modifier::BOLD),
+            modal_command: Style::new()
+                .fg(Color::Rgb(230, 230, 230))
+                .add_modifier(Modifier::BOLD),
             modal_success: Style::new().fg(green).add_modifier(Modifier::BOLD),
             modal_failure: Style::new().fg(red).add_modifier(Modifier::BOLD),
-            modal_secondary: Style::new().fg(base01),
-            modal_action_unavailable: Style::new().fg(base01).add_modifier(Modifier::DIM),
-            modal_action_selected: Style::new().bg(Color::Indexed(236)),
-            modal_warning: Style::new().fg(Color::White).bg(red),
+            modal_secondary: Style::new().fg(Color::Rgb(230, 230, 230)),
+            modal_action_unavailable: Style::new()
+                .fg(Color::Rgb(188, 188, 188))
+                .add_modifier(Modifier::DIM),
+            modal_action_selected: Style::new().bg(Color::Rgb(11, 111, 141)),
+            modal_warning: Style::new().fg(Color::White).bg(Color::Rgb(215, 0, 0)),
         }
     }
 
@@ -309,25 +357,38 @@ impl Theme {
                 .fg(Color::Indexed(228))
                 .add_modifier(Modifier::ITALIC),
             modal_border: Style::new()
-                .fg(Color::Indexed(245))
+                .fg(Color::Rgb(208, 208, 208))
                 .add_modifier(Modifier::DIM),
-            modal_title: Style::new().fg(purple).add_modifier(Modifier::BOLD),
+            modal_surface: Style::new().bg(Color::Rgb(59, 61, 79)),
+            modal_title: Style::new()
+                .fg(Color::Rgb(205, 170, 255))
+                .add_modifier(Modifier::BOLD),
             modal_footer: Style::new()
-                .fg(Color::Indexed(245))
+                .fg(Color::Rgb(208, 208, 208))
                 .add_modifier(Modifier::DIM),
-            modal_key: Style::new().fg(purple).add_modifier(Modifier::BOLD),
-            modal_branch: Style::new().fg(cyan).add_modifier(Modifier::BOLD),
-            modal_worktree: Style::new().fg(fg).add_modifier(Modifier::BOLD),
+            modal_key: Style::new()
+                .fg(Color::Rgb(248, 248, 242))
+                .add_modifier(Modifier::BOLD),
+            modal_branch: Style::new()
+                .fg(Color::Rgb(248, 248, 242))
+                .add_modifier(Modifier::BOLD),
+            modal_worktree: Style::new()
+                .fg(Color::Rgb(248, 248, 242))
+                .add_modifier(Modifier::BOLD),
             modal_commit: Style::new().fg(yellow),
-            modal_command: Style::new().fg(fg).add_modifier(Modifier::BOLD),
+            modal_command: Style::new()
+                .fg(Color::Rgb(248, 248, 242))
+                .add_modifier(Modifier::BOLD),
             modal_success: Style::new().fg(green).add_modifier(Modifier::BOLD),
             modal_failure: Style::new().fg(red).add_modifier(Modifier::BOLD),
-            modal_secondary: Style::new().fg(Color::Indexed(245)),
+            modal_secondary: Style::new().fg(Color::Rgb(248, 248, 242)),
             modal_action_unavailable: Style::new()
-                .fg(Color::Indexed(245))
+                .fg(Color::Rgb(208, 208, 208))
                 .add_modifier(Modifier::DIM),
-            modal_action_selected: Style::new().bg(Color::Indexed(238)),
-            modal_warning: Style::new().fg(Color::Black).bg(red),
+            modal_action_selected: Style::new().bg(Color::Rgb(106, 109, 157)),
+            modal_warning: Style::new()
+                .fg(Color::Rgb(23, 23, 23))
+                .bg(Color::Rgb(255, 135, 135)),
         }
     }
 
