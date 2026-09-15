@@ -1,12 +1,8 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{
-    Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState,
-};
+use ratatui::widgets::Paragraph;
 
 use super::menu::MenuItem;
-use super::shared::{block_panel, centered_rect_pct};
+use super::modal::{draw_modal_shell, ModalActionRow, ModalFooter, ModalScroll, ModalSpec};
 use crate::git::graph::{GraphCommit, GraphRefKind};
 use crate::symbols::SymbolSet;
 use crate::theme::Theme;
@@ -79,42 +75,95 @@ pub fn draw_info_modal(
     // Recorded fresh every frame; the click handler reads the latest set.
     hit_regions.clear();
 
-    let area = frame.area();
     let fields = build_fields(row);
     let title = get_title(row);
-    let width = area.width;
+    let areas = draw_modal_shell(
+        frame,
+        &ModalSpec::new(
+            title,
+            ModalFooter::hints(&[
+                ("Tab", "Switch"),
+                ("j/k", "Navigate"),
+                ("Enter", "Invoke"),
+                ("Esc", "Close"),
+            ]),
+            84,
+            22,
+        ),
+        theme,
+    );
 
-    if width >= 100 {
-        // Two-column layout: info left, actions right
-        draw_info_modal_wide(
-            frame,
-            &title,
-            &fields,
-            items,
-            cursor,
-            focus,
-            info_cursor,
-            copied_msg,
-            hit_regions,
-            theme,
-            symbols,
+    let selected_field = (focus == InfoModalFocus::Info).then_some(info_cursor);
+    let (mut lines, field_spans) = build_info_lines(
+        &fields,
+        theme,
+        areas.body.width.saturating_sub(1) as usize,
+        selected_field,
+    );
+    if let Some(msg) = copied_msg {
+        lines.push(Line::from(Span::styled(
+            msg.to_string(),
+            theme.modal_success,
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Actions", theme.modal_title)));
+    let actions_start = lines.len() as u16;
+    for (index, item) in items.iter().enumerate() {
+        let selected = focus == InfoModalFocus::Actions && index == cursor && item.enabled;
+        let mut line = ModalActionRow::new(
+            item.shortcut,
+            item.label.clone(),
+            item.reason.clone().unwrap_or_default(),
+        )
+        .render_with_availability(selected, item.enabled, theme);
+        line.spans.insert(
+            0,
+            Span::styled(
+                if selected {
+                    format!("{} ", symbols.cursor_prefix)
+                } else {
+                    "  ".to_string()
+                },
+                if item.enabled {
+                    Style::default()
+                } else {
+                    theme.modal_action_unavailable
+                },
+            ),
         );
-    } else {
-        // Single-column layout with scrolling
-        draw_info_modal_narrow(
-            frame,
-            &title,
-            &fields,
-            items,
-            cursor,
-            focus,
-            info_cursor,
-            scroll_offset,
-            copied_msg,
-            hit_regions,
-            theme,
-            symbols,
-        );
+        lines.push(line);
+    }
+
+    let target = match focus {
+        InfoModalFocus::Info => field_spans
+            .get(info_cursor)
+            .map(|span| span.start_line)
+            .unwrap_or_default(),
+        InfoModalFocus::Actions => actions_start.saturating_add(cursor as u16),
+    };
+    let mut scroll = ModalScroll::default();
+    scroll.offset = *scroll_offset;
+    scroll.ensure_visible(target, lines.len() as u16, areas.body.height);
+    *scroll_offset = scroll.offset;
+    frame.render_widget(Paragraph::new(lines).scroll((scroll.offset, 0)), areas.body);
+
+    for span in field_spans {
+        let visible_start = span.start_line.max(scroll.offset);
+        let visible_end = (span.start_line + span.line_count)
+            .min(scroll.offset.saturating_add(areas.body.height));
+        if visible_end > visible_start {
+            hit_regions.push(InfoHitRegion {
+                rect: Rect {
+                    x: areas.body.x,
+                    y: areas.body.y + visible_start - scroll.offset,
+                    width: areas.body.width,
+                    height: visible_end - visible_start,
+                },
+                label: span.label,
+                value: span.value,
+            });
+        }
     }
 }
 
@@ -591,21 +640,21 @@ fn build_info_lines(
             let selected = selected_field == Some(spans.len());
             if i == 0 {
                 let line = Line::from(vec![
-                    Span::styled(format!("{:<15} ", f.label), theme.title),
-                    Span::raw(chunk),
+                    Span::styled(format!("{:<15} ", f.label), theme.modal_secondary),
+                    Span::styled(chunk, info_value_style(f.label, theme)),
                 ]);
                 lines.push(if selected {
-                    line.style(theme.cursor)
+                    line.style(theme.modal_action_selected)
                 } else {
                     line
                 });
             } else {
                 let line = Line::from(vec![
                     Span::raw(" ".repeat(INFO_LABEL_WIDTH)),
-                    Span::raw(chunk),
+                    Span::styled(chunk, info_value_style(f.label, theme)),
                 ]);
                 lines.push(if selected {
-                    line.style(theme.cursor)
+                    line.style(theme.modal_action_selected)
                 } else {
                     line
                 });
@@ -621,358 +670,15 @@ fn build_info_lines(
     (lines, spans)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_info_modal_wide(
-    frame: &mut Frame,
-    title: &str,
-    fields: &[InfoField],
-    items: &[MenuItem],
-    cursor: usize,
-    focus: InfoModalFocus,
-    info_cursor: usize,
-    copied_msg: Option<&str>,
-    hit_regions: &mut Vec<InfoHitRegion>,
-    theme: &Theme,
-    symbols: &SymbolSet,
-) {
-    let area = frame.area();
-    let modal_rect = centered_rect_pct(85, 70, area);
-
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(modal_rect);
-
-    let info_rect = chunks[0];
-    let actions_rect = chunks[1];
-
-    // Clear background
-    frame.render_widget(Clear, modal_rect);
-
-    // Render info pane on the left. The RIGHT border is the vertical
-    // separator between the info and actions columns.
-    let block = block_panel(theme)
-        .title(title)
-        .title_alignment(Alignment::Left)
-        .title_style(theme.title)
-        .borders(Borders::LEFT | Borders::TOP | Borders::BOTTOM | Borders::RIGHT);
-    let info_inner = block.inner(info_rect);
-    frame.render_widget(block, info_rect);
-
-    // Reserve the bottom row of the info pane for the copied-confirmation message.
-    let content_height = info_inner.height.saturating_sub(1);
-    let content_rect = Rect {
-        x: info_inner.x,
-        y: info_inner.y,
-        width: info_inner.width,
-        height: content_height,
-    };
-
-    let selected_field = (focus == InfoModalFocus::Info).then_some(info_cursor);
-    let (info_lines, field_spans) =
-        build_info_lines(fields, theme, info_inner.width as usize, selected_field);
-
-    let info_para = Paragraph::new(info_lines);
-    frame.render_widget(info_para, content_rect);
-
-    // Record click-to-copy hit regions for the visible portion of each value.
-    for span in &field_spans {
-        if span.start_line >= content_height {
-            continue;
+fn info_value_style(label: &str, theme: &Theme) -> Style {
+    match label {
+        "Commit" | "Merge Base" | "Parents" => theme.modal_commit,
+        "Branch" | "Base Branch" | "Local Refs" | "Remote Refs" | "Tags" | "Remote" => {
+            theme.modal_branch
         }
-        let visible = content_height - span.start_line;
-        let height = span.line_count.min(visible);
-        if height == 0 {
-            continue;
-        }
-        hit_regions.push(InfoHitRegion {
-            rect: Rect {
-                x: content_rect.x,
-                y: content_rect.y + span.start_line,
-                width: content_rect.width,
-                height,
-            },
-            label: span.label.clone(),
-            value: span.value.clone(),
-        });
+        "Worktree" | "Path" => theme.modal_worktree,
+        _ => theme.modal_command,
     }
-
-    // Copied-confirmation message at the bottom of the info view.
-    if let Some(msg) = copied_msg {
-        let msg_rect = Rect {
-            x: info_inner.x,
-            y: info_inner.y + content_height,
-            width: info_inner.width,
-            height: 1,
-        };
-        let para = Paragraph::new(Line::from(Span::styled(msg.to_string(), theme.merged)));
-        frame.render_widget(para, msg_rect);
-    } else {
-        let hint_rect = Rect {
-            x: info_inner.x,
-            y: info_inner.y + content_height,
-            width: info_inner.width,
-            height: 1,
-        };
-        let hint = if focus == InfoModalFocus::Info {
-            "Tab switch  ↑/↓ navigate  Enter/y copy  Esc close"
-        } else {
-            "Tab switch  j/k navigate  Enter invoke  Esc close"
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(hint, theme.secondary_text))),
-            hint_rect,
-        );
-    }
-
-    // Render actions pane on the right
-    let block = block_panel(theme)
-        .title("Actions")
-        .title_alignment(Alignment::Left)
-        .title_style(theme.title)
-        .borders(Borders::RIGHT | Borders::TOP | Borders::BOTTOM);
-    let actions_inner = block.inner(actions_rect);
-    frame.render_widget(block, actions_rect);
-
-    let list_items: Vec<ListItem> = items
-        .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            let prefix = if focus == InfoModalFocus::Actions && i == cursor {
-                format!("{} ", symbols.cursor_prefix)
-            } else {
-                "  ".to_string()
-            };
-
-            let item_style = if !item.enabled {
-                theme.secondary_text
-            } else if focus == InfoModalFocus::Actions && i == cursor {
-                theme.cursor
-            } else {
-                Style::default()
-            };
-
-            let prefix_span = Span::styled(prefix, item_style);
-            let mut spans = vec![prefix_span];
-
-            if let Some(ch) = item.shortcut {
-                spans.push(Span::styled("[", item_style));
-                spans.push(Span::styled(
-                    ch.to_string(),
-                    if item.enabled {
-                        item_style.patch(theme.title)
-                    } else {
-                        item_style
-                    },
-                ));
-                spans.push(Span::styled(format!("] {}", item.label), item_style));
-            } else {
-                spans.push(Span::styled(item.label.clone(), item_style));
-            }
-
-            if let Some(reason) = &item.reason {
-                spans.push(Span::styled(format!(" ({})", reason), item_style));
-            }
-
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-
-    let list = List::new(list_items);
-    frame.render_widget(list, actions_inner);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_info_modal_narrow(
-    frame: &mut Frame,
-    title: &str,
-    fields: &[InfoField],
-    items: &[MenuItem],
-    cursor: usize,
-    focus: InfoModalFocus,
-    info_cursor: usize,
-    scroll_offset: &mut u16,
-    copied_msg: Option<&str>,
-    hit_regions: &mut Vec<InfoHitRegion>,
-    theme: &Theme,
-    symbols: &SymbolSet,
-) {
-    let area = frame.area();
-    let modal_rect = centered_rect_pct(85, 70, area);
-
-    // Clear background
-    frame.render_widget(Clear, modal_rect);
-
-    // Build combined content: info lines, separator, actions header, action lines, hint
-    let mut all_lines = Vec::new();
-
-    // Info section (wrapped to the content width: borders + scrollbar = 3).
-    // Info lines come first, so each FieldSpan's start_line is also its index
-    // within all_lines.
-    let content_width = modal_rect.width.saturating_sub(5) as usize;   // 2 borders + 1 scrollbar + 2 padding
-    let selected_field = (focus == InfoModalFocus::Info).then_some(info_cursor);
-    let (info_lines, field_spans) = build_info_lines(fields, theme, content_width, selected_field);
-    all_lines.extend(info_lines);
-
-    // Separator
-    all_lines.push(Line::from(""));
-    all_lines.push(Line::from(Span::styled(
-        "─".repeat(modal_rect.width.saturating_sub(2) as usize),
-        theme.secondary_text,
-    )));
-    all_lines.push(Line::from(""));
-
-    // Actions header
-    all_lines.push(Line::from(Span::styled("Actions", theme.title)));
-
-    // Action items
-    let actions_start_line = all_lines.len() as u16;
-    for (i, item) in items.iter().enumerate() {
-        let prefix = if focus == InfoModalFocus::Actions && i == cursor {
-            format!("{} ", symbols.cursor_prefix)
-        } else {
-            "  ".to_string()
-        };
-
-        let item_style = if !item.enabled {
-            theme.secondary_text
-        } else if focus == InfoModalFocus::Actions && i == cursor {
-            theme.cursor
-        } else {
-            Style::default()
-        };
-
-        let prefix_span = Span::styled(prefix, item_style);
-        let mut spans = vec![prefix_span];
-
-        if let Some(ch) = item.shortcut {
-            spans.push(Span::styled("[", item_style));
-            spans.push(Span::styled(
-                ch.to_string(),
-                if item.enabled {
-                    item_style.patch(theme.title)
-                } else {
-                    item_style
-                },
-            ));
-            spans.push(Span::styled(format!("] {}", item.label), item_style));
-        } else {
-            spans.push(Span::styled(item.label.clone(), item_style));
-        }
-
-        if let Some(reason) = &item.reason {
-            spans.push(Span::styled(format!(" ({})", reason), item_style));
-        }
-
-        all_lines.push(Line::from(spans));
-    }
-
-    // Hint line
-    all_lines.push(Line::from(""));
-    all_lines.push(Line::from(Span::styled(
-        if focus == InfoModalFocus::Info {
-            "Tab switch  ↑/↓ navigate  Enter/y copy  Esc close"
-        } else {
-            "Tab switch  j/k navigate  Enter invoke  Esc close"
-        },
-        theme.secondary_text,
-    )));
-
-    let total_lines = all_lines.len() as u16;
-
-    let block = block_panel(theme)
-        .title(title)
-        .title_alignment(Alignment::Left)
-        .title_style(theme.title);
-    let block_inner = block.inner(modal_rect);
-    frame.render_widget(block, modal_rect);
-
-    let inner = Rect {
-        x: block_inner.x,
-        y: block_inner.y,
-        width: block_inner.width.saturating_sub(1), // reserve the scrollbar column
-        height: block_inner.height,
-    };
-
-    // Reserve the bottom inner row for the copied-confirmation message.
-    let content_height = inner.height.saturating_sub(1);
-    let content_rect = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
-        height: content_height,
-    };
-
-    let max_scroll = total_lines.saturating_sub(content_height);
-
-    // Auto-scroll to keep the current selection in view. This pane mixes
-    // wrapped info text with one-line action rows in a single scroll
-    // buffer, so the target line is computed by hand rather than via a
-    // shared ListState.
-    let target_line = match focus {
-        InfoModalFocus::Actions => actions_start_line + cursor as u16,
-        InfoModalFocus::Info => field_spans
-            .get(info_cursor)
-            .map(|span| span.start_line)
-            .unwrap_or(0),
-    };
-    let mut offset = *scroll_offset;
-    if target_line < offset {
-        offset = target_line;
-    } else if content_height > 0 && target_line >= offset + content_height {
-        offset = target_line + 1 - content_height;
-    }
-    let clamped_offset = offset.min(max_scroll);
-    *scroll_offset = clamped_offset;
-
-    let para = Paragraph::new(all_lines).scroll((clamped_offset, 0));
-    frame.render_widget(para, content_rect);
-
-    // Record click-to-copy hit regions for the visible part of each info value,
-    // accounting for the scroll offset (a field may be partly scrolled off).
-    for span in &field_spans {
-        let vis_start = span.start_line.max(clamped_offset);
-        let vis_end = (span.start_line + span.line_count).min(clamped_offset + content_height);
-        if vis_end <= vis_start {
-            continue;
-        }
-        hit_regions.push(InfoHitRegion {
-            rect: Rect {
-                x: content_rect.x,
-                y: content_rect.y + (vis_start - clamped_offset),
-                width: content_rect.width,
-                height: vis_end - vis_start,
-            },
-            label: span.label.clone(),
-            value: span.value.clone(),
-        });
-    }
-
-    // Copied-confirmation message on the bottom inner row.
-    if let Some(msg) = copied_msg {
-        let msg_rect = Rect {
-            x: inner.x,
-            y: inner.y + content_height,
-            width: inner.width,
-            height: 1,
-        };
-        let para = Paragraph::new(Line::from(Span::styled(msg.to_string(), theme.merged)));
-        frame.render_widget(para, msg_rect);
-    }
-
-    // Render scrollbar on the right
-    let scrollbar_rect = Rect {
-        x: modal_rect.x + modal_rect.width - 1,
-        y: modal_rect.y + 1,
-        width: 1,
-        height: modal_rect.height.saturating_sub(2),
-    };
-
-    let mut scrollbar_state = ScrollbarState::new(total_lines as usize);
-    scrollbar_state = scrollbar_state.position(clamped_offset as usize);
-
-    let scrollbar = Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight);
-    frame.render_stateful_widget(scrollbar, scrollbar_rect, &mut scrollbar_state);
 }
 
 #[cfg(test)]
@@ -1020,12 +726,22 @@ mod tests {
         };
         let fields = graph_commit_fields(&commit);
         let labels: Vec<&str> = fields.iter().map(|f| f.label).collect();
-        assert!(labels.contains(&"Author"), "expected Author field, got {labels:?}");
-        assert!(labels.contains(&"Date"), "expected Date field, got {labels:?}");
+        assert!(
+            labels.contains(&"Author"),
+            "expected Author field, got {labels:?}"
+        );
+        assert!(
+            labels.contains(&"Date"),
+            "expected Date field, got {labels:?}"
+        );
         let author = fields.iter().find(|f| f.label == "Author").unwrap();
         assert_eq!(author.value, "Jane Doe <jane@example.com>");
         let date = fields.iter().find(|f| f.label == "Date").unwrap();
-        assert!(date.value.contains("ago"), "expected relative age, got: {}", date.value);
+        assert!(
+            date.value.contains("ago"),
+            "expected relative age, got: {}",
+            date.value
+        );
     }
 
     #[test]

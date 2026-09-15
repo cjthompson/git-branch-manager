@@ -2,6 +2,15 @@
 
 ## 2026-09-13
 
+### Modal system redesign (P008)
+- Reusable modal shell with pinned headers/footers, compact geometry, scrolling, and semantic theme roles
+- Structured safe/recovery confirmation with a separate single-target destructive review
+- Per-result Results accordion with selected-item recovery and dirty linked-worktree warnings
+- Keyboard-selectable Settings and Filter actions, compact footer controls, and modal interaction regressions
+
+### Fixes
+- Visually distinguish unavailable Actions-menu rows (#ui, #p008)
+
 ### Likely squash-merge detection (P007)
 - UI & safety surfacing
 

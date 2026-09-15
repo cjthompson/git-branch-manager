@@ -1,12 +1,11 @@
 use ratatui::prelude::*;
-use ratatui::style::Modifier;
-use ratatui::widgets::{Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::config::Config;
 use crate::symbols::SymbolSet;
 use crate::theme::Theme;
 
-use super::shared::{block_panel, centered_rect};
+use super::modal::{draw_modal_shell, ModalActionRow, ModalFooter, ModalScroll, ModalSpec};
 
 /// A settings row definition with current value display.
 pub struct SettingsRow {
@@ -76,42 +75,32 @@ pub fn settings_rows(
 /// `cursor` is the currently highlighted setting row.
 /// `rows` should be built via `settings_rows()`.
 pub fn draw_settings(frame: &mut Frame, cursor: usize, rows: &[SettingsRow], theme: &Theme) {
-    let area = frame.area();
-    let width = 60u16.min(area.width);
-    let height = (rows.len() as u16 + 4).min(area.height); // +4 for borders + instructions
-    let rect = centered_rect(width, height, area);
+    let areas = draw_modal_shell(
+        frame,
+        &ModalSpec::new(
+            "Settings",
+            ModalFooter::hints(&[]),
+            60,
+            rows.len() as u16 + 3,
+        ),
+        theme,
+    );
+    ModalFooter::adaptive_hints(
+        areas.footer,
+        &[("j/k", "Select"), ("Enter", "Choose"), ("Esc", "Close")],
+        &["j/k", "Enter", "Esc"],
+    )
+    .render(theme, areas.footer, frame);
+    let mut scroll = ModalScroll::default();
+    scroll.ensure_visible(cursor as u16, rows.len() as u16, areas.body.height);
 
-    let block = block_panel(theme).title(" Settings ").title_style(theme.title);
-
-    let inner = block.inner(rect);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(block, rect);
-
-    let mut lines: Vec<Line> = rows
+    let lines: Vec<Line> = rows
         .iter()
         .enumerate()
         .map(|(i, row)| {
-            let style = if i == cursor {
-                theme.cursor
-            } else {
-                Style::default()
-            };
-            Line::from(vec![
-                Span::styled(format!("  {:<30}", row.label), style),
-                Span::styled(row.value.clone(), style.add_modifier(Modifier::BOLD)),
-            ])
+            ModalActionRow::new(None, row.label, row.value.clone()).render(i == cursor, theme)
         })
         .collect();
 
-    lines.push(Line::from(""));
-    let key_style = Style::default()
-        .fg(theme.accent_fg())
-        .add_modifier(Modifier::BOLD);
-    lines.push(Line::from(vec![
-        Span::styled("  \u{2190}/\u{2192} cycle   ", theme.dim),
-        Span::styled("Esc", key_style),
-        Span::styled(" close", theme.dim),
-    ]));
-
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll.offset, 0)), areas.body);
 }

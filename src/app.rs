@@ -24,10 +24,15 @@ use git_branch_manager::ui::cells::{
     age_line, ahead_behind_line, fit_text, merge_status_line, merge_status_line_for_branch,
     pr_line, worktree_status_line,
 };
+use git_branch_manager::ui::confirm::{
+    ConfirmChoice, ConfirmStage, ConfirmTarget, DeletePreflight, DeleteRisk,
+};
 use git_branch_manager::ui::info_modal::{InfoHitRegion, InfoModalFocus, InfoModalRow};
 use git_branch_manager::ui::list_render::CellContext;
 use git_branch_manager::ui::menu::MenuItem;
-use git_branch_manager::ui::render::{ConfirmExtraKey, Overlay, RenderContext};
+use git_branch_manager::ui::modal::ModalScroll;
+use git_branch_manager::ui::render::{Overlay, RenderContext};
+use git_branch_manager::ui::results::{result_actions, ResultsAction, ResultsFocus};
 use git_branch_manager::ui::shared::{abbreviate_path, prefix_style, truncate, truncate_left};
 use git_branch_manager::ui::toast::Toast;
 use git_branch_manager::view::branches::BranchesViewDef;
@@ -434,7 +439,7 @@ impl App {
 
         RenderContext {
             active_view: self.active_view,
-            overlay: self.overlay.as_ref(),
+            overlay: self.overlay.as_mut(),
             toast: self.toast.as_ref(),
             theme: &self.theme,
             symbols: &self.symbols,
@@ -818,7 +823,7 @@ impl App {
             self.progress_rx = None;
             self.progress = None;
             self.refresh_after_operation();
-            self.overlay = Some(Overlay::Results { results });
+            self.overlay = Some(Overlay::results(results));
         }
 
         // Confirmed-action job queue (delete, push, merge, worktree ops, ...)
@@ -839,13 +844,13 @@ impl App {
 
             // Plan P005 §5: when the job produced any typed failures,
             // auto-open the Results overlay so the user sees the cause
-            // and can press `!`/`r` to recover without scrolling past
+            // and can review a per-result recovery without scrolling past
             // successes. Success-only completion stays non-modal — the
             // transient `CompletionSummary` in the status area is the
             // only feedback. `failures` already excludes `BranchNotFound`
             // (treated as "already gone" success — see §9).
             if !failures.is_empty() {
-                self.overlay = Some(Overlay::Results { results: failures });
+                self.overlay = Some(Overlay::results(failures));
             }
 
             // When DeleteLocalAndRemote completes, immediately filter confirmed remote
@@ -988,7 +993,7 @@ impl App {
                 return;
             }
             KeyCode::Char('?') => {
-                self.overlay = Some(Overlay::Help);
+                self.overlay = Some(Overlay::Help { scroll: 0 });
                 return;
             }
             KeyCode::Char(',') => {
@@ -1028,7 +1033,7 @@ impl App {
                 return;
             }
             KeyCode::Char('\\') => {
-                self.overlay = Some(Overlay::Filter);
+                self.overlay = Some(Overlay::FilterSelection { cursor: 0 });
                 return;
             }
             KeyCode::F(2) => {
@@ -1257,145 +1262,275 @@ impl App {
     fn handle_overlay_key(&mut self, key: KeyEvent) {
         let overlay = self.overlay.take();
         match overlay {
-            Some(Overlay::Help) => {
-                // Any key closes help
-            }
-            Some(Overlay::Confirm {
-                action,
-                targets,
-                remote,
-                reason,
-                extra_keys,
-            }) => match key.code {
-                KeyCode::Char('y') | KeyCode::Enter => {
-                    self.job_queue.enqueue_or_start_with_remote(
-                        action,
-                        targets,
-                        remote,
-                        self.return_view,
-                    );
-                }
-                KeyCode::Char('n') | KeyCode::Esc => {
-                    // Cancel -- don't put overlay back
-                }
-                KeyCode::Char(c) => {
-                    // Plan P005 §6: an extra-key press (e.g. `!` for
-                    // force-delete, `r` for worktree cascade) swaps the
-                    // pending action and re-installs the overlay with
-                    // the same pre-flight context so the user can
-                    // iterate without leaving the confirm flow.
-                    if let Some(extra) = extra_keys.iter().find(|e| e.key == c) {
-                        let swapped = extra.action;
-                        let extra_targets = extra.targets.clone();
-                        self.overlay = Some(Overlay::Confirm {
-                            action: swapped,
-                            targets: extra_targets,
-                            remote,
-                            reason,
-                            extra_keys,
-                        });
-                    } else {
-                        self.overlay = Some(Overlay::Confirm {
-                            action,
-                            targets,
-                            remote,
-                            reason,
-                            extra_keys,
-                        });
-                    }
-                }
-                _ => {
-                    self.overlay = Some(Overlay::Confirm {
-                        action,
-                        targets,
-                        remote,
-                        reason,
-                        extra_keys,
+            Some(Overlay::Help { scroll }) => match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.overlay = Some(Overlay::Help {
+                        scroll: scroll.saturating_add(1),
                     });
                 }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.overlay = Some(Overlay::Help {
+                        scroll: scroll.saturating_sub(1),
+                    });
+                }
+                KeyCode::PageDown => {
+                    self.overlay = Some(Overlay::Help {
+                        scroll: scroll.saturating_add(5),
+                    });
+                }
+                KeyCode::PageUp => {
+                    self.overlay = Some(Overlay::Help {
+                        scroll: scroll.saturating_sub(5),
+                    });
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {}
+                _ => self.overlay = Some(Overlay::Help { scroll }),
             },
-            Some(Overlay::Menu { cursor, items }) => match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    let mut new_cursor = cursor + 1;
-                    while new_cursor < items.len() && !items[new_cursor].enabled {
-                        new_cursor += 1;
+            Some(Overlay::Confirm {
+                preflight,
+                choices,
+                selected,
+                mut body_scroll,
+                stage,
+            }) => match stage {
+                ConfirmStage::Initial => match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        let selected = selected
+                            .saturating_add(1)
+                            .min(choices.len().saturating_sub(1));
+                        self.overlay = Some(Overlay::Confirm {
+                            preflight,
+                            choices,
+                            selected,
+                            body_scroll,
+                            stage: ConfirmStage::Initial,
+                        });
                     }
-                    if new_cursor < items.len() {
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.overlay = Some(Overlay::Confirm {
+                            preflight,
+                            choices,
+                            selected: selected.saturating_sub(1),
+                            body_scroll,
+                            stage: ConfirmStage::Initial,
+                        });
+                    }
+                    KeyCode::PageDown => {
+                        body_scroll.page_down(5);
+                        self.overlay = Some(Overlay::Confirm {
+                            preflight,
+                            choices,
+                            selected,
+                            body_scroll,
+                            stage: ConfirmStage::Initial,
+                        });
+                    }
+                    KeyCode::PageUp => {
+                        body_scroll.page_up(5);
+                        self.overlay = Some(Overlay::Confirm {
+                            preflight,
+                            choices,
+                            selected,
+                            body_scroll,
+                            stage: ConfirmStage::Initial,
+                        });
+                    }
+                    KeyCode::Enter => {
+                        if let Some(choice) = choices.get(selected).cloned() {
+                            if let Some(target) = choice.destructive_target.clone() {
+                                self.overlay = Some(Overlay::Confirm {
+                                    preflight,
+                                    choices,
+                                    selected,
+                                    body_scroll: ModalScroll::default(),
+                                    stage: ConfirmStage::FinalDestructive { choice, target },
+                                });
+                            } else {
+                                self.job_queue.enqueue_or_start_with_remote(
+                                    choice.action,
+                                    choice.targets,
+                                    choice.remote,
+                                    self.return_view,
+                                );
+                            }
+                        }
+                    }
+                    KeyCode::Char('n') | KeyCode::Esc => {}
+                    KeyCode::Char(accelerator) => {
+                        let selected = if choices
+                            .get(selected)
+                            .is_some_and(|choice| choice.accelerator == accelerator)
+                        {
+                            selected
+                        } else {
+                            choices
+                                .iter()
+                                .position(|choice| choice.accelerator == accelerator)
+                                .unwrap_or(selected)
+                        };
+                        self.overlay = Some(Overlay::Confirm {
+                            preflight,
+                            choices,
+                            selected,
+                            body_scroll,
+                            stage: ConfirmStage::Initial,
+                        });
+                    }
+                    _ => {
+                        self.overlay = Some(Overlay::Confirm {
+                            preflight,
+                            choices,
+                            selected,
+                            body_scroll,
+                            stage: ConfirmStage::Initial,
+                        });
+                    }
+                },
+                ConfirmStage::FinalDestructive { choice, target } => match key.code {
+                    KeyCode::PageDown => {
+                        body_scroll.page_down(5);
+                        self.overlay = Some(Overlay::Confirm {
+                            preflight,
+                            choices,
+                            selected,
+                            body_scroll,
+                            stage: ConfirmStage::FinalDestructive { choice, target },
+                        });
+                    }
+                    KeyCode::PageUp => {
+                        body_scroll.page_up(5);
+                        self.overlay = Some(Overlay::Confirm {
+                            preflight,
+                            choices,
+                            selected,
+                            body_scroll,
+                            stage: ConfirmStage::FinalDestructive { choice, target },
+                        });
+                    }
+                    KeyCode::Char('y') | KeyCode::Enter => {
+                        self.job_queue.enqueue_or_start_with_remote(
+                            choice.action,
+                            vec![target.job_target()],
+                            choice.remote,
+                            self.return_view,
+                        );
+                    }
+                    KeyCode::Char('n') | KeyCode::Esc => {}
+                    _ => {
+                        self.overlay = Some(Overlay::Confirm {
+                            preflight,
+                            choices,
+                            selected,
+                            body_scroll,
+                            stage: ConfirmStage::FinalDestructive { choice, target },
+                        });
+                    }
+                },
+            },
+            Some(Overlay::Menu { cursor, items }) => {
+                let cursor = items
+                    .get(cursor)
+                    .filter(|item| item.enabled)
+                    .map_or_else(|| first_enabled_index(&items).unwrap_or(0), |_| cursor);
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        let mut new_cursor = cursor + 1;
+                        while new_cursor < items.len() && !items[new_cursor].enabled {
+                            new_cursor += 1;
+                        }
+                        if new_cursor < items.len() {
+                            self.overlay = Some(Overlay::Menu {
+                                cursor: new_cursor,
+                                items,
+                            });
+                        } else {
+                            self.overlay = Some(Overlay::Menu { cursor, items });
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        let new_cursor = previous_enabled_index(&items, cursor).unwrap_or(cursor);
                         self.overlay = Some(Overlay::Menu {
                             cursor: new_cursor,
                             items,
                         });
-                    } else {
-                        self.overlay = Some(Overlay::Menu { cursor, items });
                     }
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    let mut new_cursor = cursor;
-                    loop {
-                        if new_cursor == 0 {
-                            break;
-                        }
-                        new_cursor -= 1;
-                        if items[new_cursor].enabled {
-                            break;
+                    KeyCode::Enter => {
+                        if let Some(item) = items.get(cursor) {
+                            if item.enabled {
+                                self.execute_menu_action(item.clone());
+                            } else {
+                                self.overlay = Some(Overlay::Menu { cursor, items });
+                            }
                         }
                     }
-                    self.overlay = Some(Overlay::Menu {
-                        cursor: new_cursor,
-                        items,
-                    });
-                }
-                KeyCode::Enter => {
-                    if let Some(item) = items.get(cursor) {
-                        if item.enabled {
+                    KeyCode::Esc | KeyCode::Char('q') => {} // close
+                    KeyCode::Char(c) => {
+                        if let Some((_, item)) = items
+                            .iter()
+                            .enumerate()
+                            .find(|(_, mi)| mi.shortcut == Some(c) && mi.enabled)
+                        {
                             self.execute_menu_action(item.clone());
                         } else {
                             self.overlay = Some(Overlay::Menu { cursor, items });
                         }
                     }
-                }
-                KeyCode::Esc | KeyCode::Char('q') => {} // close
-                KeyCode::Char(c) => {
-                    if let Some((_, item)) = items
-                        .iter()
-                        .enumerate()
-                        .find(|(_, mi)| mi.shortcut == Some(c) && mi.enabled)
-                    {
-                        self.execute_menu_action(item.clone());
-                    } else {
+                    _ => {
                         self.overlay = Some(Overlay::Menu { cursor, items });
                     }
                 }
-                _ => {
-                    self.overlay = Some(Overlay::Menu { cursor, items });
-                }
-            },
+            }
             Some(Overlay::InfoModal {
                 cursor,
                 info_cursor,
                 focus,
                 items,
                 row,
-            }) => match key.code {
-                KeyCode::Tab | KeyCode::BackTab => {
-                    self.overlay = Some(Overlay::InfoModal {
-                        cursor,
-                        info_cursor,
-                        focus: if focus == InfoModalFocus::Info {
-                            InfoModalFocus::Actions
-                        } else {
-                            InfoModalFocus::Info
-                        },
-                        items,
-                        row,
-                    });
-                }
-                KeyCode::Char('j') | KeyCode::Down if focus == InfoModalFocus::Actions => {
-                    let mut new_cursor = cursor + 1;
-                    while new_cursor < items.len() && !items[new_cursor].enabled {
-                        new_cursor += 1;
+            }) => {
+                let (cursor, focus) = normalize_info_action_state(cursor, focus, &items);
+                match key.code {
+                    KeyCode::Tab | KeyCode::BackTab => {
+                        self.overlay = Some(Overlay::InfoModal {
+                            cursor,
+                            info_cursor,
+                            focus: if focus == InfoModalFocus::Info
+                                && first_enabled_index(&items).is_some()
+                            {
+                                InfoModalFocus::Actions
+                            } else if focus == InfoModalFocus::Actions {
+                                InfoModalFocus::Info
+                            } else {
+                                focus
+                            },
+                            items,
+                            row,
+                        });
                     }
-                    if new_cursor < items.len() {
+                    KeyCode::Char('j') | KeyCode::Down if focus == InfoModalFocus::Actions => {
+                        let mut new_cursor = cursor + 1;
+                        while new_cursor < items.len() && !items[new_cursor].enabled {
+                            new_cursor += 1;
+                        }
+                        if new_cursor < items.len() {
+                            self.overlay = Some(Overlay::InfoModal {
+                                cursor: new_cursor,
+                                info_cursor,
+                                focus,
+                                items,
+                                row,
+                            });
+                        } else {
+                            self.overlay = Some(Overlay::InfoModal {
+                                cursor,
+                                info_cursor,
+                                focus,
+                                items,
+                                row,
+                            });
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up if focus == InfoModalFocus::Actions => {
+                        let new_cursor = previous_enabled_index(&items, cursor).unwrap_or(cursor);
                         self.overlay = Some(Overlay::InfoModal {
                             cursor: new_cursor,
                             info_cursor,
@@ -1403,7 +1538,10 @@ impl App {
                             items,
                             row,
                         });
-                    } else {
+                    }
+                    KeyCode::Char('u') | KeyCode::PageUp => {
+                        self.info_modal_scroll_offset =
+                            self.info_modal_scroll_offset.saturating_sub(5);
                         self.overlay = Some(Overlay::InfoModal {
                             cursor,
                             info_cursor,
@@ -1412,95 +1550,85 @@ impl App {
                             row,
                         });
                     }
-                }
-                KeyCode::Char('k') | KeyCode::Up if focus == InfoModalFocus::Actions => {
-                    let mut new_cursor = cursor;
-                    loop {
-                        if new_cursor == 0 {
-                            break;
+                    KeyCode::Char('d') | KeyCode::PageDown => {
+                        self.info_modal_scroll_offset =
+                            self.info_modal_scroll_offset.saturating_add(5);
+                        self.overlay = Some(Overlay::InfoModal {
+                            cursor,
+                            info_cursor,
+                            focus,
+                            items,
+                            row,
+                        });
+                    }
+                    KeyCode::Down if focus == InfoModalFocus::Info => {
+                        let info_cursor = info_cursor
+                            .saturating_add(1)
+                            .min(row.info_field_count().saturating_sub(1));
+                        self.overlay = Some(Overlay::InfoModal {
+                            cursor,
+                            info_cursor,
+                            focus,
+                            items,
+                            row,
+                        });
+                    }
+                    KeyCode::Up if focus == InfoModalFocus::Info => {
+                        let info_cursor = info_cursor.saturating_sub(1);
+                        self.overlay = Some(Overlay::InfoModal {
+                            cursor,
+                            info_cursor,
+                            focus,
+                            items,
+                            row,
+                        });
+                    }
+                    KeyCode::Enter if focus == InfoModalFocus::Info => {
+                        if let Some((label, value)) = row.info_field(info_cursor) {
+                            self.copy_info_value(label, value);
                         }
-                        new_cursor -= 1;
-                        if items[new_cursor].enabled {
-                            break;
+                        self.overlay = Some(Overlay::InfoModal {
+                            cursor,
+                            info_cursor,
+                            focus,
+                            items,
+                            row,
+                        });
+                    }
+                    KeyCode::Char('y') if focus == InfoModalFocus::Info => {
+                        if let Some((label, value)) = row.info_field(info_cursor) {
+                            self.copy_info_value(label, value);
+                        }
+                        self.overlay = Some(Overlay::InfoModal {
+                            cursor,
+                            info_cursor,
+                            focus,
+                            items,
+                            row,
+                        });
+                    }
+                    KeyCode::Enter if focus == InfoModalFocus::Actions => {
+                        if let Some(item) = items.get(cursor) {
+                            if item.enabled {
+                                self.execute_menu_action(item.clone());
+                            } else {
+                                self.overlay = Some(Overlay::InfoModal {
+                                    cursor,
+                                    info_cursor,
+                                    focus,
+                                    items,
+                                    row,
+                                });
+                            }
                         }
                     }
-                    self.overlay = Some(Overlay::InfoModal {
-                        cursor: new_cursor,
-                        info_cursor,
-                        focus,
-                        items,
-                        row,
-                    });
-                }
-                KeyCode::Char('u') | KeyCode::PageUp => {
-                    self.info_modal_scroll_offset = self.info_modal_scroll_offset.saturating_sub(5);
-                    self.overlay = Some(Overlay::InfoModal {
-                        cursor,
-                        info_cursor,
-                        focus,
-                        items,
-                        row,
-                    });
-                }
-                KeyCode::Char('d') | KeyCode::PageDown => {
-                    self.info_modal_scroll_offset = self.info_modal_scroll_offset.saturating_add(5);
-                    self.overlay = Some(Overlay::InfoModal {
-                        cursor,
-                        info_cursor,
-                        focus,
-                        items,
-                        row,
-                    });
-                }
-                KeyCode::Down if focus == InfoModalFocus::Info => {
-                    let info_cursor = info_cursor
-                        .saturating_add(1)
-                        .min(row.info_field_count().saturating_sub(1));
-                    self.overlay = Some(Overlay::InfoModal {
-                        cursor,
-                        info_cursor,
-                        focus,
-                        items,
-                        row,
-                    });
-                }
-                KeyCode::Up if focus == InfoModalFocus::Info => {
-                    let info_cursor = info_cursor.saturating_sub(1);
-                    self.overlay = Some(Overlay::InfoModal {
-                        cursor,
-                        info_cursor,
-                        focus,
-                        items,
-                        row,
-                    });
-                }
-                KeyCode::Enter if focus == InfoModalFocus::Info => {
-                    if let Some((label, value)) = row.info_field(info_cursor) {
-                        self.copy_info_value(label, value);
-                    }
-                    self.overlay = Some(Overlay::InfoModal {
-                        cursor,
-                        info_cursor,
-                        focus,
-                        items,
-                        row,
-                    });
-                }
-                KeyCode::Char('y') if focus == InfoModalFocus::Info => {
-                    if let Some((label, value)) = row.info_field(info_cursor) {
-                        self.copy_info_value(label, value);
-                    }
-                    self.overlay = Some(Overlay::InfoModal {
-                        cursor,
-                        info_cursor,
-                        focus,
-                        items,
-                        row,
-                    });
-                }
-                KeyCode::Enter if focus == InfoModalFocus::Actions => {
-                    if let Some(item) = items.get(cursor) {
-                        if item.enabled {
+                    KeyCode::Esc | KeyCode::Char('q') => {} // close
+                    KeyCode::Char(c) if focus == InfoModalFocus::Actions => {
+                        if let Some((_, item)) = items
+                            .iter()
+                            .enumerate()
+                            .find(|(_, mi)| mi.shortcut == Some(c) && mi.enabled)
+                        {
                             self.execute_menu_action(item.clone());
                         } else {
                             self.overlay = Some(Overlay::InfoModal {
@@ -1512,16 +1640,7 @@ impl App {
                             });
                         }
                     }
-                }
-                KeyCode::Esc | KeyCode::Char('q') => {} // close
-                KeyCode::Char(c) if focus == InfoModalFocus::Actions => {
-                    if let Some((_, item)) = items
-                        .iter()
-                        .enumerate()
-                        .find(|(_, mi)| mi.shortcut == Some(c) && mi.enabled)
-                    {
-                        self.execute_menu_action(item.clone());
-                    } else {
+                    _ => {
                         self.overlay = Some(Overlay::InfoModal {
                             cursor,
                             info_cursor,
@@ -1531,67 +1650,21 @@ impl App {
                         });
                     }
                 }
-                _ => {
-                    self.overlay = Some(Overlay::InfoModal {
-                        cursor,
-                        info_cursor,
-                        focus,
-                        items,
-                        row,
-                    });
-                }
-            },
-            Some(Overlay::Results { results }) => match key.code {
-                KeyCode::Enter | KeyCode::Esc => {
-                    // Operation completion already refreshed the backing view;
-                    // closing results should only reveal the refreshed list.
-                }
-                KeyCode::Char('!') => {
-                    let targets: Vec<String> = results
-                        .iter()
-                        .filter(|result| {
-                            matches!(&result.failure, Some(FailureCause::NotMerged))
-                        })
-                        .map(|result| result.branch_name.clone())
-                        .collect();
-                    if targets.is_empty() {
-                        self.overlay = Some(Overlay::Results { results });
-                    } else {
-                        self.job_queue.enqueue_or_start(
-                            BranchAction::DeleteLocalForce,
-                            targets,
-                            self.return_view,
-                        );
-                    }
-                }
-                KeyCode::Char('r') => {
-                    let targets: Vec<String> = results
-                        .iter()
-                        .filter(|result| {
-                            matches!(
-                                &result.failure,
-                                Some(FailureCause::CheckedOutInWorktree {
-                                    is_main: false,
-                                    ..
-                                })
-                            )
-                        })
-                        .map(|result| result.branch_name.clone())
-                        .collect();
-                    if targets.is_empty() {
-                        self.overlay = Some(Overlay::Results { results });
-                    } else {
-                        self.job_queue.enqueue_or_start(
-                            BranchAction::DeleteBranchAndRemoveWorktree,
-                            targets,
-                            self.return_view,
-                        );
-                    }
-                }
-                _ => {
-                    self.overlay = Some(Overlay::Results { results });
-                }
-            },
+            }
+            Some(Overlay::Results {
+                results,
+                selected_index,
+                expanded_index,
+                focus,
+                body_scroll,
+            }) => self.handle_results_key(
+                key.code,
+                results,
+                selected_index,
+                expanded_index,
+                focus,
+                body_scroll,
+            ),
             Some(Overlay::Executing { label, progress }) => {
                 if key.code == KeyCode::Esc {
                     if let Some(flag) = &self.cancel_flag {
@@ -1614,7 +1687,10 @@ impl App {
                 self.handle_settings_key(key, cursor);
             }
             Some(Overlay::Filter) => {
-                self.handle_filter_key(key);
+                self.handle_filter_key(key, 0);
+            }
+            Some(Overlay::FilterSelection { cursor }) => {
+                self.handle_filter_key(key, cursor);
             }
             Some(Overlay::GraphOptions {
                 cursor,
@@ -1689,6 +1765,18 @@ impl App {
                         scroll: scroll.saturating_sub(1),
                     });
                 }
+                KeyCode::PageDown => {
+                    self.overlay = Some(Overlay::DiagnosticsReport {
+                        audit,
+                        scroll: scroll.saturating_add(5),
+                    });
+                }
+                KeyCode::PageUp => {
+                    self.overlay = Some(Overlay::DiagnosticsReport {
+                        audit,
+                        scroll: scroll.saturating_sub(5),
+                    });
+                }
                 KeyCode::Char('f') if !audit.is_clean() => {
                     self.apply_cache_fix(audit);
                 }
@@ -1699,6 +1787,166 @@ impl App {
             },
             None => {}
         }
+    }
+
+    fn handle_results_key(
+        &mut self,
+        key: KeyCode,
+        results: Vec<OperationResult>,
+        mut selected_index: usize,
+        mut expanded_index: Option<usize>,
+        mut focus: ResultsFocus,
+        mut body_scroll: ModalScroll,
+    ) {
+        if key == KeyCode::Esc {
+            return;
+        }
+        if results.is_empty() {
+            self.overlay = Some(Overlay::results(results));
+            return;
+        }
+
+        selected_index = selected_index.min(results.len() - 1);
+        expanded_index = expanded_index.filter(|index| *index < results.len());
+        if matches!(key, KeyCode::PageDown | KeyCode::PageUp) {
+            match key {
+                KeyCode::PageDown => body_scroll.page_down(5),
+                KeyCode::PageUp => body_scroll.page_up(5),
+                _ => unreachable!("page-key match is exhaustive"),
+            }
+            self.overlay = Some(Overlay::Results {
+                results,
+                selected_index,
+                expanded_index,
+                focus,
+                body_scroll,
+            });
+            return;
+        }
+        match focus {
+            ResultsFocus::Results => match key {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    selected_index = selected_index.saturating_add(1).min(results.len() - 1);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    selected_index = selected_index.saturating_sub(1);
+                }
+                KeyCode::Enter => {
+                    expanded_index = if expanded_index == Some(selected_index) {
+                        None
+                    } else {
+                        Some(selected_index)
+                    };
+                    body_scroll = ModalScroll::default();
+                }
+                KeyCode::Tab if expanded_index == Some(selected_index) => {
+                    focus = ResultsFocus::Actions {
+                        selected_index: 0,
+                        raw_details_visible: false,
+                    };
+                }
+                _ => {}
+            },
+            ResultsFocus::Actions {
+                selected_index: action_index,
+                raw_details_visible,
+            } => {
+                let Some(result_index) = expanded_index else {
+                    focus = ResultsFocus::Results;
+                    self.overlay = Some(Overlay::Results {
+                        results,
+                        selected_index,
+                        expanded_index,
+                        focus,
+                        body_scroll,
+                    });
+                    return;
+                };
+                let actions = result_actions(&results[result_index]);
+                let action_index = action_index.min(actions.len().saturating_sub(1));
+                match key {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        focus = ResultsFocus::Actions {
+                            selected_index: action_index
+                                .saturating_add(1)
+                                .min(actions.len().saturating_sub(1)),
+                            raw_details_visible,
+                        };
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        focus = ResultsFocus::Actions {
+                            selected_index: action_index.saturating_sub(1),
+                            raw_details_visible,
+                        };
+                    }
+                    KeyCode::Tab => focus = ResultsFocus::Results,
+                    KeyCode::Enter => match actions.get(action_index).copied() {
+                        Some(ResultsAction::ViewRawGitDetails) => {
+                            focus = ResultsFocus::Actions {
+                                selected_index: action_index,
+                                raw_details_visible: !raw_details_visible,
+                            };
+                        }
+                        Some(action) => {
+                            let result = results[result_index].clone();
+                            self.open_result_recovery(&result, action);
+                            return;
+                        }
+                        None => focus = ResultsFocus::Results,
+                    },
+                    _ => {}
+                }
+            }
+        }
+
+        self.overlay = Some(Overlay::Results {
+            results,
+            selected_index,
+            expanded_index,
+            focus,
+            body_scroll,
+        });
+    }
+
+    fn open_result_recovery(&mut self, result: &OperationResult, recovery: ResultsAction) {
+        let (action, target, description) = match (recovery, result.failure.as_ref()) {
+            (ResultsAction::ReviewForceDeletion, Some(FailureCause::NotMerged)) => (
+                BranchAction::DeleteLocalForce,
+                ConfirmTarget::Branch(result.branch_name.clone()),
+                "Permanently delete only this unmerged branch.",
+            ),
+            (
+                ResultsAction::ReviewWorktreeRemoval,
+                Some(FailureCause::CheckedOutInWorktree {
+                    worktree_path,
+                    is_main: false,
+                }),
+            ) => (
+                BranchAction::DeleteBranchAndRemoveWorktree,
+                ConfirmTarget::BranchWorktree {
+                    branch: result.branch_name.clone(),
+                    worktree: worktree_path.clone(),
+                },
+                "Remove only this linked worktree, then safely delete its branch.",
+            ),
+            _ => return,
+        };
+        let targets = vec![target.job_target()];
+        let choice = ConfirmChoice {
+            accelerator: 'y',
+            action,
+            targets,
+            remote: None,
+            command: confirmation_command_for_target(action, &target, None),
+            description: description.into(),
+            destructive_target: Some(target.clone()),
+        };
+        self.open_confirm_with_choices(
+            self.return_view,
+            DeletePreflight::default(),
+            vec![choice.clone()],
+            ConfirmStage::FinalDestructive { choice, target },
+        );
     }
 
     fn handle_settings_key(&mut self, key: KeyEvent, cursor: usize) {
@@ -1715,7 +1963,7 @@ impl App {
                     cursor: cursor.saturating_sub(1),
                 });
             }
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') | KeyCode::Enter => {
                 match cursor {
                     0 => {
                         self.symbols = self.symbols.next();
@@ -1795,7 +2043,7 @@ impl App {
         }
     }
 
-    fn handle_filter_key(&mut self, key: KeyEvent) {
+    fn handle_filter_key(&mut self, key: KeyEvent, cursor: usize) {
         let active_tokens = match self.active_view {
             ViewId::Graph => &[] as &[FilterTokenDef],
             ViewId::Branches => &self.branch_filter_tokens,
@@ -1803,28 +2051,61 @@ impl App {
             ViewId::Tags => &self.tag_filter_tokens,
             ViewId::Worktrees => &self.worktree_filter_tokens,
         };
+        let max_cursor = active_tokens.len();
+        let selected_token = active_tokens.get(cursor).map(|token| token.token);
 
         match key.code {
             KeyCode::Esc | KeyCode::Char('\\') => {
                 // Close filter (overlay already taken); only Esc / \ dismiss it.
             }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.overlay = Some(Overlay::FilterSelection {
+                    cursor: (cursor + 1).min(max_cursor),
+                });
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.overlay = Some(Overlay::FilterSelection {
+                    cursor: cursor.min(max_cursor).saturating_sub(1),
+                });
+            }
+            KeyCode::Enter => {
+                if let Some(token) = selected_token {
+                    let current = self.active_filter_query();
+                    self.set_active_filter(FilterSet::toggle_token(&current, token));
+                } else {
+                    self.set_active_filter(String::new());
+                }
+                self.overlay = Some(Overlay::FilterSelection {
+                    cursor: cursor.min(max_cursor),
+                });
+            }
             KeyCode::Char('c') => {
                 // Clear all filters, but keep the modal open.
                 self.set_active_filter(String::new());
-                self.overlay = Some(Overlay::Filter);
+                self.overlay = Some(Overlay::FilterSelection {
+                    cursor: cursor.min(max_cursor),
+                });
             }
             KeyCode::Char(ch) => {
                 // Toggle the matching filter token (if any). Either way the modal
                 // stays open so the user can adjust several filters in a row.
-                if let Some(token_def) = active_tokens.iter().find(|t| t.key == ch) {
+                if let Some(token) = active_tokens
+                    .iter()
+                    .find(|token| token.key == ch)
+                    .map(|token| token.token)
+                {
                     let current = self.active_filter_query();
-                    let new = FilterSet::toggle_token(&current, token_def.token);
+                    let new = FilterSet::toggle_token(&current, token);
                     self.set_active_filter(new);
                 }
-                self.overlay = Some(Overlay::Filter);
+                self.overlay = Some(Overlay::FilterSelection {
+                    cursor: cursor.min(max_cursor),
+                });
             }
             _ => {
-                self.overlay = Some(Overlay::Filter);
+                self.overlay = Some(Overlay::FilterSelection {
+                    cursor: cursor.min(max_cursor),
+                });
             }
         }
     }
@@ -1896,12 +2177,10 @@ impl App {
                     self.handle_info_modal_click(mouse.column, mouse.row);
                 }
                 MouseEventKind::ScrollDown => {
-                    self.info_modal_scroll_offset =
-                        self.info_modal_scroll_offset.saturating_add(3);
+                    self.info_modal_scroll_offset = self.info_modal_scroll_offset.saturating_add(3);
                 }
                 MouseEventKind::ScrollUp => {
-                    self.info_modal_scroll_offset =
-                        self.info_modal_scroll_offset.saturating_sub(3);
+                    self.info_modal_scroll_offset = self.info_modal_scroll_offset.saturating_sub(3);
                 }
                 _ => {}
             }
@@ -2105,7 +2384,8 @@ impl App {
         let Some(row) = self.build_info_modal_row() else {
             return;
         };
-        let focus = if items.is_empty() {
+        let first_enabled = first_enabled_index(&items);
+        let focus = if first_enabled.is_none() {
             InfoModalFocus::Info
         } else {
             InfoModalFocus::Actions
@@ -2116,7 +2396,7 @@ impl App {
         self.info_modal_scroll_offset = 0;
         self.overlay = Some(Overlay::InfoModal {
             items,
-            cursor: 0,
+            cursor: first_enabled.unwrap_or(0),
             info_cursor: 0,
             focus,
             row,
@@ -2243,8 +2523,10 @@ impl App {
                         && item.remote.as_deref() == remote
                 })
             })
+            .filter(|cursor| items[*cursor].enabled)
+            .or_else(|| first_enabled_index(&items))
             .unwrap_or(0);
-        let focus = if items.is_empty() {
+        let focus = if first_enabled_index(&items).is_none() {
             InfoModalFocus::Info
         } else {
             focus
@@ -2727,24 +3009,16 @@ impl App {
 
         let targets = vec![item.target];
         if action == BranchAction::DeleteLocal {
-            let (reason, extra_keys) = self.build_delete_preflight(&targets);
-            self.open_confirm_with_reason(
-                action,
+            let preflight = self.build_delete_preflight(&targets);
+            let choices = self.build_delete_choices(&targets, item.remote, &preflight);
+            self.open_confirm_with_choices(
                 self.return_view,
-                targets,
-                item.remote,
-                reason,
-                extra_keys,
+                preflight,
+                choices,
+                ConfirmStage::Initial,
             );
         } else {
-            self.open_confirm_with_reason(
-                action,
-                self.return_view,
-                targets,
-                item.remote,
-                None,
-                Vec::new(),
-            );
+            self.open_confirm_with_remote(action, self.return_view, targets, item.remote);
         }
     }
 
@@ -2757,76 +3031,41 @@ impl App {
         } else {
             BranchAction::DeleteLocal
         };
-        // Plan P005 §6: walk the targets for pre-flight conditions
-        // (unmerged commits, checked out in a non-main worktree) so the
-        // Confirm overlay can show the user *why* plain delete is risky
-        // and offer a one-key recovery (`!` force-delete, `r` cascade).
-        // Only meaningful for local-only deletes — `DeleteLocalAndRemote`
-        // already implies force-delete semantics on the remote side.
-        let (reason, extra_keys) = if include_remote {
-            (None, Vec::new())
+        if include_remote {
+            self.open_confirm(action, ViewId::Branches, targets);
         } else {
-            self.build_delete_preflight(&targets)
-        };
-        self.open_confirm_with_reason(
-            action,
-            ViewId::Branches,
-            targets,
-            None,
-            reason,
-            extra_keys,
-        );
+            let preflight = self.build_delete_preflight(&targets);
+            let choices = self.build_delete_choices(&targets, None, &preflight);
+            self.open_confirm_with_choices(
+                ViewId::Branches,
+                preflight,
+                choices,
+                ConfirmStage::Initial,
+            );
+        }
     }
 
-    /// Build the Confirm overlay's pre-flight reason block and
-    /// alternate-action keys (plan P005 §6). Returns `(None, [])` when
-    /// no target triggers a pre-flight — the overlay renders the
-    /// classic `[y]es [n]o` only.
-    fn build_delete_preflight(
-        &self,
-        targets: &[String],
-    ) -> (Option<String>, Vec<ConfirmExtraKey>) {
-        let mut reasons: Vec<String> = Vec::new();
-        let mut unmerged_targets = Vec::new();
-        let mut worktree_targets = Vec::new();
-        let mut force_cascade = false;
-
-        // Derive a target width for path abbreviation from the terminal's
-        // current size, mirroring confirm.rs's ~60%-of-modal-width sizing,
-        // so long worktree paths in the reason block fit on one line
-        // instead of relying solely on word-wrap. Falls back to a sane
-        // default (80 cols) if the terminal size can't be queried.
-        let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
-        let target_width = ((term_width as usize * 60 / 100).saturating_sub(4)).max(20);
+    /// Collect structured safety facts in stable branch/status order.
+    fn build_delete_preflight(&self, targets: &[String]) -> DeletePreflight {
+        let mut risks = Vec::new();
 
         for name in targets {
-            let branch = self
+            if let Some(branch) = self
                 .branches
                 .items()
                 .iter()
-                .find(|branch| branch.name == *name);
-            if let Some(branch) = branch {
-                match branch.merge_status {
-                    MergeStatus::Unmerged => {
-                        reasons.push(format!(
-                            "Branch {name} has unique commits not on {}",
-                            branch.base_branch
-                        ));
-                        unmerged_targets.push(name.clone());
-                    }
-                    MergeStatus::LikelySquashMerged => {
-                        reasons.push(format!(
-                            "Branch {name} is only a possible (unconfirmed) squash match for {}",
-                            branch.base_branch
-                        ));
-                        unmerged_targets.push(name.clone());
-                    }
-                    MergeStatus::Pending => {
-                        reasons.push(format!(
-                            "Branch {name} merge status is still being computed; Git will verify safe deletion"
-                        ));
-                    }
-                    _ => {}
+                .find(|branch| branch.name == *name)
+            {
+                if matches!(
+                    branch.merge_status,
+                    MergeStatus::Unmerged | MergeStatus::LikelySquashMerged
+                ) {
+                    risks.push(DeleteRisk::UniqueCommits {
+                        branch: name.clone(),
+                        base: branch.base_branch.clone(),
+                        status: branch.merge_status,
+                        merge_base_commit: branch.merge_base_commit.clone(),
+                    });
                 }
             }
 
@@ -2836,59 +3075,124 @@ impl App {
                 .iter()
                 .find(|worktree| worktree.branch.as_deref() == Some(name.as_str()))
             {
-                let path_display = abbreviate_path(&worktree.path, target_width);
-                reasons.push(format!(
-                    "Branch {name} is checked out in {path_display}"
-                ));
-                if !worktree.is_main {
-                    worktree_targets.push(name.clone());
-                    let is_dirty = !worktree.wt_status.is_clean();
-                    force_cascade |= is_dirty;
-                    if is_dirty {
-                        reasons.push(format!(
-                            "Worktree {path_display} has uncommitted changes"
-                        ));
-                    }
+                risks.push(DeleteRisk::CheckedOut {
+                    branch: name.clone(),
+                    worktree: worktree.path.clone(),
+                    is_main: worktree.is_main,
+                });
+
+                if !worktree.wt_status.is_clean() {
+                    let changed: Vec<ChangedFile> = worktree
+                        .wt_status
+                        .changed_files
+                        .iter()
+                        .filter(|file| {
+                            matches!(
+                                file.kind,
+                                ChangedFileKind::Modified | ChangedFileKind::Untracked
+                            )
+                        })
+                        .cloned()
+                        .collect();
+                    let omitted = changed.len().saturating_sub(5);
+                    risks.push(DeleteRisk::DirtyWorktree {
+                        worktree: worktree.path.clone(),
+                        files: changed.into_iter().take(5).collect(),
+                        omitted,
+                    });
                 }
             }
         }
 
-        let mut extra_keys: Vec<ConfirmExtraKey> = Vec::new();
-        if !unmerged_targets.is_empty() {
-            extra_keys.push(ConfirmExtraKey {
-                key: '!',
-                label: "force-delete".into(),
-                action: BranchAction::DeleteLocalForce,
-                targets: unmerged_targets.clone(),
-            });
+        DeletePreflight { risks }
+    }
+
+    fn build_delete_choices(
+        &self,
+        targets: &[String],
+        remote: Option<String>,
+        preflight: &DeletePreflight,
+    ) -> Vec<ConfirmChoice> {
+        let mut choices = vec![ConfirmChoice {
+            accelerator: 'y',
+            action: BranchAction::DeleteLocal,
+            targets: targets.to_vec(),
+            remote: remote.clone(),
+            command: confirmation_command(BranchAction::DeleteLocal, targets, remote.as_deref()),
+            description: "Ask Git to delete only branches that are fully merged.".into(),
+            destructive_target: None,
+        }];
+
+        let mut primary_worktree_targets = Vec::new();
+        let mut dirty_worktrees = Vec::new();
+        for risk in &preflight.risks {
+            match risk {
+                DeleteRisk::CheckedOut {
+                    branch,
+                    is_main: true,
+                    ..
+                } => push_unique(&mut primary_worktree_targets, branch),
+                DeleteRisk::DirtyWorktree { worktree, .. } => {
+                    dirty_worktrees.push(worktree.clone());
+                }
+                _ => {}
+            }
         }
-        if !worktree_targets.is_empty() {
-            let force = force_cascade
-                || worktree_targets
-                    .iter()
-                    .any(|name| unmerged_targets.contains(name));
-            extra_keys.push(ConfirmExtraKey {
-                key: 'r',
-                label: if force {
-                    "force-remove worktree + delete".into()
-                } else {
-                    "remove worktree + delete".into()
-                },
-                action: if force {
-                    BranchAction::DeleteBranchAndRemoveWorktreeForce
-                } else {
-                    BranchAction::DeleteBranchAndRemoveWorktree
-                },
-                targets: worktree_targets,
+
+        for branch in preflight.risks.iter().filter_map(|risk| match risk {
+            DeleteRisk::UniqueCommits { branch, .. }
+                if !primary_worktree_targets.contains(branch) =>
+            {
+                Some(branch)
+            }
+            _ => None,
+        }) {
+            let target = ConfirmTarget::Branch(branch.clone());
+            let job_targets = vec![target.job_target()];
+            choices.push(ConfirmChoice {
+                accelerator: 'r',
+                action: BranchAction::DeleteLocalForce,
+                targets: job_targets.clone(),
+                remote: None,
+                command: confirmation_command(BranchAction::DeleteLocalForce, &job_targets, None),
+                description: "Open final destructive confirmation for this branch.".into(),
+                destructive_target: Some(target),
             });
         }
 
-        let reason = if reasons.is_empty() {
-            None
-        } else {
-            Some(reasons.join(", OR\n  "))
-        };
-        (reason, extra_keys)
+        for (branch, worktree) in preflight.risks.iter().filter_map(|risk| match risk {
+            DeleteRisk::CheckedOut {
+                branch,
+                worktree,
+                is_main: false,
+            } => Some((branch, worktree)),
+            _ => None,
+        }) {
+            let force = preflight.risks.iter().any(|risk| {
+                matches!(risk, DeleteRisk::UniqueCommits { branch: risky_branch, .. } if risky_branch == branch)
+            }) || dirty_worktrees.contains(worktree);
+            let action = if force {
+                BranchAction::DeleteBranchAndRemoveWorktreeForce
+            } else {
+                BranchAction::DeleteBranchAndRemoveWorktree
+            };
+            let target = ConfirmTarget::BranchWorktree {
+                branch: branch.clone(),
+                worktree: worktree.clone(),
+            };
+            choices.push(ConfirmChoice {
+                accelerator: 'w',
+                action,
+                targets: vec![target.job_target()],
+                remote: None,
+                command: confirmation_command_for_target(action, &target, None),
+                description: "Open final confirmation for exactly this branch/worktree pair."
+                    .into(),
+                destructive_target: Some(target),
+            });
+        }
+
+        choices
     }
 
     fn push_selected_branches(&mut self) {
@@ -2948,40 +3252,95 @@ impl App {
         targets: Vec<String>,
         remote: Option<String>,
     ) {
-        self.open_confirm_with_reason(
-            action,
-            return_view,
-            targets,
-            remote,
-            None,
-            Vec::new(),
-        );
+        if targets.is_empty() {
+            return;
+        }
+        let destructive = requires_final_confirmation(action);
+        let choices = if destructive {
+            targets
+                .into_iter()
+                .filter_map(|job_target| {
+                    let target = self.confirm_target(action, &job_target)?;
+                    Some(ConfirmChoice {
+                        accelerator: 'y',
+                        action,
+                        targets: vec![target.job_target()],
+                        remote: remote.clone(),
+                        command: confirmation_command_for_target(
+                            action,
+                            &target,
+                            remote.as_deref(),
+                        ),
+                        description: "Open final confirmation for exactly this target.".into(),
+                        destructive_target: Some(target),
+                    })
+                })
+                .collect()
+        } else {
+            vec![ConfirmChoice {
+                accelerator: 'y',
+                action,
+                command: confirmation_command(action, &targets, remote.as_deref()),
+                description: format!(
+                    "Apply {} to exactly {} target(s).",
+                    action.label(),
+                    targets.len()
+                ),
+                targets,
+                remote,
+                destructive_target: None,
+            }]
+        };
+        let stage = match choices.as_slice() {
+            [choice] if destructive => ConfirmStage::FinalDestructive {
+                choice: choice.clone(),
+                target: choice
+                    .destructive_target
+                    .clone()
+                    .expect("destructive choice has an exact target"),
+            },
+            _ => ConfirmStage::Initial,
+        };
+        self.open_confirm_with_choices(return_view, DeletePreflight::default(), choices, stage);
     }
 
-    /// Full pre-flight entry point: open the Confirm overlay with a
-    /// pre-built reason block and alternate-action keys (plan P005 §6).
-    /// Used by `delete_selected_branches` after walking the targets for
-    /// unmerged commits and worktree-checked-out branches.
-    #[allow(clippy::too_many_arguments)]
-    fn open_confirm_with_reason(
+    fn confirm_target(&self, action: BranchAction, job_target: &str) -> Option<ConfirmTarget> {
+        match action {
+            BranchAction::DeleteLocalForce => Some(ConfirmTarget::Branch(job_target.to_string())),
+            BranchAction::WorktreeForceRemove => {
+                Some(ConfirmTarget::Worktree(PathBuf::from(job_target)))
+            }
+            BranchAction::DeleteBranchAndRemoveWorktreeForce => self
+                .worktrees
+                .items()
+                .iter()
+                .find(|worktree| worktree.branch.as_deref() == Some(job_target))
+                .map(|worktree| ConfirmTarget::BranchWorktree {
+                    branch: job_target.to_string(),
+                    worktree: worktree.path.clone(),
+                }),
+            _ => None,
+        }
+    }
+
+    /// Install the typed confirmation state after target and risk discovery.
+    fn open_confirm_with_choices(
         &mut self,
-        action: BranchAction,
         return_view: ViewId,
-        targets: Vec<String>,
-        remote: Option<String>,
-        reason: Option<String>,
-        extra_keys: Vec<ConfirmExtraKey>,
+        preflight: DeletePreflight,
+        choices: Vec<ConfirmChoice>,
+        stage: ConfirmStage,
     ) {
-        if targets.is_empty() {
+        if choices.is_empty() {
             return;
         }
         self.return_view = return_view;
         self.overlay = Some(Overlay::Confirm {
-            action,
-            targets,
-            remote,
-            reason,
-            extra_keys,
+            preflight,
+            choices,
+            selected: 0,
+            body_scroll: ModalScroll::default(),
+            stage,
         });
     }
 
@@ -3564,6 +3923,101 @@ impl App {
     }
 }
 
+fn first_enabled_index(items: &[MenuItem]) -> Option<usize> {
+    items.iter().position(|item| item.enabled)
+}
+
+fn previous_enabled_index(items: &[MenuItem], cursor: usize) -> Option<usize> {
+    items
+        .get(..cursor.min(items.len()))
+        .and_then(|preceding| preceding.iter().rposition(|item| item.enabled))
+}
+
+fn normalize_info_action_state(
+    cursor: usize,
+    focus: InfoModalFocus,
+    items: &[MenuItem],
+) -> (usize, InfoModalFocus) {
+    match first_enabled_index(items) {
+        Some(first_enabled) => {
+            let cursor = items
+                .get(cursor)
+                .filter(|item| item.enabled)
+                .map_or(first_enabled, |_| cursor);
+            (cursor, focus)
+        }
+        None => (0, InfoModalFocus::Info),
+    }
+}
+
+fn push_unique(items: &mut Vec<String>, item: &str) {
+    if !items.iter().any(|existing| existing == item) {
+        items.push(item.to_string());
+    }
+}
+
+fn requires_final_confirmation(action: BranchAction) -> bool {
+    matches!(
+        action,
+        BranchAction::DeleteLocalForce
+            | BranchAction::WorktreeForceRemove
+            | BranchAction::DeleteBranchAndRemoveWorktreeForce
+    )
+}
+
+fn confirmation_command(action: BranchAction, targets: &[String], remote: Option<&str>) -> String {
+    let targets = targets.join(" ");
+    match action {
+        BranchAction::DeleteLocal => format!("git branch -d -- {targets}"),
+        BranchAction::DeleteLocalForce => format!("git branch -D -- {targets}"),
+        BranchAction::WorktreeRemove => format!("git worktree remove -- {targets}"),
+        BranchAction::WorktreeForceRemove => {
+            format!("git worktree remove --force -- {targets}")
+        }
+        BranchAction::DeleteBranchAndRemoveWorktree => {
+            format!("git worktree remove + git branch -d -- {targets}")
+        }
+        BranchAction::DeleteBranchAndRemoveWorktreeForce => {
+            format!("git worktree remove --force + git branch -D -- {targets}")
+        }
+        BranchAction::DeleteRemoteBranch => remote.map_or_else(
+            || format!("Delete remote branch {targets}"),
+            |remote| format!("git push {remote} --delete -- {targets}"),
+        ),
+        _ => format!("{} — {targets}", action.label()),
+    }
+}
+
+fn confirmation_command_for_target(
+    action: BranchAction,
+    target: &ConfirmTarget,
+    remote: Option<&str>,
+) -> String {
+    match (action, target) {
+        (BranchAction::DeleteLocalForce, ConfirmTarget::Branch(branch)) => {
+            format!("git branch -D -- {branch}")
+        }
+        (BranchAction::WorktreeForceRemove, ConfirmTarget::Worktree(worktree)) => {
+            format!("git worktree remove --force -- {}", worktree.display())
+        }
+        (
+            BranchAction::DeleteBranchAndRemoveWorktree,
+            ConfirmTarget::BranchWorktree { branch, worktree },
+        ) => format!(
+            "git worktree remove -- {} + git branch -d -- {branch}",
+            worktree.display()
+        ),
+        (
+            BranchAction::DeleteBranchAndRemoveWorktreeForce,
+            ConfirmTarget::BranchWorktree { branch, worktree },
+        ) => format!(
+            "git worktree remove --force -- {} + git branch -D -- {branch}",
+            worktree.display()
+        ),
+        _ => confirmation_command(action, &[target.job_target()], remote),
+    }
+}
+
 fn graph_affected_views(action: BranchAction) -> &'static [ViewId] {
     match action {
         BranchAction::DeleteLocal => &[ViewId::Branches, ViewId::Remotes],
@@ -3965,7 +4419,26 @@ pub(crate) fn render_worktree_row(
 mod tests {
     use super::*;
     use chrono::{Duration, TimeZone, Utc};
+    use ratatui::backend::TestBackend;
     use std::process::Command;
+
+    fn render_app(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                let mut ctx = app.build_render_context();
+                git_branch_manager::ui::render::draw(frame, &mut ctx);
+            })
+            .unwrap();
+
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
 
     fn worktree(branch: &str) -> WorktreeInfo {
         WorktreeInfo {
@@ -4652,7 +5125,8 @@ mod tests {
 
         // Branches: cursor moves with j/k; Enter opens a context menu
         app.active_view = ViewId::Branches;
-        app.branches.set_items(vec![branch("feature/a", TrackingStatus::Local)]);
+        app.branches
+            .set_items(vec![branch("feature/a", TrackingStatus::Local)]);
         app.handle_key(KeyEvent::new(
             KeyCode::Char('j'),
             crossterm::event::KeyModifiers::NONE,
@@ -4670,7 +5144,8 @@ mod tests {
 
         // Remotes: cursor moves with j/k; Enter opens a context menu
         app.active_view = ViewId::Remotes;
-        app.remotes.set_items(vec![remote("origin/feature/b", "feature/b")]);
+        app.remotes
+            .set_items(vec![remote("origin/feature/b", "feature/b")]);
         app.handle_key(KeyEvent::new(
             KeyCode::Char('j'),
             crossterm::event::KeyModifiers::NONE,
@@ -4788,6 +5263,170 @@ mod tests {
         assert!(delete.enabled);
         assert_eq!(delete.target, "feature/remote");
         assert_eq!(delete.remote.as_deref(), Some("upstream"));
+    }
+
+    #[test]
+    fn info_modal_open_selects_first_enabled_action_after_disabled_checkout() {
+        let mut app = graph_app(vec![
+            graph_ref("feature/local", graph::GraphRefKind::LocalBranch),
+            graph_ref("origin/feature/remote", graph::GraphRefKind::RemoteBranch),
+        ]);
+        let mut local = branch("feature/local", TrackingStatus::Local);
+        local.is_current = true;
+        app.branches.set_items(vec![local]);
+        app.remotes
+            .set_items(vec![remote("origin/feature/remote", "feature/remote")]);
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        let items = info_modal_items(&app);
+        let first_enabled = items
+            .iter()
+            .position(|item| item.enabled)
+            .expect("remote checkout should be available");
+        assert!(!items[0].enabled, "local Checkout must be disabled");
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::InfoModal {
+                cursor,
+                focus: InfoModalFocus::Actions,
+                ..
+            }) if cursor == first_enabled
+        ));
+    }
+
+    #[test]
+    fn action_navigation_skips_disabled_rows_in_info_modal_and_menu() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let items = || {
+            vec![
+                MenuItem {
+                    label: "Disabled first".into(),
+                    shortcut: Some('a'),
+                    action: BranchAction::DeleteLocal,
+                    target: "a".into(),
+                    remote: None,
+                    enabled: false,
+                    reason: Some("disabled".into()),
+                },
+                MenuItem {
+                    label: "Enabled middle".into(),
+                    shortcut: Some('b'),
+                    action: BranchAction::DeleteLocal,
+                    target: "b".into(),
+                    remote: None,
+                    enabled: true,
+                    reason: None,
+                },
+                MenuItem {
+                    label: "Disabled middle".into(),
+                    shortcut: Some('c'),
+                    action: BranchAction::DeleteLocal,
+                    target: "c".into(),
+                    remote: None,
+                    enabled: false,
+                    reason: Some("disabled".into()),
+                },
+                MenuItem {
+                    label: "Enabled last".into(),
+                    shortcut: Some('d'),
+                    action: BranchAction::DeleteLocal,
+                    target: "d".into(),
+                    remote: None,
+                    enabled: true,
+                    reason: None,
+                },
+            ]
+        };
+        let row = InfoModalRow::Tag(tag("v1.0.0"));
+        app.overlay = Some(Overlay::InfoModal {
+            items: items(),
+            cursor: 0,
+            info_cursor: 0,
+            focus: InfoModalFocus::Actions,
+            row: row.clone(),
+        });
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::InfoModal {
+                cursor: 3,
+                focus: InfoModalFocus::Actions,
+                ..
+            })
+        ));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::InfoModal {
+                cursor: 3,
+                focus: InfoModalFocus::Actions,
+                ..
+            })
+        ));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::InfoModal {
+                cursor: 1,
+                focus: InfoModalFocus::Actions,
+                ..
+            })
+        ));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::InfoModal {
+                cursor: 1,
+                focus: InfoModalFocus::Actions,
+                ..
+            })
+        ));
+
+        app.overlay = Some(Overlay::Menu {
+            items: items(),
+            cursor: 0,
+        });
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(app.overlay, Some(Overlay::Menu { cursor: 3, .. })));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(app.overlay, Some(Overlay::Menu { cursor: 3, .. })));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(app.overlay, Some(Overlay::Menu { cursor: 1, .. })));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(app.overlay, Some(Overlay::Menu { cursor: 1, .. })));
     }
 
     #[test]
@@ -4926,10 +5565,16 @@ mod tests {
         assert!(matches!(
             app.overlay,
             Some(Overlay::Confirm {
-                action: BranchAction::DeleteRemoteBranch,
-                ref targets,
+                ref choices,
                 ..
-            }) if targets == &["feature/remote"]
+            }) if matches!(
+                choices.as_slice(),
+                [ConfirmChoice {
+                    action: BranchAction::DeleteRemoteBranch,
+                    targets,
+                    ..
+                }] if targets == &["feature/remote"]
+            )
         ));
         assert_eq!(app.return_view, ViewId::Graph);
     }
@@ -5323,6 +5968,106 @@ mod tests {
     }
 
     #[test]
+    fn dirty_linked_worktree_git_facts_flow_into_delete_preflight_and_confirm_rendering() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("README.md"), "base\n").expect("write initial file");
+        run_git(dir, &["add", "README.md"]);
+        run_git(dir, &["commit", "-m", "initial"]);
+        run_git(dir, &["branch", "-M", "main"]);
+        run_git(dir, &["branch", "feature/dirty-linked"]);
+
+        let linked_dir = dir.join("linked-dirty");
+        let linked_dir_arg = linked_dir.to_str().expect("UTF-8 temporary path");
+        run_git(
+            dir,
+            &["worktree", "add", linked_dir_arg, "feature/dirty-linked"],
+        );
+        std::fs::write(linked_dir.join("README.md"), "dirty linked worktree\n")
+            .expect("modify tracked file in linked worktree");
+        for index in 0..6 {
+            std::fs::write(
+                linked_dir.join(format!("untracked-{index}.txt")),
+                "untracked\n",
+            )
+            .expect("write untracked file in linked worktree");
+        }
+
+        let repo = git2::Repository::open(dir).expect("open temporary repository");
+        let branches = branch::list_branches(&repo, "main").expect("load real branch facts");
+        let mut worktrees = worktree::list_worktrees(dir);
+        let enrich_rx = worktree::enrich_worktrees(worktrees.clone());
+        for update in enrich_rx {
+            let worktree = &mut worktrees[update.index];
+            worktree.wt_status = update.wt_status;
+            worktree.age_date = update.age_date;
+        }
+        let linked_status = worktrees
+            .iter()
+            .find(|worktree| worktree.path.canonicalize().ok() == linked_dir.canonicalize().ok())
+            .unwrap_or_else(|| panic!("discover linked worktree in {worktrees:?}"))
+            .wt_status
+            .clone();
+        assert!(linked_status.has_modified);
+        assert!(linked_status.has_untracked);
+        assert_eq!(linked_status.changed_files.len(), 7);
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.branches.set_items(branches);
+        let selected_index = app
+            .branches
+            .items()
+            .iter()
+            .position(|branch| branch.name == "feature/dirty-linked")
+            .expect("discover linked branch");
+        app.branches.selected_mut()[selected_index] = true;
+        app.worktrees.set_items(worktrees);
+
+        app.delete_selected_branches(false);
+        let Some(Overlay::Confirm { preflight, .. }) = app.overlay.as_ref() else {
+            panic!("expected delete preflight, got {:?}", app.overlay);
+        };
+        let Some(DeleteRisk::DirtyWorktree { files, omitted, .. }) = preflight
+            .risks
+            .iter()
+            .find(|risk| matches!(risk, DeleteRisk::DirtyWorktree { .. }))
+        else {
+            panic!("expected real dirty linked-worktree risk: {preflight:?}");
+        };
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "README.md",
+                "untracked-0.txt",
+                "untracked-1.txt",
+                "untracked-2.txt",
+                "untracked-3.txt",
+            ]
+        );
+        assert_eq!(*omitted, 2);
+
+        let rendered = render_app(&mut app, 100, 30);
+        for file in [
+            "modified: README.md",
+            "untracked: untracked-0.txt",
+            "untracked: untracked-1.txt",
+            "untracked: untracked-2.txt",
+            "untracked: untracked-3.txt",
+        ] {
+            assert!(rendered.contains(file), "missing {file}: {rendered}");
+        }
+        assert!(rendered.contains("+2 more"), "{rendered}");
+        assert!(!rendered.contains("untracked-4.txt"), "{rendered}");
+        assert!(!rendered.contains("untracked-5.txt"), "{rendered}");
+    }
+
+    #[test]
     fn branch_operation_result_refreshes_branch_metadata_immediately() {
         let tmpdir = tempfile::tempdir().expect("temp repo");
         let dir = tmpdir.path();
@@ -5482,7 +6227,7 @@ mod tests {
         app.drain_channels();
 
         match &app.overlay {
-            Some(Overlay::Results { results }) => {
+            Some(Overlay::Results { results, .. }) => {
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].branch_name, branch_name);
                 assert!(matches!(
@@ -5543,136 +6288,668 @@ mod tests {
         );
     }
 
-    #[test]
-    fn results_force_key_starts_force_delete_for_only_unmerged_failures() {
-        let tmpdir = tempfile::tempdir().expect("temp repo");
-        let mut app = App::new(
-            tmpdir.path().to_path_buf(),
-            "main".into(),
-            Config::default(),
-        );
-        app.return_view = ViewId::Branches;
-        app.overlay = Some(Overlay::Results {
-            results: vec![
-                OperationResult::failure(
-                    "feature/unmerged",
-                    BranchAction::DeleteLocal,
-                    FailureCause::NotMerged,
-                    "not merged",
-                ),
-                OperationResult::failure(
-                    "feature/other",
-                    BranchAction::DeleteLocal,
-                    FailureCause::Other {
-                        raw_message: "other".into(),
-                    },
-                    "other",
-                ),
-            ],
-        });
-
-        app.handle_overlay_key(KeyEvent::new(
-            KeyCode::Char('!'),
-            crossterm::event::KeyModifiers::NONE,
-        ));
-
-        assert!(app.overlay.is_none());
-        assert_eq!(
-            app.job_queue.current_action_for_test(),
-            Some(BranchAction::DeleteLocalForce)
-        );
-    }
-
-    #[test]
-    fn results_worktree_key_starts_safe_cascade_for_linked_worktree_failures() {
-        let tmpdir = tempfile::tempdir().expect("temp repo");
-        let mut app = App::new(
-            tmpdir.path().to_path_buf(),
-            "main".into(),
-            Config::default(),
-        );
-        app.return_view = ViewId::Branches;
-        app.overlay = Some(Overlay::Results {
-            results: vec![OperationResult::failure(
+    fn results_fixture() -> Vec<OperationResult> {
+        vec![
+            OperationResult::success(
+                "feature/deleted",
+                BranchAction::DeleteLocal,
+                "deleted feature/deleted",
+            ),
+            OperationResult::failure(
+                "feature/unmerged",
+                BranchAction::DeleteLocal,
+                FailureCause::NotMerged,
+                "error: the branch 'feature/unmerged' is not fully merged",
+            ),
+            OperationResult::failure(
                 "feature/worktree",
                 BranchAction::DeleteLocal,
                 FailureCause::CheckedOutInWorktree {
                     worktree_path: PathBuf::from("/repo/.worktrees/feature-worktree"),
                     is_main: false,
                 },
-                "checked out elsewhere",
-            )],
+                "fatal: cannot delete branch used by worktree",
+            ),
+            OperationResult::failure(
+                "feature/other",
+                BranchAction::DeleteLocal,
+                FailureCause::Other {
+                    raw_message: "fatal: unexpected ref transaction failure".into(),
+                },
+                "operation failed",
+            ),
+        ]
+    }
+
+    fn open_results_fixture(app: &mut App) {
+        app.return_view = ViewId::Branches;
+        app.overlay = Some(Overlay::results(results_fixture()));
+    }
+
+    fn press_overlay_key(app: &mut App, key: KeyCode) {
+        app.handle_overlay_key(KeyEvent::new(key, crossterm::event::KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn settings_and_filter_action_lists_select_and_choose_with_keyboard() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+
+        app.overlay = Some(Overlay::Settings { cursor: 0 });
+        press_overlay_key(&mut app, KeyCode::Char('j'));
+        press_overlay_key(&mut app, KeyCode::Up);
+        press_overlay_key(&mut app, KeyCode::Down);
+        assert!(matches!(app.overlay, Some(Overlay::Settings { cursor: 1 })));
+        let original_theme = app.theme.name;
+        press_overlay_key(&mut app, KeyCode::Enter);
+        assert!(matches!(app.overlay, Some(Overlay::Settings { cursor: 1 })));
+        assert_ne!(
+            app.theme.name, original_theme,
+            "Enter must choose the setting"
+        );
+
+        press_overlay_key(&mut app, KeyCode::Esc);
+        assert!(
+            app.overlay.is_none(),
+            "Esc must close Settings before opening Filter"
+        );
+        app.active_view = ViewId::Branches;
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('\\'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::FilterSelection { cursor: 0 })
+        ));
+        press_overlay_key(&mut app, KeyCode::Down);
+        press_overlay_key(&mut app, KeyCode::Up);
+        press_overlay_key(&mut app, KeyCode::Char('j'));
+        press_overlay_key(&mut app, KeyCode::Char('k'));
+        press_overlay_key(&mut app, KeyCode::Char('j'));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::FilterSelection { cursor: 1 })
+        ));
+        press_overlay_key(&mut app, KeyCode::Enter);
+        assert!(
+            app.active_filter_query().contains("merge:squash"),
+            "Enter must choose the selected filter"
+        );
+        press_overlay_key(&mut app, KeyCode::Char('m'));
+        assert!(
+            app.active_filter_query().contains("merge:merged"),
+            "direct token keys must still toggle their filter"
+        );
+        press_overlay_key(&mut app, KeyCode::Esc);
+        assert!(app.overlay.is_none(), "Esc must close the action list");
+    }
+
+    #[test]
+    fn page_keys_scroll_overflowing_confirm_and_results_bodies() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let choices = (0..12)
+            .map(|index| ConfirmChoice {
+                accelerator: 'y',
+                action: BranchAction::DeleteLocal,
+                targets: vec![format!("feature/choice-{index}")],
+                remote: None,
+                command: format!("git branch -d -- feature/choice-{index}"),
+                description: "Let Git reject unsafe deletion.".to_string(),
+                destructive_target: None,
+            })
+            .collect();
+        app.overlay = Some(Overlay::Confirm {
+            preflight: DeletePreflight::default(),
+            choices,
+            selected: 0,
+            body_scroll: ModalScroll::default(),
+            stage: ConfirmStage::Initial,
         });
 
+        render_app(&mut app, 48, 8);
+        press_overlay_key(&mut app, KeyCode::PageDown);
+        let rendered = render_app(&mut app, 48, 8);
+        assert!(
+            !rendered.contains("feature/choice-0"),
+            "PageDown must visibly advance Confirm after redraw: {rendered}"
+        );
+        assert!(rendered.contains("feature/choice-1"), "{rendered}");
+        press_overlay_key(&mut app, KeyCode::Char('j'));
+        let rendered = render_app(&mut app, 48, 8);
+        assert!(
+            rendered.contains("feature/choice-1"),
+            "moving focus after manual paging must keep the selected choice visible: {rendered}"
+        );
+        press_overlay_key(&mut app, KeyCode::PageUp);
+        let rendered = render_app(&mut app, 48, 8);
+        assert!(rendered.contains("feature/choice-0"), "{rendered}");
+
+        let results = (0..12)
+            .map(|index| {
+                OperationResult::failure(
+                    format!("feature/result-{index}"),
+                    BranchAction::DeleteLocal,
+                    FailureCause::Other {
+                        raw_message: format!("git failed for result {index}"),
+                    },
+                    "operation failed",
+                )
+            })
+            .collect();
+        app.overlay = Some(Overlay::Results {
+            results,
+            selected_index: 0,
+            expanded_index: None,
+            focus: ResultsFocus::Results,
+            body_scroll: ModalScroll::default(),
+        });
+
+        let rendered = render_app(&mut app, 48, 8);
+        assert!(rendered.contains("feature/result-0"), "{rendered}");
+        press_overlay_key(&mut app, KeyCode::PageDown);
+        let rendered = render_app(&mut app, 48, 8);
+        assert!(
+            !rendered.contains("feature/result-0"),
+            "PageDown must visibly advance Results after redraw: {rendered}"
+        );
+        assert!(rendered.contains("feature/result-5"), "{rendered}");
+        press_overlay_key(&mut app, KeyCode::Down);
+        let rendered = render_app(&mut app, 48, 8);
+        assert!(
+            rendered.contains("feature/result-1"),
+            "moving Results focus after manual paging must restore the selected row: {rendered}"
+        );
+        press_overlay_key(&mut app, KeyCode::PageUp);
+        let rendered = render_app(&mut app, 48, 8);
+        assert!(rendered.contains("feature/result-0"), "{rendered}");
+    }
+
+    #[test]
+    fn final_destructive_confirmation_pages_on_a_compact_terminal() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let choice = ConfirmChoice {
+            accelerator: 'r',
+            action: BranchAction::DeleteLocalForce,
+            targets: vec!["feature/unmerged".to_string()],
+            remote: None,
+            command: "git branch -D -- feature/unmerged".to_string(),
+            description: "Permanently discard unique commits.".to_string(),
+            destructive_target: Some(ConfirmTarget::Branch("feature/unmerged".to_string())),
+        };
+        app.overlay = Some(Overlay::Confirm {
+            preflight: DeletePreflight::default(),
+            choices: vec![choice.clone()],
+            selected: 0,
+            body_scroll: ModalScroll::default(),
+            stage: ConfirmStage::FinalDestructive {
+                choice,
+                target: ConfirmTarget::Branch("feature/unmerged".to_string()),
+            },
+        });
+
+        let initial = render_app(&mut app, 48, 7);
+        assert!(
+            initial.contains("FINAL DESTRUCTIVE CONFIRMATION"),
+            "{initial}"
+        );
+        press_overlay_key(&mut app, KeyCode::PageDown);
+        let paged = render_app(&mut app, 48, 7);
+        assert!(
+            !paged.contains("FINAL DESTRUCTIVE CONFIRMATION"),
+            "PageDown must visibly advance the final confirmation: {paged}"
+        );
+        assert!(paged.contains("DATA LOSS"), "{paged}");
+        press_overlay_key(&mut app, KeyCode::PageUp);
+        let reset = render_app(&mut app, 48, 7);
+        assert!(reset.contains("FINAL DESTRUCTIVE CONFIRMATION"), "{reset}");
+    }
+
+    #[test]
+    fn modal_keyboard_transition_preserves_single_target_recovery_across_resize() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("README.md"), "base\n").expect("write initial file");
+        run_git(dir, &["add", "README.md"]);
+        run_git(dir, &["commit", "-m", "initial"]);
+        run_git(dir, &["branch", "-M", "main"]);
+        run_git(dir, &["branch", "feature/first"]);
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.branches.set_items(vec![
+            branch("feature/first", TrackingStatus::Local),
+            branch("feature/second", TrackingStatus::Local),
+        ]);
+        app.branches.selected_mut().fill(true);
+
+        app.delete_selected_branches(false);
+        let Some(Overlay::Confirm {
+            preflight, choices, ..
+        }) = app.overlay.as_ref()
+        else {
+            panic!("expected delete preflight, got {:?}", app.overlay);
+        };
+        assert_eq!(preflight.risks.len(), 2);
+        assert_eq!(choices.len(), 3, "safe plus one recovery per branch");
+
+        press_overlay_key(&mut app, KeyCode::Esc);
+        assert!(app.overlay.is_none(), "Esc must cancel preflight");
+
+        app.delete_selected_branches(false);
+        press_overlay_key(&mut app, KeyCode::Down);
+        press_overlay_key(&mut app, KeyCode::Up);
+        press_overlay_key(&mut app, KeyCode::Char('j'));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Confirm { selected: 1, .. })
+        ));
+        press_overlay_key(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Confirm {
+                stage: ConfirmStage::FinalDestructive {
+                    target: ConfirmTarget::Branch(ref branch),
+                    ..
+                },
+                ..
+            }) if branch == "feature/first"
+        ));
+        assert_eq!(app.job_queue.current_action_for_test(), None);
+
+        press_overlay_key(&mut app, KeyCode::Esc);
+        assert!(
+            app.overlay.is_none(),
+            "Esc must cancel the final review too"
+        );
+
+        app.delete_selected_branches(false);
+        press_overlay_key(&mut app, KeyCode::Char('j'));
+        press_overlay_key(&mut app, KeyCode::Enter);
+        press_overlay_key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.job_queue.current_action_for_test(),
+            Some(BranchAction::DeleteLocalForce)
+        );
+        assert_eq!(
+            app.job_queue.current_targets_for_test(),
+            Some(&["feature/first".to_string()][..]),
+            "the initial final confirmation must enqueue exactly one selected branch"
+        );
+
+        open_results_fixture(&mut app);
+        press_overlay_key(&mut app, KeyCode::Down);
+        press_overlay_key(&mut app, KeyCode::Char('k'));
+        press_overlay_key(&mut app, KeyCode::Char('j'));
+        press_overlay_key(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Results {
+                selected_index: 1,
+                expanded_index: Some(1),
+                focus: ResultsFocus::Results,
+                ..
+            })
+        ));
+
+        let roomy = render_app(&mut app, 120, 30);
+        let compact = render_app(&mut app, 48, 8);
+        assert!(roomy.contains("feature/unmerged"), "{roomy}");
+        assert!(compact.contains("feature/unmerged"), "{compact}");
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Results {
+                selected_index: 1,
+                expanded_index: Some(1),
+                focus: ResultsFocus::Results,
+                ..
+            })
+        ));
+
+        press_overlay_key(&mut app, KeyCode::Tab);
+        press_overlay_key(&mut app, KeyCode::Down);
+        press_overlay_key(&mut app, KeyCode::Up);
+        press_overlay_key(&mut app, KeyCode::Enter);
+
+        let Some(Overlay::Confirm {
+            stage: ConfirmStage::FinalDestructive { choice, target },
+            ..
+        }) = app.overlay.as_ref()
+        else {
+            panic!("expected selected result recovery, got {:?}", app.overlay);
+        };
+        assert_eq!(choice.action, BranchAction::DeleteLocalForce);
+        assert_eq!(choice.targets, ["feature/unmerged"]);
+        assert_eq!(target, &ConfirmTarget::Branch("feature/unmerged".into()));
+        press_overlay_key(&mut app, KeyCode::Enter);
+        assert!(
+            app.overlay.is_none(),
+            "Enter must commit the final recovery"
+        );
+        assert_eq!(
+            app.job_queue.current_targets_for_test(),
+            Some(&["feature/first".to_string()][..]),
+            "the earlier force-delete stays current while recovery queues"
+        );
+        assert_eq!(
+            app.job_queue.queued_len_for_test(),
+            1,
+            "the final recovery must enqueue exactly the expanded feature/unmerged branch"
+        );
+        for _ in 0..100 {
+            app.job_queue.poll();
+            if app.job_queue.current_targets_for_test() == Some(&["feature/unmerged".to_string()]) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            app.job_queue.current_targets_for_test(),
+            Some(&["feature/unmerged".to_string()][..]),
+            "after the first queued force-delete completes, the actual pending recovery targets only the expanded branch"
+        );
+        assert_eq!(app.job_queue.queued_len_for_test(), 0);
+    }
+
+    #[test]
+    fn results_expands_only_one_selected_branch_at_a_time() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        open_results_fixture(&mut app);
+
+        press_overlay_key(&mut app, KeyCode::Char('j'));
+        press_overlay_key(&mut app, KeyCode::Enter);
+        let Some(Overlay::Results { expanded_index, .. }) = app.overlay.as_ref() else {
+            panic!("expected Results overlay, got {:?}", app.overlay);
+        };
+        assert_eq!(*expanded_index, Some(1));
+
+        press_overlay_key(&mut app, KeyCode::Char('j'));
+        press_overlay_key(&mut app, KeyCode::Enter);
+        let Some(Overlay::Results { expanded_index, .. }) = app.overlay.as_ref() else {
+            panic!("expected Results overlay, got {:?}", app.overlay);
+        };
+        assert_eq!(*expanded_index, Some(2));
+    }
+
+    #[test]
+    fn results_recovery_targets_only_the_expanded_result() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        open_results_fixture(&mut app);
+
+        press_overlay_key(&mut app, KeyCode::Char('j'));
+        press_overlay_key(&mut app, KeyCode::Enter);
+        press_overlay_key(&mut app, KeyCode::Tab);
+        press_overlay_key(&mut app, KeyCode::Enter);
+
+        let Some(Overlay::Confirm {
+            stage: ConfirmStage::FinalDestructive { choice, target },
+            ..
+        }) = app.overlay.as_ref()
+        else {
+            panic!("expected final confirmation, got {:?}", app.overlay);
+        };
+        assert_eq!(choice.action, BranchAction::DeleteLocalForce);
+        assert_eq!(choice.targets, vec!["feature/unmerged".to_string()]);
+        assert_eq!(target, &ConfirmTarget::Branch("feature/unmerged".into()));
+        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert_eq!(app.job_queue.queued_len_for_test(), 0);
+    }
+
+    #[test]
+    fn worktree_recovery_opens_final_confirmation_before_job_start() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        open_results_fixture(&mut app);
+
+        press_overlay_key(&mut app, KeyCode::Char('j'));
+        press_overlay_key(&mut app, KeyCode::Char('j'));
+        press_overlay_key(&mut app, KeyCode::Enter);
+        press_overlay_key(&mut app, KeyCode::Tab);
+        press_overlay_key(&mut app, KeyCode::Enter);
+
+        let Some(Overlay::Confirm {
+            stage: ConfirmStage::FinalDestructive { choice, target },
+            ..
+        }) = app.overlay.as_ref()
+        else {
+            panic!("expected final confirmation, got {:?}", app.overlay);
+        };
+        assert_eq!(choice.action, BranchAction::DeleteBranchAndRemoveWorktree);
+        assert_eq!(choice.targets, vec!["feature/worktree".to_string()]);
+        assert_eq!(
+            target,
+            &ConfirmTarget::BranchWorktree {
+                branch: "feature/worktree".into(),
+                worktree: PathBuf::from("/repo/.worktrees/feature-worktree"),
+            }
+        );
+        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert_eq!(app.job_queue.queued_len_for_test(), 0);
+    }
+
+    #[test]
+    fn safe_delete_choice_starts_only_the_selected_branch_action() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut item = branch("feature/safe", TrackingStatus::Local);
+        item.merge_status = MergeStatus::Merged;
+        app.branches.set_items(vec![item]);
+
+        app.delete_selected_branches(false);
         app.handle_overlay_key(KeyEvent::new(
-            KeyCode::Char('r'),
+            KeyCode::Char('y'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert!(
+            matches!(app.overlay, Some(Overlay::Confirm { .. })),
+            "the direct row key selects the safe choice; it must not dispatch it"
+        );
+        assert_eq!(app.job_queue.current_action_for_test(), None);
+
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ));
 
         assert!(app.overlay.is_none());
         assert_eq!(
             app.job_queue.current_action_for_test(),
-            Some(BranchAction::DeleteBranchAndRemoveWorktree)
+            Some(BranchAction::DeleteLocal)
+        );
+        assert_eq!(
+            app.job_queue.current_targets_for_test(),
+            Some(&["feature/safe".to_string()][..])
         );
     }
 
     #[test]
-    fn delete_confirm_shows_force_key_for_unmerged_branch() {
+    fn force_choice_opens_final_confirmation_before_enqueuing() {
         let tmpdir = tempfile::tempdir().expect("temp repo");
         let mut app = App::new(
             tmpdir.path().to_path_buf(),
             "main".into(),
             Config::default(),
         );
-        let mut item = branch("feature/x", TrackingStatus::Local);
+        let mut item = branch("feature/unmerged", TrackingStatus::Local);
         item.merge_status = MergeStatus::Unmerged;
         app.branches.set_items(vec![item]);
 
         app.delete_selected_branches(false);
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Char('r'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.job_queue.current_action_for_test(), None);
+
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
 
         let Some(Overlay::Confirm {
-            action, extra_keys, ..
+            stage: ConfirmStage::FinalDestructive { choice, target },
+            ..
         }) = app.overlay.as_ref()
         else {
             panic!("expected confirm overlay, got {:?}", app.overlay);
         };
-        assert_eq!(*action, BranchAction::DeleteLocal);
-        let force = extra_keys
-            .iter()
-            .find(|key| key.key == '!')
-            .expect("expected a `!` force-delete extra key");
-        assert_eq!(force.action, BranchAction::DeleteLocalForce);
-        assert_eq!(force.targets, vec!["feature/x".to_string()]);
+        assert_eq!(choice.action, BranchAction::DeleteLocalForce);
+        assert_eq!(choice.targets, vec!["feature/unmerged".to_string()]);
+        assert_eq!(target, &ConfirmTarget::Branch("feature/unmerged".into()));
+        assert_eq!(app.job_queue.current_action_for_test(), None);
     }
 
     #[test]
-    fn delete_confirm_shows_worktree_key_for_linked_branch() {
+    fn multi_selection_force_confirmation_enqueues_only_one_branch() {
         let tmpdir = tempfile::tempdir().expect("temp repo");
         let mut app = App::new(
             tmpdir.path().to_path_buf(),
             "main".into(),
             Config::default(),
         );
-        let mut item = branch("feature/y", TrackingStatus::Local);
-        item.merge_status = MergeStatus::Merged;
-        app.branches.set_items(vec![item]);
-        app.worktrees.set_items(vec![worktree("feature/y")]);
+        let mut first = branch("feature/first", TrackingStatus::Local);
+        first.merge_status = MergeStatus::Unmerged;
+        let mut second = branch("feature/second", TrackingStatus::Local);
+        second.merge_status = MergeStatus::Unmerged;
+        app.branches.set_items(vec![first, second]);
+        app.branches.selected_mut().fill(true);
 
         app.delete_selected_branches(false);
+        for _ in 0..2 {
+            app.handle_overlay_key(KeyEvent::new(
+                KeyCode::Char('j'),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
 
-        let Some(Overlay::Confirm { extra_keys, .. }) = app.overlay.as_ref() else {
-            panic!("expected confirm overlay, got {:?}", app.overlay);
+        let Some(Overlay::Confirm {
+            stage: ConfirmStage::FinalDestructive { choice, target },
+            ..
+        }) = app.overlay.as_ref()
+        else {
+            panic!("expected final confirmation, got {:?}", app.overlay);
         };
-        let cascade = extra_keys
-            .iter()
-            .find(|key| key.key == 'r')
-            .expect("expected an `r` remove-worktree extra key");
-        assert_eq!(cascade.action, BranchAction::DeleteBranchAndRemoveWorktree);
-        assert_eq!(cascade.targets, vec!["feature/y".to_string()]);
+        assert_eq!(choice.targets, vec!["feature/second".to_string()]);
+        assert_eq!(target, &ConfirmTarget::Branch("feature/second".into()));
+        assert_eq!(app.job_queue.current_action_for_test(), None);
+
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert_eq!(
+            app.job_queue.current_action_for_test(),
+            Some(BranchAction::DeleteLocalForce)
+        );
+        assert_eq!(
+            app.job_queue.current_targets_for_test(),
+            Some(&["feature/second".to_string()][..])
+        );
     }
 
     #[test]
-    fn delete_confirm_force_delete_menu_opens_confirm() {
+    fn duplicate_recovery_accelerator_keeps_navigated_target_selected() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.branches.set_items(vec![
+            branch("feature/first", TrackingStatus::Local),
+            branch("feature/second", TrackingStatus::Local),
+        ]);
+        app.branches.selected_mut().fill(true);
+
+        app.delete_selected_branches(false);
+        for _ in 0..2 {
+            app.handle_overlay_key(KeyEvent::new(
+                KeyCode::Char('j'),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        let Some(Overlay::Confirm {
+            choices, selected, ..
+        }) = app.overlay.as_ref()
+        else {
+            panic!("expected confirm overlay, got {:?}", app.overlay);
+        };
+        assert_eq!(*selected, 2);
+        assert_eq!(choices[*selected].accelerator, 'r');
+        assert_eq!(
+            choices[*selected].destructive_target,
+            Some(ConfirmTarget::Branch("feature/second".to_string()))
+        );
+
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Char('r'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Confirm { selected: 2, .. })
+        ));
+
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Confirm {
+                stage: ConfirmStage::FinalDestructive {
+                    target: ConfirmTarget::Branch(ref branch),
+                    ..
+                },
+                ..
+            }) if branch == "feature/second"
+        ));
+        assert_eq!(app.job_queue.current_action_for_test(), None);
+    }
+
+    #[test]
+    fn force_delete_menu_opens_final_confirmation_without_enqueuing() {
         let tmpdir = tempfile::tempdir().expect("temp repo");
         let mut app = App::new(
             tmpdir.path().to_path_buf(),
@@ -5680,96 +6957,341 @@ mod tests {
             Config::default(),
         );
         app.branches
-            .set_items(vec![branch("feature/z", TrackingStatus::Local)]);
-
+            .set_items(vec![branch("feature/menu-force", TrackingStatus::Local)]);
         let item = app
             .build_branch_menu()
             .into_iter()
-            .find(|item| item.label == "Force-delete local")
-            .expect("expected a `Force-delete local` menu entry");
-        assert_eq!(item.shortcut, Some('!'));
-        assert!(item.enabled);
+            .find(|item| item.action == BranchAction::DeleteLocalForce)
+            .expect("force-delete menu item");
 
         app.execute_menu_action(item);
 
         let Some(Overlay::Confirm {
-            action,
-            targets,
-            reason,
-            extra_keys,
+            stage: ConfirmStage::FinalDestructive { choice, target },
+            ..
+        }) = app.overlay.as_ref()
+        else {
+            panic!("expected final confirmation, got {:?}", app.overlay);
+        };
+        assert_eq!(choice.action, BranchAction::DeleteLocalForce);
+        assert_eq!(choice.targets, vec!["feature/menu-force".to_string()]);
+        assert_eq!(target, &ConfirmTarget::Branch("feature/menu-force".into()));
+        assert_eq!(app.job_queue.current_action_for_test(), None);
+
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Char('r'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Confirm {
+                stage: ConfirmStage::FinalDestructive { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn force_worktree_remove_opens_final_confirmation_without_enqueuing() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut wt = worktree("feature/worktree-force");
+        wt.path = PathBuf::from("/repo/.worktrees/force");
+        app.worktrees.set_items(vec![wt]);
+
+        app.remove_selected_worktrees(true);
+
+        let Some(Overlay::Confirm {
+            stage: ConfirmStage::FinalDestructive { choice, target },
+            ..
+        }) = app.overlay.as_ref()
+        else {
+            panic!("expected final confirmation, got {:?}", app.overlay);
+        };
+        assert_eq!(choice.action, BranchAction::WorktreeForceRemove);
+        assert_eq!(choice.targets, vec!["/repo/.worktrees/force".to_string()]);
+        assert_eq!(
+            target,
+            &ConfirmTarget::Worktree(PathBuf::from("/repo/.worktrees/force"))
+        );
+        assert_eq!(app.job_queue.current_action_for_test(), None);
+    }
+
+    #[test]
+    fn linked_worktree_recovery_uses_a_distinct_choice_and_final_stage() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut item = branch("feature/worktree", TrackingStatus::Local);
+        item.merge_status = MergeStatus::Merged;
+        app.branches.set_items(vec![item]);
+        app.worktrees.set_items(vec![worktree("feature/worktree")]);
+
+        app.delete_selected_branches(false);
+
+        let Some(Overlay::Confirm { choices, .. }) = app.overlay.as_ref() else {
+            panic!("expected confirm overlay, got {:?}", app.overlay);
+        };
+        let worktree_choice = choices
+            .iter()
+            .find(|choice| choice.accelerator == 'w')
+            .expect("worktree recovery choice");
+        assert_eq!(
+            worktree_choice.action,
+            BranchAction::DeleteBranchAndRemoveWorktree
+        );
+        assert_eq!(
+            worktree_choice.targets,
+            vec!["feature/worktree".to_string()]
+        );
+        assert_eq!(
+            worktree_choice.destructive_target,
+            Some(ConfirmTarget::BranchWorktree {
+                branch: "feature/worktree".to_string(),
+                worktree: PathBuf::from("/repo/.worktrees/example"),
+            })
+        );
+    }
+
+    #[test]
+    fn linked_worktree_final_confirmation_repeats_exact_path() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut item = branch("feature/worktree", TrackingStatus::Local);
+        item.merge_status = MergeStatus::Unmerged;
+        app.branches.set_items(vec![item]);
+        let mut wt = worktree("feature/worktree");
+        wt.path = PathBuf::from("/repo/.worktrees/exact-target");
+        app.worktrees.set_items(vec![wt]);
+
+        app.delete_selected_branches(false);
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Char('w'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        let rendered = render_app(&mut app, 100, 24);
+        assert!(
+            rendered.contains("Worktree: /repo/.worktrees/exact-target"),
+            "final confirmation omitted the exact worktree path: {rendered}"
+        );
+        assert!(rendered.contains("Branch: feature/worktree"), "{rendered}");
+        assert!(
+            rendered.contains("Action: Force-remove worktree + delete branch"),
+            "final confirmation omitted the exact forced recovery action: {rendered}"
+        );
+        assert!(
+            rendered.contains("Command: git worktree remove --force"),
+            "final confirmation did not repeat the exact destructive command: {rendered}"
+        );
+    }
+
+    #[test]
+    fn primary_worktree_never_offers_a_recovery_choice() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.branches
+            .set_items(vec![branch("feature/primary", TrackingStatus::Local)]);
+        let mut wt = worktree("feature/primary");
+        wt.is_main = true;
+        wt.path = PathBuf::from("/repo");
+        app.worktrees.set_items(vec![wt]);
+
+        app.delete_selected_branches(false);
+
+        let Some(Overlay::Confirm { choices, .. }) = app.overlay.as_ref() else {
+            panic!("expected confirm overlay, got {:?}", app.overlay);
+        };
+        assert_eq!(
+            choices
+                .iter()
+                .map(|choice| choice.action)
+                .collect::<Vec<_>>(),
+            vec![BranchAction::DeleteLocal],
+            "the primary worktree may be checked safely, but must never get a force/remove route"
+        );
+    }
+
+    #[test]
+    fn likely_squash_merged_preflight_requires_force_review() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut item = branch("feature/possible", TrackingStatus::Local);
+        item.merge_status = MergeStatus::LikelySquashMerged;
+        item.merge_base_commit = Some("abc12345".to_string());
+        app.branches.set_items(vec![item]);
+
+        app.delete_selected_branches(false);
+
+        let Some(Overlay::Confirm {
+            preflight, choices, ..
+        }) = app.overlay.as_ref()
+        else {
+            panic!("expected confirm overlay, got {:?}", app.overlay);
+        };
+        assert!(matches!(
+            preflight.risks.as_slice(),
+            [DeleteRisk::UniqueCommits {
+                branch,
+                base,
+                status: MergeStatus::LikelySquashMerged,
+                merge_base_commit: Some(hash),
+            }] if branch == "feature/possible" && base == "main" && hash == "abc12345"
+        ));
+        assert!(choices.iter().any(|choice| {
+            choice.accelerator == 'r'
+                && choice.action == BranchAction::DeleteLocalForce
+                && choice.targets == ["feature/possible"]
+                && choice.destructive_target
+                    == Some(ConfirmTarget::Branch("feature/possible".to_string()))
+        }));
+
+        let rendered = render_app(&mut app, 100, 24);
+        assert!(
+            rendered.contains("Status: Possible Squash Merge"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("Merge base: abc12345"), "{rendered}");
+        assert!(
+            !rendered.contains("Unique commits"),
+            "a likely squash merge must not be presented as a confirmed unique-commit result: {rendered}"
+        );
+    }
+
+    #[test]
+    fn dirty_worktree_warning_lists_at_most_five_modified_or_untracked_files() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let mut item = branch("feature/dirty", TrackingStatus::Local);
+        item.merge_status = MergeStatus::Merged;
+        app.branches.set_items(vec![item]);
+
+        let mut wt = worktree("feature/dirty");
+        wt.path = PathBuf::from("/repo/.worktrees/dirty");
+        wt.wt_status = WorkingTreeStatus {
+            has_staged: true,
+            has_modified: true,
+            has_untracked: true,
+            changed_files: vec![
+                ChangedFile {
+                    path: "staged-only.rs".into(),
+                    kind: ChangedFileKind::Staged,
+                },
+                ChangedFile {
+                    path: "modified-1.rs".into(),
+                    kind: ChangedFileKind::Modified,
+                },
+                ChangedFile {
+                    path: "modified-2.rs".into(),
+                    kind: ChangedFileKind::Modified,
+                },
+                ChangedFile {
+                    path: "modified-3.rs".into(),
+                    kind: ChangedFileKind::Modified,
+                },
+                ChangedFile {
+                    path: "modified-4.rs".into(),
+                    kind: ChangedFileKind::Modified,
+                },
+                ChangedFile {
+                    path: "untracked-1.rs".into(),
+                    kind: ChangedFileKind::Untracked,
+                },
+                ChangedFile {
+                    path: "untracked-2.rs".into(),
+                    kind: ChangedFileKind::Untracked,
+                },
+                ChangedFile {
+                    path: "untracked-3.rs".into(),
+                    kind: ChangedFileKind::Untracked,
+                },
+            ],
+        };
+        app.worktrees.set_items(vec![wt]);
+
+        app.delete_selected_branches(false);
+        let rendered = render_app(&mut app, 100, 30);
+
+        assert!(!rendered.contains("staged-only.rs"), "{rendered}");
+        for expected in [
+            "modified-1.rs",
+            "modified-2.rs",
+            "modified-3.rs",
+            "modified-4.rs",
+            "untracked-1.rs",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected}: {rendered}"
+            );
+        }
+        assert!(!rendered.contains("untracked-2.rs"), "{rendered}");
+        assert!(!rendered.contains("untracked-3.rs"), "{rendered}");
+        assert!(rendered.contains("+2 more"), "{rendered}");
+    }
+
+    #[test]
+    fn confirmation_body_scroll_keeps_selected_choice_visible() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let branches = (0..8)
+            .map(|index| branch(&format!("feature/risk-{index}"), TrackingStatus::Local))
+            .collect();
+        app.branches.set_items(branches);
+        app.branches.selected_mut().fill(true);
+
+        app.delete_selected_branches(false);
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let rendered = render_app(&mut app, 80, 8);
+
+        let Some(Overlay::Confirm {
+            selected,
+            body_scroll,
             ..
         }) = app.overlay.as_ref()
         else {
             panic!("expected confirm overlay, got {:?}", app.overlay);
         };
-        assert_eq!(*action, BranchAction::DeleteLocalForce);
-        assert_eq!(*targets, vec!["feature/z".to_string()]);
-        assert!(reason.is_none());
-        assert!(extra_keys.is_empty());
-    }
-
-    #[test]
-    fn build_delete_preflight_abbreviates_long_worktree_path_to_target_width() {
-        let tmpdir = tempfile::tempdir().expect("temp repo");
-        let mut app = App::new(
-            tmpdir.path().to_path_buf(),
-            "main".into(),
-            Config::default(),
-        );
-
-        // Mirror build_delete_preflight's own target-width derivation so the
-        // assertion holds regardless of whether stdout is a TTY in this run.
-        let term_width = crossterm::terminal::size()
-            .map(|(w, _)| w)
-            .unwrap_or(80);
-        let target_width = ((term_width as usize * 60 / 100).saturating_sub(4)).max(20);
-
-        let mut wt = worktree("feature/y");
-        let long_path =
-            "/Users/chris/dev/git-branch-manager/.claude/worktrees/feat";
+        assert_eq!(*selected, 1, "the recovery choice should be selected");
+        assert!(body_scroll.offset > 0, "risks should force body scrolling");
         assert!(
-            long_path.chars().count() > target_width,
-            "fixture path must exceed the computed budget for this test to be meaningful"
-        );
-        wt.path = PathBuf::from(long_path);
-        app.worktrees.set_items(vec![wt]);
-
-        let (reason, _extra_keys) = app.build_delete_preflight(&["feature/y".to_string()]);
-
-        let reason = reason.expect("expected a preflight reason for a checked-out worktree");
-        assert!(
-            reason.contains("is checked out in"),
-            "got: {reason:?}"
-        );
-        // The raw, unabbreviated path must not appear verbatim in the reason.
-        assert!(
-            !reason.contains(long_path),
-            "path should have been abbreviated, got: {reason:?}"
-        );
-        // The final path component ("feat") must stay fully visible per
-        // abbreviate_path's "keep the tail" contract.
-        assert!(reason.contains("feat"), "got: {reason:?}");
-    }
-
-    #[test]
-    fn build_delete_preflight_requires_force_for_likely_squash_merged() {
-        let tmpdir = tempfile::tempdir().expect("temp repo");
-        let mut app = App::new(
-            tmpdir.path().to_path_buf(),
-            "main".into(),
-            Config::default(),
-        );
-        let mut b = branch("feature/x", TrackingStatus::Local);
-        b.merge_status = MergeStatus::LikelySquashMerged;
-        app.branches.set_items(vec![b]);
-
-        let (reason, extra_keys) = app.build_delete_preflight(&["feature/x".to_string()]);
-
-        assert!(reason.is_some(), "an unconfirmed match must produce a preflight warning");
-        assert!(reason.unwrap().contains("possible"));
-        assert!(
-            extra_keys.iter().any(|k| k.key == '!'),
-            "deleting a possible-but-unconfirmed squash match must require the force key"
+            rendered.contains("git branch -D -- feature/risk-0"),
+            "selected choice is clipped: {rendered}"
         );
     }
 

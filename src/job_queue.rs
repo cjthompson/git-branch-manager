@@ -441,6 +441,12 @@ impl ActionJobQueue {
     pub fn current_action_for_test(&self) -> Option<BranchAction> {
         self.current.as_ref().map(|r| r.job.action)
     }
+
+    pub fn current_targets_for_test(&self) -> Option<&[String]> {
+        self.current
+            .as_ref()
+            .map(|running| running.job.targets.as_slice())
+    }
 }
 
 // ---- Action Execution (runs on background thread) ----

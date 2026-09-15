@@ -2,49 +2,36 @@
 
 use ratatui::prelude::*;
 use ratatui::style::Modifier;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::theme::Theme;
 use crate::types::{CacheAudit, CategoryStat, DiagnosticAction};
 
-use super::shared::centered_rect;
+use super::modal::{draw_modal_shell, ModalActionRow, ModalFooter, ModalScroll, ModalSpec};
 
 /// Renders the Diagnostics menu: one selectable row per [`DiagnosticAction`].
 pub fn draw_diagnostics_menu(frame: &mut Frame, cursor: usize, theme: &Theme) {
-    let area = frame.area();
     let actions = DiagnosticAction::ALL;
-    let width = 48u16.min(area.width);
-    let height = (actions.len() as u16 + 4).min(area.height); // +4 borders + instructions
-    let rect = centered_rect(width, height, area);
+    let areas = draw_modal_shell(
+        frame,
+        &ModalSpec::new(
+            "Diagnostics",
+            ModalFooter::hints(&[("j/k", "Navigate"), ("Enter", "Run"), ("Esc", "Close")]),
+            54,
+            actions.len() as u16 + 3,
+        ),
+        theme,
+    );
+    let mut scroll = ModalScroll::default();
+    scroll.ensure_visible(cursor as u16, actions.len() as u16, areas.body.height);
 
-    let block = Block::default()
-        .title(" Diagnostics ")
-        .title_style(theme.title)
-        .borders(Borders::ALL);
-    let inner = block.inner(rect);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(block, rect);
-
-    let mut lines: Vec<Line> = actions
+    let lines: Vec<Line> = actions
         .iter()
         .enumerate()
-        .map(|(i, action)| {
-            let style = if i == cursor {
-                theme.cursor
-            } else {
-                Style::default()
-            };
-            Line::from(Span::styled(format!("  {}", action.label()), style))
-        })
+        .map(|(i, action)| ModalActionRow::new(None, action.label(), "").render(i == cursor, theme))
         .collect();
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Enter run   Esc close",
-        theme.dim,
-    )));
-
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll.offset, 0)), areas.body);
 }
 
 /// Renders the cache-audit report: per-category breakdown, then any
@@ -56,44 +43,40 @@ pub fn draw_diagnostics_report(
     scroll: usize,
     theme: &Theme,
 ) {
-    let area = frame.area();
-    let width = (area.width * 70 / 100).max(54).min(area.width);
-    let height = (area.height * 70 / 100).max(10).min(area.height);
-    let rect = centered_rect(width, height, area);
+    let footer = if audit.is_clean() {
+        ModalFooter::hints(&[("Esc", "Close")])
+    } else {
+        ModalFooter::hints(&[("f", "Fix & reload"), ("j/k", "Scroll"), ("Esc", "Close")])
+    };
+    let areas = draw_modal_shell(
+        frame,
+        &ModalSpec::new("Cache accuracy", footer, 72, 22),
+        theme,
+    );
 
-    let block = Block::default()
-        .title(" Cache accuracy ")
-        .title_style(theme.title)
-        .borders(Borders::ALL);
-    let inner = block.inner(rect);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(block, rect);
-
-    // Fixed header: one line per category breakdown.
-    let header: Vec<Line> = vec![
+    // Category lines are part of the scroll stream; the shell owns fixed chrome.
+    let mut body: Vec<Line> = vec![
         category_line("Merge status", &audit.merge_status, theme),
         category_line("Ahead/behind", &audit.ahead_behind, theme),
         category_line("Merge base  ", &audit.merge_base, theme),
         Line::from(""),
     ];
 
-    // Scrollable body: discrepancies, then orphans.
-    let mut body: Vec<Line> = Vec::new();
     if !audit.discrepancies.is_empty() {
         body.push(Line::from(Span::styled(
             "Discrepancies",
-            theme.title.add_modifier(Modifier::BOLD),
+            theme.modal_title.add_modifier(Modifier::BOLD),
         )));
         for d in &audit.discrepancies {
             body.push(Line::from(vec![
                 Span::styled(
                     format!("  {:<28}", truncate(&d.branch, 28)),
-                    Style::default(),
+                    theme.modal_branch,
                 ),
-                Span::styled(format!("{:<13}", d.kind.label()), theme.dim),
-                Span::styled(d.cached.clone(), theme.error),
-                Span::styled(" \u{2192} ", theme.dim),
-                Span::styled(d.actual.clone(), theme.merged),
+                Span::styled(format!("{:<13}", d.kind.label()), theme.modal_secondary),
+                Span::styled(d.cached.clone(), theme.modal_failure),
+                Span::styled(" \u{2192} ", theme.modal_secondary),
+                Span::styled(d.actual.clone(), theme.modal_success),
             ]));
         }
     }
@@ -103,72 +86,45 @@ pub fn draw_diagnostics_report(
         }
         body.push(Line::from(Span::styled(
             "Orphan entries (branch no longer exists)",
-            theme.title.add_modifier(Modifier::BOLD),
+            theme.modal_title.add_modifier(Modifier::BOLD),
         )));
         for orphan in &audit.orphans {
             body.push(Line::from(Span::styled(
                 format!("  {}", truncate(orphan, 44)),
-                theme.dim,
+                theme.modal_secondary,
             )));
         }
     }
 
-    // Footer adapts to whether anything needs fixing.
-    let key_style = Style::default().fg(theme.accent_fg());
-    let footer: Line = if audit.is_clean() {
-        Line::from(vec![
-            Span::styled(
-                format!(
-                    "\u{2713} Cache is accurate \u{2014} {} entries verified   ",
-                    audit.total_checked()
-                ),
-                theme.merged,
+    if audit.is_clean() {
+        body.push(Line::from(Span::styled(
+            format!(
+                "\u{2713} Cache is accurate \u{2014} {} entries verified",
+                audit.total_checked()
             ),
-            Span::styled("Esc", key_style),
-            Span::styled(" close", theme.dim),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("f", key_style),
-            Span::styled(" fix & reload   ", theme.dim),
-            Span::styled("Esc", key_style),
-            Span::styled(" close", theme.dim),
-        ])
-    };
+            theme.modal_success,
+        )));
+    }
 
-    // Compose: header + windowed body + blank + footer, fitting `inner.height`.
-    let footer_block = 2u16; // blank separator + footer line
-    let body_capacity = inner
-        .height
-        .saturating_sub(header.len() as u16)
-        .saturating_sub(footer_block) as usize;
-
-    let max_scroll = body.len().saturating_sub(body_capacity);
-    let scroll = scroll.min(max_scroll);
-    let visible_body = body
-        .into_iter()
-        .skip(scroll)
-        .take(body_capacity)
-        .collect::<Vec<_>>();
-
-    let mut lines = header;
-    lines.extend(visible_body);
-    lines.push(Line::from(""));
-    lines.push(footer);
-
-    frame.render_widget(Paragraph::new(lines), inner);
+    let mut modal_scroll = ModalScroll::default();
+    modal_scroll.offset = scroll.min(u16::MAX as usize) as u16;
+    modal_scroll.clamp(body.len() as u16, areas.body.height);
+    frame.render_widget(
+        Paragraph::new(body).scroll((modal_scroll.offset, 0)),
+        areas.body,
+    );
 }
 
 fn category_line(label: &str, stat: &CategoryStat, theme: &Theme) -> Line<'static> {
     let mut spans = vec![
-        Span::styled(format!("  {label}  "), Style::default()),
-        Span::styled(format!("{} verified", stat.verified), theme.merged),
+        Span::styled(format!("  {label}  "), theme.modal_secondary),
+        Span::styled(format!("{} verified", stat.verified), theme.modal_success),
     ];
     if stat.mismatched > 0 {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
             format!("{} mismatched", stat.mismatched),
-            theme.error,
+            theme.modal_failure,
         ));
     }
     if stat.skipped > 0 {
@@ -184,7 +140,7 @@ fn category_line(label: &str, stat: &CategoryStat, theme: &Theme) -> Line<'stati
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
             format!("{} skipped ({})", stat.skipped, reasons_str),
-            theme.dim,
+            theme.modal_secondary,
         ));
     }
     Line::from(spans)

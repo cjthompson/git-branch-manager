@@ -34,6 +34,20 @@ pub struct Theme {
     pub remote_header: Style,
     pub toast_border: Style,
     pub toast_text: Style,
+    pub modal_border: Style,
+    pub modal_title: Style,
+    pub modal_footer: Style,
+    pub modal_key: Style,
+    pub modal_branch: Style,
+    pub modal_worktree: Style,
+    pub modal_commit: Style,
+    pub modal_command: Style,
+    pub modal_success: Style,
+    pub modal_failure: Style,
+    pub modal_secondary: Style,
+    pub modal_action_unavailable: Style,
+    pub modal_action_selected: Style,
+    pub modal_warning: Style,
 }
 
 impl Theme {
@@ -78,6 +92,22 @@ impl Theme {
             toast_text: Style::new()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::ITALIC),
+            modal_border: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+            modal_title: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            modal_footer: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+            modal_key: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            modal_branch: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            modal_worktree: Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
+            modal_commit: Style::new().fg(Color::Yellow),
+            modal_command: Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
+            modal_success: Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+            modal_failure: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+            modal_secondary: Style::new().fg(Color::DarkGray),
+            modal_action_unavailable: Style::new()
+                .fg(Color::Indexed(243))
+                .add_modifier(Modifier::DIM),
+            modal_action_selected: Style::new().bg(Color::Indexed(24)),
+            modal_warning: Style::new().fg(Color::White).bg(Color::Red),
         }
     }
 
@@ -90,7 +120,9 @@ impl Theme {
             squash_merged: Style::new()
                 .fg(Color::Indexed(172))
                 .add_modifier(Modifier::BOLD), // dark orange
-            cherry_picked: Style::new().fg(Color::Indexed(30)).add_modifier(Modifier::BOLD), // teal
+            cherry_picked: Style::new()
+                .fg(Color::Indexed(30))
+                .add_modifier(Modifier::BOLD), // teal
             in_sync: Style::new()
                 .fg(Color::Indexed(245))
                 .add_modifier(Modifier::ITALIC), // muted gray
@@ -107,7 +139,9 @@ impl Theme {
             pinned_row: Style::new().add_modifier(Modifier::DIM),
             checked_row: Style::new().bg(Color::Indexed(229)),
             error: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-            dim: Style::new().fg(Color::Indexed(245)).add_modifier(Modifier::DIM),
+            dim: Style::new()
+                .fg(Color::Indexed(245))
+                .add_modifier(Modifier::DIM),
             status_bar: Style::new().bg(Color::Indexed(252)).fg(Color::Black),
             title: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
             header: Style::new()
@@ -130,6 +164,28 @@ impl Theme {
             toast_text: Style::new()
                 .fg(Color::Indexed(172))
                 .add_modifier(Modifier::ITALIC),
+            modal_border: Style::new()
+                .fg(Color::Indexed(245))
+                .add_modifier(Modifier::DIM),
+            modal_title: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            modal_footer: Style::new()
+                .fg(Color::Indexed(245))
+                .add_modifier(Modifier::DIM),
+            modal_key: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            modal_branch: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            modal_worktree: Style::new().fg(Color::Black).add_modifier(Modifier::BOLD),
+            modal_commit: Style::new().fg(Color::Indexed(172)),
+            modal_command: Style::new().fg(Color::Black).add_modifier(Modifier::BOLD),
+            modal_success: Style::new()
+                .fg(Color::Indexed(28))
+                .add_modifier(Modifier::BOLD),
+            modal_failure: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+            modal_secondary: Style::new().fg(Color::DarkGray),
+            modal_action_unavailable: Style::new()
+                .fg(Color::Indexed(245))
+                .add_modifier(Modifier::DIM),
+            modal_action_selected: Style::new().bg(Color::Indexed(153)),
+            modal_warning: Style::new().fg(Color::Black).bg(Color::Indexed(224)),
         }
     }
 
@@ -183,6 +239,20 @@ impl Theme {
             toast_text: Style::new()
                 .fg(Color::Indexed(136))
                 .add_modifier(Modifier::ITALIC),
+            modal_border: Style::new().fg(base01).add_modifier(Modifier::DIM),
+            modal_title: Style::new().fg(blue).add_modifier(Modifier::BOLD),
+            modal_footer: Style::new().fg(base01).add_modifier(Modifier::DIM),
+            modal_key: Style::new().fg(blue).add_modifier(Modifier::BOLD),
+            modal_branch: Style::new().fg(cyan).add_modifier(Modifier::BOLD),
+            modal_worktree: Style::new().fg(base0).add_modifier(Modifier::BOLD),
+            modal_commit: Style::new().fg(yellow),
+            modal_command: Style::new().fg(base0).add_modifier(Modifier::BOLD),
+            modal_success: Style::new().fg(green).add_modifier(Modifier::BOLD),
+            modal_failure: Style::new().fg(red).add_modifier(Modifier::BOLD),
+            modal_secondary: Style::new().fg(base01),
+            modal_action_unavailable: Style::new().fg(base01).add_modifier(Modifier::DIM),
+            modal_action_selected: Style::new().bg(Color::Indexed(236)),
+            modal_warning: Style::new().fg(Color::White).bg(red),
         }
     }
 
@@ -213,7 +283,9 @@ impl Theme {
             pinned_row: Style::new().add_modifier(Modifier::DIM),
             checked_row: Style::new().bg(Color::Indexed(22)),
             error: Style::new().fg(red).add_modifier(Modifier::BOLD),
-            dim: Style::new().fg(Color::Indexed(245)).add_modifier(Modifier::DIM),
+            dim: Style::new()
+                .fg(Color::Indexed(245))
+                .add_modifier(Modifier::DIM),
             status_bar: Style::new().bg(Color::Indexed(236)).fg(fg),
             title: Style::new().fg(purple).add_modifier(Modifier::BOLD),
             header: Style::new()
@@ -236,6 +308,26 @@ impl Theme {
             toast_text: Style::new()
                 .fg(Color::Indexed(228))
                 .add_modifier(Modifier::ITALIC),
+            modal_border: Style::new()
+                .fg(Color::Indexed(245))
+                .add_modifier(Modifier::DIM),
+            modal_title: Style::new().fg(purple).add_modifier(Modifier::BOLD),
+            modal_footer: Style::new()
+                .fg(Color::Indexed(245))
+                .add_modifier(Modifier::DIM),
+            modal_key: Style::new().fg(purple).add_modifier(Modifier::BOLD),
+            modal_branch: Style::new().fg(cyan).add_modifier(Modifier::BOLD),
+            modal_worktree: Style::new().fg(fg).add_modifier(Modifier::BOLD),
+            modal_commit: Style::new().fg(yellow),
+            modal_command: Style::new().fg(fg).add_modifier(Modifier::BOLD),
+            modal_success: Style::new().fg(green).add_modifier(Modifier::BOLD),
+            modal_failure: Style::new().fg(red).add_modifier(Modifier::BOLD),
+            modal_secondary: Style::new().fg(Color::Indexed(245)),
+            modal_action_unavailable: Style::new()
+                .fg(Color::Indexed(245))
+                .add_modifier(Modifier::DIM),
+            modal_action_selected: Style::new().bg(Color::Indexed(238)),
+            modal_warning: Style::new().fg(Color::Black).bg(red),
         }
     }
 

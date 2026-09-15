@@ -10,6 +10,7 @@ pub mod info_modal;
 pub mod job_status;
 pub mod list_render;
 pub mod menu;
+pub mod modal;
 pub mod render;
 pub mod results;
 pub mod settings;

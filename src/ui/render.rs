@@ -19,42 +19,28 @@ use crate::view::ViewItem;
 
 use crate::job_queue::JobStatusView;
 
-use super::confirm::draw_confirm;
+use super::confirm::{draw_confirm, ConfirmChoice, ConfirmStage, DeletePreflight};
 use super::diagnostics::{draw_diagnostics_menu, draw_diagnostics_report};
 use super::executing::draw_executing;
-use super::filter_ui::draw_filter;
+use super::filter_ui::{draw_filter, draw_filter_selected};
 use super::graph_render::{draw_graph_options, render_graph_view};
 use super::help::draw_help;
 use super::info_modal::{draw_info_modal, InfoHitRegion, InfoModalFocus, InfoModalRow};
 use super::job_status::render_job_status;
 use super::list_render::{ListRenderParams, RowRenderer};
 use super::menu::{draw_menu, MenuItem};
-use super::results::draw_results;
+use super::modal::ModalScroll;
+use super::results::{draw_results, ResultsFocus};
 use super::settings::{draw_settings, settings_rows};
 use super::status_bar;
 use super::toast::{draw_toast, Toast};
 
-/// One alternate-action key in the Confirm overlay footer (plan P005
-/// §6). Pressing `key` swaps the Confirm's `action` for `action` and
-/// re-installs the overlay so the user can iterate between safe and
-/// force variants without re-pressing the trigger.
-///
-/// The label is the user-visible description rendered after the key in
-/// the footer (`[!] force-delete`, `[r] remove worktree + delete`).
-#[derive(Debug, Clone)]
-pub struct ConfirmExtraKey {
-    pub key: char,
-    pub label: String,
-    pub action: BranchAction,
-    /// Targets affected by this alternate action. Recovery keys may apply to
-    /// only the subset of a multi-target delete that triggered the cause.
-    pub targets: Vec<String>,
-}
-
 /// Overlay state for the top-level renderer.
 #[derive(Debug, Clone)]
 pub enum Overlay {
-    Help,
+    Help {
+        scroll: usize,
+    },
     Menu {
         items: Vec<MenuItem>,
         cursor: usize,
@@ -67,18 +53,11 @@ pub enum Overlay {
         row: InfoModalRow,
     },
     Confirm {
-        action: BranchAction,
-        targets: Vec<String>,
-        remote: Option<String>,
-        /// Optional pre-flight reason rendered above the target list,
-        /// built by `App::build_delete_preflight` (plan P005 §6) when a
-        /// target has unmerged commits or is checked out in a worktree.
-        reason: Option<String>,
-        /// Alternate-action keys (`!` for force-delete, `r` for
-        /// worktree cascade). Pressing one swaps `action` and
-        /// re-installs the overlay with the same reason so the user can
-        /// iterate without restarting the confirm flow.
-        extra_keys: Vec<ConfirmExtraKey>,
+        preflight: DeletePreflight,
+        choices: Vec<ConfirmChoice>,
+        selected: usize,
+        body_scroll: ModalScroll,
+        stage: ConfirmStage,
     },
     Executing {
         label: String,
@@ -86,11 +65,20 @@ pub enum Overlay {
     },
     Results {
         results: Vec<OperationResult>,
+        selected_index: usize,
+        expanded_index: Option<usize>,
+        focus: ResultsFocus,
+        body_scroll: ModalScroll,
     },
     Settings {
         cursor: usize,
     },
+    /// Legacy display-only filter variant retained for source compatibility.
     Filter,
+    /// Stateful filter action list used by interactive App input.
+    FilterSelection {
+        cursor: usize,
+    },
     GraphOptions {
         cursor: usize,
         include_remotes: bool,
@@ -106,11 +94,24 @@ pub enum Overlay {
     },
 }
 
+impl Overlay {
+    /// Start a Results accordion with the first row selected and every row collapsed.
+    pub fn results(results: Vec<OperationResult>) -> Self {
+        Self::Results {
+            results,
+            selected_index: 0,
+            expanded_index: None,
+            focus: ResultsFocus::Results,
+            body_scroll: ModalScroll::default(),
+        }
+    }
+}
+
 /// Everything the renderer needs to draw one frame.
 /// This avoids coupling to the full App struct (which is built in Phase 4).
 pub struct RenderContext<'a> {
     pub active_view: ViewId,
-    pub overlay: Option<&'a Overlay>,
+    pub overlay: Option<&'a mut Overlay>,
     pub toast: Option<&'a Toast>,
     pub theme: &'a Theme,
     pub symbols: &'a SymbolSet,
@@ -288,24 +289,13 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
     }
 
     // Render overlay if present
-    if let Some(overlay) = ctx.overlay {
+    if let Some(overlay) = ctx.overlay.as_deref_mut() {
         match overlay {
-            Overlay::Help => {
-                draw_help(frame, ctx.active_view, ctx.theme);
+            Overlay::Help { scroll } => {
+                draw_help(frame, ctx.active_view, scroll, ctx.theme);
             }
             Overlay::Menu { items, cursor } => {
-                let anchor = match ctx.active_view {
-                    ViewId::Graph => 2,
-                    ViewId::Branches => {
-                        ctx.branches.table_state().selected().unwrap_or(0) as u16 + 2
-                    }
-                    ViewId::Remotes => ctx.remotes.table_state().selected().unwrap_or(0) as u16 + 2,
-                    ViewId::Tags => ctx.tags.table_state().selected().unwrap_or(0) as u16 + 2,
-                    ViewId::Worktrees => {
-                        ctx.worktrees.table_state().selected().unwrap_or(0) as u16 + 2
-                    }
-                };
-                draw_menu(frame, items, *cursor, anchor, ctx.theme, ctx.symbols);
+                draw_menu(frame, items, *cursor, ctx.theme, ctx.symbols);
             }
             Overlay::InfoModal {
                 items,
@@ -329,20 +319,38 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 );
             }
             Overlay::Confirm {
-                action,
-                targets,
-                reason,
-                extra_keys,
-                ..
-            } => {
-                draw_confirm(frame, *action, targets, reason.as_deref(), extra_keys, ctx.theme);
-            }
+                preflight,
+                choices,
+                selected,
+                body_scroll,
+                stage,
+            } => draw_confirm(
+                frame,
+                preflight,
+                choices,
+                *selected,
+                body_scroll,
+                stage,
+                ctx.theme,
+            ),
             Overlay::Executing { label, progress } => {
                 draw_executing(frame, label, progress.as_ref(), ctx.theme);
             }
-            Overlay::Results { results } => {
-                draw_results(frame, results, ctx.theme);
-            }
+            Overlay::Results {
+                results,
+                selected_index,
+                expanded_index,
+                focus,
+                body_scroll,
+            } => draw_results(
+                frame,
+                results,
+                selected_index,
+                expanded_index,
+                focus,
+                body_scroll,
+                ctx.theme,
+            ),
             Overlay::Settings { cursor } => {
                 let branch_sort = crate::view::sort_keys::display_string(
                     ctx.branch_columns,
@@ -388,6 +396,23 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                     ctx.active_filter_tokens,
                     &filter_query,
                     title,
+                    ctx.theme,
+                );
+            }
+            Overlay::FilterSelection { cursor } => {
+                let title = match ctx.active_view {
+                    ViewId::Graph => "Graph Filters",
+                    ViewId::Branches => "Filters",
+                    ViewId::Remotes => "Remote Filters",
+                    ViewId::Tags => "Tag Filters",
+                    ViewId::Worktrees => "Worktree Filters",
+                };
+                draw_filter_selected(
+                    frame,
+                    ctx.active_filter_tokens,
+                    &filter_query,
+                    title,
+                    *cursor,
                     ctx.theme,
                 );
             }

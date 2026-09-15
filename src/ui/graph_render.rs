@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use ratatui::prelude::*;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::git::graph::{GraphCommit, GraphRef, GraphRefKind, GraphSource};
 use crate::symbols::SymbolSet;
@@ -10,7 +10,7 @@ use crate::theme::Theme;
 use crate::view::graph::GraphState;
 use crate::view::ViewId;
 
-use super::shared::centered_rect;
+use super::modal::{draw_modal_shell, ModalActionRow, ModalFooter, ModalScroll, ModalSpec};
 use super::tab_bar::tab_bar_line;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -839,41 +839,40 @@ fn short_oid(oid: &str) -> String {
 
 /// Draw the opt-in remote-ref/load-older controls for the Graph tab.
 pub fn draw_graph_options(frame: &mut Frame, cursor: usize, include_remotes: bool, theme: &Theme) {
-    let width = 46.min(frame.area().width);
-    let height = 8.min(frame.area().height);
-    let rect = centered_rect(width, height, frame.area());
-    let selected = theme.cursor;
     let rows = [
-        format!(
-            "{} Include remote refs",
-            if include_remotes { "[x]" } else { "[ ]" }
+        ModalActionRow::new(
+            Some(' '),
+            format!(
+                "{} Include remote refs",
+                if include_remotes { "[x]" } else { "[ ]" }
+            ),
+            "",
         ),
-        "Load older history (+500 commits)".to_string(),
+        ModalActionRow::new(None, "Load older history (+500 commits)", ""),
     ];
+    let areas = draw_modal_shell(
+        frame,
+        &ModalSpec::new(
+            "Graph options",
+            ModalFooter::hints(&[
+                ("j/k", "Navigate"),
+                ("Space", "Toggle"),
+                ("Enter", "Apply"),
+                ("Esc", "Cancel"),
+            ]),
+            68,
+            6,
+        ),
+        theme,
+    );
+    let mut scroll = ModalScroll::default();
+    scroll.ensure_visible(cursor as u16, rows.len() as u16, areas.body.height);
     let lines = rows
         .iter()
         .enumerate()
-        .map(|(index, row)| {
-            if index == cursor {
-                Line::from(Span::styled(format!(" > {row}"), selected))
-            } else {
-                Line::from(format!("   {row}"))
-            }
-        })
-        .chain([
-            Line::from(""),
-            Line::from(Span::styled(
-                " Space toggle  Enter apply  Esc cancel",
-                theme.dim,
-            )),
-        ])
+        .map(|(index, row)| row.render(index == cursor, theme))
         .collect::<Vec<_>>();
-    let block = Block::default()
-        .title(" Graph options ")
-        .title_style(theme.title)
-        .borders(Borders::ALL);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(Paragraph::new(lines).block(block), rect);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll.offset, 0)), areas.body);
 }
 
 #[cfg(test)]

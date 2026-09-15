@@ -1,11 +1,10 @@
 use ratatui::prelude::*;
-use ratatui::style::Modifier;
-use ratatui::widgets::{Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::theme::Theme;
 use crate::view::ViewId;
 
-use super::shared::{block_panel, centered_rect};
+use super::modal::{draw_modal_shell, ModalFooter, ModalScroll, ModalSpec};
 
 /// Common keybindings shown for all views.
 const COMMON_KEYS: &[(&str, &str)] = &[
@@ -88,12 +87,8 @@ const GRAPH_CONCEPTS: &[&str] = &[
 ];
 
 /// Renders the help overlay on top of the current view.
-pub fn draw_help(frame: &mut Frame, active_view: ViewId, theme: &Theme) {
-    let area = frame.area();
-
-    let key_style = Style::default()
-        .fg(theme.accent_fg())
-        .add_modifier(Modifier::BOLD);
+pub fn draw_help(frame: &mut Frame, active_view: ViewId, scroll: &mut usize, theme: &Theme) {
+    let key_style = theme.modal_key;
 
     // Choose view-specific keys
     let view_keys: &[(&str, &str)] = match active_view {
@@ -129,8 +124,17 @@ pub fn draw_help(frame: &mut Frame, active_view: ViewId, theme: &Theme) {
     // only when the terminal is too narrow. (Previously this was inverted:
     // single-column was the default and two-column only kicked in when the
     // terminal was too short for single-column.)
-    let content_height_single = all_lines.len() as u16 + 2;
-    let use_two_cols = area.width >= col_width * 2 + separator.chars().count() as u16 + 4;
+    let use_two_cols = frame.area().width >= col_width * 2 + separator.chars().count() as u16 + 4;
+    let areas = draw_modal_shell(
+        frame,
+        &ModalSpec::new(
+            "Help",
+            ModalFooter::hints(&[("j/k", "Scroll"), ("PgUp/Dn", "Page"), ("Esc", "Close")]),
+            82,
+            22,
+        ),
+        theme,
+    );
 
     if use_two_cols {
         let mid = all_lines.len().div_ceil(2);
@@ -155,29 +159,26 @@ pub fn draw_help(frame: &mut Frame, active_view: ViewId, theme: &Theme) {
             })
             .collect();
 
-        let width = (col_width * 2 + separator.len() as u16 + 6).min(area.width);
-        let height = (mid as u16 + 2).min(area.height);
-        let rect = centered_rect(width, height, area);
-
-        let block = block_panel(theme).title("Help").title_style(theme.title);
-        let paragraph = Paragraph::new(lines).block(block);
-        frame.render_widget(Clear, rect);
-        frame.render_widget(paragraph, rect);
+        let offset = clamp_scroll(scroll, mid as u16, areas.body.height);
+        frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), areas.body);
     } else {
         // Single column
         let lines: Vec<Line> = all_lines
             .iter()
             .map(|entry| Line::from(render_help_entry(entry, key_style, theme)))
             .collect();
-        let width = (col_width + 6).min(area.width);
-        let height = content_height_single.min(area.height);
-        let rect = centered_rect(width, height, area);
-
-        let block = block_panel(theme).title("Help").title_style(theme.title);
-        let paragraph = Paragraph::new(lines).block(block);
-        frame.render_widget(Clear, rect);
-        frame.render_widget(paragraph, rect);
+        let offset = clamp_scroll(scroll, all_lines.len() as u16, areas.body.height);
+        frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), areas.body);
     }
+}
+
+/// Bounds the persisted Help offset to the rows that can occupy the shell body.
+fn clamp_scroll(scroll: &mut usize, total_rows: u16, viewport_rows: u16) -> u16 {
+    let mut modal_scroll = ModalScroll::default();
+    modal_scroll.offset = (*scroll).min(u16::MAX as usize) as u16;
+    modal_scroll.clamp(total_rows, viewport_rows);
+    *scroll = modal_scroll.offset as usize;
+    modal_scroll.offset
 }
 
 enum HelpEntry {
@@ -227,21 +228,15 @@ fn build_help_entries(
 fn render_help_entry<'a>(entry: &HelpEntry, key_style: Style, theme: &Theme) -> Vec<Span<'a>> {
     match entry {
         HelpEntry::Section(title) => {
-            vec![Span::styled(
-                title.clone(),
-                theme.title.add_modifier(Modifier::BOLD),
-            )]
+            vec![Span::styled(title.clone(), theme.modal_title)]
         }
         HelpEntry::Key { key, desc } => {
             vec![
                 Span::styled(format!("{:<10}", key), key_style),
-                Span::styled(desc.clone(), Style::default()),
+                Span::styled(desc.clone(), theme.modal_secondary),
             ]
         }
-        HelpEntry::Note(text) => vec![Span::styled(
-            text.clone(),
-            Style::default().add_modifier(Modifier::DIM),
-        )],
+        HelpEntry::Note(text) => vec![Span::styled(text.clone(), theme.modal_secondary)],
         HelpEntry::Blank => {
             vec![Span::raw("")]
         }

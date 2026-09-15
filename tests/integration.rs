@@ -1583,6 +1583,96 @@ fn test_delete_local_classifies_primary_and_linked_worktree_failures() {
 }
 
 #[test]
+fn test_dirty_linked_worktree_reports_all_changes_and_remains_recoverable() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    let linked_path = dir.join(".worktrees/dirty-linked");
+    let linked_path_text = linked_path.to_string_lossy().into_owned();
+
+    run_git(dir, &["branch", "feature/dirty-linked"]);
+    run_git(
+        dir,
+        &[
+            "worktree",
+            "add",
+            linked_path_text.as_str(),
+            "feature/dirty-linked",
+        ],
+    );
+    std::fs::write(linked_path.join("README.md"), "# Dirty linked worktree\n").unwrap();
+    for index in 0..6 {
+        std::fs::write(
+            linked_path.join(format!("untracked-{index}.txt")),
+            format!("untracked {index}\n"),
+        )
+        .unwrap();
+    }
+
+    let worktrees = worktree::list_worktrees(dir);
+    let linked_index = worktrees
+        .iter()
+        .position(|worktree| worktree.branch.as_deref() == Some("feature/dirty-linked"))
+        .expect("linked worktree should be listed");
+    assert!(
+        !worktrees[linked_index].is_main,
+        "the dirty linked worktree must be non-primary"
+    );
+
+    let statuses = worktree::enrich_worktrees(worktrees);
+    let linked_status = statuses
+        .iter()
+        .find(|result| result.index == linked_index)
+        .expect("linked worktree should be enriched")
+        .wt_status;
+    assert!(linked_status.has_modified, "README.md is modified");
+    assert!(linked_status.has_untracked, "six files are untracked");
+    assert!(!linked_status.has_staged, "no changes are staged");
+    assert_eq!(
+        linked_status.changed_files.len(),
+        7,
+        "the presentation layer may bound its list to five, but enrichment retains all facts"
+    );
+    assert!(linked_status
+        .changed_files
+        .iter()
+        .any(|file| { file.path == "README.md" && file.kind == ChangedFileKind::Modified }));
+    for index in 0..6 {
+        assert!(
+            linked_status.changed_files.iter().any(|file| {
+                file.path == format!("untracked-{index}.txt")
+                    && file.kind == ChangedFileKind::Untracked
+            }),
+            "untracked-{index}.txt was omitted from linked-worktree enrichment"
+        );
+    }
+
+    let linked = operations::delete_local(&repo, "feature/dirty-linked");
+    assert!(!linked.success, "a linked worktree branch is not removable");
+    match linked.failure {
+        Some(FailureCause::CheckedOutInWorktree {
+            worktree_path,
+            is_main: false,
+        }) => assert!(
+            worktree_path.ends_with(".worktrees/dirty-linked"),
+            "Git must identify the linked worktree, got {}",
+            worktree_path.display()
+        ),
+        other => panic!("expected a recoverable linked-worktree failure, got {other:?}"),
+    }
+
+    let primary = operations::delete_local(&repo, "main");
+    assert!(!primary.success, "the primary branch is not removable");
+    assert!(matches!(primary.failure, Some(FailureCause::Other { .. })));
+
+    if std::env::var_os("GBM_KEEP_TEST_REPOS").is_none() {
+        run_git(
+            dir,
+            &["worktree", "remove", "--force", linked_path_text.as_str()],
+        );
+    }
+}
+
+#[test]
 fn test_ahead_behind_indicators() {
     // Create a bare "remote" repo, clone it, push a branch, then add a local commit.
     // The branch should report ahead=1, behind=0.

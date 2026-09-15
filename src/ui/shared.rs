@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use ratatui::prelude::*;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Padding};
 
 use crate::theme::Theme;
@@ -154,13 +154,16 @@ pub fn render_progress_bar(inner_width: usize, completed: usize, total: usize) -
 /// dim-styled label. Shared by confirm/menu/info-modal/status-bar hint text
 /// so every overlay renders shortcut hints identically.
 pub fn key_hint(key: char, label: &str, theme: &Theme) -> Vec<Span<'static>> {
-    let key_style = Style::default()
-        .fg(theme.accent_fg())
-        .add_modifier(Modifier::BOLD);
+    key_hint_str(&key.to_string(), label, theme)
+}
+
+/// Returns the canonical `[key] label` hint spans for string-capable shortcut
+/// keys, including multi-character keys such as `Esc`.
+pub fn key_hint_str(key: &str, label: &str, theme: &Theme) -> Vec<Span<'static>> {
     vec![
-        Span::styled("[", theme.dim),
-        Span::styled(key.to_string(), key_style),
-        Span::styled(format!("] {label}"), theme.dim),
+        Span::styled("[", theme.modal_footer),
+        Span::styled(key.to_string(), theme.modal_key),
+        Span::styled(format!("] {label}"), theme.modal_footer),
     ]
 }
 
@@ -171,7 +174,7 @@ pub fn key_hint(key: char, label: &str, theme: &Theme) -> Vec<Span<'static>> {
 pub fn block_panel(theme: &Theme) -> Block<'_> {
     Block::default()
         .borders(Borders::ALL)
-        .border_style(theme.dim)
+        .border_style(theme.modal_border)
         .padding(Padding::horizontal(1))
 }
 

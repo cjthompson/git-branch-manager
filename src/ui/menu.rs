@@ -1,11 +1,11 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{Clear, List, ListItem};
+use ratatui::widgets::Paragraph;
 
 use crate::symbols::SymbolSet;
 use crate::theme::Theme;
 use crate::types::BranchAction;
 
-use super::shared::block_panel;
+use super::modal::{draw_modal_shell, ModalActionRow, ModalFooter, ModalScroll, ModalSpec};
 
 /// A single item in the context menu overlay.
 #[derive(Debug, Clone)]
@@ -21,77 +21,58 @@ pub struct MenuItem {
     pub reason: Option<String>,
 }
 
-/// Renders a context menu overlay at the given anchor row.
-///
-/// `items` is the list of menu entries (some may be disabled).
-/// `cursor` is the current highlighted menu item index.
-/// `anchor_row` is the y position to anchor the menu near.
+/// Renders a context menu overlay through the shared modal shell.
 pub fn draw_menu(
     frame: &mut Frame,
     items: &[MenuItem],
     cursor: usize,
-    anchor_row: u16,
     theme: &Theme,
     symbols: &SymbolSet,
 ) {
-    let area = frame.area();
-    let menu_width = 35u16.min(area.width);
-    let menu_height = (items.len() as u16 + 2).min(area.height); // +2 for borders
+    let areas = draw_modal_shell(
+        frame,
+        &ModalSpec::new(
+            "Actions",
+            ModalFooter::hints(&[("j/k", "Navigate"), ("Enter", "Select"), ("Esc", "Close")]),
+            54,
+            items.len() as u16 + 3,
+        ),
+        theme,
+    );
+    let mut scroll = ModalScroll::default();
+    scroll.ensure_visible(cursor as u16, items.len() as u16, areas.body.height);
 
-    // Position near cursor row, right side of screen
-    let y = anchor_row.min(area.height.saturating_sub(menu_height));
-    let x = area.width.saturating_sub(menu_width + 1);
-    let rect = Rect::new(x, y, menu_width, menu_height);
-
-    let list_items: Vec<ListItem> = items
+    let lines: Vec<Line> = items
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let prefix = if i == cursor {
+            let selected = i == cursor && item.enabled;
+            let prefix = if selected {
                 format!("{} ", symbols.cursor_prefix)
             } else {
                 "  ".to_string()
             };
 
-            let item_style = if !item.enabled {
-                theme.secondary_text
-            } else if i == cursor {
-                theme.cursor
-            } else {
-                Style::default()
-            };
-
-            let prefix_span = Span::styled(prefix, item_style);
-            let mut spans = vec![prefix_span];
-
-            if let Some(ch) = item.shortcut {
-                spans.push(Span::styled("[", item_style));
-                spans.push(Span::styled(
-                    ch.to_string(),
+            let mut line = ModalActionRow::new(
+                item.shortcut,
+                item.label.clone(),
+                item.reason.clone().unwrap_or_default(),
+            )
+            .render_with_availability(selected, item.enabled, theme);
+            line.spans.insert(
+                0,
+                Span::styled(
+                    prefix,
                     if item.enabled {
-                        item_style.patch(theme.title)
+                        Style::default()
                     } else {
-                        item_style
+                        theme.modal_action_unavailable
                     },
-                ));
-                spans.push(Span::styled(format!("] {}", item.label), item_style));
-            } else {
-                spans.push(Span::styled(item.label.clone(), item_style));
-            }
-
-            if let Some(reason) = &item.reason {
-                spans.push(Span::styled(format!(" ({})", reason), item_style));
-            }
-
-            ListItem::new(Line::from(spans))
+                ),
+            );
+            line
         })
         .collect();
 
-    let block = block_panel(theme)
-        .title("Actions")
-        .title_style(theme.title);
-
-    let list = List::new(list_items).block(block);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(list, rect);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll.offset, 0)), areas.body);
 }

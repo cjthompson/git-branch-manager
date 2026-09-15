@@ -1,166 +1,386 @@
+use std::path::PathBuf;
+
 use ratatui::prelude::*;
-use ratatui::widgets::{Clear, Paragraph, Wrap};
+use ratatui::widgets::Paragraph;
 
 use crate::theme::Theme;
-use crate::types::BranchAction;
+use crate::types::{BranchAction, ChangedFile, MergeStatus};
 
-use super::render::ConfirmExtraKey;
-use super::shared::{block_panel, centered_rect, key_hint};
+use super::modal::{draw_modal_shell, ModalActionRow, ModalFooter, ModalScroll, ModalSpec};
+use super::shared::abbreviate_path;
 
-/// Renders a confirmation dialog overlay.
-///
-/// `action` is the operation about to be performed.
-/// `target_names` is the list of items the action will affect.
-/// `reason` (plan P005 §6) is an optional pre-flight reason block
-/// rendered above the target list when the build_delete_preflight pass
-/// detected unmerged commits or a worktree holding the branch.
-/// `extra_keys` are the alternate-action keys (`!`, `r`) shown after
-/// `[y]es [n]o` so the user can switch to the recovery variant
-/// without leaving the confirm flow.
+/// Structured safety facts collected before a local branch deletion.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeletePreflight {
+    pub risks: Vec<DeleteRisk>,
+}
+
+/// One reason a local branch deletion needs additional review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteRisk {
+    UniqueCommits {
+        branch: String,
+        base: String,
+        status: MergeStatus,
+        merge_base_commit: Option<String>,
+    },
+    CheckedOut {
+        branch: String,
+        worktree: PathBuf,
+        is_main: bool,
+    },
+    DirtyWorktree {
+        worktree: PathBuf,
+        files: Vec<ChangedFile>,
+        omitted: usize,
+    },
+}
+
+/// One selectable operation in the initial confirmation stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmChoice {
+    pub accelerator: char,
+    pub action: BranchAction,
+    pub targets: Vec<String>,
+    pub remote: Option<String>,
+    pub command: String,
+    pub description: String,
+    pub destructive_target: Option<ConfirmTarget>,
+}
+
+/// The one exact target authorized by a destructive final confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfirmTarget {
+    Branch(String),
+    Worktree(PathBuf),
+    BranchWorktree { branch: String, worktree: PathBuf },
+}
+
+impl ConfirmTarget {
+    /// The single queue target corresponding to this confirmation target.
+    pub fn job_target(&self) -> String {
+        match self {
+            Self::Branch(branch) | Self::BranchWorktree { branch, .. } => branch.clone(),
+            Self::Worktree(worktree) => worktree.to_string_lossy().into_owned(),
+        }
+    }
+}
+
+/// Confirmation advances explicitly before a recovery action can discard data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfirmStage {
+    Initial,
+    FinalDestructive {
+        choice: ConfirmChoice,
+        target: ConfirmTarget,
+    },
+}
+
+/// Renders the typed confirmation state through the shared modal shell.
 pub fn draw_confirm(
     frame: &mut Frame,
-    action: BranchAction,
-    target_names: &[String],
-    reason: Option<&str>,
-    extra_keys: &[ConfirmExtraKey],
+    preflight: &DeletePreflight,
+    choices: &[ConfirmChoice],
+    selected: usize,
+    body_scroll: &mut ModalScroll,
+    stage: &ConfirmStage,
     theme: &Theme,
 ) {
-    let action_label = action.label();
-    let count = target_names.len();
+    let final_stage = matches!(stage, ConfirmStage::FinalDestructive { .. });
+    let title = if final_stage {
+        "Confirm destructive action"
+    } else {
+        "Confirm action"
+    };
+    let area = frame.area();
+    let preferred_width = (area.width * 80 / 100).clamp(48, 100);
+    let max_height = (area.height * 80 / 100).max(8).min(area.height);
+    let areas = draw_modal_shell(
+        frame,
+        &ModalSpec::new(title, ModalFooter::hints(&[]), preferred_width, max_height),
+        theme,
+    );
 
+    let path_width = areas.body.width.saturating_sub(20).max(12) as usize;
+    let (lines, selected_row) = match stage {
+        ConfirmStage::Initial => initial_lines(preflight, choices, selected, path_width, theme),
+        ConfirmStage::FinalDestructive { choice, target } => {
+            (final_lines(choice, target, theme), None)
+        }
+    };
+    let total_rows = lines.len().min(u16::MAX as usize) as u16;
+    let overflowing = total_rows > areas.body.height;
+    let footer = confirm_footer(final_stage, overflowing, areas.footer);
+    footer.render(theme, areas.footer, frame);
+    body_scroll.keep_focus_visible(selected_row, total_rows, areas.body.height);
+
+    frame.render_widget(
+        Paragraph::new(lines).scroll((body_scroll.offset, 0)),
+        areas.body,
+    );
+}
+
+fn confirm_footer(final_stage: bool, overflowing: bool, area: Rect) -> ModalFooter<'static> {
+    if final_stage {
+        let full = if overflowing {
+            vec![
+                ("y/Enter", "Confirm"),
+                ("n/Esc", "Cancel"),
+                ("PgUp/Dn", "Page"),
+            ]
+        } else {
+            vec![("y/Enter", "Confirm"), ("n/Esc", "Cancel")]
+        };
+        let compact = if overflowing {
+            vec![("y/Enter", "Yes"), ("n/Esc", "No"), ("PgUp/Dn", "Scroll")]
+        } else {
+            vec![("y/Enter", "Yes"), ("n/Esc", "No")]
+        };
+        ModalFooter::adaptive_hints_with_compact(area, &full, &compact)
+    } else {
+        let full = if overflowing {
+            vec![
+                ("j/k", "Navigate"),
+                ("Enter", "Select"),
+                ("Esc", "Cancel"),
+                ("PgUp/Dn", "Page"),
+            ]
+        } else {
+            vec![("j/k", "Navigate"), ("Enter", "Select"), ("Esc", "Cancel")]
+        };
+        let compact = if overflowing {
+            vec!["j/k", "Enter", "Esc", "PgUp/Dn"]
+        } else {
+            vec!["j/k", "Enter", "Esc"]
+        };
+        ModalFooter::adaptive_hints(area, &full, &compact)
+    }
+}
+
+fn initial_lines(
+    preflight: &DeletePreflight,
+    choices: &[ConfirmChoice],
+    selected: usize,
+    path_width: usize,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, Option<u16>) {
     let mut lines = vec![
         Line::from(Span::styled(
-            format!("{action_label} {count} item(s)?"),
-            theme.title,
+            "Review the target and choose an action.",
+            theme.modal_secondary,
         )),
         Line::from(""),
     ];
 
-    // Optional pre-flight reason block (plan P005 §6). Rendered as one
-    // wrapped paragraph so long worktree paths flow on narrow terminals
-    // instead of being mid-word truncated.
-    if let Some(reason_text) = reason {
-        for raw_line in reason_text.split('\n') {
-            lines.push(Line::from(Span::styled(
-                format!("  {}", raw_line),
-                theme.secondary_text,
-            )));
+    if let Some(default_choice) = choices.first() {
+        lines.push(Line::from(Span::styled("Targets", theme.modal_title)));
+        for target in &default_choice.targets {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(target.clone(), branch_style(target, theme)),
+            ]));
         }
         lines.push(Line::from(""));
     }
 
-    for name in target_names {
-        lines.push(Line::from(Span::styled(
-            format!("  {}", name),
-            theme.selected,
-        )));
+    if !preflight.risks.is_empty() {
+        lines.push(Line::from(Span::styled("Safety review", theme.modal_title)));
+        for risk in &preflight.risks {
+            push_risk_lines(&mut lines, risk, path_width, theme);
+        }
+        lines.push(Line::from(""));
     }
 
-    lines.push(Line::from(""));
-    let key_style = Style::default().fg(theme.accent_fg()).add_modifier(Modifier::BOLD);
-    let mut footer = vec![
-        Span::styled("[", theme.dim),
-        Span::styled("y", key_style),
-        Span::styled("]es  [", theme.dim),
-        Span::styled("n", key_style),
-        Span::styled("]o", theme.dim),
-    ];
-    // Append the alternate-action hints so the user can see what `!`
-    // and `r` would do at a glance.
-    for extra in extra_keys {
-        footer.push(Span::raw("  "));
-        footer.extend(key_hint(extra.key, &extra.label, theme));
+    lines.push(Line::from(Span::styled("Choices", theme.modal_title)));
+    let selected = selected.min(choices.len().saturating_sub(1));
+    let mut selected_row = None;
+    for (index, choice) in choices.iter().enumerate() {
+        if index == selected {
+            selected_row = Some(lines.len().min(u16::MAX as usize) as u16);
+        }
+        lines.push(
+            ModalActionRow::new(
+                Some(choice.accelerator),
+                choice.command.clone(),
+                choice.description.clone(),
+            )
+            .render(index == selected, theme),
+        );
     }
-    lines.push(Line::from(footer));
 
-    // Calculate overlay size
-    let area = frame.area();
-    let max_height = (area.height * 60 / 100).max(8);
-    let inner_max = max_height.saturating_sub(2) as usize; // subtract borders
+    (lines, selected_row)
+}
 
-    // Truncate if content exceeds available space. Header now has the
-    // action line + blank + (optional reason block + blank) + targets +
-    // blank + footer; the math below assumes a fixed 3-line footer
-    // (blank + yes/no + extras still wraps to one line on most widths)
-    // and recomputes the available budget for the target list.
-    if lines.len() > inner_max {
-        // Fixed blocks at top: action line, blank, optional reason
-        // (re-counted below), blank, then footer (2 lines: blank +
-        // key list). We compute header_lines dynamically so the
-        // optional reason block fits.
-        let action_lines = 2; // action question + blank
-        let reason_lines = reason.map_or(0, |r| {
-            // Each reason line plus a trailing blank. The pre-flight
-            // produces reason_text.split('\n') joined by ", OR\n  ", so
-            // count explicit newlines. Worst case this over-estimates
-            // by one blank line, which only eats one target line.
-            r.matches('\n').count() + 2
-        });
-        let footer_lines = 2; // blank + yes/no (extras wrap inline)
-        let header_lines = action_lines + reason_lines;
-        let available_for_items =
-            inner_max.saturating_sub(header_lines + footer_lines + 1);
-
-        let targets_start = header_lines;
-        let targets_end = lines.len() - footer_lines;
-        let total_items = targets_end.saturating_sub(targets_start);
-        let hidden = total_items.saturating_sub(available_for_items);
-
-        if hidden > 0 {
-            let footer: Vec<Line> = lines.split_off(lines.len() - footer_lines);
-            lines.truncate(targets_start + available_for_items);
+fn push_risk_lines(
+    lines: &mut Vec<Line<'static>>,
+    risk: &DeleteRisk,
+    path_width: usize,
+    theme: &Theme,
+) {
+    match risk {
+        DeleteRisk::UniqueCommits {
+            branch,
+            base,
+            status,
+            merge_base_commit,
+        } => {
+            lines.push(Line::from(vec![
+                Span::styled("  Status: ", theme.modal_secondary),
+                Span::styled(
+                    merge_status_label(*status),
+                    merge_status_style(*status, theme),
+                ),
+                Span::raw("  "),
+                Span::styled(branch.clone(), branch_style(branch, theme)),
+                Span::styled(" compared with ", theme.modal_secondary),
+                Span::styled(base.clone(), branch_style(base, theme)),
+            ]));
+            if let Some(hash) = merge_base_commit {
+                lines.push(Line::from(vec![
+                    Span::styled("    Merge base: ", theme.modal_secondary),
+                    Span::styled(hash.clone(), theme.modal_commit),
+                ]));
+            }
+        }
+        DeleteRisk::CheckedOut {
+            branch,
+            worktree,
+            is_main,
+        } => {
+            let path = abbreviate_path(worktree, path_width);
+            lines.push(Line::from(vec![
+                Span::styled("  Checked out  ", theme.modal_warning),
+                Span::styled(branch.clone(), branch_style(branch, theme)),
+                Span::styled(" at ", theme.modal_secondary),
+                Span::styled(path, theme.modal_worktree),
+            ]));
+            if *is_main {
+                lines.push(Line::from(Span::styled(
+                    "  PRIMARY WORKTREE - removal recovery is disabled",
+                    theme.modal_warning,
+                )));
+            }
+        }
+        DeleteRisk::DirtyWorktree {
+            worktree,
+            files,
+            omitted,
+        } => {
+            let path = abbreviate_path(worktree, path_width);
             lines.push(Line::from(Span::styled(
-                format!("  ...{} more", hidden),
-                theme.dim,
+                format!("  DIRTY WORKTREE  {path}"),
+                theme.modal_warning,
             )));
-            lines.extend(footer);
+            for file in files {
+                lines.push(Line::from(Span::styled(
+                    format!("    {}: {}", file.kind.label(), file.path),
+                    theme.modal_warning,
+                )));
+            }
+            if *omitted > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("    +{omitted} more"),
+                    theme.modal_warning,
+                )));
+            }
+            if files.is_empty() && *omitted == 0 {
+                lines.push(Line::from(Span::styled(
+                    "    staged changes are present",
+                    theme.modal_warning,
+                )));
+            }
         }
     }
+}
 
-    // Expand width to fit the longest content line, avoiding mid-word wraps.
-    let content_max_width = lines
-        .iter()
-        .map(|l: &Line| {
-            l.spans
-                .iter()
-                .map(|s| s.content.chars().count())
-                .sum::<usize>()
-        })
-        .max()
-        .unwrap_or(0) as u16;
-    let width_cap = (area.width * 80 / 100).min(100);
-    let width = (content_max_width + 4)
-        .max(40)
-        .min(area.width.saturating_sub(2))
-        .min(width_cap);
+fn final_lines(
+    choice: &ConfirmChoice,
+    target: &ConfirmTarget,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "FINAL DESTRUCTIVE CONFIRMATION",
+            theme.modal_warning,
+        )),
+        Line::from(vec![
+            Span::styled("Action: ", theme.modal_secondary),
+            Span::styled(choice.action.label(), theme.modal_command),
+        ]),
+    ];
+    match target {
+        ConfirmTarget::Branch(branch) => lines.push(Line::from(vec![
+            Span::styled("Branch: ", theme.modal_secondary),
+            Span::styled(branch.clone(), branch_style(branch, theme)),
+        ])),
+        ConfirmTarget::Worktree(worktree) => lines.push(Line::from(vec![
+            Span::styled("Worktree: ", theme.modal_secondary),
+            Span::styled(
+                worktree.to_string_lossy().into_owned(),
+                theme.modal_worktree,
+            ),
+        ])),
+        ConfirmTarget::BranchWorktree { branch, worktree } => {
+            lines.push(Line::from(vec![
+                Span::styled("Branch: ", theme.modal_secondary),
+                Span::styled(branch.clone(), branch_style(branch, theme)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Worktree: ", theme.modal_secondary),
+                Span::styled(
+                    worktree.to_string_lossy().into_owned(),
+                    theme.modal_worktree,
+                ),
+            ]));
+        }
+    }
+    if let Some(remote) = &choice.remote {
+        lines.push(Line::from(vec![
+            Span::styled("Remote: ", theme.modal_secondary),
+            Span::styled(remote.clone(), theme.modal_branch),
+        ]));
+    }
+    lines.extend([
+        Line::from(vec![
+            Span::styled("Command: ", theme.modal_secondary),
+            Span::styled(choice.command.clone(), theme.modal_command),
+        ]),
+        Line::from(Span::styled(
+            data_loss_text(choice.action),
+            theme.modal_warning,
+        )),
+    ]);
+    lines
+}
 
-    // Simulate wrapping at the actual inner width so the height accounts for
-    // any lines that still wrap (e.g. very long paths in narrow terminals).
-    let inner_width = width.saturating_sub(4) as usize; // 2 for borders + 2 for block_panel's horizontal padding
-    let wrapped_height: usize = lines
-        .iter()
-        .map(|l| {
-            let chars: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
-            if chars == 0 {
-                1
-            } else {
-                chars.div_ceil(inner_width.max(1))
-            }
-        })
-        .sum();
-    let content_height = (wrapped_height as u16) + 2 + 2; // +2 borders, +2 word-wrap slack (ratatui's Wrap{trim:false} is word-wrap, not char-wrap, so the div_ceil simulation above can under-count)
-    let height = content_height.min(max_height).min(area.height);
+fn merge_status_label(status: MergeStatus) -> &'static str {
+    match status {
+        MergeStatus::LikelySquashMerged => "Possible Squash Merge",
+        MergeStatus::Unmerged => "Unmerged",
+        _ => "Requires Review",
+    }
+}
 
-    let rect = centered_rect(width, height, area);
+fn merge_status_style(status: MergeStatus, theme: &Theme) -> Style {
+    match status {
+        MergeStatus::LikelySquashMerged => theme.squash_merged.add_modifier(Modifier::DIM),
+        MergeStatus::Unmerged => theme.modal_failure,
+        _ => theme.modal_warning,
+    }
+}
 
-    let block = block_panel(theme)
-        .title(format!("Confirm {}", action_label))
-        .title_style(theme.title);
+fn data_loss_text(action: BranchAction) -> &'static str {
+    match action {
+        BranchAction::DeleteLocalForce => {
+            "DATA LOSS: unique commits on the exact target may be permanently destroyed."
+        }
+        BranchAction::WorktreeForceRemove | BranchAction::DeleteBranchAndRemoveWorktreeForce => {
+            "DATA LOSS: uncommitted work and unique commits may be permanently destroyed."
+        }
+        _ => "DATA LOSS: removing this worktree and branch cannot be undone here.",
+    }
+}
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
-
-    frame.render_widget(Clear, rect);
-    frame.render_widget(paragraph, rect);
+fn branch_style(_name: &str, theme: &Theme) -> Style {
+    theme.modal_branch
 }

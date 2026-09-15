@@ -1,10 +1,13 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{Clear, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::theme::Theme;
 use crate::types::ProgressUpdate;
 
-use super::shared::{block_panel, centered_rect, render_progress_bar, truncate_left};
+use super::{
+    modal::{draw_modal_shell, ModalFooter, ModalSpec},
+    shared::{render_progress_bar, truncate_left},
+};
 
 /// Renders the executing/progress overlay.
 ///
@@ -16,21 +19,13 @@ pub fn draw_executing(
     progress: Option<&ProgressUpdate>,
     theme: &Theme,
 ) {
-    let area = frame.area();
-
-    let width = 50u16.min(area.width);
-
-    let block = block_panel(theme)
-        .title("Running")
-        .title_style(theme.title);
-
     let display_label = if label.is_empty() {
         "Working..."
     } else {
         label
     };
 
-    let inner_width = width.saturating_sub(4) as usize; // 2 for borders + 2 for block_panel's horizontal padding
+    let inner_width = 46usize;
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -43,16 +38,15 @@ pub fn draw_executing(
         lines.push(Line::from(Span::styled(bar, theme.primary_text)));
 
         // Line 3: current item name
-        let item_display = truncate_left(progress.current_item.as_str(), inner_width.saturating_sub(3));
+        let item_display = truncate_left(
+            progress.current_item.as_str(),
+            inner_width.saturating_sub(3),
+        );
         lines.push(Line::from(Span::styled(item_display, theme.secondary_text)));
-
-        // Line 4: cancel hint
-        lines.push(Line::from(Span::styled("Esc to cancel", theme.dim)));
     } else {
-        // No progress info yet, just show label and cancel hint
+        // No progress info yet, just show the label.
         lines.push(Line::from(Span::styled(display_label, theme.dim)));
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("Esc to cancel", theme.dim)));
     }
 
     // Height tracks actual content (accounting for word-wrap on a long
@@ -68,15 +62,21 @@ pub fn draw_executing(
             }
         })
         .sum();
-    let height = ((wrapped_height as u16) + 2).min(area.height); // +2 for borders
-
-    let rect = centered_rect(width, height, area);
+    let height = (wrapped_height as u16 + 3).max(5);
+    let areas = draw_modal_shell(
+        frame,
+        &ModalSpec::new(
+            "Running",
+            ModalFooter::hints(&[("Esc", "Cancel")]),
+            50,
+            height,
+        ),
+        theme,
+    );
 
     let paragraph = Paragraph::new(lines)
-        .block(block)
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: false });
 
-    frame.render_widget(Clear, rect);
-    frame.render_widget(paragraph, rect);
+    frame.render_widget(paragraph, areas.body);
 }

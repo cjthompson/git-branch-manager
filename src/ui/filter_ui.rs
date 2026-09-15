@@ -1,16 +1,15 @@
 use ratatui::prelude::*;
-use ratatui::style::Modifier;
-use ratatui::widgets::{Clear, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::theme::Theme;
 use crate::view::filter::{FilterSet, FilterTokenDef};
 
-use super::shared::{block_panel, centered_rect};
+use super::modal::{draw_modal_shell, ModalActionRow, ModalFooter, ModalScroll, ModalSpec};
 
 /// Renders the generic filter builder overlay.
 ///
 /// This single function works for all views by accepting the view's filter token
-/// definitions. Active tokens are highlighted in green.
+/// definitions. Active tokens use the modal success role.
 ///
 /// `filter_tokens` defines which filter toggles to show.
 /// `current_query` is the current filter query string.
@@ -22,21 +21,42 @@ pub fn draw_filter(
     title: &str,
     theme: &Theme,
 ) {
-    let area = frame.area();
+    draw_filter_with_selection(frame, filter_tokens, current_query, title, None, theme);
+}
 
-    let key_style = Style::default()
-        .fg(theme.accent_fg())
-        .add_modifier(Modifier::BOLD);
-    let active_style = Style::default()
-        .fg(theme.selected.fg.unwrap_or(ratatui::style::Color::Green))
-        .add_modifier(Modifier::BOLD);
-    let label_style = Style::default();
+/// Renders the interactive filter action list with a selected action.
+pub(crate) fn draw_filter_selected(
+    frame: &mut Frame,
+    filter_tokens: &[FilterTokenDef],
+    current_query: &str,
+    title: &str,
+    cursor: usize,
+    theme: &Theme,
+) {
+    draw_filter_with_selection(
+        frame,
+        filter_tokens,
+        current_query,
+        title,
+        Some(cursor),
+        theme,
+    );
+}
 
+fn draw_filter_with_selection(
+    frame: &mut Frame,
+    filter_tokens: &[FilterTokenDef],
+    current_query: &str,
+    title: &str,
+    cursor: Option<usize>,
+    theme: &Theme,
+) {
     // Group tokens by category based on their token prefix
     let mut lines: Vec<Line> = Vec::new();
+    let mut selected_row = None;
     let mut current_section: Option<&str> = None;
 
-    for token_def in filter_tokens {
+    for (index, token_def) in filter_tokens.iter().enumerate() {
         let section = token_section(token_def.token);
 
         // Insert section header if we've entered a new section
@@ -44,37 +64,44 @@ pub fn draw_filter(
             if current_section.is_some() {
                 lines.push(Line::from("")); // blank line between sections
             }
-            let section_style = Style::default()
-                .fg(theme.accent_fg())
-                .add_modifier(Modifier::BOLD);
-            lines.push(Line::from(Span::styled(section, section_style)));
+            lines.push(Line::from(Span::styled(section, theme.modal_title)));
             current_section = Some(section);
         }
 
-        lines.push(filter_line(
-            &token_def.key.to_string(),
-            token_def.label,
-            token_def.token,
-            current_query,
-            key_style,
-            active_style,
-            label_style,
-        ));
+        let selected = cursor == Some(index);
+        if selected {
+            selected_row = Some(lines.len().min(u16::MAX as usize) as u16);
+        }
+        let marker = if FilterSet::has_token(current_query, token_def.token) {
+            "\u{25c9}"
+        } else {
+            "\u{25ef}"
+        };
+        let state = if FilterSet::has_token(current_query, token_def.token) {
+            "Active"
+        } else {
+            "Inactive"
+        };
+        lines.push(
+            ModalActionRow::new(
+                Some(token_def.key),
+                format!("{marker} {}", token_def.label),
+                state,
+            )
+            .render(selected, theme),
+        );
     }
 
     // Add clear all option
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("c", key_style),
-        Span::styled("  Clear all filters", label_style),
-    ]));
-
-    // Footer hint: selecting filters keeps the modal open; Esc closes it.
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("esc", key_style),
-        Span::styled("  close", label_style),
-    ]));
+    let clear_selected = cursor == Some(filter_tokens.len());
+    if clear_selected {
+        selected_row = Some(lines.len().min(u16::MAX as usize) as u16);
+    }
+    lines.push(
+        ModalActionRow::new(Some('c'), "Clear all filters", "Remove every active filter")
+            .render(clear_selected, theme),
+    );
 
     let content_max_width = lines
         .iter()
@@ -86,19 +113,34 @@ pub fn draw_filter(
         })
         .max()
         .unwrap_or(0) as u16;
-    let content_height = lines.len() as u16 + 2; // +2 for borders
-    let width = (content_max_width + 4)
-        .max(36)
-        .min(area.width.saturating_sub(2));
-    let height = content_height.min(area.height);
-    let rect = centered_rect(width, height, area);
+    let areas = draw_modal_shell(
+        frame,
+        &ModalSpec::new(
+            title.to_string(),
+            ModalFooter::hints(&[]),
+            (content_max_width + 4).max(48),
+            lines.len() as u16 + 3,
+        ),
+        theme,
+    );
 
-    let block = block_panel(theme).title(title).title_style(theme.title);
+    ModalFooter::adaptive_hints(
+        areas.footer,
+        &[("j/k", "Select"), ("Enter", "Choose"), ("Esc", "Close")],
+        &["j/k", "Enter", "Esc"],
+    )
+    .render(theme, areas.footer, frame);
+    let mut scroll = ModalScroll::default();
+    if let Some(selected_row) = selected_row {
+        scroll.ensure_visible(selected_row, lines.len() as u16, areas.body.height);
+    }
 
-    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
-
-    frame.render_widget(Clear, rect);
-    frame.render_widget(paragraph, rect);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll.offset, 0)),
+        areas.body,
+    );
 }
 
 /// Determine the section name from a filter token's prefix.
@@ -114,31 +156,6 @@ fn token_section(token: &str) -> &'static str {
     } else {
         "Other"
     }
-}
-
-fn filter_line<'a>(
-    key: &str,
-    label: &str,
-    token: &str,
-    query: &str,
-    key_style: Style,
-    active_style: Style,
-    label_style: Style,
-) -> Line<'a> {
-    let is_active = FilterSet::has_token(query, token);
-    let marker = if is_active { "\u{25c9} " } else { "\u{25ef} " }; // filled vs empty circle
-    let (marker_style, text_style) = if is_active {
-        (active_style, active_style)
-    } else {
-        (label_style, label_style)
-    };
-
-    Line::from(vec![
-        Span::styled(key.to_string(), key_style),
-        Span::styled(" ".to_string(), label_style),
-        Span::styled(marker.to_string(), marker_style),
-        Span::styled(label.to_string(), text_style),
-    ])
 }
 
 #[cfg(test)]
