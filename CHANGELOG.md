@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-15
+
+### Tasks
+- Inventory typical Git operations and compare app actions (#git, #ui)
+
 ## 2026-09-13
 
 ### Modal system redesign (P008)
