@@ -1,13 +1,17 @@
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
+use std::sync::{mpsc, Arc};
 
 use git_branch_manager::git::{
-    branch, cache, cherry_loader, diagnostics, fuzzy_match, graph, merge_detection, operations,
-    squash_loader, status, tags, worktree,
+    branch, cache, capability, cherry_loader, diagnostics, fuzzy_match, graph, merge_detection,
+    operations, squash_loader, status, tags, worktree,
 };
+use git_branch_manager::job_queue::{ActionJob, ActionJobQueue};
 use git_branch_manager::types::{
-    ChangedFileKind, DiagKind, FailureCause, MergeStatus, SquashConfidence,
+    BranchAction, ChangedFileKind, DiagKind, FailureCause, MergeStatus, SquashConfidence,
+    TrackingStatus,
 };
+use git_branch_manager::view::ViewId;
 
 /// A temp directory for tests. Deletes itself on drop, EXCEPT when the
 /// `GBM_KEEP_TEST_REPOS` env var is set — then it leaks the directory and prints
@@ -253,8 +257,9 @@ fn test_load_graph_preserves_merge_lanes_and_local_refs() {
         ],
     );
 
-    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
-        .expect("graph loader should handle an ordinary merged local branch");
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+            .expect("graph loader should handle an ordinary merged local branch");
 
     assert!(matches!(snapshot.source, graph::GraphSource::Gleisbau));
     assert!(snapshot
@@ -290,8 +295,9 @@ fn test_graph_branch_labels_follow_visual_branch_tracks() {
         &["merge", "--no-ff", "release/0.3", "-m", "merge release/0.3"],
     );
 
-    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
-        .expect("graph loader should preserve live branch tracks");
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+            .expect("graph loader should preserve live branch tracks");
     let release_commit = snapshot
         .commits
         .iter()
@@ -436,7 +442,12 @@ fn test_graph_default_branch_renders_in_column_zero() {
     for i in 0..8 {
         run_git(
             dir,
-            &["commit", "--allow-empty", "-m", &format!("feature commit {i}")],
+            &[
+                "commit",
+                "--allow-empty",
+                "-m",
+                &format!("feature commit {i}"),
+            ],
         );
     }
 
@@ -464,7 +475,11 @@ fn test_graph_default_branch_renders_in_column_zero() {
         .iter()
         .filter(|commit| commit.summary.starts_with("main commit "))
         .collect();
-    assert_eq!(main_commits.len(), 3, "all 3 main commits should be in the graph");
+    assert_eq!(
+        main_commits.len(),
+        3,
+        "all 3 main commits should be in the graph"
+    );
     for commit in main_commits {
         assert_eq!(
             commit.lane,
@@ -506,7 +521,10 @@ fn test_graph_base_branch_with_special_chars_lands_in_column_zero() {
 
     run_git(dir, &["checkout", "main"]);
     run_git(dir, &["checkout", "-b", "release1X0"]);
-    run_git(dir, &["commit", "--allow-empty", "-m", "release1X0 commit 0"]);
+    run_git(
+        dir,
+        &["commit", "--allow-empty", "-m", "release1X0 commit 0"],
+    );
     run_git(dir, &["checkout", "main"]);
 
     let options = graph::GraphLoadOptions {
@@ -562,7 +580,10 @@ fn test_graph_base_branch_lands_in_column_zero_with_diverged_remote() {
     );
     run_git(&advance_dir, &["config", "user.name", "Test User"]);
     run_git(&advance_dir, &["config", "user.email", "test@example.com"]);
-    run_git(&advance_dir, &["commit", "--allow-empty", "-m", "remote ahead"]);
+    run_git(
+        &advance_dir,
+        &["commit", "--allow-empty", "-m", "remote ahead"],
+    );
     run_git(&advance_dir, &["push", "origin", "main"]);
 
     // Pull origin/main's new tip into work_dir's remote-tracking ref without
@@ -682,8 +703,9 @@ fn test_graph_does_not_expose_a_deleted_merge_branch_as_a_live_ref() {
     );
     run_git(dir, &["branch", "-D", "worktree-agent-deleted"]);
 
-    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
-        .expect("graph loader should handle deleted merge branches");
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+            .expect("graph loader should handle deleted merge branches");
     let deleted_commit = snapshot
         .commits
         .iter()
@@ -702,8 +724,11 @@ fn test_graph_does_not_expose_a_deleted_merge_branch_as_a_live_ref() {
 #[test]
 fn test_graph_labels_deleted_merge_branch_from_conventional_subject() {
     let tmpdir = setup_graph_label_fixture();
-    let snapshot = graph::load_graph_with_squash_annotations(tmpdir.path(), graph::GraphLoadOptions::default())
-        .expect("graph loader should preserve the composed fixture");
+    let snapshot = graph::load_graph_with_squash_annotations(
+        tmpdir.path(),
+        graph::GraphLoadOptions::default(),
+    )
+    .expect("graph loader should preserve the composed fixture");
     let deleted_commit = snapshot
         .commits
         .iter()
@@ -722,8 +747,11 @@ fn test_graph_labels_deleted_merge_branch_from_conventional_subject() {
 #[test]
 fn test_graph_label_fixture_labels_nested_and_first_parent_tracks() {
     let tmpdir = setup_graph_label_fixture();
-    let snapshot = graph::load_graph_with_squash_annotations(tmpdir.path(), graph::GraphLoadOptions::default())
-        .expect("graph loader should preserve the composed fixture");
+    let snapshot = graph::load_graph_with_squash_annotations(
+        tmpdir.path(),
+        graph::GraphLoadOptions::default(),
+    )
+    .expect("graph loader should preserve the composed fixture");
 
     let nested_commit = snapshot
         .commits
@@ -799,8 +827,9 @@ fn test_load_graph_includes_remote_refs_only_when_requested() {
     run_git(&work_dir, &["checkout", "main"]);
     run_git(&work_dir, &["branch", "-D", "remote-only"]);
 
-    let local_only = graph::load_graph_with_squash_annotations(&work_dir, graph::GraphLoadOptions::default())
-        .expect("local graph load should succeed");
+    let local_only =
+        graph::load_graph_with_squash_annotations(&work_dir, graph::GraphLoadOptions::default())
+            .expect("local graph load should succeed");
     assert!(!local_only
         .commits
         .iter()
@@ -905,8 +934,9 @@ fn test_graph_refs_mark_only_linked_worktrees() {
         &["worktree", "add", &linked_path_string, "feature/linked"],
     );
 
-    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
-        .expect("graph load should include linked worktree metadata");
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+            .expect("graph load should include linked worktree metadata");
     let linked = snapshot
         .commits
         .iter()
@@ -933,8 +963,9 @@ fn test_load_graph_caps_history_at_five_hundred_commits() {
         run_git(dir, &["commit", "--allow-empty", "-m", &message]);
     }
 
-    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
-        .expect("bounded graph load should succeed");
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+            .expect("bounded graph load should succeed");
     assert_eq!(snapshot.commits.len(), 500);
     assert_eq!(snapshot.max_count, 500);
 }
@@ -946,8 +977,9 @@ fn test_load_graph_uses_cli_fallback_for_shallow_repository() {
     let head = repo.head().unwrap().target().unwrap();
     std::fs::write(dir.join(".git/shallow"), format!("{head}\n")).unwrap();
 
-    let snapshot = graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
-        .expect("git CLI fallback should handle a shallow repository");
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+            .expect("git CLI fallback should handle a shallow repository");
 
     assert!(matches!(
         snapshot.source,
@@ -1531,12 +1563,21 @@ fn test_delete_local_requires_merge_but_force_delete_bypasses_it() {
     run_git(dir, &["checkout", "main"]);
 
     let safe = operations::delete_local(&repo, "feature/unmerged-delete");
-    assert!(!safe.success, "safe deletion must reject an unmerged branch");
+    assert!(
+        !safe.success,
+        "safe deletion must reject an unmerged branch"
+    );
     assert!(matches!(safe.failure, Some(FailureCause::NotMerged)));
 
     let forced = operations::delete_local_force(&repo, "feature/unmerged-delete");
-    assert!(forced.success, "force deletion should remove the branch: {forced:?}");
-    assert!(matches!(forced.action, git_branch_manager::types::BranchAction::DeleteLocalForce));
+    assert!(
+        forced.success,
+        "force deletion should remove the branch: {forced:?}"
+    );
+    assert!(matches!(
+        forced.action,
+        git_branch_manager::types::BranchAction::DeleteLocalForce
+    ));
     assert!(repo
         .find_branch("feature/unmerged-delete", git2::BranchType::Local)
         .is_err());
@@ -1548,7 +1589,10 @@ fn test_delete_local_classifies_primary_and_linked_worktree_failures() {
     let dir = tmpdir.path();
 
     let primary = operations::delete_local(&repo, "main");
-    assert!(!primary.success, "the checked-out primary branch is not removable");
+    assert!(
+        !primary.success,
+        "the checked-out primary branch is not removable"
+    );
     // Intentional behavior change (P005 review): `main` is checked out in the
     // primary worktree, which IS the caller's own worktree (repo_path ==
     // dir here). classify_delete_command_error now uses
@@ -1670,6 +1714,613 @@ fn test_dirty_linked_worktree_reports_all_changes_and_remains_recoverable() {
             &["worktree", "remove", "--force", linked_path_text.as_str()],
         );
     }
+}
+
+/// Reimplements `App::worktree_presence_for` (src/app.rs:3046-3056) against
+/// the `pub` `WorktreeInfo`/`WorktreePresence` types, since `App` itself is
+/// unreachable from this test binary (`app` is `mod app;` in main.rs, not
+/// re-exported by lib.rs). Kept in exact lockstep with the production
+/// lookup: first match by `branch == Some(name)`.
+fn worktree_presence_for<'a>(
+    worktrees: &'a [git_branch_manager::types::WorktreeInfo],
+    branch_name: &str,
+) -> Option<capability::WorktreePresence<'a>> {
+    worktrees
+        .iter()
+        .find(|wt| wt.branch.as_deref() == Some(branch_name))
+        .map(|wt| capability::WorktreePresence {
+            path: &wt.path,
+            is_main: wt.is_main,
+            is_clean: wt.wt_status.is_clean(),
+        })
+}
+
+/// Mirrors `App::worktree_presence_for_branch_or_base` (src/app.rs:3058-3071):
+/// tries the branch's own worktree first, only falling back to the base
+/// branch's worktree if the branch itself is checked out nowhere.
+fn worktree_presence_for_branch_or_base<'a>(
+    worktrees: &'a [git_branch_manager::types::WorktreeInfo],
+    branch_name: &str,
+    base_branch: &str,
+) -> Option<capability::WorktreePresence<'a>> {
+    worktree_presence_for(worktrees, branch_name)
+        .or_else(|| worktree_presence_for(worktrees, base_branch))
+}
+
+/// Real worktree state for `dir`: `list_worktrees` + synchronous
+/// `enrich_worktrees` drain.
+fn worktrees_with_status(dir: &std::path::Path) -> Vec<git_branch_manager::types::WorktreeInfo> {
+    let mut worktrees = worktree::list_worktrees(dir);
+    let rx = worktree::enrich_worktrees(worktrees.clone());
+    for result in rx.iter() {
+        if let Some(wt) = worktrees.get_mut(result.index) {
+            wt.wt_status = result.wt_status;
+            wt.age_date = result.age_date;
+        }
+    }
+    worktrees
+}
+
+/// Repo-wide remote check (src/app.rs:297,3659).
+fn has_configured_remote(repo: &git2::Repository) -> bool {
+    repo.remotes().map(|r| !r.is_empty()).unwrap_or(false)
+}
+
+/// Inject an ActionJob as "running" via `ActionJobQueue::inject_running_for_test`.
+/// No background thread spawned, no real git runs.
+fn inject_job_for_test(
+    queue: &mut ActionJobQueue,
+    action: BranchAction,
+    targets: Vec<String>,
+    dispatch_path: Option<std::path::PathBuf>,
+) {
+    let job = ActionJob {
+        action,
+        targets,
+        remote: None,
+        return_view: ViewId::Branches,
+        dispatch_path,
+    };
+    let (_op_tx, op_rx) = mpsc::channel();
+    let (_prog_tx, prog_rx) = mpsc::channel();
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    queue.inject_running_for_test(job, op_rx, prog_rx, cancel_flag);
+}
+
+/// Canonicalize a path for comparison. On macOS, `tempfile::tempdir()` returns
+/// `/var/folders/...` while `git2::Repository::work_path()` returns
+/// `/private/var/folders/...` (the real path behind the `/var` symlink);
+/// `std::fs::canonicalize` resolves both to the same canonical form so path
+/// equality assertions work portably.
+fn canonical(path: &std::path::Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+#[test]
+fn graph_enter_current_clean_branch_enables_rebase_and_push_disables_checkout_and_delete() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(
+        dir,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/repo.git",
+        ],
+    );
+    run_git(dir, &["checkout", "-b", "feature-current"]);
+    std::fs::write(dir.join("current.txt"), "current\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "feature-current commit"]);
+
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let current = branches
+        .iter()
+        .find(|b| b.name == "feature-current")
+        .expect("feature-current should be listed");
+    assert!(
+        current.is_current,
+        "feature-current should be the checked-out HEAD of the primary worktree"
+    );
+    assert!(!current.is_base);
+    assert!(matches!(current.tracking, TrackingStatus::Local));
+
+    let worktrees = worktrees_with_status(dir);
+    assert!(
+        worktree_presence_for(&worktrees, &current.name).is_some(),
+        "the current branch is checked out in the primary worktree, which list_worktrees always includes"
+    );
+
+    // Checkout / Delete local / Force-delete local / Create worktree: every
+    // evaluator checks `is_current` before `worktree.is_some()`
+    // (src/git/capability.rs:50-117), so the reason is "current", not
+    // "checked out in worktree", even though a WorktreePresence IS resolved
+    // here (the primary worktree itself).
+    let checkout =
+        capability::can_checkout_local(current, worktree_presence_for(&worktrees, &current.name));
+    assert!(!checkout.available);
+    assert_eq!(checkout.reason, Some("current"));
+
+    let delete_local =
+        capability::can_delete_local(current, worktree_presence_for(&worktrees, &current.name));
+    assert!(!delete_local.available);
+    assert_eq!(delete_local.reason, Some("current"));
+
+    let force_delete = capability::can_force_delete_local(
+        current,
+        worktree_presence_for(&worktrees, &current.name),
+    );
+    assert!(!force_delete.available);
+    assert_eq!(force_delete.reason, Some("current"));
+
+    let create_wt =
+        capability::can_create_worktree(current, worktree_presence_for(&worktrees, &current.name));
+    assert!(!create_wt.available);
+    assert_eq!(create_wt.reason, Some("current"));
+
+    // Rebase: allowed for the current branch regardless of cleanliness.
+    let rebase = capability::can_rebase(
+        current,
+        worktree_presence_for(&worktrees, &current.name),
+        true,
+    );
+    assert!(
+        rebase.available,
+        "rebase should be enabled on a clean current branch: {:?}",
+        rebase.reason
+    );
+
+    // Push: has_configured_remote is repo-wide, not per-branch.
+    let push = capability::can_push(current, has_configured_remote(&repo), true);
+    assert!(
+        push.available,
+        "push should be enabled for a clean current branch with no upstream: {:?}",
+        push.reason
+    );
+
+    // Merge into base: branch-first fallback resolves to current's own worktree.
+    let merge = capability::can_merge_into_base(
+        current,
+        worktree_presence_for_branch_or_base(&worktrees, &current.name, "main"),
+    );
+    assert!(
+        merge.available,
+        "merge should be enabled when the resolved worktree is clean: {:?}",
+        merge.reason
+    );
+
+    // Dispatch-path check for the enabled Rebase.
+    let dispatch_path =
+        worktree_presence_for(&worktrees, &current.name).map(|wt| wt.path.to_path_buf());
+    assert_eq!(
+        dispatch_path.as_deref().map(canonical).as_deref(),
+        Some(canonical(dir).as_path())
+    );
+
+    let mut queue = ActionJobQueue::new(dir.to_path_buf(), "main".to_string());
+    inject_job_for_test(
+        &mut queue,
+        BranchAction::Rebase,
+        vec![current.name.clone()],
+        dispatch_path,
+    );
+    assert!(queue.is_running_for_test());
+    assert_eq!(queue.current_action_for_test(), Some(BranchAction::Rebase));
+    assert_eq!(
+        queue.current_targets_for_test().map(|t| t.to_vec()),
+        Some(vec![current.name.clone()])
+    );
+}
+
+#[test]
+fn graph_enter_p008_style_linked_worktree_exposes_safe_operations_only() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    let linked_path = dir.join(".worktrees/feature-linked");
+    let linked_path_text = linked_path.to_string_lossy().into_owned();
+
+    run_git(
+        dir,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/repo.git",
+        ],
+    );
+    run_git(dir, &["branch", "feature-linked"]);
+    run_git(
+        dir,
+        &[
+            "worktree",
+            "add",
+            linked_path_text.as_str(),
+            "feature-linked",
+        ],
+    );
+    // A real commit reachable only from the linked worktree's branch --
+    // the temp-repo equivalent of "commit 11d7ca1 in the P008 worktree".
+    std::fs::write(linked_path.join("linked.txt"), "linked\n").unwrap();
+    run_git(&linked_path, &["add", "."]);
+    run_git(
+        &linked_path,
+        &[
+            "commit",
+            "-m",
+            "docs: update changelog for unavailable actions",
+        ],
+    );
+
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let feature = branches
+        .iter()
+        .find(|b| b.name == "feature-linked")
+        .expect("feature-linked should be listed");
+    assert!(
+        !feature.is_current,
+        "feature-linked is checked out in a linked worktree, not the primary"
+    );
+    assert!(!feature.is_base);
+
+    let worktrees = worktrees_with_status(dir);
+    let presence = worktree_presence_for(&worktrees, &feature.name)
+        .expect("feature-linked should resolve to the linked worktree");
+    assert!(
+        !presence.is_main,
+        "the linked worktree is not the primary/main one"
+    );
+
+    for (label, cap) in [
+        (
+            "checkout",
+            capability::can_checkout_local(
+                feature,
+                worktree_presence_for(&worktrees, &feature.name),
+            ),
+        ),
+        (
+            "delete_local",
+            capability::can_delete_local(feature, worktree_presence_for(&worktrees, &feature.name)),
+        ),
+        (
+            "force_delete_local",
+            capability::can_force_delete_local(
+                feature,
+                worktree_presence_for(&worktrees, &feature.name),
+            ),
+        ),
+        (
+            "create_worktree",
+            capability::can_create_worktree(
+                feature,
+                worktree_presence_for(&worktrees, &feature.name),
+            ),
+        ),
+    ] {
+        assert!(
+            !cap.available,
+            "{label} should be disabled for a branch checked out in a linked worktree"
+        );
+        assert_eq!(
+            cap.reason,
+            Some("checked out in worktree"),
+            "{label} reason mismatch"
+        );
+    }
+
+    // Rebase: blocked too.
+    let rebase = capability::can_rebase(
+        feature,
+        worktree_presence_for(&worktrees, &feature.name),
+        true,
+    );
+    assert!(!rebase.available);
+    assert_eq!(rebase.reason, Some("checked out in other worktree"));
+
+    // Push never consults worktree state.
+    let push = capability::can_push(feature, has_configured_remote(&repo), true);
+    assert!(
+        push.available,
+        "push should remain enabled for a branch checked out in a linked worktree: {:?}",
+        push.reason
+    );
+
+    // Dispatch-path check for the enabled Push: resolves to None.
+    let mut queue = ActionJobQueue::new(dir.to_path_buf(), "main".to_string());
+    inject_job_for_test(
+        &mut queue,
+        BranchAction::Push,
+        vec![feature.name.clone()],
+        None,
+    );
+    assert!(queue.is_running_for_test());
+    assert_eq!(queue.current_action_for_test(), Some(BranchAction::Push));
+    assert_eq!(
+        queue.current_targets_for_test().map(|t| t.to_vec()),
+        Some(vec![feature.name.clone()])
+    );
+}
+
+#[test]
+fn graph_enter_no_upstream_branch_enables_push_and_rebase_but_not_pull() {
+    let (_tmpdir, work_dir, repo) = setup_remote_test_repo();
+    let dir = work_dir.as_path();
+
+    run_git(dir, &["checkout", "-b", "local-only"]);
+    std::fs::write(dir.join("local.txt"), "local\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "local-only commit"]);
+    // Never pushed: local-only has no upstream.
+
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let local_only = branches
+        .iter()
+        .find(|b| b.name == "local-only")
+        .expect("local-only should be listed");
+    assert!(
+        matches!(local_only.tracking, TrackingStatus::Local),
+        "local-only must have no upstream"
+    );
+    assert!(local_only.is_current);
+
+    let worktrees = worktrees_with_status(dir);
+
+    // Push: has_configured_remote is repo-wide (origin exists from setup_remote_test_repo).
+    let push = capability::can_push(local_only, has_configured_remote(&repo), true);
+    assert!(
+        push.available,
+        "push should be enabled for a local-only branch when any remote is configured: {:?}",
+        push.reason
+    );
+
+    // Rebase: allowed, current + no worktree exclusion applies.
+    let rebase = capability::can_rebase(
+        local_only,
+        worktree_presence_for(&worktrees, &local_only.name),
+        true,
+    );
+    assert!(
+        rebase.available,
+        "rebase should be enabled for the clean, no-upstream current branch: {:?}",
+        rebase.reason
+    );
+
+    // Pull: gated on the per-branch remote-tracking flag, not the repo-wide one.
+    let per_branch_has_remote = matches!(
+        &local_only.tracking,
+        TrackingStatus::Tracked { gone: false, .. }
+    );
+    assert!(!per_branch_has_remote);
+    let pull = capability::can_pull(
+        local_only,
+        worktree_presence_for(&worktrees, &local_only.name),
+        per_branch_has_remote,
+    );
+    assert!(!pull.available);
+    assert_eq!(pull.reason, Some("no remote"));
+
+    // Dispatch-path check for the enabled Rebase.
+    let dispatch_path =
+        worktree_presence_for(&worktrees, &local_only.name).map(|wt| wt.path.to_path_buf());
+    assert_eq!(
+        dispatch_path.as_deref().map(canonical).as_deref(),
+        Some(canonical(dir).as_path())
+    );
+
+    let mut queue = ActionJobQueue::new(dir.to_path_buf(), "main".to_string());
+    inject_job_for_test(
+        &mut queue,
+        BranchAction::Rebase,
+        vec![local_only.name.clone()],
+        dispatch_path,
+    );
+    assert!(queue.is_running_for_test());
+    assert_eq!(queue.current_action_for_test(), Some(BranchAction::Rebase));
+}
+
+#[test]
+fn graph_enter_dirty_linked_worktree_disables_checkout_delete_and_merge_but_not_push() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    let linked_path = dir.join(".worktrees/feature-dirty");
+    let linked_path_text = linked_path.to_string_lossy().into_owned();
+
+    run_git(
+        dir,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/repo.git",
+        ],
+    );
+    run_git(dir, &["branch", "feature-dirty"]);
+    run_git(
+        dir,
+        &[
+            "worktree",
+            "add",
+            linked_path_text.as_str(),
+            "feature-dirty",
+        ],
+    );
+    std::fs::write(linked_path.join("dirty.txt"), "dirty\n").unwrap();
+    // Untracked, uncommitted: the linked worktree is dirty.
+
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let feature = branches
+        .iter()
+        .find(|b| b.name == "feature-dirty")
+        .expect("feature-dirty should be listed");
+    assert!(!feature.is_current);
+
+    let worktrees = worktrees_with_status(dir);
+    let presence = worktree_presence_for(&worktrees, &feature.name)
+        .expect("feature-dirty has a linked worktree");
+    assert!(
+        !presence.is_clean,
+        "the linked worktree has an untracked file"
+    );
+
+    let delete_local =
+        capability::can_delete_local(feature, worktree_presence_for(&worktrees, &feature.name));
+    assert!(!delete_local.available);
+    assert_eq!(delete_local.reason, Some("checked out in worktree"));
+
+    let checkout =
+        capability::can_checkout_local(feature, worktree_presence_for(&worktrees, &feature.name));
+    assert!(!checkout.available);
+    assert_eq!(checkout.reason, Some("checked out in worktree"));
+
+    // Rebase on the branch itself: blocked because different worktree.
+    let rebase = capability::can_rebase(
+        feature,
+        worktree_presence_for(&worktrees, &feature.name),
+        false,
+    );
+    assert!(!rebase.available);
+    assert_eq!(rebase.reason, Some("checked out in other worktree"));
+
+    // Push ignores worktree cleanliness.
+    let push = capability::can_push(feature, has_configured_remote(&repo), true);
+    assert!(
+        push.available,
+        "push ignores worktree cleanliness entirely: {:?}",
+        push.reason
+    );
+
+    // Merge into base: branch-first fallback resolves to feature-dirty's OWN worktree.
+    let merge = capability::can_merge_into_base(
+        feature,
+        worktree_presence_for_branch_or_base(&worktrees, &feature.name, "main"),
+    );
+    assert!(
+        !merge.available,
+        "merge should be disabled when the resolved worktree is dirty"
+    );
+    assert_eq!(merge.reason, Some("base dirty"));
+
+    // Dispatch-path check for the enabled Push.
+    let mut queue = ActionJobQueue::new(dir.to_path_buf(), "main".to_string());
+    inject_job_for_test(
+        &mut queue,
+        BranchAction::Push,
+        vec![feature.name.clone()],
+        None,
+    );
+    assert!(queue.is_running_for_test());
+    assert_eq!(
+        queue.current_targets_for_test().map(|t| t.to_vec()),
+        Some(vec![feature.name.clone()])
+    );
+}
+
+#[test]
+fn graph_enter_base_branch_in_linked_worktree_gates_merge_and_squash_on_base_cleanliness() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    let base_linked_path = dir.join(".worktrees/main-linked");
+    let base_linked_path_text = base_linked_path.to_string_lossy().into_owned();
+
+    // Vacate "main" from the primary worktree so it can be checked out in a linked worktree.
+    run_git(dir, &["branch", "feature-source"]);
+    run_git(dir, &["checkout", "-b", "scratch"]);
+    run_git(
+        dir,
+        &["worktree", "add", base_linked_path_text.as_str(), "main"],
+    );
+
+    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let feature = branches
+        .iter()
+        .find(|b| b.name == "feature-source")
+        .expect("feature-source should be listed");
+    assert!(!feature.is_current);
+    assert!(!feature.is_base);
+
+    // Clean base worktree.
+    let worktrees_clean = worktrees_with_status(dir);
+    assert!(
+        worktree_presence_for(&worktrees_clean, &feature.name).is_none(),
+        "feature-source is not checked out anywhere in this scenario"
+    );
+    let base_presence_clean = worktree_presence_for(&worktrees_clean, "main")
+        .expect("main should resolve to the linked worktree");
+    assert!(!base_presence_clean.is_main);
+    assert!(base_presence_clean.is_clean);
+
+    let merge_clean = capability::can_merge_into_base(
+        feature,
+        worktree_presence_for_branch_or_base(&worktrees_clean, &feature.name, "main"),
+    );
+    assert!(
+        merge_clean.available,
+        "merge into a clean base worktree should be enabled: {:?}",
+        merge_clean.reason
+    );
+    let squash_clean = capability::can_squash_into_base(
+        feature,
+        worktree_presence_for_branch_or_base(&worktrees_clean, &feature.name, "main"),
+    );
+    assert!(
+        squash_clean.available,
+        "squash into a clean base worktree should be enabled: {:?}",
+        squash_clean.reason
+    );
+
+    // Dirty base worktree.
+    std::fs::write(base_linked_path.join("dirty-base.txt"), "dirty base\n").unwrap();
+    let worktrees_dirty = worktrees_with_status(dir);
+    let base_presence_dirty = worktree_presence_for(&worktrees_dirty, "main")
+        .expect("main should still resolve to the linked worktree");
+    assert!(
+        !base_presence_dirty.is_clean,
+        "the linked base worktree now has an untracked file"
+    );
+
+    let merge_dirty = capability::can_merge_into_base(
+        feature,
+        worktree_presence_for_branch_or_base(&worktrees_dirty, &feature.name, "main"),
+    );
+    assert!(!merge_dirty.available);
+    assert_eq!(merge_dirty.reason, Some("base dirty"));
+    let squash_dirty = capability::can_squash_into_base(
+        feature,
+        worktree_presence_for_branch_or_base(&worktrees_dirty, &feature.name, "main"),
+    );
+    assert!(!squash_dirty.available);
+    assert_eq!(squash_dirty.reason, Some("base dirty"));
+
+    // Dispatch-path check for the enabled Merge (clean-base case).
+    let dispatch_path =
+        worktree_presence_for_branch_or_base(&worktrees_clean, &feature.name, "main")
+            .map(|wt| wt.path.to_path_buf());
+    assert_eq!(
+        dispatch_path.as_deref().map(canonical).as_deref(),
+        Some(canonical(&base_linked_path).as_path()),
+        "merge should dispatch into main's own linked worktree"
+    );
+    assert_ne!(
+        dispatch_path.as_deref().map(canonical).as_deref(),
+        Some(canonical(dir).as_path()),
+        "must not run in the primary worktree instead"
+    );
+
+    let mut queue = ActionJobQueue::new(dir.to_path_buf(), "main".to_string());
+    inject_job_for_test(
+        &mut queue,
+        BranchAction::Merge,
+        vec![feature.name.clone()],
+        dispatch_path,
+    );
+    assert!(queue.is_running_for_test());
+    assert_eq!(queue.current_action_for_test(), Some(BranchAction::Merge));
+    assert_eq!(
+        queue.current_targets_for_test().map(|t| t.to_vec()),
+        Some(vec![feature.name.clone()])
+    );
 }
 
 #[test]
@@ -3151,10 +3802,12 @@ fn test_worktree_lookup_includes_primary_and_reports_command_errors() {
     assert!(primary.is_main);
     assert_eq!(primary.branch.as_deref(), Some("main"));
 
-    let missing = worktree::try_list_worktrees(std::path::Path::new(
-        "/definitely/not/a/git/repository",
-    ));
-    assert!(missing.is_err(), "worktree command failures must be observable");
+    let missing =
+        worktree::try_list_worktrees(std::path::Path::new("/definitely/not/a/git/repository"));
+    assert!(
+        missing.is_err(),
+        "worktree command failures must be observable"
+    );
 }
 
 #[test]
@@ -3247,7 +3900,10 @@ fn test_worktree_path_for_branch_finds_linked_worktree_other_than_caller() {
         .expect("linked worktree should be found");
     assert!(path.ends_with(".worktrees/feature-linked-path"));
 
-    run_git(dir, &["worktree", "remove", ".worktrees/feature-linked-path"]);
+    run_git(
+        dir,
+        &["worktree", "remove", ".worktrees/feature-linked-path"],
+    );
 }
 
 #[test]
@@ -3256,8 +3912,7 @@ fn test_try_other_worktree_for_branch_none_vs_err() {
     let dir = tmpdir.path();
 
     // Not checked out anywhere else: Ok(None), distinct from a lookup failure.
-    let not_checked_out =
-        worktree::try_other_worktree_for_branch(dir, "does-not-exist-anywhere");
+    let not_checked_out = worktree::try_other_worktree_for_branch(dir, "does-not-exist-anywhere");
     assert!(matches!(not_checked_out, Ok(None)));
 
     // An unreadable/non-existent repo path: Err(_), distinguishable from Ok(None).
@@ -3636,10 +4291,7 @@ fn test_squash_scenario_02_multi_commit_branch_squashed_into_one_base_commit() {
 
     let repo = git2::Repository::open(dir).unwrap();
     let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
-    let feature = branches
-        .iter()
-        .find(|b| b.name == "feature/multi")
-        .unwrap();
+    let feature = branches.iter().find(|b| b.name == "feature/multi").unwrap();
     assert_eq!(feature.merge_status, MergeStatus::LocalSquashMerged);
 }
 
@@ -3719,7 +4371,12 @@ fn test_squash_scenario_04_branch_with_internal_merge_commit_then_squash_merged(
     run_git(dir, &["checkout", "feature/topology"]);
     run_git(
         dir,
-        &["merge", "feature/topology-sub", "-m", "merge sub into topology"],
+        &[
+            "merge",
+            "feature/topology-sub",
+            "-m",
+            "merge sub into topology",
+        ],
     );
 
     run_git(dir, &["checkout", "main"]);
@@ -3790,10 +4447,7 @@ fn test_squash_scenario_05_partial_landing_via_individual_cherry_picks() {
     )
     .expect("graph load should succeed");
     assert!(
-        snapshot
-            .commits
-            .iter()
-            .all(|c| !c.is_possible_squash_merge),
+        snapshot.commits.iter().all(|c| !c.is_possible_squash_merge),
         "partial cherry-pick coverage must not produce any possible-squash annotation \
          (known limitation: no single base commit's diff equals the branch's full aggregate diff)"
     );
@@ -3894,12 +4548,7 @@ fn test_squash_scenario_06_reordered_commits_and_hunk_order_insensitivity() {
             .stdout(std::process::Stdio::piped())
             .spawn()
             .expect("git patch-id should spawn");
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(diff_text)
-            .unwrap();
+        child.stdin.as_mut().unwrap().write_all(diff_text).unwrap();
         let out = child.wait_with_output().unwrap();
         String::from_utf8_lossy(&out.stdout)
             .split_whitespace()
@@ -4008,7 +4657,10 @@ fn test_squash_scenario_08a_conflict_resolution_extra_lines_fuzzy_positive() {
     let squash_content = "l1-b\nl2-b\nl3-b\nl4-b\nl5-b\nl6-b\nl7-resolved\nl8-main\n";
     std::fs::write(dir.join("f8a.txt"), squash_content).unwrap();
     run_git(dir, &["add", "f8a.txt"]);
-    run_git(dir, &["commit", "-m", "squash landing with extra resolution edit"]);
+    run_git(
+        dir,
+        &["commit", "-m", "squash landing with extra resolution edit"],
+    );
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
     // Expect A: not flagged under exact patch-id match (known false negative).
@@ -4078,7 +4730,14 @@ fn test_squash_scenario_08b_true_conflicting_hunks_manually_resolved() {
     run_git(dir, &["checkout", "main"]);
     let main_parent_content = "one-MAIN\ntwo-MAIN\nthree\nfour\nfive\n";
     std::fs::write(dir.join("f8b.txt"), main_parent_content).unwrap();
-    run_git(dir, &["commit", "-am", "main changes lines 1-2 independently (true conflict)"]);
+    run_git(
+        dir,
+        &[
+            "commit",
+            "-am",
+            "main changes lines 1-2 independently (true conflict)",
+        ],
+    );
     let main_parent = git_output(dir, &["rev-parse", "HEAD"]);
 
     // This is a true git-level conflict, so `git merge --squash` exits
@@ -4171,7 +4830,10 @@ fn test_squash_scenario_08c_merge_tree_confirmation_check() {
     let squash_content = "l1-b\nl2-b\nl3-b\nl4-b\nl5-b\nl6-b\nl7-resolved\nl8-main\n";
     std::fs::write(dir.join("f8c.txt"), squash_content).unwrap();
     run_git(dir, &["add", "f8c.txt"]);
-    run_git(dir, &["commit", "-m", "squash landing with extra resolution edit"]);
+    run_git(
+        dir,
+        &["commit", "-m", "squash landing with extra resolution edit"],
+    );
 
     let merge_tree_output = Command::new("git")
         .current_dir(dir)
@@ -4219,10 +4881,17 @@ fn test_likely_squash_merged_merge_tree_confirms_when_bundled_with_unrelated_cha
     run_git(dir, &["merge", "--squash", "feature/bundled"]);
     std::fs::write(dir.join("other.txt"), "unrelated content\n").unwrap();
     run_git(dir, &["add", "."]);
-    run_git(dir, &["commit", "-m", "squash shared.txt + unrelated other.txt"]);
+    run_git(
+        dir,
+        &["commit", "-m", "squash shared.txt + unrelated other.txt"],
+    );
 
     assert!(!merge_detection::is_squash_merged(
-        dir, "main", "feature/bundled", None, None
+        dir,
+        "main",
+        "feature/bundled",
+        None,
+        None
     ));
     assert_eq!(
         merge_detection::likely_squash_merged(dir, "main", "feature/bundled", None, None),
@@ -4243,7 +4912,10 @@ fn test_likely_squash_merged_rejects_invalid_supplied_merge_base() {
     run_git(dir, &["merge", "--squash", "feature/invalid-merge-base"]);
     std::fs::write(dir.join("other.txt"), "unrelated content\n").unwrap();
     run_git(dir, &["add", "."]);
-    run_git(dir, &["commit", "-m", "squash shared.txt + unrelated other.txt"]);
+    run_git(
+        dir,
+        &["commit", "-m", "squash shared.txt + unrelated other.txt"],
+    );
 
     assert_eq!(
         merge_detection::likely_squash_merged(
@@ -4282,10 +4954,17 @@ fn test_likely_squash_merged_fuzzy_confirms_when_merge_tree_conflicts() {
     let squash_content = "l1-b\nl2-b\nl3-b\nl4-b\nl5-b\nl6-b\nl7-resolved\nl8-main\n";
     std::fs::write(dir.join("f8c.txt"), squash_content).unwrap();
     run_git(dir, &["add", "f8c.txt"]);
-    run_git(dir, &["commit", "-m", "squash landing with extra resolution edit"]);
+    run_git(
+        dir,
+        &["commit", "-m", "squash landing with extra resolution edit"],
+    );
 
     assert!(!merge_detection::is_squash_merged(
-        dir, "main", "feature/8c-fuzzy", None, None
+        dir,
+        "main",
+        "feature/8c-fuzzy",
+        None,
+        None
     ));
     assert_eq!(
         merge_detection::likely_squash_merged(dir, "main", "feature/8c-fuzzy", None, None),
@@ -4311,7 +4990,11 @@ fn test_likely_squash_merged_returns_none_when_no_signal() {
     run_git(dir, &["commit", "-m", "main: add unrelated other2"]);
 
     assert!(!merge_detection::is_squash_merged(
-        dir, "main", "feature/unrelated", None, None
+        dir,
+        "main",
+        "feature/unrelated",
+        None,
+        None
     ));
     assert_eq!(
         merge_detection::likely_squash_merged(dir, "main", "feature/unrelated", None, None),
@@ -4528,13 +5211,21 @@ fn test_squash_scenario_10b_rename_and_content_change() {
     let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();
 
-    std::fs::write(dir.join("original2.txt"), "line one\nline two\nline three\n").unwrap();
+    std::fs::write(
+        dir.join("original2.txt"),
+        "line one\nline two\nline three\n",
+    )
+    .unwrap();
     run_git(dir, &["add", "original2.txt"]);
     run_git(dir, &["commit", "-m", "add original2.txt"]);
 
     run_git(dir, &["checkout", "-b", "feature/rename-and-change"]);
     run_git(dir, &["mv", "original2.txt", "renamed2.txt"]);
-    std::fs::write(dir.join("renamed2.txt"), "line one\nline two CHANGED\nline three\n").unwrap();
+    std::fs::write(
+        dir.join("renamed2.txt"),
+        "line one\nline two CHANGED\nline three\n",
+    )
+    .unwrap();
     run_git(dir, &["commit", "-am", "rename and change content"]);
 
     run_git(dir, &["checkout", "main"]);
@@ -4582,7 +5273,9 @@ fn test_squash_scenario_10c_executable_bit_only_change() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(dir.join("script.sh")).unwrap().permissions();
+        let mut perms = std::fs::metadata(dir.join("script.sh"))
+            .unwrap()
+            .permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(dir.join("script.sh"), perms).unwrap();
     }
@@ -4677,16 +5370,8 @@ fn test_squash_scenario_11_whitespace_negative_unrelated() {
     let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();
 
-    std::fs::write(
-        dir.join("ws-a.txt"),
-        "alpha one\nalpha two\nalpha three\n",
-    )
-    .unwrap();
-    std::fs::write(
-        dir.join("ws-b.txt"),
-        "beta one\nbeta two\nbeta three\n",
-    )
-    .unwrap();
+    std::fs::write(dir.join("ws-a.txt"), "alpha one\nalpha two\nalpha three\n").unwrap();
+    std::fs::write(dir.join("ws-b.txt"), "beta one\nbeta two\nbeta three\n").unwrap();
     run_git(dir, &["add", "."]);
     run_git(dir, &["commit", "-m", "add ws-a.txt and ws-b.txt"]);
 
@@ -4696,16 +5381,22 @@ fn test_squash_scenario_11_whitespace_negative_unrelated() {
         "alpha one   \nalpha two\nalpha three\n",
     )
     .unwrap();
-    run_git(dir, &["commit", "-am", "branch: trailing whitespace on ws-a.txt"]);
+    run_git(
+        dir,
+        &["commit", "-am", "branch: trailing whitespace on ws-a.txt"],
+    );
 
     run_git(dir, &["checkout", "main"]);
     // An independent, unrelated whitespace-only change on a *different* file.
-    std::fs::write(
-        dir.join("ws-b.txt"),
-        "beta one   \nbeta two\nbeta three\n",
-    )
-    .unwrap();
-    run_git(dir, &["commit", "-am", "main: unrelated trailing whitespace on ws-b.txt"]);
+    std::fs::write(dir.join("ws-b.txt"), "beta one   \nbeta two\nbeta three\n").unwrap();
+    run_git(
+        dir,
+        &[
+            "commit",
+            "-am",
+            "main: unrelated trailing whitespace on ws-b.txt",
+        ],
+    );
     let unrelated_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
     let snapshot = graph::load_graph_with_squash_annotations(
@@ -4764,7 +5455,14 @@ fn test_squash_scenario_12_empty_net_zero_branch_and_base_commit() {
     run_git(dir, &["add", "other-temp.txt"]);
     run_git(dir, &["commit", "-m", "add other temp content"]);
     run_git(dir, &["rm", "other-temp.txt"]);
-    run_git(dir, &["commit", "-m", "remove other temp content (net zero, unrelated)"]);
+    run_git(
+        dir,
+        &[
+            "commit",
+            "-m",
+            "remove other temp content (net zero, unrelated)",
+        ],
+    );
     let empty_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
     let snapshot = graph::load_graph_with_squash_annotations(
@@ -4786,10 +5484,7 @@ fn test_squash_scenario_12_empty_net_zero_branch_and_base_commit() {
          another empty-diff branch — empty diffs are explicitly excluded (None), never matched"
     );
     assert!(
-        snapshot
-            .commits
-            .iter()
-            .all(|c| !c.is_possible_squash_merge),
+        snapshot.commits.iter().all(|c| !c.is_possible_squash_merge),
         "no commit in this fixture should be flagged: both diffs involved are empty"
     );
 
@@ -4815,7 +5510,13 @@ fn test_squash_scenario_13_reverted_branch_net_zero_but_no_specific_squash_point
     // base commit's diff to match against.
     let (tmpdir, repo) = setup_test_repo();
     let dir = tmpdir.path();
-    let base_tree = repo.head().unwrap().peel_to_tree().unwrap().id().to_string();
+    let base_tree = repo
+        .head()
+        .unwrap()
+        .peel_to_tree()
+        .unwrap()
+        .id()
+        .to_string();
 
     run_git(dir, &["checkout", "-b", "feature/reverted"]);
     std::fs::write(dir.join("temp2.txt"), "temp content 2\n").unwrap();
@@ -4875,7 +5576,14 @@ fn test_squash_scenario_14_duplicate_independently_recreated_patch() {
 
     run_git(dir, &["checkout", "main"]);
     std::fs::write(dir.join("dup.txt"), "after\n").unwrap();
-    run_git(dir, &["commit", "-am", "main: independently make the identical fix"]);
+    run_git(
+        dir,
+        &[
+            "commit",
+            "-am",
+            "main: independently make the identical fix",
+        ],
+    );
     let independent_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
     let snapshot = graph::load_graph_with_squash_annotations(
@@ -4914,7 +5622,14 @@ fn test_squash_scenario_14_duplicate_independently_recreated_patch() {
     // small-diff `MIN_UNION_SIZE_FOR_FUZZY` gate.
     let branch_diff = git_output(
         dir,
-        &["diff", "--binary", "--full-index", "main~1", "feature/duplicate-fix", "--"],
+        &[
+            "diff",
+            "--binary",
+            "--full-index",
+            "main~1",
+            "feature/duplicate-fix",
+            "--",
+        ],
     );
     let base_diff = git_output(
         dir,
@@ -4968,7 +5683,16 @@ fn test_squash_scenario_15_criss_cross_multiple_merge_bases() {
     // chain.
     let criss_merge_2 = git_output(
         dir,
-        &["commit-tree", &merged_tree, "-p", &b_tip, "-p", &a_tip, "-m", "merge a into b"],
+        &[
+            "commit-tree",
+            &merged_tree,
+            "-p",
+            &b_tip,
+            "-p",
+            &a_tip,
+            "-m",
+            "merge a into b",
+        ],
     );
     run_git(dir, &["branch", "-f", "criss-b", &criss_merge_2]);
 
@@ -5042,10 +5766,7 @@ fn test_squash_scenario_16_shallow_out_of_window_history_max_count_boundary() {
         "the squash landing commit should be outside the displayed window"
     );
     assert!(
-        snapshot
-            .commits
-            .iter()
-            .all(|c| !c.is_possible_squash_merge),
+        snapshot.commits.iter().all(|c| !c.is_possible_squash_merge),
         "Algorithm A must fail closed (no false positive) outside its displayed window"
     );
 
@@ -5068,7 +5789,10 @@ fn test_squash_scenario_17_local_base_vs_remote_base_divergence() {
     run_git(&remote_dir, &["init", "--bare", "-b", "main"]);
 
     let work_dir = base.path().join("work");
-    run_git(base.path(), &["clone", remote_dir.to_str().unwrap(), "work"]);
+    run_git(
+        base.path(),
+        &["clone", remote_dir.to_str().unwrap(), "work"],
+    );
     run_git(&work_dir, &["config", "user.name", "Test User"]);
     run_git(&work_dir, &["config", "user.email", "test@example.com"]);
     std::fs::write(work_dir.join("README.md"), "# Test\n").unwrap();
@@ -5086,12 +5810,21 @@ fn test_squash_scenario_17_local_base_vs_remote_base_divergence() {
     // A second clone squash-merges the feature branch and pushes to origin,
     // without `work` ever fetching it locally into `main`.
     let second_dir = base.path().join("second");
-    run_git(base.path(), &["clone", remote_dir.to_str().unwrap(), "second"]);
+    run_git(
+        base.path(),
+        &["clone", remote_dir.to_str().unwrap(), "second"],
+    );
     run_git(&second_dir, &["config", "user.name", "Second User"]);
     run_git(&second_dir, &["config", "user.email", "second@example.com"]);
     run_git(&second_dir, &["fetch", "origin", "feature/divergence"]);
-    run_git(&second_dir, &["merge", "--squash", "origin/feature/divergence"]);
-    run_git(&second_dir, &["commit", "-m", "squash merge feature/divergence"]);
+    run_git(
+        &second_dir,
+        &["merge", "--squash", "origin/feature/divergence"],
+    );
+    run_git(
+        &second_dir,
+        &["commit", "-m", "squash merge feature/divergence"],
+    );
     run_git(&second_dir, &["push", "origin", "main"]);
 
     // `work`'s local main is still behind; only fetch (not merge/pull).
@@ -5132,11 +5865,17 @@ fn test_squash_scenario_18_branch_advances_after_cached_as_squash_merged() {
     std::fs::write(work_dir.join("stale.txt"), "stale content\n").unwrap();
     run_git(&work_dir, &["add", "stale.txt"]);
     run_git(&work_dir, &["commit", "-m", "feature commit"]);
-    run_git(&work_dir, &["push", "-u", "origin", "feature/cache-staleness"]);
+    run_git(
+        &work_dir,
+        &["push", "-u", "origin", "feature/cache-staleness"],
+    );
 
     run_git(&work_dir, &["checkout", "main"]);
     run_git(&work_dir, &["merge", "--squash", "feature/cache-staleness"]);
-    run_git(&work_dir, &["commit", "-m", "squash merge feature/cache-staleness"]);
+    run_git(
+        &work_dir,
+        &["commit", "-m", "squash merge feature/cache-staleness"],
+    );
     run_git(&work_dir, &["push", "origin", "main"]);
 
     let repo = git2::Repository::open(&work_dir).unwrap();
@@ -5196,7 +5935,11 @@ fn test_squash_scenario_19_large_history_performance_characterization() {
     const BRANCH_COUNT: usize = 50;
 
     for i in 0..BASE_COMMITS {
-        std::fs::write(dir.join(format!("base-{i}.txt")), format!("base content {i}\n")).unwrap();
+        std::fs::write(
+            dir.join(format!("base-{i}.txt")),
+            format!("base content {i}\n"),
+        )
+        .unwrap();
         run_git(dir, &["add", "."]);
         run_git(dir, &["commit", "-m", &format!("base commit {i}")]);
     }
@@ -5333,7 +6076,10 @@ fn test_squash_scenario_20b_squash_omits_a_trivial_branch_change() {
         "alpha-x\nbeta-x\ngamma-x\ndelta-x\nepsilon-x\nzeta-x\ndebug: on\n",
     )
     .unwrap();
-    run_git(dir, &["commit", "-am", "branch changes 6 lines plus enables debug"]);
+    run_git(
+        dir,
+        &["commit", "-am", "branch changes 6 lines plus enables debug"],
+    );
 
     run_git(dir, &["checkout", "main"]);
     run_git(dir, &["merge", "--squash", "feature/20b"]);
@@ -5415,7 +6161,10 @@ fn test_squash_scenario_20c_autoformatter_noise_during_squash() {
     }
     std::fs::write(dir.join("f20c.txt"), formatted_lines.join("\n") + "\n").unwrap();
     run_git(dir, &["add", "f20c.txt"]);
-    run_git(dir, &["commit", "-m", "squash landing plus autoformatter noise"]);
+    run_git(
+        dir,
+        &["commit", "-m", "squash landing plus autoformatter noise"],
+    );
     let squash_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
     let snapshot = graph::load_graph_with_squash_annotations(
@@ -5485,7 +6234,14 @@ fn test_squash_scenario_20d_coincidentally_similar_but_unrelated_negative_contro
         "fn one() {\n    println!(\"one\");\n}\nfn two() {}\nfn three() {}\nfn four() {}\n",
     )
     .unwrap();
-    run_git(dir, &["commit", "-am", "branch: implement fn one with similar boilerplate"]);
+    run_git(
+        dir,
+        &[
+            "commit",
+            "-am",
+            "branch: implement fn one with similar boilerplate",
+        ],
+    );
 
     run_git(dir, &["checkout", "main"]);
     std::fs::write(
@@ -5495,7 +6251,11 @@ fn test_squash_scenario_20d_coincidentally_similar_but_unrelated_negative_contro
     .unwrap();
     run_git(
         dir,
-        &["commit", "-am", "main: unrelated commit, implement fn three with similar boilerplate"],
+        &[
+            "commit",
+            "-am",
+            "main: unrelated commit, implement fn three with similar boilerplate",
+        ],
     );
     let unrelated_base_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
@@ -5569,7 +6329,10 @@ fn test_squash_scenario_21_structural_graph_render_not_blocked_by_squash_enrichm
          enrichment runs asynchronously and is gated by the reload generation"
     );
     assert!(
-        snapshot.commits.iter().all(|c| c.fuzzy_squash_match.is_none()),
+        snapshot
+            .commits
+            .iter()
+            .all(|c| c.fuzzy_squash_match.is_none()),
         "no fuzzy squash matches should be set on the fresh structural snapshot"
     );
 }
@@ -5608,8 +6371,7 @@ fn test_squash_scenario_21b_completed_enrichment_updates_squash_marker() {
 
     // Run enrichment synchronously, as `spawn_possible_squash_enrichment`
     // would do on its background thread.
-    let updates =
-        graph::compute_possible_squash_updates(dir, &snapshot, Some("main"));
+    let updates = graph::compute_possible_squash_updates(dir, &snapshot, Some("main"));
     graph::apply_squash_enrichment(&mut snapshot, &updates);
 
     assert!(
@@ -7048,18 +7810,10 @@ fn test_cherry_loader_drains_to_cherry_picked_status() {
     let tip = git_output(&dir, &["rev-parse", "feature/cherry-loader"]);
     run_git(&dir, &["cherry-pick", &tip]);
 
-    let candidates = vec![(
-        "feature/cherry-loader".to_string(),
-        tip,
-        None,
-    )];
+    let candidates = vec![("feature/cherry-loader".to_string(), tip, None)];
     let cache = cache::BranchCache::load(&dir);
-    let rx = cherry_loader::spawn_cherry_checker(
-        dir.clone(),
-        "main".to_string(),
-        candidates,
-        cache,
-    );
+    let rx =
+        cherry_loader::spawn_cherry_checker(dir.clone(), "main".to_string(), candidates, cache);
 
     let results: Vec<_> = rx.iter().collect();
     assert_eq!(results.len(), 1, "expected one cherry result");
@@ -7093,10 +7847,21 @@ fn test_graph_cherry_pick_enrichment_marks_branch_commits() {
     // `--allow-empty` so the second commit (which adds a different file but
     // patches the same tree when the previous file is already in main) does
     // not error as an "empty" cherry-pick.
-    let log = git_output(dir, &["log", "--reverse", "--format=%H", "feature/graph-cherry"]);
+    let log = git_output(
+        dir,
+        &["log", "--reverse", "--format=%H", "feature/graph-cherry"],
+    );
     let commits: Vec<&str> = log.lines().collect();
     for hash in &commits {
-        run_git(dir, &["cherry-pick", "--allow-empty", "--keep-redundant-commits", hash]);
+        run_git(
+            dir,
+            &[
+                "cherry-pick",
+                "--allow-empty",
+                "--keep-redundant-commits",
+                hash,
+            ],
+        );
     }
 
     let options = graph::GraphLoadOptions {

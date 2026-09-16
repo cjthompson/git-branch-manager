@@ -13,8 +13,8 @@ use ratatui::Terminal;
 
 use git_branch_manager::config::Config;
 use git_branch_manager::git::{
-    branch, cache, cherry_loader, diagnostics, graph, operations, pr_loader, squash_loader, tags,
-    worktree,
+    branch, cache, capability, cherry_loader, diagnostics, graph, operations, pr_loader,
+    squash_loader, tags, worktree,
 };
 use git_branch_manager::job_queue::{ActionJobQueue, JobEvent};
 use git_branch_manager::symbols::SymbolSet;
@@ -1346,11 +1346,14 @@ impl App {
                                     stage: ConfirmStage::FinalDestructive { choice, target },
                                 });
                             } else {
+                                let dispatch_path =
+                                    self.dispatch_path_for(choice.action, &choice.targets);
                                 self.job_queue.enqueue_or_start_with_remote(
                                     choice.action,
                                     choice.targets,
                                     choice.remote,
                                     self.return_view,
+                                    dispatch_path,
                                 );
                             }
                         }
@@ -1408,11 +1411,14 @@ impl App {
                         });
                     }
                     KeyCode::Char('y') | KeyCode::Enter => {
+                        let job_targets = vec![target.job_target()];
+                        let dispatch_path = self.dispatch_path_for(choice.action, &job_targets);
                         self.job_queue.enqueue_or_start_with_remote(
                             choice.action,
-                            vec![target.job_target()],
+                            job_targets,
                             choice.remote,
                             self.return_view,
+                            dispatch_path,
                         );
                     }
                     KeyCode::Char('n') | KeyCode::Esc => {}
@@ -2560,191 +2566,156 @@ impl App {
                 .map(|(remote, _)| remote.to_owned()),
             TrackingStatus::Local => None,
         };
-        let is_ahead = branch.ahead.is_some_and(|a| a > 0);
-        let is_behind = branch.behind.is_some_and(|b| b > 0);
         let has_pr = self.pr_map.contains_key(&branch.name);
 
+        // While the background worktree loader hasn't finished, `worktree_presence_for`
+        // can't be trusted: a branch may actually be checked out somewhere the app just
+        // hasn't learned about yet, so a false "not checked out anywhere" could let an
+        // unsafe operation through. Gate every capability that consults worktree state
+        // behind "loading" until `self.worktrees.loading` clears. Push/Force push take
+        // no worktree parameter at all (they never needed it — see
+        // `git/capability.rs::can_push`/`can_force_push`), so they are left ungated, and
+        // `Open PR in browser` is untouched per #094's scope.
+        let loading = self.worktrees.loading;
+        let gate = |cap: capability::Capability| {
+            if loading {
+                capability::Capability::no("loading")
+            } else {
+                cap
+            }
+        };
+
         vec![
-            MenuItem {
-                label: "Checkout".into(),
-                enabled: !branch.is_current,
-                reason: if branch.is_current {
-                    Some("current".into())
-                } else {
-                    None
-                },
-                shortcut: Some('c'),
-                action: BranchAction::Checkout,
-                target: branch.name.clone(),
-                remote: None,
-            },
-            MenuItem {
-                label: "Delete local".into(),
-                enabled: !branch.is_base && !branch.is_current,
-                reason: if branch.is_current {
-                    Some("current".into())
-                } else if branch.is_base {
-                    Some("base".into())
-                } else {
-                    None
-                },
-                shortcut: Some('d'),
-                action: BranchAction::DeleteLocal,
-                target: branch.name.clone(),
-                remote: None,
-            },
-            MenuItem {
-                label: "Delete local + remote".into(),
-                enabled: !branch.is_base && !branch.is_current && has_remote,
-                reason: if branch.is_current {
-                    Some("current".into())
-                } else if branch.is_base {
-                    Some("base".into())
-                } else if !has_remote {
-                    Some("no remote".into())
-                } else {
-                    None
-                },
-                shortcut: Some('D'),
-                action: BranchAction::DeleteLocalAndRemote,
-                target: branch.name.clone(),
-                remote: tracking_remote,
-            },
-            MenuItem {
-                label: "Force-delete local".into(),
-                enabled: !branch.is_base && !branch.is_current,
-                reason: if branch.is_current {
-                    Some("current".into())
-                } else if branch.is_base {
-                    Some("base".into())
-                } else {
-                    None
-                },
-                shortcut: Some('!'),
-                action: BranchAction::DeleteLocalForce,
-                target: branch.name.clone(),
-                remote: None,
-            },
-            MenuItem {
-                label: "Fast-forward".into(),
-                enabled: !branch.is_current && has_remote,
-                reason: if branch.is_current {
-                    Some("current".into())
-                } else if !has_remote {
-                    Some("no remote".into())
-                } else {
-                    None
-                },
-                shortcut: Some('f'),
-                action: BranchAction::FastForward,
-                target: branch.name.clone(),
-                remote: None,
-            },
-            MenuItem {
-                label: "Push".into(),
-                enabled: is_ahead || (!has_remote && self.has_configured_remote),
-                reason: if !self.has_configured_remote {
-                    Some("no remote".into())
-                } else if has_remote && !is_ahead {
-                    Some("not ahead".into())
-                } else {
-                    None
-                },
-                shortcut: Some('p'),
-                action: BranchAction::Push,
-                target: branch.name.clone(),
-                remote: None,
-            },
-            MenuItem {
-                label: "Force push".into(),
-                enabled: is_ahead && is_behind,
-                reason: if !has_remote {
-                    Some("no remote".into())
-                } else if !is_ahead {
-                    Some("not ahead".into())
-                } else if !is_behind {
-                    Some("not behind".into())
-                } else {
-                    None
-                },
-                shortcut: Some('P'),
-                action: BranchAction::ForcePush,
-                target: branch.name.clone(),
-                remote: None,
-            },
-            MenuItem {
-                label: "Pull".into(),
-                enabled: is_behind && has_remote,
-                reason: if !has_remote {
-                    Some("no remote".into())
-                } else if !is_behind {
-                    Some("not behind".into())
-                } else {
-                    None
-                },
-                shortcut: Some('l'),
-                action: BranchAction::Pull,
-                target: branch.name.clone(),
-                remote: None,
-            },
-            MenuItem {
-                label: "Merge into base".into(),
-                enabled: !branch.is_base && !branch.is_current,
-                reason: if branch.is_current {
-                    Some("current".into())
-                } else if branch.is_base {
-                    Some("base".into())
-                } else {
-                    None
-                },
-                shortcut: Some('m'),
-                action: BranchAction::Merge,
-                target: branch.name.clone(),
-                remote: None,
-            },
-            MenuItem {
-                label: "Squash merge into base".into(),
-                enabled: !branch.is_base && !branch.is_current,
-                reason: if branch.is_current {
-                    Some("current".into())
-                } else if branch.is_base {
-                    Some("base".into())
-                } else {
-                    None
-                },
-                shortcut: Some('s'),
-                action: BranchAction::SquashMerge,
-                target: branch.name.clone(),
-                remote: None,
-            },
-            MenuItem {
-                label: "Rebase onto base".into(),
-                enabled: !branch.is_base && !branch.is_current,
-                reason: if branch.is_current {
-                    Some("current".into())
-                } else if branch.is_base {
-                    Some("base".into())
-                } else {
-                    None
-                },
-                shortcut: Some('r'),
-                action: BranchAction::Rebase,
-                target: branch.name.clone(),
-                remote: None,
-            },
-            MenuItem {
-                label: "Create worktree".into(),
-                enabled: !branch.is_current,
-                reason: if branch.is_current {
-                    Some("current".into())
-                } else {
-                    None
-                },
-                shortcut: Some('w'),
-                action: BranchAction::Worktree,
-                target: branch.name.clone(),
-                remote: None,
-            },
+            self.row_from(
+                "Checkout",
+                Some('c'),
+                BranchAction::Checkout,
+                branch.name.clone(),
+                None,
+                gate(capability::can_checkout_local(
+                    branch,
+                    self.worktree_presence_for(&branch.name),
+                )),
+            ),
+            self.row_from(
+                "Delete local",
+                Some('d'),
+                BranchAction::DeleteLocal,
+                branch.name.clone(),
+                None,
+                gate(capability::can_delete_local(
+                    branch,
+                    self.worktree_presence_for(&branch.name),
+                )),
+            ),
+            self.row_from(
+                "Delete local + remote",
+                Some('D'),
+                BranchAction::DeleteLocalAndRemote,
+                branch.name.clone(),
+                tracking_remote,
+                gate(capability::can_delete_local_and_remote(
+                    branch,
+                    self.worktree_presence_for(&branch.name),
+                    has_remote,
+                )),
+            ),
+            self.row_from(
+                "Force-delete local",
+                Some('!'),
+                BranchAction::DeleteLocalForce,
+                branch.name.clone(),
+                None,
+                gate(capability::can_force_delete_local(
+                    branch,
+                    self.worktree_presence_for(&branch.name),
+                )),
+            ),
+            self.row_from(
+                "Fast-forward",
+                Some('f'),
+                BranchAction::FastForward,
+                branch.name.clone(),
+                None,
+                gate(capability::can_fast_forward(
+                    branch,
+                    self.worktree_presence_for(&branch.name),
+                    has_remote,
+                )),
+            ),
+            self.row_from(
+                "Push",
+                Some('p'),
+                BranchAction::Push,
+                branch.name.clone(),
+                None,
+                capability::can_push(branch, self.has_configured_remote, true),
+            ),
+            self.row_from(
+                "Force push",
+                Some('P'),
+                BranchAction::ForcePush,
+                branch.name.clone(),
+                None,
+                capability::can_force_push(branch, has_remote),
+            ),
+            self.row_from(
+                "Pull",
+                Some('l'),
+                BranchAction::Pull,
+                branch.name.clone(),
+                None,
+                gate(capability::can_pull(
+                    branch,
+                    self.worktree_presence_for(&branch.name),
+                    has_remote,
+                )),
+            ),
+            self.row_from(
+                "Merge into base",
+                Some('m'),
+                BranchAction::Merge,
+                branch.name.clone(),
+                None,
+                gate(capability::can_merge_into_base(
+                    branch,
+                    self.worktree_presence_for_branch_or_base(&branch.name, &self.base_branch),
+                )),
+            ),
+            self.row_from(
+                "Squash merge into base",
+                Some('s'),
+                BranchAction::SquashMerge,
+                branch.name.clone(),
+                None,
+                gate(capability::can_squash_into_base(
+                    branch,
+                    self.worktree_presence_for_branch_or_base(&branch.name, &self.base_branch),
+                )),
+            ),
+            self.row_from(
+                "Rebase onto base",
+                Some('r'),
+                BranchAction::Rebase,
+                branch.name.clone(),
+                None,
+                gate(capability::can_rebase(
+                    branch,
+                    self.worktree_presence_for(&branch.name),
+                    true,
+                )),
+            ),
+            self.row_from(
+                "Create worktree",
+                Some('w'),
+                BranchAction::Worktree,
+                branch.name.clone(),
+                None,
+                gate(capability::can_create_worktree(
+                    branch,
+                    self.worktree_presence_for(&branch.name),
+                )),
+            ),
             MenuItem {
                 label: "Open PR in browser".into(),
                 enabled: has_pr,
@@ -3025,7 +2996,23 @@ impl App {
     // ---- View-level action helpers ----
 
     fn delete_selected_branches(&mut self, include_remote: bool) {
-        let targets = self.get_selected_branch_names();
+        let targets = if include_remote {
+            // Drop base/current (cannot delete those) and drop no-remote (no path
+            // to success). Worktree-checked-out and dirty branches still flow
+            // through to `build_delete_preflight` so the user sees a structured
+            // `DeleteRisk::CheckedOut` / `DeleteRisk::DirtyWorktree` warning in
+            // the confirm overlay and can confirm or cancel.
+            self.get_selected_branch_names_for(|b| {
+                let has_remote = matches!(&b.tracking, TrackingStatus::Tracked { gone: false, .. });
+                !b.is_pinned() && has_remote
+            })
+        } else {
+            // Drop base/current only (same as the OLD `!is_pinned()` filter).
+            // Worktree-checked-out and dirty branches reach
+            // `build_delete_preflight` so the user gets the structured preflight
+            // warning and the chance to confirm or cancel.
+            self.get_selected_branch_names_for(|b| !b.is_pinned())
+        };
         let action = if include_remote {
             BranchAction::DeleteLocalAndRemote
         } else {
@@ -3042,6 +3029,96 @@ impl App {
                 choices,
                 ConfirmStage::Initial,
             );
+        }
+    }
+
+    /// Return a `WorktreePresence` view of the worktree currently on the given
+    /// branch, if any. `None` means "no worktree the app has loaded has this
+    /// branch checked out." Pure shim over `self.worktrees.items()` — no I/O.
+    /// Reuses the same lookup as `build_delete_preflight` below.
+    ///
+    /// Used by `build_branch_menu_for` (Step 4) to feed the `capability::can_*`
+    /// evaluators. The `worktrees.loading` gate lives upstream of this call
+    /// (in the menu builder), not here.
+    fn worktree_presence_for(&self, branch_name: &str) -> Option<capability::WorktreePresence<'_>> {
+        self.worktrees
+            .items()
+            .iter()
+            .find(|worktree| worktree.branch.as_deref() == Some(branch_name))
+            .map(|worktree| capability::WorktreePresence {
+                path: &worktree.path,
+                is_main: worktree.is_main,
+                is_clean: worktree.wt_status.is_clean(),
+            })
+    }
+
+    /// Like `worktree_presence_for`, but tries `branch_name` first and falls
+    /// back to `base_branch` if the branch itself isn't checked out anywhere.
+    /// Consolidates the lookup shared by evaluators that need either the
+    /// source branch's worktree (`can_rebase`) or the base branch's worktree
+    /// (`can_merge_into_base`, `can_squash_into_base`). When `branch_name ==
+    /// base_branch` this collapses to a single lookup.
+    fn worktree_presence_for_branch_or_base(
+        &self,
+        branch_name: &str,
+        base_branch: &str,
+    ) -> Option<capability::WorktreePresence<'_>> {
+        self.worktree_presence_for(branch_name)
+            .or_else(|| self.worktree_presence_for(base_branch))
+    }
+
+    /// Resolve the worktree-aware dispatch path for a confirmed job, per
+    /// Design → "Worktree-aware merge/squash dispatch" (plan P010 Step 7).
+    /// Only `Merge`/`SquashMerge`/`Rebase` resolve to `Some(path)`; every
+    /// other action resolves to `None`, which `JobQueue::start`'s
+    /// `unwrap_or_else` fallback (Step 6) turns into "run in
+    /// `self.repo_path`" -- today's unchanged behavior.
+    ///
+    /// `targets` is the exact job-target list about to be enqueued: either
+    /// `choice.targets` from `ConfirmStage::Initial`, or the single
+    /// `vec![target.job_target()]` from `ConfirmStage::FinalDestructive`.
+    /// Merge/SquashMerge/Rebase menu rows are only ever built per-branch by
+    /// `build_branch_menu_for` and routed through `execute_menu_action`'s
+    /// single-target `vec![item.target]` -- there is no bulk multi-select
+    /// path for these three actions (bulk selection is Delete/Push-only,
+    /// see `get_selected_branch_names_for`) -- so `targets.first()` is
+    /// always the correct, and only, source branch.
+    fn dispatch_path_for(&self, action: BranchAction, targets: &[String]) -> Option<PathBuf> {
+        let branch_name = targets.first()?;
+        match action {
+            BranchAction::Merge | BranchAction::SquashMerge => self
+                .worktree_presence_for_branch_or_base(branch_name, &self.base_branch)
+                .map(|wt| wt.path.to_path_buf()),
+            BranchAction::Rebase => self
+                .worktree_presence_for(branch_name)
+                .map(|wt| wt.path.to_path_buf()),
+            _ => None,
+        }
+    }
+
+    /// Build a `MenuItem` from a `capability::Capability`. `remote` is passed
+    /// through separately (not derived from `cap`) because `Delete local +
+    /// remote` needs to carry the tracking remote name downstream through
+    /// `execute_menu_action`/`open_confirm_with_remote`/`build_delete_choices`
+    /// (see `src/app.rs:3013,3021`) — collapsing `remote` into this helper's
+    /// signature as an always-`None` field would silently break that action.
+    fn row_from(
+        &self,
+        label: &str,
+        shortcut: Option<char>,
+        action: BranchAction,
+        target: String,
+        remote: Option<String>,
+        cap: capability::Capability,
+    ) -> MenuItem {
+        MenuItem {
+            label: label.into(),
+            enabled: cap.available,
+            reason: cap.reason.map(str::to_owned),
+            shortcut,
+            action,
+            target,
+            remote,
         }
     }
 
@@ -3196,7 +3273,9 @@ impl App {
     }
 
     fn push_selected_branches(&mut self) {
-        let targets = self.get_selected_branch_names();
+        let targets = self.get_selected_branch_names_for(|b| {
+            capability::can_push(b, self.has_configured_remote, true).available
+        });
         self.open_confirm(BranchAction::Push, ViewId::Branches, targets);
     }
 
@@ -3235,8 +3314,11 @@ impl App {
         self.open_confirm(action, ViewId::Worktrees, targets);
     }
 
-    fn get_selected_branch_names(&self) -> Vec<String> {
-        list_state::collect_targets(&self.branches, |b| (!b.is_pinned()).then(|| b.name.clone()))
+    fn get_selected_branch_names_for(
+        &self,
+        action_check: impl Fn(&BranchInfo) -> bool,
+    ) -> Vec<String> {
+        list_state::collect_targets(&self.branches, |b| action_check(b).then(|| b.name.clone()))
     }
 
     /// Open a confirm overlay for `action` over `targets`, returning to
@@ -5608,6 +5690,7 @@ mod tests {
                 targets: vec!["feature/refresh".into()],
                 remote: None,
                 return_view: ViewId::Graph,
+                dispatch_path: None,
             },
             op_rx,
             prog_rx,
@@ -5662,6 +5745,7 @@ mod tests {
                 targets: vec!["feature/remote".into()],
                 remote: None,
                 return_view: ViewId::Graph,
+                dispatch_path: None,
             },
             op_rx,
             prog_rx,
@@ -5717,6 +5801,7 @@ mod tests {
                 targets: vec!["feature/remote".into()],
                 remote: None,
                 return_view: ViewId::Graph,
+                dispatch_path: None,
             },
             op_rx,
             prog_rx,
@@ -5781,6 +5866,7 @@ mod tests {
                 targets: vec!["feature/delete".into()],
                 remote: None,
                 return_view: ViewId::Branches,
+                dispatch_path: None,
             },
             op_rx,
             prog_rx,
@@ -5849,6 +5935,7 @@ mod tests {
                 targets: vec!["feature/local".into()],
                 remote: None,
                 return_view: ViewId::Graph,
+                dispatch_path: None,
             },
             op_rx,
             prog_rx,
@@ -5900,6 +5987,7 @@ mod tests {
                 targets: vec!["feature/local".into()],
                 remote: Some("upstream".into()),
                 return_view: ViewId::Graph,
+                dispatch_path: None,
             },
             op_rx,
             prog_rx,
@@ -6144,6 +6232,7 @@ mod tests {
                 targets: vec![branch_name.to_string()],
                 remote: None,
                 return_view: ViewId::Branches,
+                dispatch_path: None,
             },
             op_rx,
             prog_rx,
@@ -6208,6 +6297,7 @@ mod tests {
                 targets: vec![branch_name.to_string()],
                 remote: None,
                 return_view: ViewId::Branches,
+                dispatch_path: None,
             },
             op_rx,
             prog_rx,
@@ -6266,6 +6356,7 @@ mod tests {
                 targets: vec![branch_name.to_string()],
                 remote: None,
                 return_view: ViewId::Branches,
+                dispatch_path: None,
             },
             op_rx,
             prog_rx,

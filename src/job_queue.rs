@@ -31,6 +31,12 @@ pub struct ActionJob {
     pub targets: Vec<String>,
     pub remote: Option<String>,
     pub return_view: ViewId,
+    /// Overrides the queue's own `repo_path` for this job only — lets a
+    /// caller dispatch a merge/squash/rebase against a specific worktree
+    /// instead of always running from `ActionJobQueue::repo_path`. `None`
+    /// means "use the queue's own `repo_path`" (every existing call site's
+    /// current, unchanged behavior).
+    pub dispatch_path: Option<PathBuf>,
 }
 
 struct RunningJob {
@@ -77,14 +83,14 @@ impl CompletionSummary {
         let success_count = results
             .iter()
             .filter(|r| {
-                r.success
-                    || matches!(&r.failure, Some(crate::types::FailureCause::BranchNotFound))
+                r.success || matches!(&r.failure, Some(crate::types::FailureCause::BranchNotFound))
             })
             .count();
         let failures: Vec<OperationResult> = results
             .iter()
             .filter(|r| {
-                !r.success && !matches!(&r.failure, Some(crate::types::FailureCause::BranchNotFound))
+                !r.success
+                    && !matches!(&r.failure, Some(crate::types::FailureCause::BranchNotFound))
             })
             .cloned()
             .collect();
@@ -177,17 +183,26 @@ impl ActionJobQueue {
         targets: Vec<String>,
         return_view: ViewId,
     ) {
-        self.enqueue_or_start_with_remote(action, targets, None, return_view);
+        self.enqueue_or_start_with_remote(action, targets, None, return_view, None);
     }
 
     /// Like [`Self::enqueue_or_start`], while retaining the authoritative
     /// remote name for a single remote-branch action.
+    ///
+    /// `dispatch_path` overrides the queue's own `repo_path` for this job
+    /// only (see [`ActionJob::dispatch_path`]) -- callers dispatching
+    /// `Merge`/`SquashMerge`/`Rebase` against a specific worktree pass
+    /// `Some(path)` (resolved by `App::dispatch_path_for`); every other
+    /// caller passes `None`, preserving today's behavior of always running
+    /// against the queue's own `repo_path` via the `unwrap_or_else` fallback
+    /// in [`Self::start`].
     pub fn enqueue_or_start_with_remote(
         &mut self,
         action: BranchAction,
         targets: Vec<String>,
         remote: Option<String>,
         return_view: ViewId,
+        dispatch_path: Option<PathBuf>,
     ) {
         if targets.is_empty() {
             return;
@@ -197,6 +212,7 @@ impl ActionJobQueue {
             targets,
             remote,
             return_view,
+            dispatch_path,
         };
         if self.is_busy() {
             self.queued.push_back(job);
@@ -206,7 +222,10 @@ impl ActionJobQueue {
     }
 
     fn start(&mut self, job: ActionJob) {
-        let repo_path = self.repo_path.clone();
+        let repo_path = job
+            .dispatch_path
+            .clone()
+            .unwrap_or_else(|| self.repo_path.clone());
         let base_branch = self.base_branch.clone();
         let item_names = job.targets.clone();
         let action = job.action;
@@ -954,16 +973,14 @@ fn execute_action_with_remote(
             results.extend(match action {
                 BranchAction::DeleteBranchAndRemoveWorktree
                 | BranchAction::DeleteBranchAndRemoveWorktreeForce
-                | BranchAction::DeleteBranchAndRemoveWorktreeRemote => {
-                    execute_branch_name_cascade(
-                        action,
-                        item_names,
-                        repo_path,
-                        remote,
-                        prog_tx,
-                        cancel_flag,
-                    )
-                }
+                | BranchAction::DeleteBranchAndRemoveWorktreeRemote => execute_branch_name_cascade(
+                    action,
+                    item_names,
+                    repo_path,
+                    remote,
+                    prog_tx,
+                    cancel_flag,
+                ),
                 _ => unreachable!("matched new delete action"),
             });
         }
@@ -1006,6 +1023,7 @@ mod tests {
             targets: targets.iter().map(|s| s.to_string()).collect(),
             remote: None,
             return_view: ViewId::Branches,
+            dispatch_path: None,
         }
     }
 
@@ -1363,7 +1381,12 @@ mod tests {
         run_git(dir, &["branch", "cascade-clean"]);
         run_git(
             dir,
-            &["worktree", "add", ".worktrees/cascade-clean", "cascade-clean"],
+            &[
+                "worktree",
+                "add",
+                ".worktrees/cascade-clean",
+                "cascade-clean",
+            ],
         );
         let wt_path = dir.join(".worktrees/cascade-clean");
 
@@ -1380,14 +1403,16 @@ mod tests {
             &cancel,
         );
 
-        assert!(results
-            .iter()
-            .any(|r| r.action == BranchAction::WorktreeRemove && r.success),
+        assert!(
+            results
+                .iter()
+                .any(|r| r.action == BranchAction::WorktreeRemove && r.success),
             "{results:?}"
         );
-        assert!(results
-            .iter()
-            .any(|r| r.action == BranchAction::DeleteLocal && r.success),
+        assert!(
+            results
+                .iter()
+                .any(|r| r.action == BranchAction::DeleteLocal && r.success),
             "{results:?}"
         );
         assert!(!wt_path.exists());
@@ -1410,7 +1435,12 @@ mod tests {
         run_git(dir, &["branch", "cascade-dirty"]);
         run_git(
             dir,
-            &["worktree", "add", ".worktrees/cascade-dirty", "cascade-dirty"],
+            &[
+                "worktree",
+                "add",
+                ".worktrees/cascade-dirty",
+                "cascade-dirty",
+            ],
         );
         let wt_path = dir.join(".worktrees/cascade-dirty");
         std::fs::write(wt_path.join("untracked.txt"), "discard me\n").unwrap();
@@ -1428,14 +1458,16 @@ mod tests {
             &cancel,
         );
 
-        assert!(results
-            .iter()
-            .any(|r| r.action == BranchAction::WorktreeForceRemove && r.success),
+        assert!(
+            results
+                .iter()
+                .any(|r| r.action == BranchAction::WorktreeForceRemove && r.success),
             "{results:?}"
         );
-        assert!(results
-            .iter()
-            .any(|r| r.action == BranchAction::DeleteLocalForce && r.success),
+        assert!(
+            results
+                .iter()
+                .any(|r| r.action == BranchAction::DeleteLocalForce && r.success),
             "{results:?}"
         );
         assert!(!wt_path.exists());
@@ -1543,7 +1575,7 @@ mod tests {
             .is_err());
 
         run_git(&work_dir, &["fetch", "--prune"]);
-    assert!(repo
+        assert!(repo
             .find_branch("origin/wt-remote-branch", git2::BranchType::Remote)
             .is_err());
     }

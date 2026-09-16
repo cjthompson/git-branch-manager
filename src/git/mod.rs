@@ -1,5 +1,6 @@
 pub mod branch;
 pub mod cache;
+pub mod capability;
 pub mod cherry_loader;
 pub mod diagnostics;
 pub mod fuzzy_match;

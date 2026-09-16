@@ -1,6 +1,22 @@
 # Changelog
 
+## 2026-09-16
+
+### Plan: Graph Actions-Menu Availability Correction (P010)
+- Full verification matrix: cargo build clean, cargo test 660 passed (1 ignored), cargo clippy clean, cargo fmt clean on all P010-touched files (#ui, #git, #worktree)
+- Add Req 5 regression tests in tests/integration.rs (5 scenarios: current, linked-worktree, no-upstream, dirty, base-worktree; capability gating + dispatch-path assertions via inject_running_for_test; 412 insertions) (#ui, #git, #worktree)
+- Audit help.rs, status_bar.rs, and other UI/non-UI files for stale gating prose — no user-facing changes needed (matches the plan's prediction; list_render bulk checkbox and Step 5 bulk filter are consistent on is_pinned semantics) (#ui, #git, #worktree)
+- Resolve and pass the worktree-aware dispatch path from App (enqueue_or_start_with_remote gains dispatch_path parameter; App::dispatch_path_for resolves Merge/Squash to base worktree and Rebase to branch worktree; both Confirm overlay call sites updated) (#ui, #git, #worktree)
+- Add dispatch_path plumbing to JobQueue (ActionJob gains dispatch_path: Option<PathBuf>; JobQueue::start resolves via unwrap_or_else fallback to self.repo_path; 11 construction sites set dispatch_path: None) (#ui, #git, #worktree)
+- Refactor bulk multi-select key handlers (d/D/p) for parity: parameterized get_selected_branch_names_for helper; delete preserves !is_pinned() preflight UX, delete-local-and-remote adds no-remote check, push uses capability::can_push strict (#ui, #git, #worktree)
+- Refactor build_branch_menu_for to call capability evaluators (src/app.rs:2552-2758, row_from helper, loading-gate closure); restore can_push tracked-ahead gate and can_pull non-current-behind gate; 46 unit tests in git::capability (#ui, #git, #worktree)
+- Implement each capability evaluator with focused unit tests (src/git/capability.rs: 13 can_* evaluators, 43 unit tests, all clippy-clean) (#ui, #git, #worktree)
+- Add App::worktree_presence_for and App::worktree_presence_for_branch_or_base helpers (src/app.rs:3056, :3074) bridging WorktreeInfo state to capability::WorktreePresence (#ui, #git, #worktree)
+
 ## 2026-09-15
+
+### Plan: Graph Actions-Menu Availability Correction (P010)
+- Add capability module (src/git/capability.rs) with WorktreePresence and Capability types plus 13 stub evaluator functions; wire pub mod capability into src/git/mod.rs (#ui, #git, #worktree)
 
 ### Tasks
 - Inventory typical Git operations and compare app actions (#git, #ui)
