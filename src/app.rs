@@ -5822,6 +5822,7 @@ mod tests {
             op_rx,
             prog_rx,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
         );
         op_tx
             .send(vec![OperationResult::success(
@@ -6252,6 +6253,7 @@ mod tests {
             op_rx,
             prog_rx,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
         );
         op_tx
             .send(vec![OperationResult::failure(
@@ -6309,6 +6311,7 @@ mod tests {
             },
             op_rx,
             prog_rx,
+            Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
         );
         op_tx
@@ -6610,7 +6613,7 @@ mod tests {
                 ..
             }) if branch == "feature/first"
         ));
-        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert_eq!(app.job_queue.current_action(), None);
 
         press_overlay_key(&mut app, KeyCode::Esc);
         assert!(
@@ -6623,7 +6626,7 @@ mod tests {
         press_overlay_key(&mut app, KeyCode::Enter);
         press_overlay_key(&mut app, KeyCode::Enter);
         assert_eq!(
-            app.job_queue.current_action_for_test(),
+            app.job_queue.current_action(),
             Some(BranchAction::DeleteLocalForce)
         );
         assert_eq!(
@@ -6756,7 +6759,7 @@ mod tests {
         assert_eq!(choice.action, BranchAction::DeleteLocalForce);
         assert_eq!(choice.targets, vec!["feature/unmerged".to_string()]);
         assert_eq!(target, &ConfirmTarget::Branch("feature/unmerged".into()));
-        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert_eq!(app.job_queue.current_action(), None);
         assert_eq!(app.job_queue.queued_len_for_test(), 0);
     }
 
@@ -6792,7 +6795,7 @@ mod tests {
                 worktree: PathBuf::from("/repo/.worktrees/feature-worktree"),
             }
         );
-        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert_eq!(app.job_queue.current_action(), None);
         assert_eq!(app.job_queue.queued_len_for_test(), 0);
     }
 
@@ -6818,7 +6821,7 @@ mod tests {
             matches!(app.overlay, Some(Overlay::Confirm { .. })),
             "the direct row key selects the safe choice; it must not dispatch it"
         );
-        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert_eq!(app.job_queue.current_action(), None);
 
         app.handle_overlay_key(KeyEvent::new(
             KeyCode::Enter,
@@ -6827,7 +6830,7 @@ mod tests {
 
         assert!(app.overlay.is_none());
         assert_eq!(
-            app.job_queue.current_action_for_test(),
+            app.job_queue.current_action(),
             Some(BranchAction::DeleteLocal)
         );
         assert_eq!(
@@ -6853,7 +6856,7 @@ mod tests {
             KeyCode::Char('r'),
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert_eq!(app.job_queue.current_action(), None);
 
         app.handle_overlay_key(KeyEvent::new(
             KeyCode::Enter,
@@ -6870,7 +6873,7 @@ mod tests {
         assert_eq!(choice.action, BranchAction::DeleteLocalForce);
         assert_eq!(choice.targets, vec!["feature/unmerged".to_string()]);
         assert_eq!(target, &ConfirmTarget::Branch("feature/unmerged".into()));
-        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert_eq!(app.job_queue.current_action(), None);
     }
 
     #[test]
@@ -6909,7 +6912,7 @@ mod tests {
         };
         assert_eq!(choice.targets, vec!["feature/second".to_string()]);
         assert_eq!(target, &ConfirmTarget::Branch("feature/second".into()));
-        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert_eq!(app.job_queue.current_action(), None);
 
         app.handle_overlay_key(KeyEvent::new(
             KeyCode::Enter,
@@ -6917,7 +6920,7 @@ mod tests {
         ));
 
         assert_eq!(
-            app.job_queue.current_action_for_test(),
+            app.job_queue.current_action(),
             Some(BranchAction::DeleteLocalForce)
         );
         assert_eq!(
@@ -6985,7 +6988,7 @@ mod tests {
                 ..
             }) if branch == "feature/second"
         ));
-        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert_eq!(app.job_queue.current_action(), None);
     }
 
     #[test]
@@ -7016,13 +7019,13 @@ mod tests {
         assert_eq!(choice.action, BranchAction::DeleteLocalForce);
         assert_eq!(choice.targets, vec!["feature/menu-force".to_string()]);
         assert_eq!(target, &ConfirmTarget::Branch("feature/menu-force".into()));
-        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert_eq!(app.job_queue.current_action(), None);
 
         app.handle_overlay_key(KeyEvent::new(
             KeyCode::Char('r'),
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert_eq!(app.job_queue.current_action(), None);
         assert!(matches!(
             app.overlay,
             Some(Overlay::Confirm {
@@ -7059,7 +7062,7 @@ mod tests {
             target,
             &ConfirmTarget::Worktree(PathBuf::from("/repo/.worktrees/force"))
         );
-        assert_eq!(app.job_queue.current_action_for_test(), None);
+        assert_eq!(app.job_queue.current_action(), None);
     }
 
     #[test]

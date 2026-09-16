@@ -472,6 +472,7 @@ fn execute_branch_name_cascade(
     remote: Option<&str>,
     prog_tx: &Sender<ProgressUpdate>,
     cancel_flag: &Arc<AtomicBool>,
+    partial_delete_risk: &Arc<AtomicBool>,
 ) -> Vec<OperationResult> {
     let repo = match git2::Repository::open(repo_path) {
         Ok(repo) => repo,
@@ -563,9 +564,23 @@ fn execute_branch_name_cascade(
         }
 
         let remove_result = if force {
-            operations::force_remove_worktree(repo_path, &worktree.path)
+            operations::force_remove_worktree(
+                repo_path,
+                &worktree.path,
+                (index, item_names.len()),
+                prog_tx,
+                cancel_flag,
+                partial_delete_risk,
+            )
         } else {
-            operations::remove_worktree(repo_path, &worktree.path)
+            operations::remove_worktree(
+                repo_path,
+                &worktree.path,
+                (index, item_names.len()),
+                prog_tx,
+                cancel_flag,
+                partial_delete_risk,
+            )
         };
         let removed = remove_result.success;
         results.push(remove_result);
@@ -986,6 +1001,7 @@ fn execute_action_with_remote(
                     remote,
                     prog_tx,
                     cancel_flag,
+                    partial_delete_risk,
                 ),
                 _ => unreachable!("matched new delete action"),
             });
@@ -1361,6 +1377,7 @@ mod tests {
 
         let (prog_tx, _prog_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
+        let partial_delete_risk = Arc::new(AtomicBool::new(false));
         let results = execute_action_with_remote(
             BranchAction::DeleteLocalForce,
             &["force-delete".into()],
@@ -1370,6 +1387,7 @@ mod tests {
             None,
             &prog_tx,
             &cancel,
+            &partial_delete_risk,
         );
 
         assert_eq!(results.len(), 1, "force delete should produce one result");
@@ -1405,6 +1423,7 @@ mod tests {
 
         let (prog_tx, _prog_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
+        let partial_delete_risk = Arc::new(AtomicBool::new(false));
         let results = execute_action_with_remote(
             BranchAction::DeleteBranchAndRemoveWorktree,
             &["cascade-clean".into()],
@@ -1414,6 +1433,7 @@ mod tests {
             None,
             &prog_tx,
             &cancel,
+            &partial_delete_risk,
         );
 
         assert!(
@@ -1460,6 +1480,7 @@ mod tests {
 
         let (prog_tx, _prog_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
+        let partial_delete_risk = Arc::new(AtomicBool::new(false));
         let results = execute_action_with_remote(
             BranchAction::DeleteBranchAndRemoveWorktreeForce,
             &["cascade-dirty".into()],
@@ -1469,6 +1490,7 @@ mod tests {
             None,
             &prog_tx,
             &cancel,
+            &partial_delete_risk,
         );
 
         assert!(
@@ -1503,6 +1525,7 @@ mod tests {
 
         let (prog_tx, _prog_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
+        let partial_delete_risk = Arc::new(AtomicBool::new(false));
         let results = execute_action_with_remote(
             BranchAction::DeleteBranchAndRemoveWorktreeForce,
             &["main".into()],
@@ -1512,6 +1535,7 @@ mod tests {
             None,
             &prog_tx,
             &cancel,
+            &partial_delete_risk,
         );
 
         assert!(results.iter().any(|result| matches!(
@@ -1632,6 +1656,7 @@ mod tests {
 
         let (prog_tx, _prog_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
+        let partial_delete_risk = Arc::new(AtomicBool::new(false));
         let results = execute_action_with_remote(
             BranchAction::DeleteBranchAndRemoveWorktreeRemote,
             &["branch-name-remote".into()],
@@ -1641,6 +1666,7 @@ mod tests {
             Some("origin"),
             &prog_tx,
             &cancel,
+            &partial_delete_risk,
         );
 
         assert!(results
