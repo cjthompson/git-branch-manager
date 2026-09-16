@@ -13,3 +13,4 @@ pub mod squash_loader;
 pub mod status;
 pub mod tags;
 pub mod worktree;
+pub mod worktree_delete;

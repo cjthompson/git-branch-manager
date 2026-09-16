@@ -93,6 +93,11 @@
 ### Force default branch into column 0 of the Graph view (P003)
 - Add 3 integration tests for column-0 placement in tests/integration.rs (basic, special chars, diverged remote) (#graph, #tests)
 
+## 2026-09-08
+
+### Tasks
+- tests/integration.rs: add new worktree-deletion progress/cancellation tests (#worktrees, #progress-bar)
+
 ## 2026-09-02
 
 ### Graph Commit Details: Author + Local-Timezone Date (P004)
@@ -162,6 +167,14 @@
 ### Tasks
 - Info modal: tab to switch focus between INFO and ACTIONS; arrow keys navigate INFO items; enter/y copies value to clipboard (#ui, #modal, #keyboard)
 - Add 'in sync' status for branches that exactly match base (#ui, #merge-detection)
+
+## 2026-07-21
+
+### Tasks
+- app.rs: cancel-confirm UI for worktree deletion (Overlay::ConfirmCancelJob, x-key handling, draw_confirm_cancel) (#worktrees, #progress-bar)
+- job_queue.rs: thread partial_delete_risk through RunningJob, rename current_action_for_test, update inject_running_for_test (#worktrees, #progress-bar)
+- Rewrite operations::remove_worktree/force_remove_worktree as orchestrators over worktree_delete (#worktrees, #progress-bar)
+- Add src/git/worktree_delete.rs: count_files, delete_recursive, find_worktree_for_path, prune_admin (#worktrees, #progress-bar)
 
 ## 2026-07-17
 
