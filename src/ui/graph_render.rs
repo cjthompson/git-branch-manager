@@ -236,7 +236,7 @@ fn render_graph_rows(
             pending_merge_lane = None;
         }
         let (fixed_right, refs) = commit
-            .map(|commit| ref_pane_parts(commit, ref_width, selected, theme, symbols))
+            .map(|commit| ref_pane_parts(commit, ref_width, is_current_commit, selected, theme, symbols))
             .unwrap_or_default();
         rows.push((selected, is_current_commit, dag, detail, fixed_right, refs));
     }
@@ -478,7 +478,8 @@ fn ref_pane_spans(
     theme: &Theme,
     symbols: &SymbolSet,
 ) -> Vec<Span<'static>> {
-    let (fixed, refs) = ref_pane_parts(commit, ref_width, selected, theme, symbols);
+    let is_current = commit.refs.iter().any(|r| r.is_current);
+    let (fixed, refs) = ref_pane_parts(commit, ref_width, is_current, selected, theme, symbols);
     let mut spans = fixed;
     for (index, reference) in refs.into_iter().enumerate() {
         if index > 0 {
@@ -492,6 +493,7 @@ fn ref_pane_spans(
 fn ref_pane_parts(
     commit: &GraphCommit,
     ref_width: u16,
+    is_current: bool,
     selected: bool,
     theme: &Theme,
     symbols: &SymbolSet,
@@ -543,7 +545,7 @@ fn ref_pane_parts(
         return (spans, Vec::new());
     }
 
-    let state = ref_pane_state_spans(&refs, selected, theme, symbols);
+    let state = ref_pane_state_spans(&refs, is_current, selected, theme, symbols);
     if ref_width <= 14 {
         spans.push(Span::styled(
             graph_separator(symbols),
@@ -559,7 +561,12 @@ fn ref_pane_parts(
         selected_style(theme.secondary_text, selected, theme),
     ));
     spans.push(ref_pane_space(1, selected, theme));
-    spans.extend(padded_ref_pane_state_spans(state, selected, theme));
+    spans.extend(padded_ref_pane_state_spans(
+        state,
+        if is_current { STATE_WIDTH_HEAD } else { STATE_WIDTH },
+        selected,
+        theme,
+    ));
     spans.push(ref_pane_space(1, selected, theme));
     spans.push(Span::styled(
         graph_separator(symbols),
@@ -628,6 +635,7 @@ fn possible_squash_source_spans(
 }
 
 const STATE_WIDTH: usize = 5;
+const STATE_WIDTH_HEAD: usize = 7;
 
 fn ref_pane_space(width: usize, selected: bool, theme: &Theme) -> Span<'static> {
     Span::styled(
@@ -638,13 +646,14 @@ fn ref_pane_space(width: usize, selected: bool, theme: &Theme) -> Span<'static> 
 
 fn padded_ref_pane_state_spans(
     state: Vec<Span<'static>>,
+    width: usize,
     selected: bool,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
-    let mut state = truncate_spans(state, STATE_WIDTH);
+    let mut state = truncate_spans(state, width);
     let used = spans_width(&state);
-    if used < STATE_WIDTH {
-        state.push(ref_pane_space(STATE_WIDTH - used, selected, theme));
+    if used < width {
+        state.push(ref_pane_space(width - used, selected, theme));
     }
     state
 }
@@ -658,11 +667,20 @@ fn commit_summary_style(commit: &GraphCommit, theme: &Theme) -> Style {
 
 fn ref_pane_state_spans(
     refs: &[&GraphRef],
+    is_current: bool,
     selected: bool,
     theme: &Theme,
     symbols: &SymbolSet,
 ) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
+    if is_current {
+        spans.push(Span::styled(
+            "HEAD",
+            selected_style(theme.current_branch, selected, theme),
+        ));
+    }
+    let mut content_started = false;
+
     if let Some(reference) = refs
         .iter()
         .filter(|r| r.kind == GraphRefKind::LocalBranch && r.tracking.is_some())
@@ -671,6 +689,7 @@ fn ref_pane_state_spans(
         if let Some(tracking) = reference.tracking.as_ref() {
             let (text, style) = match (tracking.ahead, tracking.behind) {
                 (0, 0) => (symbols.status_in_sync.to_string(), theme.in_sync),
+                (_ahead, 0) if is_current => (symbols.arrow_up.to_string(), theme.ahead),
                 (ahead, 0) => (
                     format!(
                         "{}{}",
@@ -683,6 +702,7 @@ fn ref_pane_state_spans(
                     ),
                     theme.ahead,
                 ),
+                (0, _behind) if is_current => (symbols.arrow_down.to_string(), theme.behind),
                 (0, behind) => (
                     format!(
                         "{}{}",
@@ -695,17 +715,27 @@ fn ref_pane_state_spans(
                     ),
                     theme.behind,
                 ),
+                _ if is_current => ("R".to_string(), theme.unmerged),
                 _ => ("RB".to_string(), theme.unmerged),
             };
+            let text = if is_current { format!(" {text}") } else { text };
             spans.push(Span::styled(text, selected_style(style, selected, theme)));
+            content_started = true;
         }
     }
     if refs
         .iter()
         .any(|r| r.kind == GraphRefKind::LocalBranch && r.has_linked_worktree)
     {
+        let text = if is_current {
+            if content_started { "W" } else { " W" }
+        } else if spans.is_empty() {
+            "WT"
+        } else {
+            " WT"
+        };
         spans.push(Span::styled(
-            if spans.is_empty() { "WT" } else { " WT" },
+            text,
             selected_style(theme.primary_text, selected, theme),
         ));
     }
@@ -1822,6 +1852,199 @@ mod tests {
         let theme = Theme::dark();
         assert_eq!(Some(buffer[(1, 2)].bg), theme.checked_row.bg);
         assert_ne!(Some(buffer[(1, 3)].bg), theme.checked_row.bg);
+    }
+
+    #[test]
+    fn graph_current_branch_state_column_starts_with_HEAD_label() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = GraphState::new();
+        state.apply_result(Ok(crate::git::graph::GraphSnapshot {
+            source: GraphSource::Gleisbau,
+            commits: vec![GraphCommit {
+                oid: "1111111111111111".into(),
+                summary: "feature commit".into(),
+                parents: vec![],
+                lane: Some(0),
+                branch: None,
+                refs: vec![GraphRef {
+                    name: "feature".into(),
+                    kind: GraphRefKind::LocalBranch,
+                    has_linked_worktree: false,
+                    is_current: true,
+                    tracking: Some(crate::git::graph::GraphRefTracking {
+                        ahead: 3,
+                        behind: 0,
+                    }),
+                }],
+                is_possible_squash_merge: false,
+                fuzzy_squash_match: None,
+                ..GraphCommit::default()
+            }],
+            lines: vec![GraphLine {
+                graph: "*".into(),
+                commit_index: Some(0),
+            }],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+            generation: None,
+        }));
+        terminal
+            .draw(|frame| {
+                render_graph_view(
+                    frame,
+                    frame.area(),
+                    &mut state,
+                    &Theme::dark(),
+                    &SymbolSet::unicode(),
+                )
+            })
+            .unwrap();
+
+        let theme = Theme::dark();
+        let buffer = terminal.backend().buffer();
+        let row: String = buffer
+            .content()
+            .chunks(80)
+            .nth(2)
+            .unwrap()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        let head_byte = row.find("HEAD").expect("HEAD label in State column");
+        let head_index = row[..head_byte].chars().count();
+        for (offset, expected) in "HEAD".chars().enumerate() {
+            let cell = &buffer[((head_index + offset) as u16, 2)];
+            assert_eq!(cell.symbol(), expected.to_string());
+            assert_eq!(Some(cell.fg), theme.current_branch.fg);
+        }
+    }
+
+    #[test]
+    fn graph_current_branch_state_column_abbreviates_WT_and_drops_count() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = GraphState::new();
+        state.apply_result(Ok(crate::git::graph::GraphSnapshot {
+            source: GraphSource::Gleisbau,
+            commits: vec![GraphCommit {
+                oid: "1111111111111111".into(),
+                summary: "feature commit".into(),
+                parents: vec![],
+                lane: Some(0),
+                branch: None,
+                refs: vec![GraphRef {
+                    name: "feature".into(),
+                    kind: GraphRefKind::LocalBranch,
+                    has_linked_worktree: true,
+                    is_current: true,
+                    tracking: Some(crate::git::graph::GraphRefTracking {
+                        ahead: 3,
+                        behind: 0,
+                    }),
+                }],
+                is_possible_squash_merge: false,
+                fuzzy_squash_match: None,
+                ..GraphCommit::default()
+            }],
+            lines: vec![GraphLine {
+                graph: "*".into(),
+                commit_index: Some(0),
+            }],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+            generation: None,
+        }));
+        terminal
+            .draw(|frame| {
+                render_graph_view(
+                    frame,
+                    frame.area(),
+                    &mut state,
+                    &Theme::dark(),
+                    &SymbolSet::unicode(),
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let row: String = buffer
+            .content()
+            .chunks(80)
+            .nth(2)
+            .unwrap()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(row.contains("HEAD \u{2191}W"), "got: {row}");
+        assert!(!row.contains("WT"));
+        let head_byte = row.find("HEAD").unwrap();
+        let head_chars = row[..head_byte].chars().count();
+        let chars_after: String = row.chars().skip(head_chars).take(7).collect();
+        assert!(!chars_after.contains('3'), "got: {chars_after}");
+    }
+
+    #[test]
+    fn graph_non_current_branch_state_column_does_not_render_HEAD_label() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = GraphState::new();
+        state.apply_result(Ok(crate::git::graph::GraphSnapshot {
+            source: GraphSource::Gleisbau,
+            commits: vec![GraphCommit {
+                oid: "1111111111111111".into(),
+                summary: "feature commit".into(),
+                parents: vec![],
+                lane: Some(0),
+                branch: None,
+                refs: vec![GraphRef {
+                    name: "feature".into(),
+                    kind: GraphRefKind::LocalBranch,
+                    has_linked_worktree: false,
+                    is_current: false,
+                    tracking: Some(crate::git::graph::GraphRefTracking {
+                        ahead: 3,
+                        behind: 0,
+                    }),
+                }],
+                is_possible_squash_merge: false,
+                fuzzy_squash_match: None,
+                ..GraphCommit::default()
+            }],
+            lines: vec![GraphLine {
+                graph: "*".into(),
+                commit_index: Some(0),
+            }],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+            generation: None,
+        }));
+        terminal
+            .draw(|frame| {
+                render_graph_view(
+                    frame,
+                    frame.area(),
+                    &mut state,
+                    &Theme::dark(),
+                    &SymbolSet::unicode(),
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let row: String = buffer
+            .content()
+            .chunks(80)
+            .nth(2)
+            .unwrap()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(!row.contains("HEAD"), "got: {row}");
+        assert!(row.contains("\u{2191}3"), "got: {row}");
     }
 
     #[test]
