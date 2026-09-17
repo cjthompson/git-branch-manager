@@ -560,14 +560,22 @@ fn ref_pane_parts(
         graph_separator(symbols),
         selected_style(theme.secondary_text, selected, theme),
     ));
-    spans.push(ref_pane_space(1, selected, theme));
+    // The HEAD state value (STATE_WIDTH_HEAD) is 2 cells wider than the normal
+    // STATE_WIDTH. Drop the inner padding space on each side of the state field
+    // for that case so the total fixed-width section stays the same width as
+    // every other row and the header, keeping the Refs column aligned.
+    if !is_current {
+        spans.push(ref_pane_space(1, selected, theme));
+    }
     spans.extend(padded_ref_pane_state_spans(
         state,
         if is_current { STATE_WIDTH_HEAD } else { STATE_WIDTH },
         selected,
         theme,
     ));
-    spans.push(ref_pane_space(1, selected, theme));
+    if !is_current {
+        spans.push(ref_pane_space(1, selected, theme));
+    }
     spans.push(Span::styled(
         graph_separator(symbols),
         selected_style(theme.secondary_text, selected, theme),
@@ -2045,6 +2053,120 @@ mod tests {
             .collect();
         assert!(!row.contains("HEAD"), "got: {row}");
         assert!(row.contains("\u{2191}3"), "got: {row}");
+    }
+
+    #[test]
+    fn graph_current_branch_state_column_padding_matches_non_current_rows() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = GraphState::new();
+        state.apply_result(Ok(crate::git::graph::GraphSnapshot {
+            source: GraphSource::Gleisbau,
+            commits: vec![
+                GraphCommit {
+                    oid: "1111111111111111".into(),
+                    summary: "current commit".into(),
+                    parents: vec![],
+                    lane: Some(0),
+                    branch: None,
+                    refs: vec![GraphRef {
+                        name: "zzcur".into(),
+                        kind: GraphRefKind::LocalBranch,
+                        has_linked_worktree: false,
+                        is_current: true,
+                        tracking: Some(crate::git::graph::GraphRefTracking {
+                            ahead: 3,
+                            behind: 0,
+                        }),
+                    }],
+                    is_possible_squash_merge: false,
+                    fuzzy_squash_match: None,
+                    ..GraphCommit::default()
+                },
+                GraphCommit {
+                    oid: "2222222222222222".into(),
+                    summary: "other commit".into(),
+                    parents: vec![],
+                    lane: Some(0),
+                    branch: None,
+                    refs: vec![GraphRef {
+                        name: "zzoth".into(),
+                        kind: GraphRefKind::LocalBranch,
+                        has_linked_worktree: false,
+                        is_current: false,
+                        tracking: Some(crate::git::graph::GraphRefTracking {
+                            ahead: 3,
+                            behind: 0,
+                        }),
+                    }],
+                    is_possible_squash_merge: false,
+                    fuzzy_squash_match: None,
+                    ..GraphCommit::default()
+                },
+            ],
+            lines: vec![
+                GraphLine {
+                    graph: "*".into(),
+                    commit_index: Some(0),
+                },
+                GraphLine {
+                    graph: "*".into(),
+                    commit_index: Some(1),
+                },
+            ],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+            generation: None,
+        }));
+        terminal
+            .draw(|frame| {
+                render_graph_view(
+                    frame,
+                    frame.area(),
+                    &mut state,
+                    &Theme::dark(),
+                    &SymbolSet::unicode(),
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (1..=3)
+            .map(|n| {
+                buffer
+                    .content()
+                    .chunks(80)
+                    .nth(n)
+                    .unwrap()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect()
+            })
+            .collect();
+        let header_row = &rows[0];
+        let current_row = &rows[1];
+        let other_row = &rows[2];
+
+        let char_index = |haystack: &str, needle: &str, label: &str| {
+            let byte_index = haystack
+                .find(needle)
+                .unwrap_or_else(|| panic!("{label} not found: {haystack:?}"));
+            haystack[..byte_index].chars().count()
+        };
+
+        let refs_index = char_index(header_row, "Refs", "Refs header label");
+        let current_ref_index = char_index(current_row, "zzcur", "current row ref name");
+        let other_ref_index = char_index(other_row, "zzoth", "non-current row ref name");
+
+        assert_eq!(
+            current_ref_index, refs_index,
+            "current-branch row ref column should align with header: {current_row}"
+        );
+        assert_eq!(
+            current_ref_index, other_ref_index,
+            "current-branch row ref column should match non-current row: {current_row} vs {other_row}"
+        );
     }
 
     #[test]
