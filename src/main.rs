@@ -24,12 +24,20 @@ use tracing::{field, info, info_span, instrument, Span};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut config = Config::load();
-    git_branch_manager::view::sort_keys::migrate_legacy_config(&mut config);
+
+    // Non-interactive dumps (also covers the deprecated `--list`) are what
+    // `cargo test` uses to spawn this binary many times per run; skip the
+    // optional debug log for them so test runs don't flood an interactive
+    // user's debug.log with process-start noise.
+    let is_dump_mode = cli.branches || cli.list || cli.remotes || cli.tags || cli.worktrees;
 
     // Optional debug log, opt-in via GBM_DEBUG so the same instrumentation
-    // can be captured in debug and release builds.
-    let _log_guard = init_debug_log();
+    // can be captured in debug and release builds. Initialized before
+    // Config::load() below so the load path's own tracing is captured too.
+    let _log_guard = if is_dump_mode { None } else { init_debug_log() };
+
+    let mut config = Config::load();
+    git_branch_manager::view::sort_keys::migrate_legacy_config(&mut config);
 
     // Open repo
     let search_path = cli.repo.as_deref().unwrap_or(std::path::Path::new("."));

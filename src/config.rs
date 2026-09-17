@@ -118,18 +118,38 @@ impl Config {
         }
     }
 
+    /// Reload the on-disk config, apply `mutate` to it, and save the result.
+    ///
+    /// Avoids clobbering settings changed by a concurrent instance (config.toml
+    /// is a single global path, not per-repo) or a manual edit made since this
+    /// process last read the file: rather than writing back a whole in-memory
+    /// snapshot that may be stale outside the field(s) `mutate` touches, this
+    /// always starts from a fresh read of disk.
+    pub fn update(mutate: impl FnOnce(&mut Config)) -> Config {
+        let mut fresh = Self::load();
+        mutate(&mut fresh);
+        fresh.save();
+        fresh
+    }
+
     fn config_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
+        Self::config_dir_root()
             .join("git-branch-manager")
             .join("config.toml")
     }
 
     fn legacy_config_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("git-bm")
-            .join("config.toml")
+        Self::config_dir_root().join("git-bm").join("config.toml")
+    }
+
+    /// The root directory config paths are resolved under. Overridable via
+    /// `GBM_CONFIG_DIR` so tests can exercise `load`/`save`/`update` without
+    /// touching the real user config file.
+    fn config_dir_root() -> PathBuf {
+        if let Ok(dir) = std::env::var("GBM_CONFIG_DIR") {
+            return PathBuf::from(dir);
+        }
+        dirs::config_dir().unwrap_or_else(|| PathBuf::from("."))
     }
 }
 
@@ -166,5 +186,59 @@ mod tests {
 
         assert_eq!(parsed.include_remotes, Some(true));
         assert!(serialized.contains("include_remotes = true"));
+    }
+
+    /// Serializes access to `GBM_CONFIG_DIR`-dependent tests, since env vars
+    /// are process-global and `cargo test` runs tests on multiple threads.
+    static CONFIG_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// `Config::update` must not clobber a field it doesn't touch, even when
+    /// that field was changed on disk (e.g. by a concurrent instance, or a
+    /// manual edit) after this process's own in-memory copy was loaded.
+    #[test]
+    fn update_preserves_untouched_fields_changed_out_of_band() {
+        let _guard = CONFIG_DIR_ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "gbm-config-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: serialized by CONFIG_DIR_ENV_LOCK; no other test reads/writes
+        // GBM_CONFIG_DIR.
+        unsafe {
+            std::env::set_var("GBM_CONFIG_DIR", &dir);
+        }
+
+        // This process "loads" the config early (as App does at startup)...
+        let mut in_memory = Config::load();
+        assert_eq!(in_memory.theme, None);
+
+        // ...then, before this process saves anything, a concurrent instance
+        // (or a manual edit) changes an unrelated field on disk.
+        Config::update(|c| c.auto_fetch = Some(true));
+
+        // This process now saves a change to a *different* field using the
+        // old reload-merge-save helper, deriving the new value from its own
+        // stale in-memory copy (mirroring how app.rs derives values like
+        // `self.theme` before calling `Config::update`).
+        in_memory.theme = Some("dracula".into());
+        let saved = Config::update(|c| c.theme = in_memory.theme.clone());
+
+        assert_eq!(saved.theme, Some("dracula".into()));
+        assert_eq!(
+            saved.auto_fetch,
+            Some(true),
+            "concurrent auto_fetch change must survive an unrelated save"
+        );
+
+        // SAFETY: still serialized by CONFIG_DIR_ENV_LOCK.
+        unsafe {
+            std::env::remove_var("GBM_CONFIG_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

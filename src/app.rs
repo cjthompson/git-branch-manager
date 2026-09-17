@@ -1002,13 +1002,13 @@ impl App {
             }
             KeyCode::Char('T') => {
                 self.theme = self.theme.next();
-                self.save_config();
+                self.save_theme();
                 return;
             }
             KeyCode::Char('Y') => {
                 self.symbols = self.symbols.next();
                 self.reload_graph_for_symbol_change();
-                self.save_config();
+                self.save_symbols();
                 return;
             }
             KeyCode::Tab => {
@@ -1756,7 +1756,7 @@ impl App {
                 }
                 KeyCode::Enter => {
                     self.apply_graph_options(cursor, include_remotes);
-                    self.save_config();
+                    self.save_include_remotes();
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {}
                 _ => {
@@ -2033,7 +2033,7 @@ impl App {
                     }
                     _ => {}
                 }
-                self.save_config();
+                self.save_settings_field(cursor);
                 self.overlay = Some(Overlay::Settings { cursor });
             }
             KeyCode::Left | KeyCode::Char('h') => {
@@ -2071,7 +2071,7 @@ impl App {
                     }
                     _ => {}
                 }
-                self.save_config();
+                self.save_settings_field(cursor);
                 self.overlay = Some(Overlay::Settings { cursor });
             }
             KeyCode::Esc => {
@@ -3476,7 +3476,7 @@ impl App {
                 list_state::cycle_sort_and_apply(&mut self.worktrees, &self.worktree_columns)
             }
         }
-        self.save_sort_config();
+        self.save_sort_field(self.active_view);
     }
 
     fn toggle_sort_direction(&mut self) {
@@ -3497,7 +3497,7 @@ impl App {
                 &self.worktree_columns,
             ),
         }
-        self.save_sort_config();
+        self.save_sort_field(self.active_view);
     }
 
     // ---- View Loading ----
@@ -3904,45 +3904,110 @@ impl App {
     }
 
     // ---- Config ----
+    //
+    // Every save below goes through `Config::update`, which reloads the
+    // on-disk file, applies only the field(s) this action changed, and
+    // writes the result back. config.toml is a single global path shared by
+    // every running instance (not per-repo), and users can also hand-edit it
+    // while the app is running — so a save must never write back a full
+    // in-memory snapshot that may be stale outside the field(s) actually
+    // being changed. See `Config::update`'s doc comment.
 
-    fn save_config(&mut self) {
-        self.config.theme = Some(self.theme.name.to_string());
-        self.config.symbols = Some(self.symbols.name.to_string());
-        self.config.include_remotes = Some(self.graph.includes_remotes());
-        self.save_sort_config_only();
-        self.config.save();
+    fn save_theme(&mut self) {
+        let theme = self.theme.name.to_string();
+        self.config = Config::update(|c| c.theme = Some(theme.clone()));
     }
 
-    fn save_sort_config(&mut self) {
-        self.save_sort_config_only();
-        self.config.save();
+    fn save_symbols(&mut self) {
+        let symbols = self.symbols.name.to_string();
+        self.config = Config::update(|c| c.symbols = Some(symbols.clone()));
     }
 
-    fn save_sort_config_only(&mut self) {
-        self.config.sort_column_branches = self
-            .branches
-            .sort_column()
-            .and_then(|i| sort_keys::key_for_index(&self.branch_columns, i))
-            .map(str::to_string);
-        self.config.sort_asc_branches = Some(self.branches.sort_ascending());
-        self.config.sort_column_remotes = self
-            .remotes
-            .sort_column()
-            .and_then(|i| sort_keys::key_for_index(&self.remote_columns, i))
-            .map(str::to_string);
-        self.config.sort_asc_remotes = Some(self.remotes.sort_ascending());
-        self.config.sort_column_tags = self
-            .tags
-            .sort_column()
-            .and_then(|i| sort_keys::key_for_index(&self.tag_columns, i))
-            .map(str::to_string);
-        self.config.sort_asc_tags = Some(self.tags.sort_ascending());
-        self.config.sort_column_worktrees = self
-            .worktrees
-            .sort_column()
-            .and_then(|i| sort_keys::key_for_index(&self.worktree_columns, i))
-            .map(str::to_string);
-        self.config.sort_asc_worktrees = Some(self.worktrees.sort_ascending());
+    fn save_include_remotes(&mut self) {
+        let include_remotes = self.graph.includes_remotes();
+        self.config = Config::update(|c| c.include_remotes = Some(include_remotes));
+    }
+
+    fn save_auto_fetch(&mut self) {
+        let auto_fetch = self.config.auto_fetch;
+        self.config = Config::update(|c| c.auto_fetch = auto_fetch);
+    }
+
+    fn save_load_worktrees_on_launch(&mut self) {
+        let load_worktrees_on_launch = self.config.load_worktrees_on_launch;
+        self.config = Config::update(|c| c.load_worktrees_on_launch = load_worktrees_on_launch);
+    }
+
+    /// Persist only the given view's sort column/direction.
+    fn save_sort_field(&mut self, view: ViewId) {
+        match view {
+            ViewId::Graph => {}
+            ViewId::Branches => {
+                let col = self
+                    .branches
+                    .sort_column()
+                    .and_then(|i| sort_keys::key_for_index(&self.branch_columns, i))
+                    .map(str::to_string);
+                let asc = self.branches.sort_ascending();
+                self.config = Config::update(|c| {
+                    c.sort_column_branches = col.clone();
+                    c.sort_asc_branches = Some(asc);
+                });
+            }
+            ViewId::Remotes => {
+                let col = self
+                    .remotes
+                    .sort_column()
+                    .and_then(|i| sort_keys::key_for_index(&self.remote_columns, i))
+                    .map(str::to_string);
+                let asc = self.remotes.sort_ascending();
+                self.config = Config::update(|c| {
+                    c.sort_column_remotes = col.clone();
+                    c.sort_asc_remotes = Some(asc);
+                });
+            }
+            ViewId::Tags => {
+                let col = self
+                    .tags
+                    .sort_column()
+                    .and_then(|i| sort_keys::key_for_index(&self.tag_columns, i))
+                    .map(str::to_string);
+                let asc = self.tags.sort_ascending();
+                self.config = Config::update(|c| {
+                    c.sort_column_tags = col.clone();
+                    c.sort_asc_tags = Some(asc);
+                });
+            }
+            ViewId::Worktrees => {
+                let col = self
+                    .worktrees
+                    .sort_column()
+                    .and_then(|i| sort_keys::key_for_index(&self.worktree_columns, i))
+                    .map(str::to_string);
+                let asc = self.worktrees.sort_ascending();
+                self.config = Config::update(|c| {
+                    c.sort_column_worktrees = col.clone();
+                    c.sort_asc_worktrees = Some(asc);
+                });
+            }
+        }
+    }
+
+    /// Persist only the settings-overlay field the given cursor row controls.
+    /// Row order matches the overlay: 0=symbols, 1=theme, 2-5=per-view sort,
+    /// 6=auto_fetch, 7=load_worktrees_on_launch.
+    fn save_settings_field(&mut self, cursor: usize) {
+        match cursor {
+            0 => self.save_symbols(),
+            1 => self.save_theme(),
+            2 => self.save_sort_field(ViewId::Branches),
+            3 => self.save_sort_field(ViewId::Remotes),
+            4 => self.save_sort_field(ViewId::Tags),
+            5 => self.save_sort_field(ViewId::Worktrees),
+            6 => self.save_auto_fetch(),
+            7 => self.save_load_worktrees_on_launch(),
+            _ => {}
+        }
     }
 
     /// Cycle the given view's sort through its cycle of states. `forward` selects
