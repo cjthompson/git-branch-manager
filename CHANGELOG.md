@@ -2,6 +2,9 @@
 
 ## 2026-09-17
 
+### Fixes
+- Graph view: HEAD row's State column padding overflows and misaligns the Refs column (#graph, #ui)
+
 ### Tasks
 - Add HEAD label to Graph view State column
 
