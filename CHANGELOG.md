@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-17
+
+### Tasks
+- Add HEAD label to Graph view State column
+
 ## 2026-09-16
 
 ### Plan: Graph Actions-Menu Availability Correction (P010)
