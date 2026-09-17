@@ -19,15 +19,15 @@ Test repos:
 Commands:
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-baseline-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-baseline-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-baseline-large-repo-worktrees.log \
+GBM_DEBUG=/tmp/gbm-loop-baseline-large-repo-worktrees.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --worktrees --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-baseline-remote-heavy-repo-remotes.log \
+GBM_DEBUG=/tmp/gbm-loop-baseline-remote-heavy-repo-remotes.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
 ```
@@ -55,15 +55,15 @@ workers before closing the `enrich_worktrees_worker` span.
 Commands:
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-worktree-parallel-large-repo-worktrees.log \
+GBM_DEBUG=/tmp/gbm-loop-after-worktree-parallel-large-repo-worktrees.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --worktrees --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-worktree-parallel-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-after-worktree-parallel-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-worktree-parallel-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-worktree-parallel-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -97,7 +97,7 @@ Commit before attempted change: `4972351`
 The relevant baseline/guardrail was the large remote repo:
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-worktree-parallel-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-worktree-parallel-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -121,7 +121,7 @@ This preserved the existing out-of-order-safe channel contract.
 ### After
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-parallel-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-remote-parallel-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -170,7 +170,7 @@ the existing `RemoteEnrichResult` channel.
 ### After
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-bulk-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-remote-bulk-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -209,7 +209,7 @@ Commit before attempted change: `2a46945`
 The baseline is the bounded remote run after Iteration 3:
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-bulk-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-remote-bulk-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -233,7 +233,7 @@ channel contract by sending `SquashResult` values back from the coordinator.
 ### After
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-parallel-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-parallel-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -272,7 +272,7 @@ The local branch baseline was the latest `large-repo --branches` guardrail after
 Iteration 3:
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-bulk-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-after-remote-bulk-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 ```
@@ -299,11 +299,11 @@ and kept the existing `repo.graph_ahead_behind` path as a fallback.
 ### After
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-local-tracking-bulk-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-after-local-tracking-bulk-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-local-tracking-bulk-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-local-tracking-bulk-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -351,7 +351,7 @@ The baseline is still the latest accepted-code `large-repo --branches`
 guardrail from Iteration 3:
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-bulk-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-after-remote-bulk-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 ```
@@ -375,11 +375,11 @@ with an O(1) membership check. The function signature and callers are unchanged.
 ### After
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-detect-merged-revwalk-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-after-detect-merged-revwalk-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-detect-merged-revwalk-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-detect-merged-revwalk-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -424,7 +424,7 @@ Commit before change: `eab83a2`
 The baseline is the accepted after-run from Iteration 6:
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-detect-merged-revwalk-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-after-detect-merged-revwalk-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 ```
@@ -451,11 +451,11 @@ built, the old `repo.merge_base()` path remains as a fallback.
 ### After
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-merge-base-bounded-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-after-merge-base-bounded-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-merge-base-bounded-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-merge-base-bounded-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -501,15 +501,15 @@ Commit before change: `234e656`
 Fresh current-state diagnostics before the attempted change:
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-current-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-current-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-current-large-repo-worktrees.log \
+GBM_DEBUG=/tmp/gbm-loop-current-large-repo-worktrees.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --worktrees --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-current-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-current-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -536,15 +536,15 @@ Cache keys, channel results, and status semantics are unchanged.
 ### After
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-commit-hash-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-commit-hash-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-commit-hash-large-repo-worktrees.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-commit-hash-large-repo-worktrees.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --worktrees --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-commit-hash-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-commit-hash-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -593,7 +593,7 @@ Commit before change: `62a0f2a`
 The baseline is the accepted after-run from Iteration 8:
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-commit-hash-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-commit-hash-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -619,15 +619,15 @@ not have a commit hash keep the old branch-name path.
 ### After
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-mergebase-commit-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-mergebase-commit-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-mergebase-commit-large-repo-worktrees.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-mergebase-commit-large-repo-worktrees.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --worktrees --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-mergebase-commit-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-mergebase-commit-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -675,7 +675,7 @@ Commit before change: `8f3d1a5`
 The baseline is the accepted after-run from Iteration 9:
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-mergebase-commit-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-mergebase-commit-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -701,20 +701,20 @@ save remains unchanged.
 ### After
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-periodic-save-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-periodic-save-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-periodic-save-large-repo-worktrees.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-periodic-save-large-repo-worktrees.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --worktrees --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-periodic-save-remote-heavy-repo-remotes-60s-run1.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-periodic-save-remote-heavy-repo-remotes-60s-run1.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-periodic-save-remote-heavy-repo-remotes-60s-run2.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-periodic-save-remote-heavy-repo-remotes-60s-run2.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -761,7 +761,7 @@ Commit before change: `a32b42a`
 The baseline is the accepted repeated run from Iteration 10:
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-periodic-save-remote-heavy-repo-remotes-60s-run2.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-periodic-save-remote-heavy-repo-remotes-60s-run2.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -789,15 +789,15 @@ second Git command and derives `MergeStatus::Merged` from `ahead == Some(0)`.
 ### After
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-merged-from-ahead-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-after-remote-merged-from-ahead-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-merged-from-ahead-large-repo-worktrees.log \
+GBM_DEBUG=/tmp/gbm-loop-after-remote-merged-from-ahead-large-repo-worktrees.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --worktrees --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-merged-from-ahead-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-remote-merged-from-ahead-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -847,7 +847,7 @@ Commit before change: `016a289`
 The baseline is the accepted after-run from Iteration 11:
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-remote-merged-from-ahead-remote-heavy-repo-remotes-60s.log \
+GBM_DEBUG=/tmp/gbm-loop-after-remote-merged-from-ahead-remote-heavy-repo-remotes-60s.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
@@ -873,20 +873,20 @@ unchanged.
 ### After
 
 ```sh
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-save-100-large-repo-branches.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-save-100-large-repo-branches.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --branches --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-save-100-large-repo-worktrees.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-save-100-large-repo-worktrees.log \
   /usr/bin/time -p ./target/release/git-branch-manager \
   --repo ~/workspace/large-repo --worktrees --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-save-100-remote-heavy-repo-remotes-60s-run1.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-save-100-remote-heavy-repo-remotes-60s-run1.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never
 
-GBM_TIMING_LOG=/tmp/gbm-loop-after-squash-save-100-remote-heavy-repo-remotes-60s-run2.log \
+GBM_DEBUG=/tmp/gbm-loop-after-squash-save-100-remote-heavy-repo-remotes-60s-run2.log \
   /usr/bin/time -p perl -e 'alarm shift; exec @ARGV' 60 \
   ./target/release/git-branch-manager \
   --repo ~/workspace/remote-heavy-repo --remotes --color=never

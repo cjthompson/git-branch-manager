@@ -4629,6 +4629,7 @@ mod tests {
             name: name.into(),
             kind,
             has_linked_worktree: false,
+            is_current: false,
             tracking: None,
         }
     }
@@ -7759,6 +7760,7 @@ mod tests {
                     name: "main".into(),
                     kind: graph::GraphRefKind::LocalBranch,
                     has_linked_worktree: false,
+                    is_current: false,
                     tracking: None,
                 }],
                 is_possible_squash_merge: false,

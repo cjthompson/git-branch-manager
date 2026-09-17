@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -30,26 +31,90 @@ pub struct Config {
 impl Config {
     pub fn load() -> Self {
         let path = Self::config_path();
+        let legacy = Self::legacy_config_path();
 
         // Try new path first, then legacy path
-        let content = fs::read_to_string(&path)
-            .or_else(|_| fs::read_to_string(Self::legacy_config_path()))
-            .unwrap_or_default();
+        let (used_path, content) = match fs::read_to_string(&path) {
+            Ok(c) => (path, c),
+            Err(new_err) => match fs::read_to_string(&legacy) {
+                Ok(c) => {
+                    info!(
+                        new_path = %path.display(),
+                        legacy_path = %legacy.display(),
+                        new_error = %new_err,
+                        "config: new path unreadable, falling back to legacy"
+                    );
+                    (legacy, c)
+                }
+                Err(legacy_err) => {
+                    warn!(
+                        new_path = %path.display(),
+                        legacy_path = %legacy.display(),
+                        new_error = %new_err,
+                        legacy_error = %legacy_err,
+                        "config: both paths unreadable, returning defaults"
+                    );
+                    return Self::default();
+                }
+            },
+        };
 
         if content.is_empty() {
+            info!(path = %used_path.display(), "config: file empty, returning defaults");
             return Self::default();
         }
 
-        toml::from_str(&content).unwrap_or_default()
+        match toml::from_str(&content) {
+            Ok(parsed) => {
+                info!(
+                    path = %used_path.display(),
+                    bytes = content.len(),
+                    "config: loaded"
+                );
+                parsed
+            }
+            Err(e) => {
+                warn!(
+                    path = %used_path.display(),
+                    bytes = content.len(),
+                    error = %e,
+                    "config: parse failed, returning defaults"
+                );
+                Self::default()
+            }
+        }
     }
 
     pub fn save(&self) {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
+            if let Err(e) = fs::create_dir_all(parent) {
+                warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "config save: failed to create parent dir"
+                );
+                return;
+            }
         }
-        if let Ok(content) = toml::to_string(self) {
-            let _ = fs::write(&path, content);
+        let content = match toml::to_string(self) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error = %e, "config save: serialize failed");
+                return;
+            }
+        };
+        info!(
+            path = %path.display(),
+            bytes = content.len(),
+            "config save"
+        );
+        if let Err(e) = fs::write(&path, &content) {
+            warn!(
+                path = %path.display(),
+                error = %e,
+                "config save: write failed"
+            );
         }
     }
 

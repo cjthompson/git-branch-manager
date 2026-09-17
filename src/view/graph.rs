@@ -245,6 +245,7 @@ mod tests {
                         name: "main".into(),
                         kind: GraphRefKind::LocalBranch,
                         has_linked_worktree: false,
+                        is_current: false,
                         tracking: None,
                     }],
                     is_possible_squash_merge: false,

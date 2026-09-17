@@ -7891,3 +7891,53 @@ fn test_graph_cherry_pick_enrichment_marks_branch_commits() {
         }
     }
 }
+
+/// `main` and `origin/main` pointing at the same commit must expose BOTH refs
+/// (Local and Remote) on that commit, even when `include_remotes=false`. The
+/// Remote ref drives the cloud icon under the LRT column; suppressing it makes
+/// the commit look like it has no upstream tracking, which the user reported
+/// on `claude-code-config` (`64931a9d` where `main` had `[origin/main]`
+/// tracking but the cloud was missing).
+#[test]
+fn test_graph_remote_ref_visible_at_default_include_remotes_for_tracked_base() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    let options = graph::GraphLoadOptions {
+        max_count: 50,
+        include_remotes: false, // <-- explicit: default behavior under test
+        line_style: graph::GraphLineStyle::Thin,
+        base_branch: Some("main".to_string()),
+    };
+    let snapshot =
+        graph::load_graph_with_squash_annotations(&work_dir, options).expect("graph load failed");
+
+    // Find the local HEAD commit (the one `main` and `origin/main` both point to).
+    let main_tip = git_output(&work_dir, &["rev-parse", "main"]);
+
+    let commit = snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.oid == main_tip)
+        .expect("main tip should appear in snapshot");
+
+    let has_local_main = commit
+        .refs
+        .iter()
+        .any(|r| r.kind == graph::GraphRefKind::LocalBranch && r.name == "main");
+    let has_remote_main = commit
+        .refs
+        .iter()
+        .any(|r| r.kind == graph::GraphRefKind::RemoteBranch && r.name == "origin/main");
+
+    assert!(
+        has_local_main,
+        "commit {} (main) should carry a LocalBranch ref named 'main'",
+        main_tip
+    );
+    assert!(
+        has_remote_main,
+        "commit {} (main) should carry a RemoteBranch ref named 'origin/main' \
+         even when include_remotes=false, so the LRT 'R' column shows the cloud",
+        main_tip
+    );
+}

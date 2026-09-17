@@ -122,6 +122,7 @@ pub struct GraphRef {
     pub name: String,
     pub kind: GraphRefKind,
     pub has_linked_worktree: bool,
+    pub is_current: bool,
     pub tracking: Option<GraphRefTracking>,
 }
 
@@ -1123,6 +1124,10 @@ fn collect_ref_data(
 ) -> Result<RefData, String> {
     let repository =
         git2::Repository::open(repo_path).map_err(|error| error.message().to_string())?;
+    let head_shorthand = repository
+        .head()
+        .ok()
+        .and_then(|head| head.shorthand().ok().map(str::to_string));
     let mut data = RefData::default();
     let base_branch = requested_base
         .map(str::to_string)
@@ -1214,6 +1219,7 @@ fn collect_ref_data(
                 name: name.clone(),
                 kind: GraphRefKind::LocalBranch,
                 has_linked_worktree: linked_worktrees.contains(name),
+                is_current: head_shorthand.as_deref() == Some(name.as_str()),
                 tracking,
             },
         );
@@ -1228,6 +1234,35 @@ fn collect_ref_data(
                     name: name.clone(),
                     kind: GraphRefKind::RemoteBranch,
                     has_linked_worktree: false,
+                    is_current: false,
+                    tracking: None,
+                },
+            );
+        }
+    } else {
+        // With `include_remotes=false` we deliberately do not pull every
+        // remote ref into the snapshot (the git log command in the loaders
+        // already limits which commits are visible). However, when a tracked
+        // local branch shares an OID with its upstream — e.g. `main` and
+        // `origin/main` point at the same commit because nothing diverged —
+        // we still want the remote ref attached so the LRT 'R' column shows
+        // the cloud icon and the user can see the commit is on the remote.
+        // The downstream ref-pane renderer collapses `origin/<X>` into its
+        // matching local `<X>` label so no duplicate text appears.
+        for (name, target_oid) in &remote_refs {
+            let short = remote_short_name(name);
+            let matches_local = local_refs.iter().any(|(local_name, _)| local_name == short);
+            if !matches_local {
+                continue;
+            }
+            insert_ref(
+                &mut data.refs_by_oid,
+                target_oid,
+                GraphRef {
+                    name: name.clone(),
+                    kind: GraphRefKind::RemoteBranch,
+                    has_linked_worktree: false,
+                    is_current: false,
                     tracking: None,
                 },
             );
@@ -1253,6 +1288,7 @@ fn collect_ref_data(
                 name: name.to_string(),
                 kind: GraphRefKind::Tag,
                 has_linked_worktree: false,
+                is_current: false,
                 tracking: None,
             },
         );

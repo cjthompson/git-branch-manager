@@ -169,6 +169,12 @@ fn render_graph_rows(
         let commit = graph_line
             .commit_index
             .and_then(|commit_index| snapshot.commits.get(commit_index));
+        let is_current_commit = commit.is_some_and(|commit| {
+            commit
+                .refs
+                .iter()
+                .any(|graph_ref| graph_ref.is_current)
+        });
         let is_merge = commit.is_some_and(|commit| commit.parents.len() > 1)
             || graph_line
                 .graph
@@ -232,12 +238,12 @@ fn render_graph_rows(
         let (fixed_right, refs) = commit
             .map(|commit| ref_pane_parts(commit, ref_width, selected, theme, symbols))
             .unwrap_or_default();
-        rows.push((selected, dag, detail, fixed_right, refs));
+        rows.push((selected, is_current_commit, dag, detail, fixed_right, refs));
     }
 
     let max_offset = rows
         .iter()
-        .map(|(_selected, dag, detail, fixed_right, refs)| {
+        .map(|(_selected, _is_current_commit, dag, detail, fixed_right, refs)| {
             let detail_width = (graph_width as usize).saturating_sub(spans_width(dag));
             let refs_width = (ref_width as usize).saturating_sub(spans_width(fixed_right));
             spans_width(detail)
@@ -250,9 +256,10 @@ fn render_graph_rows(
     let horizontal_offset = state.horizontal_offset();
     let lines: Vec<Line<'static>> = rows
         .into_iter()
-        .map(|(selected, dag, detail, fixed_right, refs)| {
+        .map(|(selected, is_current_commit, dag, detail, fixed_right, refs)| {
             compose_scrolled_row(
                 selected,
+                is_current_commit,
                 dag,
                 detail,
                 fixed_right,
@@ -275,6 +282,7 @@ fn render_graph_rows(
 #[allow(clippy::too_many_arguments)]
 fn compose_scrolled_row(
     selected: bool,
+    is_current_commit: bool,
     dag: Vec<Span<'static>>,
     detail: Vec<Span<'static>>,
     fixed_right: Vec<Span<'static>>,
@@ -299,7 +307,12 @@ fn compose_scrolled_row(
     spans.push(Span::styled(graph_separator(symbols), theme.secondary_text));
     spans.extend(fixed_right);
     spans.extend(refs);
-    Line::from(spans)
+    let line = Line::from(spans);
+    if is_current_commit {
+        line.style(theme.checked_row)
+    } else {
+        line
+    }
 }
 
 fn compose_row(
@@ -899,6 +912,7 @@ mod tests {
                     name: "main".into(),
                     kind: crate::git::graph::GraphRefKind::LocalBranch,
                     has_linked_worktree: false,
+                    is_current: false,
                     tracking: None,
                 }],
                 is_possible_squash_merge: false,
@@ -979,6 +993,7 @@ mod tests {
                     name: "main".into(),
                     kind: crate::git::graph::GraphRefKind::LocalBranch,
                     has_linked_worktree: false,
+                    is_current: false,
                     tracking: None,
                 }],
                 is_possible_squash_merge: false,
@@ -1046,6 +1061,7 @@ mod tests {
                     name: "long-reference-name-that-continues".into(),
                     kind: crate::git::graph::GraphRefKind::LocalBranch,
                     has_linked_worktree: false,
+                    is_current: false,
                     tracking: Some(crate::git::graph::GraphRefTracking {
                         ahead: 1,
                         behind: 0,
@@ -1115,12 +1131,14 @@ mod tests {
                         name: "main".into(),
                         kind: crate::git::graph::GraphRefKind::LocalBranch,
                         has_linked_worktree: false,
+                        is_current: false,
                         tracking: None,
                     },
                     GraphRef {
                         name: "worktree-agent-68eec8ed8aa".into(),
                         kind: crate::git::graph::GraphRefKind::LocalBranch,
                         has_linked_worktree: false,
+                        is_current: false,
                         tracking: None,
                     },
                 ],
@@ -1191,6 +1209,7 @@ mod tests {
                     name: "main".into(),
                     kind: GraphRefKind::LocalBranch,
                     has_linked_worktree: true,
+                    is_current: false,
                     tracking: Some(crate::git::graph::GraphRefTracking {
                         ahead: 9,
                         behind: 0,
@@ -1200,12 +1219,14 @@ mod tests {
                     name: "origin/main".into(),
                     kind: GraphRefKind::RemoteBranch,
                     has_linked_worktree: false,
+                    is_current: false,
                     tracking: None,
                 },
                 GraphRef {
                     name: "v1".into(),
                     kind: GraphRefKind::Tag,
                     has_linked_worktree: false,
+                    is_current: false,
                     tracking: None,
                 },
             ],
@@ -1322,6 +1343,7 @@ mod tests {
                 name: "main".into(),
                 kind: GraphRefKind::LocalBranch,
                 has_linked_worktree: false,
+                is_current: false,
                 tracking: None,
             }],
             is_possible_squash_merge: false,
@@ -1723,5 +1745,208 @@ mod tests {
         for span in connector {
             assert_eq!(span.style, theme.remote_title);
         }
+    }
+
+    #[test]
+    fn graph_current_branch_commit_row_is_tinted_with_checked_row_background() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = GraphState::new();
+        state.apply_result(Ok(crate::git::graph::GraphSnapshot {
+            source: GraphSource::Gleisbau,
+            commits: vec![
+                GraphCommit {
+                    oid: "1111111111111111".into(),
+                    summary: "feature commit".into(),
+                    parents: vec![],
+                    lane: Some(0),
+                    branch: None,
+                    refs: vec![GraphRef {
+                        name: "feature".into(),
+                        kind: GraphRefKind::LocalBranch,
+                        has_linked_worktree: false,
+                        is_current: true,
+                        tracking: None,
+                    }],
+                    is_possible_squash_merge: false,
+                    fuzzy_squash_match: None,
+                    ..GraphCommit::default()
+                },
+                GraphCommit {
+                    oid: "2222222222222222".into(),
+                    summary: "main commit".into(),
+                    parents: vec![],
+                    lane: Some(0),
+                    branch: None,
+                    refs: vec![GraphRef {
+                        name: "main".into(),
+                        kind: GraphRefKind::LocalBranch,
+                        has_linked_worktree: false,
+                        is_current: false,
+                        tracking: None,
+                    }],
+                    is_possible_squash_merge: false,
+                    fuzzy_squash_match: None,
+                    ..GraphCommit::default()
+                },
+            ],
+            lines: vec![
+                GraphLine {
+                    graph: "*".into(),
+                    commit_index: Some(0),
+                },
+                GraphLine {
+                    graph: "*".into(),
+                    commit_index: Some(1),
+                },
+            ],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+            generation: None,
+        }));
+        state.move_down();
+        terminal
+            .draw(|frame| {
+                render_graph_view(
+                    frame,
+                    frame.area(),
+                    &mut state,
+                    &Theme::dark(),
+                    &SymbolSet::ascii(),
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let theme = Theme::dark();
+        assert_eq!(Some(buffer[(1, 2)].bg), theme.checked_row.bg);
+        assert_ne!(Some(buffer[(1, 3)].bg), theme.checked_row.bg);
+    }
+
+    #[test]
+    fn graph_detached_head_produces_no_tinted_rows() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = GraphState::new();
+        state.apply_result(Ok(crate::git::graph::GraphSnapshot {
+            source: GraphSource::Gleisbau,
+            commits: vec![GraphCommit {
+                oid: "1111111111111111".into(),
+                summary: "main commit".into(),
+                parents: vec![],
+                lane: Some(0),
+                branch: None,
+                refs: vec![GraphRef {
+                    name: "main".into(),
+                    kind: GraphRefKind::LocalBranch,
+                    has_linked_worktree: false,
+                    is_current: false,
+                    tracking: None,
+                }],
+                is_possible_squash_merge: false,
+                fuzzy_squash_match: None,
+                ..GraphCommit::default()
+            }],
+            lines: vec![GraphLine {
+                graph: "*".into(),
+                commit_index: Some(0),
+            }],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+            generation: None,
+        }));
+        terminal
+            .draw(|frame| {
+                render_graph_view(
+                    frame,
+                    frame.area(),
+                    &mut state,
+                    &Theme::dark(),
+                    &SymbolSet::ascii(),
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let theme = Theme::dark();
+        assert_ne!(Some(buffer[(1, 2)].bg), theme.checked_row.bg);
+    }
+
+    #[test]
+    fn graph_head_only_branch_row_is_tinted() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = GraphState::new();
+        state.apply_result(Ok(crate::git::graph::GraphSnapshot {
+            source: GraphSource::Gleisbau,
+            commits: vec![
+                GraphCommit {
+                    oid: "1111111111111111".into(),
+                    summary: "feature commit".into(),
+                    parents: vec![],
+                    lane: Some(0),
+                    branch: None,
+                    refs: vec![GraphRef {
+                        name: "feature".into(),
+                        kind: GraphRefKind::LocalBranch,
+                        has_linked_worktree: false,
+                        is_current: true,
+                        tracking: None,
+                    }],
+                    is_possible_squash_merge: false,
+                    fuzzy_squash_match: None,
+                    ..GraphCommit::default()
+                },
+                GraphCommit {
+                    oid: "2222222222222222".into(),
+                    summary: "main commit".into(),
+                    parents: vec![],
+                    lane: Some(0),
+                    branch: None,
+                    refs: vec![GraphRef {
+                        name: "main".into(),
+                        kind: GraphRefKind::LocalBranch,
+                        has_linked_worktree: false,
+                        is_current: false,
+                        tracking: None,
+                    }],
+                    is_possible_squash_merge: false,
+                    fuzzy_squash_match: None,
+                    ..GraphCommit::default()
+                },
+            ],
+            lines: vec![
+                GraphLine {
+                    graph: "*".into(),
+                    commit_index: Some(0),
+                },
+                GraphLine {
+                    graph: "*".into(),
+                    commit_index: Some(1),
+                },
+            ],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+            generation: None,
+        }));
+        state.move_down();
+        terminal
+            .draw(|frame| {
+                render_graph_view(
+                    frame,
+                    frame.area(),
+                    &mut state,
+                    &Theme::dark(),
+                    &SymbolSet::ascii(),
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let theme = Theme::dark();
+        assert_eq!(Some(buffer[(1, 2)].bg), theme.checked_row.bg);
     }
 }

@@ -13,6 +13,9 @@
 - Implement each capability evaluator with focused unit tests (src/git/capability.rs: 13 can_* evaluators, 43 unit tests, all clippy-clean) (#ui, #git, #worktree)
 - Add App::worktree_presence_for and App::worktree_presence_for_branch_or_base helpers (src/app.rs:3056, :3074) bridging WorktreeInfo state to capability::WorktreePresence (#ui, #git, #worktree)
 
+### Tasks
+- Add current-branch row tint to Graph view
+
 ## 2026-09-15
 
 ### Plan: Graph Actions-Menu Availability Correction (P010)

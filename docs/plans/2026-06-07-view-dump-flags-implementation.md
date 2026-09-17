@@ -999,7 +999,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Deterministic default-sort ordering → `pin_first` (Tasks 4–6) matching the TUI's `ListState` pinned-first default.
 - JSON additive seam → satisfied structurally: enrichment yields typed rows; rendering is a separate consumer. JSON (v2) = derive `Serialize` on the row structs + a `JsonRenderer` over the same rows + a `--format` flag. `MergeStatus` already derives `Serialize`; `TrackingStatus`/`PrInfo`/the row structs would need it. **Not in this plan** (per spec non-goal).
 - Tests via `setup_test_repo()` with `--color=never` + an `--color=always` ANSI check (Task 3 unit) → covered.
-- Timing/`GBM_TIMING_LOG`: out of scope — this base only has the debug-gated `/tmp/gbm-timing.log`; the dump runs the real loaders, so whatever subscriber is active captures spans. The richer opt-in lives on the perf branch.
+- Timing/`GBM_DEBUG`: out of scope — this base only has the debug-gated `~/Library/Caches/git-branch-manager/debug.log`; the dump runs the real loaders, so whatever subscriber is active captures spans. The richer opt-in lives on the perf branch.
 
 **Placeholder scan:** every code step contains complete code; the only deferred items are explicitly the JSON v2 follow-up (out of scope) and the Task 4 stub arms, which are filled in Tasks 5–6.
 

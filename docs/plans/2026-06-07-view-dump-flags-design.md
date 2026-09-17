@@ -14,11 +14,11 @@ after every background loader has completed.
 This serves two purposes:
 
 1. **Performance harness.** Each flag runs the view's whole synchronous load path
-   and emits the existing `GBM_TIMING_LOG` spans, so a run is a deterministic,
+   and emits the existing `GBM_DEBUG` spans, so a run is a deterministic,
    scriptable performance capture (no TUI, no pane, no screen-scraping).
 2. **Correctness oracle.** The rendered rows are stable across runs, so a change
    can be proven behavior-preserving by diffing `--branches` output before and
-   after — while timing is read separately from the timing log.
+   after — while timing is read separately from the debug log.
 
 This is **piece 1** of the larger automation goal. **Piece 2** — the
 make-change → test → document → loop harness that consumes these flags — is out
@@ -85,7 +85,7 @@ holds. One function per view:
   completion.
 - **`--remotes`** / **`--tags`** — their respective loaders to completion.
 
-All of this runs under the same tracing spans, so `GBM_TIMING_LOG` captures are
+All of this runs under the same tracing spans, so `GBM_DEBUG` captures are
 identical in vocabulary to a real startup load.
 
 ### Output model & renderer seam
@@ -205,5 +205,5 @@ Integration tests in `tests/integration.rs` using `setup_test_repo()`:
 ## Out of scope
 
 Piece 2: the make-change → test → document → loop automation that drives these
-flags, parses `GBM_TIMING_LOG`, updates the slow-function tracker, and iterates.
+flags, parses `GBM_DEBUG`, updates the slow-function tracker, and iterates.
 That builds on this feature once it ships.
