@@ -56,6 +56,9 @@ pub type PrMap = HashMap<String, PrInfo>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchAction {
+    /// Navigate to the selected ref or commit in the Graph view. This is a
+    /// UI-only action and must never be enqueued as a Git operation.
+    JumpToGraph,
     // Local branch actions
     DeleteLocal,
     /// Skip the merge-status gate; bypass `BranchInfo.merge_status` and
@@ -108,6 +111,7 @@ pub enum BranchAction {
 impl BranchAction {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::JumpToGraph => "Jump to Graph",
             Self::DeleteLocal => "Delete local",
             Self::DeleteLocalForce => "Force-delete local",
             Self::DeleteLocalAndRemote => "Delete local + remote",

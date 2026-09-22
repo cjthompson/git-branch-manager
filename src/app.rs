@@ -1080,6 +1080,14 @@ impl App {
             return;
         }
 
+        // Jump from any ref list to the matching commit in Graph. Graph keeps
+        // its existing `g`/`G` Home/End bindings because this branch is only
+        // reached for the four list views.
+        if key.code == KeyCode::Char('g') {
+            self.jump_to_graph_from_active_list();
+            return;
+        }
+
         // Common navigation/selection keys (work in every view)
         if self.handle_common_list_key(key) {
             return;
@@ -1214,6 +1222,49 @@ impl App {
             KeyCode::Char('o') => self.open_graph_options(),
             KeyCode::Char('r') => self.reload_graph(),
             _ => {}
+        }
+    }
+
+    fn jump_to_graph_from_active_list(&mut self) {
+        let Some((target, include_remotes)) = (match self.active_view {
+            ViewId::Branches => self
+                .branches
+                .cursor_item()
+                .map(|branch| (branch.name.clone(), false)),
+            ViewId::Remotes => self
+                .remotes
+                .cursor_item()
+                .map(|branch| (branch.full_ref.clone(), true)),
+            ViewId::Tags => self
+                .tags
+                .cursor_item()
+                .map(|tag| (tag.name.clone(), false)),
+            ViewId::Worktrees => self.worktrees.cursor_item().map(|worktree| {
+                (
+                    worktree
+                        .branch
+                        .clone()
+                        .unwrap_or_else(|| worktree.commit_hash.clone()),
+                    false,
+                )
+            }),
+            ViewId::Graph => None,
+        }) else {
+            return;
+        };
+
+        self.jump_to_graph(target, include_remotes);
+    }
+
+    fn jump_to_graph(&mut self, target: String, include_remotes: bool) {
+        let graph_includes_remotes = self.graph.includes_remotes() || include_remotes;
+        self.active_view = ViewId::Graph;
+        self.graph.focus_target(target);
+
+        if (include_remotes && !self.graph.includes_remotes())
+            || (self.graph.snapshot().is_none() && !self.graph.is_loading())
+        {
+            self.spawn_graph_load(self.graph.max_count(), graph_includes_remotes);
         }
     }
 
@@ -2510,6 +2561,10 @@ impl App {
                     .map(|tag| self.build_tag_menu_for(tag)),
             };
             if let Some(items) = items {
+                let items: Vec<MenuItem> = items
+                    .into_iter()
+                    .filter(|item| item.action != BranchAction::JumpToGraph)
+                    .collect();
                 groups.push((reference.name.clone(), items));
             }
         }
@@ -2620,6 +2675,15 @@ impl App {
         };
 
         vec![
+            MenuItem {
+                label: "Jump to Graph".into(),
+                enabled: true,
+                reason: None,
+                shortcut: Some('g'),
+                action: BranchAction::JumpToGraph,
+                target: branch.name.clone(),
+                remote: None,
+            },
             self.row_from(
                 "Checkout",
                 Some('c'),
@@ -2776,6 +2840,15 @@ impl App {
 
         vec![
             MenuItem {
+                label: "Jump to Graph".into(),
+                enabled: true,
+                reason: None,
+                shortcut: Some('g'),
+                action: BranchAction::JumpToGraph,
+                target: branch.full_ref.clone(),
+                remote: None,
+            },
+            MenuItem {
                 label: "Checkout".into(),
                 enabled: !pinned && !has_local,
                 reason: if pinned {
@@ -2884,6 +2957,15 @@ impl App {
     fn build_tag_menu_for(&self, tag: &TagInfo) -> Vec<MenuItem> {
         vec![
             MenuItem {
+                label: "Jump to Graph".into(),
+                enabled: true,
+                reason: None,
+                shortcut: Some('g'),
+                action: BranchAction::JumpToGraph,
+                target: tag.name.clone(),
+                remote: None,
+            },
+            MenuItem {
                 label: "Delete tag".into(),
                 enabled: true,
                 reason: None,
@@ -2943,8 +3025,21 @@ impl App {
             .clone()
             .or((!has_remote).then(|| "no remote".into()));
         let target = wt.path.to_string_lossy().to_string();
+        let graph_target = wt
+            .branch
+            .clone()
+            .unwrap_or_else(|| wt.commit_hash.clone());
 
         vec![
+            MenuItem {
+                label: "Jump to Graph".into(),
+                enabled: true,
+                reason: None,
+                shortcut: Some('g'),
+                action: BranchAction::JumpToGraph,
+                target: graph_target,
+                remote: None,
+            },
             MenuItem {
                 label: "Remove worktree".into(),
                 enabled: !is_main && !is_dirty,
@@ -2996,6 +3091,11 @@ impl App {
 
     fn execute_menu_action(&mut self, item: MenuItem) {
         let action = item.action;
+        if action == BranchAction::JumpToGraph {
+            self.jump_to_graph(item.target, self.return_view == ViewId::Remotes);
+            return;
+        }
+
         // View PR -- fire and forget, no confirm
         if action == BranchAction::ViewRemotePR {
             let name = item.target;
@@ -4201,6 +4301,7 @@ fn confirmation_command_for_target(
 
 fn graph_affected_views(action: BranchAction) -> &'static [ViewId] {
     match action {
+        BranchAction::JumpToGraph => &[],
         BranchAction::DeleteLocal => &[ViewId::Branches, ViewId::Remotes],
         BranchAction::DeleteLocalAndRemote => &[ViewId::Branches, ViewId::Remotes],
         BranchAction::Checkout
@@ -5212,6 +5313,16 @@ mod tests {
         ));
         assert_eq!(app.graph.commit_cursor(), 1);
         app.handle_key(KeyEvent::new(
+            KeyCode::Char('g'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.graph.commit_cursor(), 0);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('G'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.graph.commit_cursor(), 1);
+        app.handle_key(KeyEvent::new(
             KeyCode::Char('l'),
             crossterm::event::KeyModifiers::NONE,
         ));
@@ -5233,6 +5344,116 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert_eq!(app.active_view, ViewId::Branches);
+    }
+
+    #[test]
+    fn ref_view_context_menus_include_jump_to_graph_for_all_ref_types() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+
+        app.active_view = ViewId::Branches;
+        app.branches
+            .set_items(vec![branch("feature/nav", TrackingStatus::Local)]);
+        let branch_jump = app
+            .build_menu_items()
+            .into_iter()
+            .find(|item| item.action == BranchAction::JumpToGraph)
+            .expect("Branches menu should expose Graph navigation");
+        assert_eq!(branch_jump.shortcut, Some('g'));
+        assert_eq!(branch_jump.target, "feature/nav");
+
+        app.active_view = ViewId::Remotes;
+        app.remotes
+            .set_items(vec![remote("origin/feature/nav", "feature/nav")]);
+        let remote_jump = app
+            .build_menu_items()
+            .into_iter()
+            .find(|item| item.action == BranchAction::JumpToGraph)
+            .expect("Remotes menu should expose Graph navigation");
+        assert_eq!(remote_jump.target, "origin/feature/nav");
+
+        app.active_view = ViewId::Tags;
+        app.tags.set_items(vec![tag("v1.2.3")]);
+        let tag_jump = app
+            .build_menu_items()
+            .into_iter()
+            .find(|item| item.action == BranchAction::JumpToGraph)
+            .expect("Tags menu should expose Graph navigation");
+        assert_eq!(tag_jump.target, "v1.2.3");
+
+        app.active_view = ViewId::Worktrees;
+        app.worktrees.set_items(vec![worktree("feature/nav")]);
+        let worktree_jump = app
+            .build_menu_items()
+            .into_iter()
+            .find(|item| item.action == BranchAction::JumpToGraph)
+            .expect("Worktrees menu should expose Graph navigation");
+        assert_eq!(worktree_jump.target, "feature/nav");
+    }
+
+    #[test]
+    fn g_jumps_from_each_ref_view_to_the_selected_graph_commit() {
+        let mut app = graph_app(vec![
+            graph_ref("feature/nav", graph::GraphRefKind::LocalBranch),
+            graph_ref("origin/feature/nav", graph::GraphRefKind::RemoteBranch),
+            graph_ref("v1.2.3", graph::GraphRefKind::Tag),
+        ]);
+        app.branches
+            .set_items(vec![branch("feature/nav", TrackingStatus::Local)]);
+        app.remotes
+            .set_items(vec![remote("origin/feature/nav", "feature/nav")]);
+        app.tags.set_items(vec![tag("v1.2.3")]);
+        app.worktrees.set_items(vec![worktree("feature/nav")]);
+
+        for view in [
+            ViewId::Branches,
+            ViewId::Remotes,
+            ViewId::Tags,
+            ViewId::Worktrees,
+        ] {
+            app.active_view = view;
+            app.handle_key(KeyEvent::new(
+                KeyCode::Char('g'),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            assert_eq!(app.active_view, ViewId::Graph);
+            assert_eq!(
+                app.graph.selected_commit().unwrap().oid,
+                "1111111111111111111111111111111111111111"
+            );
+        }
+    }
+
+    #[test]
+    fn context_menu_jump_to_graph_closes_modal_and_selects_commit() {
+        let mut app = graph_app(vec![graph_ref(
+            "feature/nav",
+            graph::GraphRefKind::LocalBranch,
+        )]);
+        app.active_view = ViewId::Branches;
+        app.branches
+            .set_items(vec![branch("feature/nav", TrackingStatus::Local)]);
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(info_modal_items(&app)
+            .iter()
+            .any(|item| item.action == BranchAction::JumpToGraph));
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('g'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert_eq!(app.active_view, ViewId::Graph);
+        assert!(app.overlay.is_none());
+        assert_eq!(app.graph.commit_cursor(), 0);
     }
 
     #[test]
@@ -8033,6 +8254,7 @@ mod tests {
                 targets: vec!["/repo/.worktrees/feature".to_string()],
                 remote: None,
                 return_view: ViewId::Worktrees,
+                dispatch_path: None,
             },
             op_rx,
             prog_rx,
@@ -8095,6 +8317,7 @@ mod tests {
                 targets: vec!["/repo/.worktrees/feature".to_string()],
                 remote: None,
                 return_view: ViewId::Worktrees,
+                dispatch_path: None,
             },
             op_rx,
             prog_rx,
@@ -8156,6 +8379,7 @@ mod tests {
                 targets: vec!["/repo/.worktrees/feature".to_string()],
                 remote: None,
                 return_view: ViewId::Worktrees,
+                dispatch_path: None,
             },
             op_rx,
             prog_rx,
@@ -8199,6 +8423,7 @@ mod tests {
                 targets: vec!["feature/x".to_string()],
                 remote: None,
                 return_view: ViewId::Branches,
+                dispatch_path: None,
             },
             op_rx,
             prog_rx,

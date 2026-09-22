@@ -14,7 +14,7 @@ Ever accumulate dozens of local branches that GitHub says were "squash and merge
 
 ![Select merged branches](docs/screenshots/select-merged.png)
 
-**Context menu** — press `Enter` on any branch for per-branch actions (checkout, delete, push, merge, rebase, and more):
+**Context menu** — press `Enter` on any branch for per-branch actions (jump to Graph, checkout, delete, push, merge, rebase, and more):
 
 ![Context menu](docs/screenshots/context-menu.png)
 
@@ -50,6 +50,8 @@ Press `o` to open Graph options. `Space` toggles "Include remote refs", and `Ent
 Press `L` to load 500 more commits per press; history expansion is uncapped and session-only.
 
 Press `Enter` on a commit to open the same branch/remote/tag context menu used by the Branches, Remotes, and Tags views, built from whatever live refs point at that commit. Commits with no matching refs are shown informationally with no actions.
+
+From the Branches, Remotes, Tags, or Worktrees view, press `g` to jump the selected branch, tag, or worktree commit to its row in Graph. The same navigation is available as `Jump to Graph` in each view's context menu. In Graph, `g` and `G` retain their Home and End meanings.
 
 Graph loads via the Gleisbau graph-layout crate first. If Gleisbau errors or panics (e.g. on shallow clones or unusual ref states), Graph falls back to `git log --graph --topo-order --decorate` and shows a "Git fallback: \<cause\>" banner.
 

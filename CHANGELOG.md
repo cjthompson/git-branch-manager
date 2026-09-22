@@ -7,6 +7,7 @@
 
 ### Tasks
 - Add HEAD label to Graph view State column
+- Add Graph-view navigation from ref views and global g hotkey
 
 ## 2026-09-16
 

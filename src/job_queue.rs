@@ -1036,6 +1036,9 @@ fn execute_action_with_remote(
         BranchAction::ViewRemotePR => {
             // Handled in App::execute_menu_action, shouldn't reach here
         }
+        BranchAction::JumpToGraph => {
+            // Handled in App::execute_menu_action, shouldn't reach the job queue.
+        }
     }
 
     // Send final progress

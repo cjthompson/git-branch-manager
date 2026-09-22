@@ -17,6 +17,7 @@ pub struct GraphState {
     cursor: usize,
     offset: usize,
     horizontal_offset: usize,
+    pending_target: Option<String>,
 }
 
 impl Default for GraphState {
@@ -36,6 +37,7 @@ impl GraphState {
             cursor: 0,
             offset: 0,
             horizontal_offset: 0,
+            pending_target: None,
         }
     }
 
@@ -93,20 +95,25 @@ impl GraphState {
     pub fn apply_result(&mut self, result: Result<GraphSnapshot, GraphLoadError>) {
         self.loading = false;
         let selected_oid = self.selected_commit().map(|commit| commit.oid.clone());
+        let pending_target = self.pending_target.take();
         match result {
             Ok(snapshot) => {
-                let cursor = selected_oid
+                let target_cursor = pending_target
                     .as_deref()
-                    .and_then(|oid| {
-                        snapshot
-                            .lines
-                            .iter()
-                            .filter_map(|line| line.commit_index)
-                            .position(|commit_index| {
-                                snapshot
-                                    .commits
-                                    .get(commit_index)
-                                    .is_some_and(|commit| commit.oid == oid)
+                    .and_then(|target| cursor_for_target(&snapshot, target));
+                let cursor = target_cursor
+                    .or_else(|| {
+                        selected_oid.as_deref().and_then(|oid| {
+                            snapshot
+                                .lines
+                                .iter()
+                                .filter_map(|line| line.commit_index)
+                                .position(|commit_index| {
+                                    snapshot
+                                        .commits
+                                        .get(commit_index)
+                                        .is_some_and(|commit| commit.oid == oid)
+                                })
                             })
                     })
                     .unwrap_or(0);
@@ -117,6 +124,9 @@ impl GraphState {
                 self.cursor = cursor;
                 self.offset = 0;
                 self.horizontal_offset = 0;
+                if target_cursor.is_none() {
+                    self.pending_target = pending_target;
+                }
             }
             Err(error) => {
                 self.snapshot = None;
@@ -124,7 +134,27 @@ impl GraphState {
                 self.cursor = 0;
                 self.offset = 0;
                 self.horizontal_offset = 0;
+                self.pending_target = pending_target;
             }
+        }
+    }
+
+    /// Focus the commit identified by a live ref name or a full/abbreviated
+    /// commit OID. If the snapshot is still loading, retain the target and
+    /// apply it when the next structural snapshot arrives.
+    pub fn focus_target(&mut self, target: impl Into<String>) -> bool {
+        let target = target.into();
+        let cursor = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| cursor_for_target(snapshot, &target));
+        if let Some(cursor) = cursor {
+            self.cursor = cursor;
+            self.pending_target = None;
+            true
+        } else {
+            self.pending_target = Some(target);
+            false
         }
     }
 
@@ -224,6 +254,24 @@ impl GraphState {
             }
         }
     }
+}
+
+fn cursor_for_target(snapshot: &GraphSnapshot, target: &str) -> Option<usize> {
+    if target.is_empty() {
+        return None;
+    }
+
+    snapshot
+        .lines
+        .iter()
+        .filter_map(|line| line.commit_index)
+        .enumerate()
+        .find_map(|(cursor, commit_index)| {
+            let commit = snapshot.commits.get(commit_index)?;
+            let is_ref = commit.refs.iter().any(|reference| reference.name == target);
+            let is_oid = commit.oid == target || commit.oid.starts_with(target);
+            (is_ref || is_oid).then_some(cursor)
+        })
 }
 
 #[cfg(test)]
@@ -364,5 +412,35 @@ mod tests {
 
         assert_eq!(state.commit_cursor(), 1);
         assert_eq!(state.selected_commit().unwrap().summary, "second");
+    }
+
+    #[test]
+    fn graph_focus_target_selects_refs_and_abbreviated_oids() {
+        let mut state = GraphState::new();
+        state.apply_result(Ok(snapshot()));
+
+        assert!(state.focus_target("main"));
+        assert_eq!(state.commit_cursor(), 0);
+        assert!(state.focus_target("2222222"));
+        assert_eq!(state.commit_cursor(), 1);
+    }
+
+    #[test]
+    fn graph_focus_target_waits_for_a_later_snapshot_when_loading() {
+        let mut state = GraphState::new();
+        state.begin_load(500, false);
+        assert!(!state.focus_target("feature/new"));
+
+        let mut loaded = snapshot();
+        loaded.commits[1].refs.push(GraphRef {
+            name: "feature/new".into(),
+            kind: GraphRefKind::LocalBranch,
+            has_linked_worktree: false,
+            is_current: false,
+            tracking: None,
+        });
+        state.apply_result(Ok(loaded));
+
+        assert_eq!(state.commit_cursor(), 1);
     }
 }

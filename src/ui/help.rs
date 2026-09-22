@@ -11,7 +11,6 @@ const COMMON_KEYS: &[(&str, &str)] = &[
     ("j/\u{2193}", "Move down"),
     ("k/\u{2191}", "Move up"),
     ("PgUp/Dn", "Page scroll"),
-    ("g/G", "Home / End"),
     ("SPACE", "Toggle selection"),
     ("a", "Select all"),
     ("n", "Deselect all"),
@@ -72,6 +71,7 @@ const WORKTREE_KEYS: &[(&str, &str)] = &[
 
 /// Graph-view-specific keys.
 const GRAPH_KEYS: &[(&str, &str)] = &[
+    ("g/G", "Home / End"),
     ("h/l or ←/→", "Scroll commit text and refs"),
     ("o", "Graph options"),
     ("L", "Load 500 older commits"),
@@ -109,6 +109,7 @@ pub fn draw_help(frame: &mut Frame, active_view: ViewId, scroll: &mut usize, the
         &section_header,
         view_keys,
         COMMON_KEYS,
+        (active_view != ViewId::Graph).then_some(("g", "Jump selected ref to Graph")),
         if active_view == ViewId::Graph {
             GRAPH_CONCEPTS
         } else {
@@ -192,6 +193,7 @@ fn build_help_entries(
     view_section: &str,
     view_keys: &[(&str, &str)],
     common_keys: &[(&str, &str)],
+    list_graph_key: Option<(&str, &str)>,
     concepts: &[&str],
 ) -> Vec<HelpEntry> {
     let mut entries = Vec::new();
@@ -215,6 +217,12 @@ fn build_help_entries(
 
     // Common section
     entries.push(HelpEntry::Section("Navigation & General".to_string()));
+    if let Some((key, description)) = list_graph_key {
+        entries.push(HelpEntry::Key {
+            key: key.to_string(),
+            desc: description.to_string(),
+        });
+    }
     for &(k, d) in common_keys {
         entries.push(HelpEntry::Key {
             key: k.to_string(),
