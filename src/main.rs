@@ -15,15 +15,15 @@ use std::io;
 
 use git_branch_manager::cli::Cli;
 use git_branch_manager::config::Config;
-use git_branch_manager::git::{
-    branch, cache, diagnostics, merge_detection, operations, worktree,
-};
+use git_branch_manager::git::{branch, cache, diagnostics, merge_detection, operations, worktree};
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::types::MergeStatus;
 use tracing::{field, info, info_span, instrument, Span};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let cache_root = cache::CacheRoot::from_env();
+    cache::prune_stale_caches(&cache_root);
 
     // Non-interactive dumps (also covers the deprecated `--list`) are what
     // `cargo test` uses to spawn this binary many times per run; skip the
@@ -74,6 +74,7 @@ fn main() -> Result<()> {
             cli.symbols.as_deref(),
             view,
             cli.color,
+            &cache_root,
         )?;
         print!("{out}");
         return Ok(());
@@ -86,6 +87,7 @@ fn main() -> Result<()> {
     {
         let repo_path_bg = repo_path.clone();
         let base_branch_bg = base_branch.clone();
+        let cache_root_bg = cache_root.clone();
         std::thread::spawn(move || {
             let branch_load_span = info_span!(
                 "branch_load",
@@ -117,8 +119,10 @@ fn main() -> Result<()> {
                 return;
             };
             phase1_span.record("fast_branch_count", branches.len() as u64);
-            let cache_for_app = cache::BranchCache::load(&repo_path_bg);
-            let cache_for_squash = cache::BranchCache::load(&repo_path_bg);
+            let cache_for_app =
+                cache::BranchCache::load_for_base(&repo_path_bg, &base_branch_bg, &cache_root_bg);
+            let cache_for_squash =
+                cache::BranchCache::load_for_base(&repo_path_bg, &base_branch_bg, &cache_root_bg);
             if phase1_tx
                 .send(app::Phase1Msg::Fast(
                     branches.clone(),
@@ -144,6 +148,7 @@ fn main() -> Result<()> {
                 let phase1_tx_clone = phase1_tx.clone();
                 let secondary_path = repo_path_bg.clone();
                 let secondary_base = base_branch_bg.clone();
+                let secondary_cache_root = cache_root_bg.clone();
                 std::thread::spawn(move || {
                     let Ok(repo2) = git2::Repository::open(&secondary_path) else {
                         return;
@@ -153,7 +158,11 @@ fn main() -> Result<()> {
                         .find_branch(&secondary_base, git2::BranchType::Local)
                         .ok()
                         .and_then(|b| b.get().target());
-                    let mut mb_cache = cache::BranchCache::load(&secondary_path);
+                    let mut mb_cache = cache::BranchCache::load_for_base(
+                        &secondary_path,
+                        &secondary_base,
+                        &secondary_cache_root,
+                    );
                     let mut branches2 = branches_clone;
 
                     // Fast path: if base tip matches the cache, skip the full revwalk and
@@ -258,7 +267,8 @@ fn main() -> Result<()> {
             // Ahead/behind on this thread (needs the !Send repo from the fast load).
             // Runs fully in parallel with the secondary thread above.
             // Cache avoids re-traversing O(N) commit graph when tips haven't changed.
-            let mut ab_cache = cache::BranchCache::load(&repo_path_bg);
+            let mut ab_cache =
+                cache::BranchCache::load_for_base(&repo_path_bg, &base_branch_bg, &cache_root_bg);
             let ahead_behind_updates = compute_ahead_behind(&repo, &branches, &mut ab_cache);
             ab_cache.save();
             phase1_span.record(
@@ -271,7 +281,12 @@ fn main() -> Result<()> {
     }
 
     // Create app (TUI launches immediately; branches arrive via phase1_rx)
-    let mut app = app::App::new(repo_path.clone(), base_branch.clone(), config);
+    let mut app = app::App::with_cache_root(
+        repo_path.clone(),
+        base_branch.clone(),
+        config,
+        cache_root.clone(),
+    );
     app.phase1_rx = Some(phase1_rx);
 
     // Silently verify (and correct) the cache in the background unless disabled.
@@ -281,6 +296,7 @@ fn main() -> Result<()> {
         app.cache_verify_rx = Some(diagnostics::spawn_cache_verifier(
             repo_path.clone(),
             base_branch.clone(),
+            cache_root.clone(),
         ));
     }
 

@@ -1,7 +1,7 @@
 # Share cache data across linked worktrees
 
 **Date:** 2026-09-29
-**Status:** Design — approved, pending spec review
+**Status:** Design — user-approved; review feedback incorporated
 
 ## Context
 
@@ -56,12 +56,15 @@ all base scopes and OID-keyed values.
 Run a best-effort cache sweep once at application startup, before opening
 persistent cache databases. Restrict it to direct children of the configured
 cache root whose names match the app's legacy `git-bm-cache-*.sqlite3` or new
-`git-bm-repo-cache-*.sqlite3` database patterns. Expire a database 60 days
-after its last use; refresh its modification time when it is loaded, including
-read-only cache hits. Remove its matching `-wal` and `-shm` files at the same
-time. Ignore filesystem cleanup errors so pruning cannot prevent startup.
-If a file's age cannot be determined or its removal fails, leave it for a later
-sweep.
+`git-bm-repo-cache-*.sqlite3` database patterns, optionally followed by exactly
+`-wal` or `-shm`. Expire a database 60 days after its last use; refresh its
+modification time when it is loaded, including read-only cache hits. Remove its
+matching `-wal` and `-shm` files at the same time. If a companion removal fails
+after its database has been removed, recognize that sidecar as an orphan on a
+later sweep and expire it using the sidecar's own modification time. A sidecar
+whose database still exists is eligible only when that database expires. Ignore
+filesystem cleanup errors so pruning cannot prevent startup. If a file's age
+cannot be determined or its removal fails, leave it for a later sweep.
 
 The cache contents are derived. Expiring a database only causes later cache
 misses and recomputation. A repository used within the retention window keeps
@@ -69,9 +72,14 @@ its cache even if it did not write new entries.
 
 Integration tests must direct cache writes to a test-owned temporary cache root
 outside the repository worktree, never the user's OS cache directory. Pass this
-location explicitly through cache-consuming calls and background workers;
-avoid a process-global environment override because tests run in parallel.
-Linked worktrees created by one test use that test's same cache root. On normal
+location explicitly through in-process cache-consuming calls and background
+workers. Tests that spawn `CARGO_BIN_EXE_git-branch-manager` must pass the same
+root to each child with a child-scoped `GBM_CACHE_DIR` environment value (set on
+that `Command`, never with process-global environment mutation); the binary
+uses it as the cache-root override and keeps the OS cache directory as the
+production default when it is unset. This covers dump paths that load caches
+inside the child process while keeping parallel tests isolated. Linked
+worktrees created by one test use that test's same cache root. On normal
 `TestDir` drop, remove both the test repository and its cache root, including
 SQLite WAL/SHM sidecars. When `GBM_KEEP_TEST_REPOS` is set, preserve both for
 inspection.
@@ -92,6 +100,7 @@ recognizes both legacy and new filename patterns.
 - `src/main.rs`, `src/app.rs`, `src/git/branch.rs`, `src/git/diagnostics.rs`,
   `src/git/graph.rs`, and `src/dump.rs`: pass the selected base branch for
   status-aware cache handles and pass cache location through internal loads.
+  Resolve `GBM_CACHE_DIR` as a binary startup override for child-process tests.
   Async squash/cherry workers keep using the already scoped handle they
   receive.
 - `src/git/cache.rs`: preserve repository-wide OID-keyed reuse without adding
@@ -99,7 +108,8 @@ recognizes both legacy and new filename patterns.
 - `tests/integration.rs`: exercise a main worktree plus a linked worktree,
   verify shared database identity and independent status scopes for different
   bases, give each `TestDir` a temporary cache root, pass it through every
-  cache-using path, and remove it when the test repository drops.
+  in-process cache-using path and each spawned CLI child, and remove it when the
+  test repository drops.
 
 ## Testing
 
@@ -112,8 +122,13 @@ recognizes both legacy and new filename patterns.
 - A `TestDir` lifecycle test proves normal teardown removes the temporary cache
   root and WAL/SHM sidecars, while `GBM_KEEP_TEST_REPOS` preserves them.
 - Pruning tests use a controlled clock to prove files at 59 days remain, files
-  past 60 days and their sidecars are removed, recently loaded read-only caches
-  are retained, and unrelated files are untouched.
+  past 60 days and their sidecars are removed, old orphan `-wal` and `-shm`
+  files with recognized cache names are removed when their database is absent,
+  recently loaded read-only caches are retained, and unrelated files are
+  untouched.
+- `dump_remotes_detects_squash_merged` and other cache-using dump tests that
+  spawn the CLI pass their `TestDir` cache root through the child-scoped
+  `GBM_CACHE_DIR` value and assert cache files stay under that root.
 - Run the focused Rust tests and the repository-required `cargo build` during
   implementation.
 

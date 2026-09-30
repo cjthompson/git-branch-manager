@@ -8,6 +8,173 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use tracing::{field, instrument, Span};
 
+/// Directory containing the SQLite cache files. Applications can pass an
+/// explicit root to keep cache ownership scoped to a process or test fixture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CacheRoot {
+    path: PathBuf,
+}
+
+impl CacheRoot {
+    /// Resolve the startup override, falling back to the platform cache dir.
+    /// Tests that spawn the CLI set `GBM_CACHE_DIR` on that child process only.
+    pub fn from_env() -> Self {
+        let path = std::env::var_os("GBM_CACHE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                dirs::cache_dir()
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join("git-branch-manager")
+            });
+        Self { path }
+    }
+
+    /// Construct a cache root at an explicit directory.
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn cache_path(&self, repo_path: &Path) -> PathBuf {
+        let identity_path = git_common_dir(repo_path).unwrap_or_else(|| {
+            fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf())
+        });
+        let mut hasher = DefaultHasher::new();
+        identity_path.hash(&mut hasher);
+        let hash = hasher.finish();
+        self.path
+            .join(format!("git-bm-repo-cache-{hash:x}.sqlite3"))
+    }
+}
+
+fn git_common_dir(repo_path: &Path) -> Option<PathBuf> {
+    git2::Repository::open(repo_path).ok().map(|repo| {
+        fs::canonicalize(repo.commondir()).unwrap_or_else(|_| repo.commondir().to_path_buf())
+    })
+}
+
+const CACHE_RETENTION: std::time::Duration = std::time::Duration::from_secs(60 * 24 * 60 * 60);
+
+/// Remove app-owned cache databases that have not been used for 60 days.
+/// Failures are intentionally ignored because cleanup must never block startup.
+pub fn prune_stale_caches(cache_root: &CacheRoot) {
+    prune_stale_caches_at(cache_root, std::time::SystemTime::now());
+}
+
+fn prune_stale_caches_at(cache_root: &CacheRoot, now: std::time::SystemTime) {
+    prune_stale_caches_at_with(cache_root, now, |path| fs::remove_file(path));
+}
+
+fn prune_stale_caches_at_with<F>(
+    cache_root: &CacheRoot,
+    now: std::time::SystemTime,
+    mut remove_file: F,
+) where
+    F: FnMut(&Path) -> std::io::Result<()>,
+{
+    let Ok(children) = fs::read_dir(cache_root.path()) else {
+        return;
+    };
+    let mut artifacts: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    for child in children.flatten() {
+        let path = child.path();
+        if !child
+            .file_type()
+            .map(|kind| kind.is_file())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Some(name) = child.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(database_name) = cache_database_name(&name) else {
+            continue;
+        };
+        artifacts
+            .entry(cache_root.path().join(database_name))
+            .or_default()
+            .push(path);
+    }
+
+    for (database, files) in artifacts {
+        let database_exists = files.iter().any(|path| path == &database);
+        if database_exists {
+            let database_is_stale = modified_at(&database)
+                .map(|modified| is_stale(modified, now))
+                .unwrap_or(false);
+            let has_recent_sidecar = files.iter().any(|path| {
+                path != &database
+                    && modified_at(path)
+                        .map(|modified| !is_stale(modified, now))
+                        .unwrap_or(true)
+            });
+            if database_is_stale && !has_recent_sidecar {
+                if remove_file(&database).is_ok() {
+                    // If the database is still present, keep its WAL/SHM files
+                    // intact. Failed sidecar removals become orphans and are
+                    // retried by a later sweep.
+                    for path in files {
+                        if path != database {
+                            let _ = remove_file(&path);
+                        }
+                    }
+                }
+            }
+        } else {
+            // A crash can leave WAL/SHM files after SQLite removes the database.
+            // Age each orphan independently so a recent sidecar is preserved.
+            for path in files {
+                if modified_at(&path)
+                    .map(|modified| is_stale(modified, now))
+                    .unwrap_or(false)
+                {
+                    let _ = remove_file(&path);
+                }
+            }
+        }
+    }
+}
+
+fn cache_database_name(name: &str) -> Option<String> {
+    let database_name = name
+        .strip_suffix("-wal")
+        .or_else(|| name.strip_suffix("-shm"))
+        .unwrap_or(name);
+    let hash = database_name
+        .strip_prefix("git-bm-repo-cache-")
+        .or_else(|| database_name.strip_prefix("git-bm-cache-"))
+        .and_then(|rest| rest.strip_suffix(".sqlite3"))?;
+    let is_hex_hash = !hash.is_empty()
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    is_hex_hash.then(|| database_name.to_string())
+}
+
+fn modified_at(path: &Path) -> Option<std::time::SystemTime> {
+    fs::metadata(path).ok()?.modified().ok()
+}
+
+fn is_stale(modified: std::time::SystemTime, now: std::time::SystemTime) -> bool {
+    now.duration_since(modified)
+        .map(|age| age > CACHE_RETENTION)
+        .unwrap_or(false)
+}
+
+fn refresh_cache_timestamp(path: &Path) {
+    if !path.exists() {
+        return;
+    }
+    if let Ok(file) = fs::File::open(path) {
+        let _ =
+            file.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()));
+    }
+}
+
 #[derive(Debug)]
 struct CacheEntry {
     merge_status: String,
@@ -56,6 +223,7 @@ struct GraphPatchEntry {
 /// stays `Send` and can be moved across the background-thread channels.
 pub struct BranchCache {
     path: PathBuf,
+    base_branch: Option<String>,
     entries: HashMap<String, CacheEntry>,
     /// Ahead/behind counts keyed by "{branch_oid}:{upstream_oid}".
     /// Same OID pair always yields the same count — valid until either tip changes.
@@ -74,19 +242,42 @@ pub struct BranchCache {
 }
 
 impl BranchCache {
+    /// Load the default cache root with no branch-status scope.
+    /// Status-aware callers should use [`Self::load_for_base`].
     #[instrument(skip(repo_path), fields(path = ?repo_path, entry_count = field::Empty))]
     pub fn load(repo_path: &Path) -> Self {
-        Self::load_from_path(cache_path(repo_path))
+        Self::load_with_root(repo_path, &CacheRoot::from_env())
+    }
+
+    /// Load the explicit root without a branch-status scope. This is useful
+    /// for OID-only work; status-aware callers should use [`Self::load_for_base`].
+    #[instrument(skip(repo_path, cache_root), fields(path = ?repo_path, entry_count = field::Empty))]
+    pub fn load_with_root(repo_path: &Path, cache_root: &CacheRoot) -> Self {
+        Self::load_from_path_for_base(cache_root.cache_path(repo_path), None)
+    }
+
+    /// Load the shared repository database with branch-status rows bound to
+    /// the selected base branch. OID-keyed tables remain shared across scopes.
+    pub fn load_for_base(repo_path: &Path, base_branch: &str, cache_root: &CacheRoot) -> Self {
+        Self::load_from_path_for_base(cache_root.cache_path(repo_path), Some(base_branch))
     }
 
     /// Load a cache from an explicit path. Primarily for tests that need a
     /// controlled location instead of the per-repo OS cache directory.
     pub fn load_from_path(path: PathBuf) -> Self {
+        Self::load_from_path_for_base(path, None)
+    }
+
+    fn load_from_path_for_base(path: PathBuf, base_branch: Option<&str>) -> Self {
+        refresh_cache_timestamp(&path);
         let span = Span::current();
-        let (entries, ab_entries, mb_entries, base_tip, graph_patch_entries) = read_all(&path);
+        let base_branch = base_branch.map(str::to_owned);
+        let (entries, ab_entries, mb_entries, base_tip, graph_patch_entries) =
+            read_all(&path, base_branch.as_deref());
         span.record("entry_count", entries.len() as u64);
         Self {
             path,
+            base_branch,
             entries,
             ab_entries,
             mb_data: MergeBaseData {
@@ -141,12 +332,17 @@ impl BranchCache {
             };
             if tx
                 .execute(
-                    "INSERT INTO branch_cache (branch_name, merge_status, commit_hash)
-                     VALUES (?1, ?2, ?3)
-                     ON CONFLICT(branch_name) DO UPDATE SET
+                    "INSERT INTO branch_cache (base_branch, branch_name, merge_status, commit_hash)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(base_branch, branch_name) DO UPDATE SET
                          merge_status = excluded.merge_status,
                          commit_hash = excluded.commit_hash",
-                    params![branch_name, entry.merge_status, entry.commit_hash],
+                    params![
+                        base_scope(self.base_branch.as_deref()),
+                        branch_name,
+                        entry.merge_status,
+                        entry.commit_hash
+                    ],
                 )
                 .is_err()
             {
@@ -212,8 +408,8 @@ impl BranchCache {
         for branch_name in &deleted_entries {
             if tx
                 .execute(
-                    "DELETE FROM branch_cache WHERE branch_name = ?1",
-                    params![branch_name],
+                    "DELETE FROM branch_cache WHERE base_branch = ?1 AND branch_name = ?2",
+                    params![base_scope(self.base_branch.as_deref()), branch_name],
                 )
                 .is_err()
             {
@@ -222,17 +418,23 @@ impl BranchCache {
         }
 
         if write_base_tip {
+            let meta_key = base_tip_meta_key(self.base_branch.as_deref());
             if let Some(base_tip) = &self.mb_data.base_tip {
                 if tx
                     .execute(
-                        "INSERT INTO meta (key, value) VALUES ('base_tip', ?1)
+                        "INSERT INTO meta (key, value) VALUES (?1, ?2)
                          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                        params![base_tip],
+                        params![meta_key, base_tip],
                     )
                     .is_err()
                 {
                     return;
                 }
+            } else if tx
+                .execute("DELETE FROM meta WHERE key = ?1", params![meta_key])
+                .is_err()
+            {
+                return;
             }
         }
 
@@ -516,7 +718,23 @@ impl BranchCache {
         self.deleted_entries.borrow_mut().clear();
         self.base_tip_dirty.set(false);
         let _ = fs::remove_file(&self.path);
+        let _ = fs::remove_file(sidecar_path(&self.path, "-wal"));
+        let _ = fs::remove_file(sidecar_path(&self.path, "-shm"));
     }
+}
+
+fn sidecar_path(database: &Path, suffix: &str) -> PathBuf {
+    let mut value = database.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+fn base_scope(base_branch: Option<&str>) -> &str {
+    base_branch.unwrap_or("")
+}
+
+fn base_tip_meta_key(base_branch: Option<&str>) -> String {
+    format!("base_tip:{}", base_scope(base_branch))
 }
 
 fn open_conn(path: &Path) -> rusqlite::Result<Connection> {
@@ -531,9 +749,11 @@ fn open_conn(path: &Path) -> rusqlite::Result<Connection> {
 fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS branch_cache (
-            branch_name  TEXT PRIMARY KEY,
+            base_branch  TEXT NOT NULL,
+            branch_name  TEXT NOT NULL,
             merge_status TEXT NOT NULL,
-            commit_hash  TEXT NOT NULL
+            commit_hash  TEXT NOT NULL,
+            PRIMARY KEY (base_branch, branch_name)
         );
         CREATE TABLE IF NOT EXISTS ahead_behind (
             key    TEXT PRIMARY KEY,
@@ -559,6 +779,7 @@ fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
 #[allow(clippy::type_complexity)]
 fn read_all(
     path: &Path,
+    base_branch: Option<&str>,
 ) -> (
     HashMap<String, CacheEntry>,
     HashMap<String, [u32; 2]>,
@@ -585,21 +806,21 @@ fn read_all(
         );
     };
     (
-        read_entries(&conn),
+        read_entries(&conn, base_scope(base_branch)),
         read_ahead_behind(&conn),
         read_merge_base(&conn),
-        read_base_tip(&conn),
+        read_base_tip(&conn, &base_tip_meta_key(base_branch)),
         read_graph_patch(&conn),
     )
 }
 
-fn read_entries(conn: &Connection) -> HashMap<String, CacheEntry> {
-    let Ok(mut stmt) =
-        conn.prepare("SELECT branch_name, merge_status, commit_hash FROM branch_cache")
-    else {
+fn read_entries(conn: &Connection, base_branch: &str) -> HashMap<String, CacheEntry> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT branch_name, merge_status, commit_hash FROM branch_cache WHERE base_branch = ?1",
+    ) else {
         return HashMap::new();
     };
-    let Ok(rows) = stmt.query_map([], |row| {
+    let Ok(rows) = stmt.query_map([base_branch], |row| {
         Ok((
             row.get::<_, String>(0)?,
             CacheEntry {
@@ -658,32 +879,293 @@ fn read_graph_patch(conn: &Connection) -> HashMap<String, GraphPatchEntry> {
     rows.flatten().collect()
 }
 
-fn read_base_tip(conn: &Connection) -> Option<String> {
-    conn.query_row("SELECT value FROM meta WHERE key = 'base_tip'", [], |row| {
+fn read_base_tip(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
         row.get::<_, String>(0)
     })
     .ok()
 }
 
+#[cfg(test)]
 fn cache_path(repo_path: &Path) -> PathBuf {
-    let mut hasher = DefaultHasher::new();
-    repo_path.hash(&mut hasher);
-    let hash = hasher.finish();
-    dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("git-branch-manager")
-        .join(format!("git-bm-cache-{hash:x}.sqlite3"))
+    CacheRoot::from_env().cache_path(repo_path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     use tempfile::TempDir;
+
+    const DAY: u64 = 24 * 60 * 60;
 
     fn temp_cache() -> (TempDir, BranchCache) {
         let dir = TempDir::new().unwrap();
         let cache = BranchCache::load_from_path(dir.path().join("cache.sqlite3"));
         (dir, cache)
+    }
+
+    fn git(directory: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(directory)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn set_mtime(path: &Path, modified: std::time::SystemTime) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+    }
+
+    #[test]
+    fn cache_path_uses_common_git_directory_for_worktrees() {
+        let fixture = TempDir::new().unwrap();
+        let main = fixture.path().join("main");
+        let worktree = fixture.path().join("linked-worktree");
+        let clone = fixture.path().join("separate-clone");
+        fs::create_dir(&main).unwrap();
+        git(&main, &["init", "-b", "main"]);
+        git(&main, &["config", "user.name", "Cache Test"]);
+        git(&main, &["config", "user.email", "cache@example.com"]);
+        fs::write(main.join("readme"), "repo\n").unwrap();
+        git(&main, &["add", "readme"]);
+        git(&main, &["commit", "-m", "initial"]);
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        git(
+            fixture.path(),
+            &[
+                "clone",
+                "--quiet",
+                main.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+
+        let root = CacheRoot::at(fixture.path().join("cache"));
+        assert_eq!(
+            root.cache_path(&main),
+            root.cache_path(&worktree),
+            "linked worktrees share a cache database"
+        );
+        assert_ne!(
+            root.cache_path(&main),
+            root.cache_path(&clone),
+            "separate clones keep independent cache databases"
+        );
+    }
+
+    #[test]
+    fn status_rows_and_base_tips_are_scoped_while_oid_values_are_shared() {
+        let dir = TempDir::new().unwrap();
+        let cache_path = dir.path().join("cache.sqlite3");
+        let branch_tip = git2::Oid::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        let base_tip = git2::Oid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+
+        let mut main_cache = BranchCache::load_from_path_for_base(cache_path.clone(), Some("main"));
+        main_cache.insert("feature/x", &MergeStatus::Merged, "feature-tip");
+        main_cache.set_base_tip(Some("main-tip".to_string()));
+        main_cache.insert_ahead_behind(branch_tip, base_tip, 2, 3);
+        main_cache.save();
+
+        let mut release_cache =
+            BranchCache::load_from_path_for_base(cache_path.clone(), Some("release"));
+        assert_eq!(release_cache.lookup("feature/x", "feature-tip"), None);
+        assert_eq!(release_cache.mb_data.base_tip, None);
+        assert_eq!(
+            release_cache.lookup_ahead_behind(branch_tip, base_tip),
+            Some((2, 3)),
+            "OID-keyed values remain shared across base scopes"
+        );
+        release_cache.insert("feature/x", &MergeStatus::Unmerged, "feature-tip");
+        release_cache.set_base_tip(Some("release-tip".to_string()));
+        release_cache.save();
+
+        let mut main_cache =
+            BranchCache::load_from_path_for_base(cache_path.clone(), Some("main"));
+        let release_cache =
+            BranchCache::load_from_path_for_base(cache_path.clone(), Some("release"));
+        assert_eq!(
+            main_cache.lookup("feature/x", "feature-tip"),
+            Some(MergeStatus::Merged)
+        );
+        assert_eq!(main_cache.mb_data.base_tip.as_deref(), Some("main-tip"));
+        assert_eq!(
+            release_cache.lookup("feature/x", "feature-tip"),
+            Some(MergeStatus::Unmerged)
+        );
+        assert_eq!(
+            release_cache.mb_data.base_tip.as_deref(),
+            Some("release-tip")
+        );
+        main_cache.clear();
+        assert!(!cache_path.exists(), "clearing removes the shared database");
+    }
+
+    #[test]
+    fn stale_cache_pruning_expires_databases_and_orphan_sidecars_only() {
+        let dir = TempDir::new().unwrap();
+        let root = CacheRoot::at(dir.path());
+        let now = std::time::SystemTime::now();
+        let stale = now - std::time::Duration::from_secs(61 * DAY);
+        let recent = now - std::time::Duration::from_secs(59 * DAY);
+        let expired_db = dir.path().join("git-bm-repo-cache-e11e.sqlite3");
+        let expired_legacy_db = dir.path().join("git-bm-cache-1e9ac7.sqlite3");
+        let expired_wal = dir.path().join("git-bm-repo-cache-e11e.sqlite3-wal");
+        let expired_shm = dir.path().join("git-bm-repo-cache-e11e.sqlite3-shm");
+        let old_orphan_wal = dir.path().join("git-bm-cache-0bad.sqlite3-wal");
+        let old_orphan_shm = dir.path().join("git-bm-cache-0bad.sqlite3-shm");
+        let recent_db = dir.path().join("git-bm-cache-cafe.sqlite3");
+        let unrelated = dir.path().join("notes.sqlite3");
+        let unrelated_journal = dir.path().join("git-bm-cache-journal.sqlite3-journal");
+
+        for path in [
+            &expired_db,
+            &expired_legacy_db,
+            &expired_wal,
+            &expired_shm,
+            &old_orphan_wal,
+            &old_orphan_shm,
+            &recent_db,
+            &unrelated,
+            &unrelated_journal,
+        ] {
+            fs::write(path, "test cache").unwrap();
+        }
+        for path in [
+            &expired_db,
+            &expired_legacy_db,
+            &expired_wal,
+            &expired_shm,
+            &old_orphan_wal,
+            &old_orphan_shm,
+        ] {
+            set_mtime(path, stale);
+        }
+        set_mtime(&recent_db, recent);
+        set_mtime(&unrelated, stale);
+        set_mtime(&unrelated_journal, stale);
+
+        prune_stale_caches_at(&root, now);
+
+        for path in [
+            &expired_db,
+            &expired_legacy_db,
+            &expired_wal,
+            &expired_shm,
+            &old_orphan_wal,
+            &old_orphan_shm,
+        ] {
+            assert!(
+                !path.exists(),
+                "stale cache artifact should be removed: {path:?}"
+            );
+        }
+        assert!(recent_db.exists(), "cache younger than 60 days remains");
+        assert!(unrelated.exists(), "unrecognized files are untouched");
+        assert!(
+            unrelated_journal.exists(),
+            "non-WAL SQLite sidecars are untouched"
+        );
+    }
+
+    #[test]
+    fn failed_stale_database_removal_preserves_its_sidecars() {
+        let dir = TempDir::new().unwrap();
+        let root = CacheRoot::at(dir.path());
+        let now = std::time::SystemTime::now();
+        let stale = now - std::time::Duration::from_secs(61 * DAY);
+        let database = dir.path().join("git-bm-repo-cache-a11ce.sqlite3");
+        let wal = dir.path().join("git-bm-repo-cache-a11ce.sqlite3-wal");
+        let shm = dir.path().join("git-bm-repo-cache-a11ce.sqlite3-shm");
+        for path in [&database, &wal, &shm] {
+            fs::write(path, "test cache").unwrap();
+            set_mtime(path, stale);
+        }
+
+        prune_stale_caches_at_with(&root, now, |path| {
+            if path == database {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected database removal failure",
+                ))
+            } else {
+                fs::remove_file(path)
+            }
+        });
+
+        assert!(
+            database.exists(),
+            "failed database deletion is retried later"
+        );
+        assert!(
+            wal.exists(),
+            "WAL stays with a database that could not be removed"
+        );
+        assert!(
+            shm.exists(),
+            "SHM stays with a database that could not be removed"
+        );
+    }
+
+    #[test]
+    fn cache_filename_matcher_accepts_only_generated_hex_hashes() {
+        assert_eq!(
+            cache_database_name("git-bm-cache-deadbeef.sqlite3"),
+            Some("git-bm-cache-deadbeef.sqlite3".to_string())
+        );
+        assert_eq!(
+            cache_database_name("git-bm-repo-cache-123abc.sqlite3"),
+            Some("git-bm-repo-cache-123abc.sqlite3".to_string())
+        );
+        for name in [
+            "git-bm-cache-expired.sqlite3",
+            "git-bm-repo-cache-xyz.sqlite3",
+            "git-bm-cache-DEADBEEF.sqlite3",
+            "git-bm-cache-deadbeef.sqlite3-journal",
+        ] {
+            assert_eq!(
+                cache_database_name(name),
+                None,
+                "unexpected match for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn loading_cache_without_writes_refreshes_its_last_used_time() {
+        let dir = TempDir::new().unwrap();
+        let root = CacheRoot::at(dir.path());
+        let repo_dir = TempDir::new().unwrap();
+        let db = root.cache_path(repo_dir.path());
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        fs::write(&db, "not a sqlite db").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(61 * DAY);
+        set_mtime(&db, old);
+
+        let _cache = BranchCache::load_with_root(repo_dir.path(), &root);
+        let now = std::time::SystemTime::now();
+        prune_stale_caches_at(&root, now);
+
+        assert!(
+            db.exists(),
+            "a recently loaded cache must survive pruning even without writes"
+        );
     }
 
     #[test]
@@ -909,7 +1391,9 @@ mod tests {
         assert!(path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("git-bm-cache-") && name.ends_with(".sqlite3")));
+            .is_some_and(|name| {
+                name.starts_with("git-bm-repo-cache-") && name.ends_with(".sqlite3")
+            }));
     }
 
     #[test]

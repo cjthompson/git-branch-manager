@@ -406,14 +406,18 @@ pub fn apply_fix(cache: &mut BranchCache, audit: &CacheAudit) {
 /// resulting [`CacheAudit`] is sent, purely so the caller can patch live UI
 /// state. Opens its own `Repository`/`BranchCache` handles, matching every
 /// other launch-time background thread (neither type is `Send`).
-pub fn spawn_cache_verifier(repo_path: PathBuf, base_branch: String) -> Receiver<CacheAudit> {
+pub fn spawn_cache_verifier(
+    repo_path: PathBuf,
+    base_branch: String,
+    cache_root: super::cache::CacheRoot,
+) -> Receiver<CacheAudit> {
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || {
         let Ok(repo) = Repository::open(&repo_path) else {
             return;
         };
-        let mut cache = BranchCache::load(&repo_path);
+        let mut cache = BranchCache::load_for_base(&repo_path, &base_branch, &cache_root);
         let cancel = AtomicBool::new(false);
         let audit = audit_cache(
             &repo,

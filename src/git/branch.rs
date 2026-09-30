@@ -422,9 +422,18 @@ fn parse_remote_ahead_behind(output: &str) -> HashMap<String, (Option<u32>, Opti
 /// Synchronous — runs squash checks inline. Used by `--list` mode and tests.
 #[instrument(skip(repo), fields(base_branch, result_count = field::Empty))]
 pub fn list_branches(repo: &Repository, base_branch: &str) -> Result<Vec<BranchInfo>> {
+    list_branches_with_cache_root(repo, base_branch, &super::cache::CacheRoot::from_env())
+}
+
+#[instrument(skip(repo, cache_root), fields(base_branch, result_count = field::Empty))]
+pub fn list_branches_with_cache_root(
+    repo: &Repository,
+    base_branch: &str,
+    cache_root: &super::cache::CacheRoot,
+) -> Result<Vec<BranchInfo>> {
     let span = Span::current();
     let repo_path = repo.workdir().unwrap_or_else(|| repo.path());
-    let mut cache = super::cache::BranchCache::load(repo_path);
+    let mut cache = super::cache::BranchCache::load_for_base(repo_path, base_branch, cache_root);
 
     let mut branches = collect_branch_metadata(repo, base_branch, false, true)?;
     let base_reachable =

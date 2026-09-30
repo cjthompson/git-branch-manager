@@ -51,6 +51,7 @@ pub fn run(
     symbols_override: Option<&str>,
     view: DumpView,
     color: ColorChoice,
+    cache_root: &cache::CacheRoot,
 ) -> Result<String> {
     let theme = Theme::from_name(config.theme.as_deref().unwrap_or("dark"));
     let symbols = SymbolSet::from_name(
@@ -70,7 +71,7 @@ pub fn run(
 
     match view {
         DumpView::Branches => {
-            let mut rows = branch::list_branches(repo, base)?;
+            let mut rows = branch::list_branches_with_cache_root(repo, base, cache_root)?;
             let pr_map = github::fetch_open_prs_checked(repo_path).unwrap_or_else(|e| {
                 eprintln!("note: PR data unavailable ({e}); PR column left blank");
                 Default::default()
@@ -148,7 +149,7 @@ pub fn run(
                 })
                 .collect();
             if !candidates.is_empty() {
-                let remote_cache = cache::BranchCache::load(repo_path);
+                let remote_cache = cache::BranchCache::load_for_base(repo_path, base, cache_root);
                 let squash_rx = squash_loader::spawn_squash_checker(
                     repo_path.to_path_buf(),
                     base.to_string(),
@@ -235,7 +236,7 @@ pub fn run(
             // Correlate merge status from the branch list (same data the
             // Branches view shows). Graceful degrade: on error, worktrees keep
             // their Unmerged default.
-            if let Ok(branches) = branch::list_branches(repo, base) {
+            if let Ok(branches) = branch::list_branches_with_cache_root(repo, base, cache_root) {
                 worktree::apply_branch_merge_status(&mut rows, &branches);
             }
             pin_first(&mut rows);

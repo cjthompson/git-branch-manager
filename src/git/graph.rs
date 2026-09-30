@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use chrono::{DateTime, TimeZone, Utc};
 
-use crate::git::cache::BranchCache;
+use crate::git::cache::{BranchCache, CacheRoot};
 
 /// An app-owned graph payload. It deliberately contains no repository handles
 /// or Gleisbau values, so it can move across a background channel.
@@ -151,6 +151,7 @@ pub struct GraphLoadOptions {
     pub include_remotes: bool,
     pub line_style: GraphLineStyle,
     pub base_branch: Option<String>,
+    pub cache_root: CacheRoot,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -177,6 +178,7 @@ impl Default for GraphLoadOptions {
             include_remotes: false,
             line_style: GraphLineStyle::default(),
             base_branch: None,
+            cache_root: CacheRoot::from_env(),
         }
     }
 }
@@ -225,8 +227,12 @@ pub fn load_graph_with_squash_annotations(
     options: GraphLoadOptions,
 ) -> Result<GraphSnapshot, GraphLoadError> {
     let mut snapshot = load_graph(repo_path, options.clone())?;
-    let mut updates =
-        compute_possible_squash_updates(repo_path, &snapshot, options.base_branch.as_deref());
+    let mut updates = compute_possible_squash_updates(
+        repo_path,
+        &snapshot,
+        options.base_branch.as_deref(),
+        &options.cache_root,
+    );
     let cherry_updates =
         compute_cherry_pick_updates(repo_path, &snapshot, options.base_branch.as_deref());
     merge_enrichment_updates(&mut updates, cherry_updates);
@@ -244,6 +250,7 @@ pub fn spawn_possible_squash_enrichment(
     repo_path: PathBuf,
     requested_base: Option<String>,
     generation: u64,
+    cache_root: CacheRoot,
 ) -> Receiver<GraphEnrichmentMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -251,6 +258,7 @@ pub fn spawn_possible_squash_enrichment(
             &repo_path,
             &snapshot,
             requested_base.as_deref(),
+            &cache_root,
         );
         let cherry_updates =
             compute_cherry_pick_updates(&repo_path, &snapshot, requested_base.as_deref());
@@ -524,6 +532,7 @@ pub fn compute_possible_squash_updates(
     repo_path: &Path,
     snapshot: &GraphSnapshot,
     requested_base: Option<&str>,
+    cache_root: &CacheRoot,
 ) -> Vec<GraphEnrichmentUpdate> {
     let base_branch = requested_base.map(str::to_string).or_else(|| {
         let repository = git2::Repository::open(repo_path).ok()?;
@@ -544,7 +553,7 @@ pub fn compute_possible_squash_updates(
         return Vec::new();
     };
 
-    let mut cache = BranchCache::load(repo_path);
+    let mut cache = BranchCache::load_for_base(repo_path, &base_branch, cache_root);
 
     let mut jobs = snapshot
         .commits
@@ -1490,7 +1499,15 @@ mod tests {
         let head_oid = String::from_utf8(head.stdout).unwrap().trim().to_string();
         std::fs::write(dir.join(".git/shallow"), format!("{head_oid}\n")).unwrap();
 
-        let snapshot = load_graph_with_squash_annotations(dir, GraphLoadOptions::default()).unwrap();
+        let test_cache = tempfile::tempdir().unwrap();
+        let snapshot = load_graph_with_squash_annotations(
+            dir,
+            GraphLoadOptions {
+                cache_root: CacheRoot::at(test_cache.path()),
+                ..GraphLoadOptions::default()
+            },
+        )
+        .unwrap();
         assert!(matches!(
             snapshot.source,
             crate::git::graph::GraphSource::GitCliFallback { .. }
@@ -1529,7 +1546,15 @@ mod tests {
             .output()
             .unwrap();
 
-        let snapshot = load_graph_with_squash_annotations(dir, GraphLoadOptions::default()).unwrap();
+        let test_cache = tempfile::tempdir().unwrap();
+        let snapshot = load_graph_with_squash_annotations(
+            dir,
+            GraphLoadOptions {
+                cache_root: CacheRoot::at(test_cache.path()),
+                ..GraphLoadOptions::default()
+            },
+        )
+        .unwrap();
         assert!(matches!(
             snapshot.source,
             crate::git::graph::GraphSource::Gleisbau
@@ -1578,8 +1603,15 @@ mod tests {
         let head_oid = String::from_utf8(head.stdout).unwrap().trim().to_string();
         std::fs::write(dir.join(".git/shallow"), format!("{head_oid}\n")).unwrap();
 
-        let snapshot =
-            load_graph_with_squash_annotations(dir, GraphLoadOptions::default()).unwrap();
+        let test_cache = tempfile::tempdir().unwrap();
+        let snapshot = load_graph_with_squash_annotations(
+            dir,
+            GraphLoadOptions {
+                cache_root: CacheRoot::at(test_cache.path()),
+                ..GraphLoadOptions::default()
+            },
+        )
+        .unwrap();
         assert!(matches!(
             snapshot.source,
             crate::git::graph::GraphSource::GitCliFallback { .. }

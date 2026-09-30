@@ -22,6 +22,7 @@ use git_branch_manager::view::ViewId;
 /// ```
 struct TestDir {
     inner: Option<tempfile::TempDir>,
+    cache_root: Option<tempfile::TempDir>,
     path: std::path::PathBuf,
 }
 
@@ -30,6 +31,7 @@ impl TestDir {
         let path = td.path().to_path_buf();
         Self {
             inner: Some(td),
+            cache_root: Some(tempfile::tempdir().expect("failed to create test cache root")),
             path,
         }
     }
@@ -37,18 +39,99 @@ impl TestDir {
     fn path(&self) -> &std::path::Path {
         &self.path
     }
+
+    fn cache_root(&self) -> &std::path::Path {
+        self.cache_root
+            .as_ref()
+            .expect("test cache root already dropped")
+            .path()
+    }
+
+    fn graph_options(&self) -> graph::GraphLoadOptions {
+        let mut options = graph::GraphLoadOptions::default();
+        options.cache_root = cache::CacheRoot::at(self.cache_root().to_path_buf());
+        options
+    }
+
+    fn preserve_tempdirs(&mut self) -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
+        let repo = self.inner.take().map(|dir| dir.keep());
+        let cache = self.cache_root.take().map(|dir| dir.keep());
+        (repo, cache)
+    }
 }
 
 impl Drop for TestDir {
     fn drop(&mut self) {
         if std::env::var_os("GBM_KEEP_TEST_REPOS").is_some() {
-            if let Some(td) = self.inner.take() {
-                let kept = td.keep(); // leak: skip the recursive delete
+            let (repo, cache) = self.preserve_tempdirs();
+            if let Some(kept) = repo {
                 eprintln!("[GBM_KEEP_TEST_REPOS] kept test repo: {}", kept.display());
             }
+            if let Some(kept) = cache {
+                eprintln!("[GBM_KEEP_TEST_REPOS] kept test cache: {}", kept.display());
+            }
         }
-        // Otherwise `inner` drops normally and deletes the directory.
+        // Otherwise both TempDirs drop normally and remove their contents.
     }
+}
+
+fn manager_command(test_dir: &TestDir) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"));
+    command.env("GBM_CACHE_DIR", test_dir.cache_root());
+    command
+}
+
+fn test_branches(
+    test_dir: &TestDir,
+    repo: &git2::Repository,
+    base_branch: &str,
+) -> anyhow::Result<Vec<git_branch_manager::types::BranchInfo>> {
+    Ok(branch::list_branches_with_cache_root(
+        repo,
+        base_branch,
+        &cache::CacheRoot::at(test_dir.cache_root().to_path_buf()),
+    )?)
+}
+
+#[test]
+fn testdir_removes_cache_root_and_sqlite_sidecars_on_drop() {
+    let cache_root = {
+        let (test_dir, _repo) = setup_test_repo();
+        let cache_root = test_dir.cache_root().to_path_buf();
+        for suffix in ["", "-wal", "-shm"] {
+            std::fs::write(
+                cache_root.join(format!("git-bm-repo-cache-test.sqlite3{suffix}")),
+                "cache data",
+            )
+            .unwrap();
+        }
+        cache_root
+    };
+
+    assert!(
+        !cache_root.exists(),
+        "TestDir drop must remove its temporary cache root"
+    );
+}
+
+#[test]
+fn testdir_preserves_repo_and_cache_roots_when_requested() {
+    let (mut test_dir, repo) = setup_test_repo();
+    let cache_marker = test_dir.cache_root().join("kept.sqlite3");
+    std::fs::write(&cache_marker, "cache data").unwrap();
+    let repo_path = test_dir.path().to_path_buf();
+    let cache_path = test_dir.cache_root().to_path_buf();
+
+    let (kept_repo, kept_cache) = test_dir.preserve_tempdirs();
+    drop(test_dir);
+    drop(repo);
+
+    assert_eq!(kept_repo.as_deref(), Some(repo_path.as_path()));
+    assert_eq!(kept_cache.as_deref(), Some(cache_path.as_path()));
+    assert!(repo_path.exists(), "preserving keeps the test repository");
+    assert!(cache_marker.exists(), "preserving keeps the test cache");
+    std::fs::remove_dir_all(repo_path).unwrap();
+    std::fs::remove_dir_all(cache_path).unwrap();
 }
 
 /// Create a temporary git repository with an initial commit on the "main" branch.
@@ -258,7 +341,7 @@ fn test_load_graph_preserves_merge_lanes_and_local_refs() {
     );
 
     let snapshot =
-        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
             .expect("graph loader should handle an ordinary merged local branch");
 
     assert!(matches!(snapshot.source, graph::GraphSource::Gleisbau));
@@ -296,7 +379,7 @@ fn test_graph_branch_labels_follow_visual_branch_tracks() {
     );
 
     let snapshot =
-        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
             .expect("graph loader should preserve live branch tracks");
     let release_commit = snapshot
         .commits
@@ -368,7 +451,7 @@ fn test_graph_base_branch_owns_first_parent_chain_with_retained_merged_ref() {
 
     let options = graph::GraphLoadOptions {
         base_branch: Some("main".into()),
-        ..graph::GraphLoadOptions::default()
+        ..tmpdir.graph_options()
     };
     let snapshot = graph::load_graph_with_squash_annotations(dir, options.clone())
         .expect("Gleisbau should preserve base-branch ownership");
@@ -387,7 +470,7 @@ fn test_graph_base_branch_owns_first_parent_chain_with_retained_merged_ref() {
 
 #[test]
 fn test_graph_both_loaders_agree_on_author_and_author_date() {
-    use git_branch_manager::git::graph::{load_graph_with_squash_annotations, GraphLoadOptions};
+    use git_branch_manager::git::graph::load_graph_with_squash_annotations;
 
     let (tmpdir, repo) = setup_test_repo();
     let dir = tmpdir.path();
@@ -396,12 +479,12 @@ fn test_graph_both_loaders_agree_on_author_and_author_date() {
     run_git(dir, &["config", "user.name", "Agree Bot"]);
     run_git(dir, &["commit", "--allow-empty", "-m", "comparison tip"]);
 
-    let gleisbau = load_graph_with_squash_annotations(dir, GraphLoadOptions::default())
+    let gleisbau = load_graph_with_squash_annotations(dir, tmpdir.graph_options())
         .expect("gleisbau should succeed");
     assert!(matches!(gleisbau.source, graph::GraphSource::Gleisbau));
 
     std::fs::write(dir.join(".git/shallow"), format!("{initial_oid}\n")).unwrap();
-    let fallback = load_graph_with_squash_annotations(dir, GraphLoadOptions::default())
+    let fallback = load_graph_with_squash_annotations(dir, tmpdir.graph_options())
         .expect("fallback should succeed");
     assert!(matches!(
         fallback.source,
@@ -465,7 +548,7 @@ fn test_graph_default_branch_renders_in_column_zero() {
 
     let options = graph::GraphLoadOptions {
         base_branch: Some("main".into()),
-        ..graph::GraphLoadOptions::default()
+        ..tmpdir.graph_options()
     };
     let snapshot = graph::load_graph_with_squash_annotations(dir, options)
         .expect("graph loader should place the default branch in column 0");
@@ -529,7 +612,7 @@ fn test_graph_base_branch_with_special_chars_lands_in_column_zero() {
 
     let options = graph::GraphLoadOptions {
         base_branch: Some("release/1.0".into()),
-        ..graph::GraphLoadOptions::default()
+        ..tmpdir.graph_options()
     };
     let snapshot = graph::load_graph_with_squash_annotations(dir, options)
         .expect("graph loader should place the special-char base branch in column 0");
@@ -603,7 +686,7 @@ fn test_graph_base_branch_lands_in_column_zero_with_diverged_remote() {
     let options = graph::GraphLoadOptions {
         include_remotes: true,
         base_branch: Some("main".into()),
-        ..graph::GraphLoadOptions::default()
+        ..tmpdir.graph_options()
     };
     let snapshot = graph::load_graph_with_squash_annotations(&work_dir, options)
         .expect("graph loader should place local main in column 0 despite a diverged remote");
@@ -663,7 +746,7 @@ fn test_graph_local_branch_owns_track_before_matching_remote() {
         graph::GraphLoadOptions {
             include_remotes: true,
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            .._tmpdir.graph_options()
         },
     )
     .expect("graph loader should preserve local ownership with remotes enabled");
@@ -704,7 +787,7 @@ fn test_graph_does_not_expose_a_deleted_merge_branch_as_a_live_ref() {
     run_git(dir, &["branch", "-D", "worktree-agent-deleted"]);
 
     let snapshot =
-        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
             .expect("graph loader should handle deleted merge branches");
     let deleted_commit = snapshot
         .commits
@@ -726,7 +809,7 @@ fn test_graph_labels_deleted_merge_branch_from_conventional_subject() {
     let tmpdir = setup_graph_label_fixture();
     let snapshot = graph::load_graph_with_squash_annotations(
         tmpdir.path(),
-        graph::GraphLoadOptions::default(),
+        tmpdir.graph_options(),
     )
     .expect("graph loader should preserve the composed fixture");
     let deleted_commit = snapshot
@@ -749,7 +832,7 @@ fn test_graph_label_fixture_labels_nested_and_first_parent_tracks() {
     let tmpdir = setup_graph_label_fixture();
     let snapshot = graph::load_graph_with_squash_annotations(
         tmpdir.path(),
-        graph::GraphLoadOptions::default(),
+        tmpdir.graph_options(),
     )
     .expect("graph loader should preserve the composed fixture");
 
@@ -787,7 +870,7 @@ fn test_graph_label_fixture_keeps_tag_only_histories_reachable() {
         tmpdir.path(),
         graph::GraphLoadOptions {
             include_remotes: true,
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph loader should include tag-only fixture histories");
@@ -828,7 +911,7 @@ fn test_load_graph_includes_remote_refs_only_when_requested() {
     run_git(&work_dir, &["branch", "-D", "remote-only"]);
 
     let local_only =
-        graph::load_graph_with_squash_annotations(&work_dir, graph::GraphLoadOptions::default())
+        graph::load_graph_with_squash_annotations(&work_dir, _tmpdir.graph_options())
             .expect("local graph load should succeed");
     assert!(!local_only
         .commits
@@ -841,7 +924,7 @@ fn test_load_graph_includes_remote_refs_only_when_requested() {
         &work_dir,
         graph::GraphLoadOptions {
             include_remotes: true,
-            ..graph::GraphLoadOptions::default()
+            .._tmpdir.graph_options()
         },
     )
     .expect("remote graph load should succeed");
@@ -871,7 +954,7 @@ fn test_graph_refs_include_remote_tracking_state() {
         &work_dir,
         graph::GraphLoadOptions {
             include_remotes: true,
-            ..graph::GraphLoadOptions::default()
+            .._tmpdir.graph_options()
         },
     )
     .expect("graph load with remote tracking refs should succeed");
@@ -935,7 +1018,7 @@ fn test_graph_refs_mark_only_linked_worktrees() {
     );
 
     let snapshot =
-        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
             .expect("graph load should include linked worktree metadata");
     let linked = snapshot
         .commits
@@ -964,7 +1047,7 @@ fn test_load_graph_caps_history_at_five_hundred_commits() {
     }
 
     let snapshot =
-        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
             .expect("bounded graph load should succeed");
     assert_eq!(snapshot.commits.len(), 500);
     assert_eq!(snapshot.max_count, 500);
@@ -978,7 +1061,7 @@ fn test_load_graph_uses_cli_fallback_for_shallow_repository() {
     std::fs::write(dir.join(".git/shallow"), format!("{head}\n")).unwrap();
 
     let snapshot =
-        graph::load_graph_with_squash_annotations(dir, graph::GraphLoadOptions::default())
+        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
             .expect("git CLI fallback should handle a shallow repository");
 
     assert!(matches!(
@@ -1025,7 +1108,7 @@ fn test_graph_marks_only_base_commit_with_exact_squash_patch() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph loader should annotate exact squash patch matches");
@@ -1086,7 +1169,7 @@ fn test_graph_preserves_every_base_oid_for_duplicate_patch_ids() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph loader should retain duplicate patch matches");
@@ -1148,7 +1231,7 @@ fn test_graph_excludes_regular_merges_roots_and_empty_patches() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph loader should ignore ineligible patch shapes");
@@ -1191,7 +1274,7 @@ fn test_graph_cli_fallback_receives_exact_squash_annotation() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("CLI fallback should receive the shared squash annotation");
@@ -1232,7 +1315,7 @@ fn test_graph_squash_matching_stays_within_displayed_history_bound() {
         graph::GraphLoadOptions {
             max_count: 1,
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("bounded graph load should not inspect undisplayed matching history");
@@ -1273,7 +1356,7 @@ fn test_load_graph_fallback_with_remotes_includes_tag_only_history() {
         &work_dir,
         graph::GraphLoadOptions {
             include_remotes: true,
-            ..graph::GraphLoadOptions::default()
+            .._tmpdir.graph_options()
         },
     )
     .expect("git CLI fallback should retain the remote and tag-only ref range");
@@ -1328,7 +1411,7 @@ fn test_list_branches() {
     run_git(dir, &["branch", "feature-a"]);
     run_git(dir, &["branch", "feature-b"]);
 
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
 
     // Should have 3 branches: main, feature-a, feature-b
     assert_eq!(
@@ -1373,7 +1456,7 @@ fn test_merged_branch_detection() {
 
     // Re-open the repo so git2 sees the merge commit
     let repo = git2::Repository::open(dir).expect("failed to re-open repo");
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
 
     let feature = branches
         .iter()
@@ -1406,7 +1489,7 @@ fn test_squash_merged_branch_detection() {
 
     // Re-open the repo so git2 sees the latest state
     let repo = git2::Repository::open(dir).expect("failed to re-open repo");
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
 
     let feature = branches
         .iter()
@@ -1432,7 +1515,7 @@ fn test_in_sync_branch_detection() {
     run_git(dir, &["branch", "feature-fresh"]);
 
     let repo = git2::Repository::open(dir).expect("failed to open repo");
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
 
     let fresh = branches
         .iter()
@@ -1466,7 +1549,7 @@ fn test_in_sync_does_not_swallow_real_merges() {
     run_git(dir, &["merge", "feature-merged", "-m", "merge f"]);
 
     let repo = git2::Repository::open(dir).expect("failed to re-open repo");
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
 
     let merged = branches
         .iter()
@@ -1496,7 +1579,7 @@ fn test_unmerged_branch_detection() {
 
     // Re-open the repo so git2 sees the latest state
     let repo = git2::Repository::open(dir).expect("failed to re-open repo");
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
 
     let feature = branches
         .iter()
@@ -1784,7 +1867,13 @@ fn inject_job_for_test(
     let (_op_tx, op_rx) = mpsc::channel();
     let (_prog_tx, prog_rx) = mpsc::channel();
     let cancel_flag = Arc::new(AtomicBool::new(false));
-    queue.inject_running_for_test(job, op_rx, prog_rx, cancel_flag);
+    queue.inject_running_for_test(
+        job,
+        op_rx,
+        prog_rx,
+        cancel_flag,
+        Arc::new(AtomicBool::new(false)),
+    );
 }
 
 /// Canonicalize a path for comparison. On macOS, `tempfile::tempdir()` returns
@@ -1815,7 +1904,7 @@ fn graph_enter_current_clean_branch_enables_rebase_and_push_disables_checkout_an
     run_git(dir, &["add", "."]);
     run_git(dir, &["commit", "-m", "feature-current commit"]);
 
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
     let current = branches
         .iter()
         .find(|b| b.name == "feature-current")
@@ -1907,7 +1996,7 @@ fn graph_enter_current_clean_branch_enables_rebase_and_push_disables_checkout_an
         dispatch_path,
     );
     assert!(queue.is_running_for_test());
-    assert_eq!(queue.current_action_for_test(), Some(BranchAction::Rebase));
+    assert_eq!(queue.current_action(), Some(BranchAction::Rebase));
     assert_eq!(
         queue.current_targets_for_test().map(|t| t.to_vec()),
         Some(vec![current.name.clone()])
@@ -1953,7 +2042,7 @@ fn graph_enter_p008_style_linked_worktree_exposes_safe_operations_only() {
         ],
     );
 
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
     let feature = branches
         .iter()
         .find(|b| b.name == "feature-linked")
@@ -2036,7 +2125,7 @@ fn graph_enter_p008_style_linked_worktree_exposes_safe_operations_only() {
         None,
     );
     assert!(queue.is_running_for_test());
-    assert_eq!(queue.current_action_for_test(), Some(BranchAction::Push));
+    assert_eq!(queue.current_action(), Some(BranchAction::Push));
     assert_eq!(
         queue.current_targets_for_test().map(|t| t.to_vec()),
         Some(vec![feature.name.clone()])
@@ -2054,7 +2143,7 @@ fn graph_enter_no_upstream_branch_enables_push_and_rebase_but_not_pull() {
     run_git(dir, &["commit", "-m", "local-only commit"]);
     // Never pushed: local-only has no upstream.
 
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&_tmpdir, &repo, "main").expect("list_branches failed");
     let local_only = branches
         .iter()
         .find(|b| b.name == "local-only")
@@ -2117,7 +2206,7 @@ fn graph_enter_no_upstream_branch_enables_push_and_rebase_but_not_pull() {
         dispatch_path,
     );
     assert!(queue.is_running_for_test());
-    assert_eq!(queue.current_action_for_test(), Some(BranchAction::Rebase));
+    assert_eq!(queue.current_action(), Some(BranchAction::Rebase));
 }
 
 #[test]
@@ -2149,7 +2238,7 @@ fn graph_enter_dirty_linked_worktree_disables_checkout_delete_and_merge_but_not_
     std::fs::write(linked_path.join("dirty.txt"), "dirty\n").unwrap();
     // Untracked, uncommitted: the linked worktree is dirty.
 
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
     let feature = branches
         .iter()
         .find(|b| b.name == "feature-dirty")
@@ -2232,7 +2321,7 @@ fn graph_enter_base_branch_in_linked_worktree_gates_merge_and_squash_on_base_cle
         &["worktree", "add", base_linked_path_text.as_str(), "main"],
     );
 
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
     let feature = branches
         .iter()
         .find(|b| b.name == "feature-source")
@@ -2316,7 +2405,7 @@ fn graph_enter_base_branch_in_linked_worktree_gates_merge_and_squash_on_base_cle
         dispatch_path,
     );
     assert!(queue.is_running_for_test());
-    assert_eq!(queue.current_action_for_test(), Some(BranchAction::Merge));
+    assert_eq!(queue.current_action(), Some(BranchAction::Merge));
     assert_eq!(
         queue.current_targets_for_test().map(|t| t.to_vec()),
         Some(vec![feature.name.clone()])
@@ -2372,7 +2461,13 @@ fn test_ahead_behind_indicators() {
 
     // 8. Open repo and list branches
     let repo = git2::Repository::open(&work_dir).expect("failed to open work repo");
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let test_cache = tempfile::tempdir().expect("isolated branch cache");
+    let branches = branch::list_branches_with_cache_root(
+        &repo,
+        "main",
+        &cache::CacheRoot::at(test_cache.path()),
+    )
+    .expect("list_branches failed");
 
     let feature = branches
         .iter()
@@ -2404,7 +2499,7 @@ fn test_ahead_behind_local_only_branch() {
 
     run_git(dir, &["branch", "local-only"]);
 
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
     let local_branch = branches
         .iter()
         .find(|b| b.name == "local-only")
@@ -2836,7 +2931,11 @@ fn test_remote_branch_squash_merge_detection() {
         })
         .collect();
 
-    let cache = git_branch_manager::git::cache::BranchCache::load(&work_dir);
+    let cache = git_branch_manager::git::cache::BranchCache::load_for_base(
+        &work_dir,
+        "main",
+        &git_branch_manager::git::cache::CacheRoot::at(_tmpdir.cache_root().to_path_buf()),
+    );
     let rx = squash_loader::spawn_squash_checker(
         work_dir.clone(),
         "main".to_string(),
@@ -4440,7 +4539,7 @@ fn test_squash_scenario_01_baseline_single_commit_clean_squash() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -4466,7 +4565,7 @@ fn test_squash_scenario_01_baseline_single_commit_clean_squash() {
     // Expect B: Branches view reports a squash-merged status family member.
     // No remote is configured in this test repo, so it's local-only.
     let repo = git2::Repository::open(dir).unwrap();
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
     let feature = branches
         .iter()
         .find(|b| b.name == "feature/baseline")
@@ -4494,7 +4593,7 @@ fn test_squash_landing_lists_all_matching_local_branch_names() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -4538,7 +4637,7 @@ fn test_squash_scenario_02_multi_commit_branch_squashed_into_one_base_commit() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -4553,7 +4652,7 @@ fn test_squash_scenario_02_multi_commit_branch_squashed_into_one_base_commit() {
     );
 
     let repo = git2::Repository::open(dir).unwrap();
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
     let feature = branches.iter().find(|b| b.name == "feature/multi").unwrap();
     assert_eq!(feature.merge_status, MergeStatus::LocalSquashMerged);
 }
@@ -4586,7 +4685,7 @@ fn test_squash_scenario_03_regular_merge_is_not_flagged_as_squash() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -4601,7 +4700,7 @@ fn test_squash_scenario_03_regular_merge_is_not_flagged_as_squash() {
     );
 
     let repo = git2::Repository::open(dir).unwrap();
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
     let feature = branches
         .iter()
         .find(|b| b.name == "feature/regular-merge")
@@ -4651,7 +4750,7 @@ fn test_squash_scenario_04_branch_with_internal_merge_commit_then_squash_merged(
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -4666,7 +4765,7 @@ fn test_squash_scenario_04_branch_with_internal_merge_commit_then_squash_merged(
     );
 
     let repo = git2::Repository::open(dir).unwrap();
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
     let feature = branches
         .iter()
         .find(|b| b.name == "feature/topology")
@@ -4705,7 +4804,7 @@ fn test_squash_scenario_05_partial_landing_via_individual_cherry_picks() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -4747,7 +4846,7 @@ fn test_squash_scenario_06_reordered_commits_and_hunk_order_insensitivity() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -4858,7 +4957,7 @@ fn test_squash_scenario_07_rebased_branch_then_squash_merged() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -4873,7 +4972,7 @@ fn test_squash_scenario_07_rebased_branch_then_squash_merged() {
     );
 
     let repo = git2::Repository::open(dir).unwrap();
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
     let feature = branches
         .iter()
         .find(|b| b.name == "feature/rebased")
@@ -4931,7 +5030,7 @@ fn test_squash_scenario_08a_conflict_resolution_extra_lines_fuzzy_positive() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -5024,7 +5123,7 @@ fn test_squash_scenario_08b_true_conflicting_hunks_manually_resolved() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -5289,7 +5388,11 @@ fn test_spawn_squash_checker_reports_likely_squash_merged_with_confidence() {
     );
 
     let candidates = vec![("feature/bundled-e2e".to_string(), branch_tip, None)];
-    let cache = cache::BranchCache::load(dir);
+    let cache = cache::BranchCache::load_for_base(
+        dir,
+        "main",
+        &cache::CacheRoot::at(tmpdir.cache_root().to_path_buf()),
+    );
     let rx = squash_loader::spawn_squash_checker(
         dir.to_path_buf(),
         "main".to_string(),
@@ -5396,7 +5499,7 @@ fn test_squash_scenario_09_binary_file_changes() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -5444,7 +5547,7 @@ fn test_squash_scenario_10a_rename_only_no_content_change() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -5500,7 +5603,7 @@ fn test_squash_scenario_10b_rename_and_content_change() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -5554,7 +5657,7 @@ fn test_squash_scenario_10c_executable_bit_only_change() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -5602,7 +5705,7 @@ fn test_squash_scenario_11_whitespace_only_change() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -5666,7 +5769,7 @@ fn test_squash_scenario_11_whitespace_negative_unrelated() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -5732,7 +5835,7 @@ fn test_squash_scenario_12_empty_net_zero_branch_and_base_commit() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -5803,7 +5906,7 @@ fn test_squash_scenario_13_reverted_branch_net_zero_but_no_specific_squash_point
     );
 
     let repo = git2::Repository::open(dir).unwrap();
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
     let feature = branches
         .iter()
         .find(|b| b.name == "feature/reverted")
@@ -5853,7 +5956,7 @@ fn test_squash_scenario_14_duplicate_independently_recreated_patch() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -6019,7 +6122,7 @@ fn test_squash_scenario_16_shallow_out_of_window_history_max_count_boundary() {
         graph::GraphLoadOptions {
             max_count: 2,
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("bounded graph load should not error");
@@ -6142,7 +6245,7 @@ fn test_squash_scenario_18_branch_advances_after_cached_as_squash_merged() {
     run_git(&work_dir, &["push", "origin", "main"]);
 
     let repo = git2::Repository::open(&work_dir).unwrap();
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&_tmpdir, &repo, "main").expect("list_branches failed");
     let feature = branches
         .iter()
         .find(|b| b.name == "feature/cache-staleness")
@@ -6162,7 +6265,7 @@ fn test_squash_scenario_18_branch_advances_after_cached_as_squash_merged() {
     run_git(&work_dir, &["checkout", "main"]);
 
     let repo = git2::Repository::open(&work_dir).unwrap();
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&_tmpdir, &repo, "main").expect("list_branches failed");
     let feature = branches
         .iter()
         .find(|b| b.name == "feature/cache-staleness")
@@ -6225,7 +6328,7 @@ fn test_squash_scenario_19_large_history_performance_characterization() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed even at this scale");
@@ -6239,7 +6342,7 @@ fn test_squash_scenario_19_large_history_performance_characterization() {
 
     let repo = git2::Repository::open(dir).unwrap();
     let start = std::time::Instant::now();
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
     let branch_elapsed = start.elapsed();
     eprintln!(
         "[scenario 19] Algorithm B (Branches list_branches): {} branches, elapsed {:?}",
@@ -6288,7 +6391,7 @@ fn test_squash_scenario_20a_squash_plus_trivial_follow_up_folded_in() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -6360,7 +6463,7 @@ fn test_squash_scenario_20b_squash_omits_a_trivial_branch_change() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -6434,7 +6537,7 @@ fn test_squash_scenario_20c_autoformatter_noise_during_squash() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -6526,7 +6629,7 @@ fn test_squash_scenario_20d_coincidentally_similar_but_unrelated_negative_contro
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -6577,7 +6680,7 @@ fn test_squash_scenario_21_structural_graph_render_not_blocked_by_squash_enrichm
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("structural graph load should succeed");
@@ -6621,7 +6724,7 @@ fn test_squash_scenario_21b_completed_enrichment_updates_squash_marker() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("structural graph load should succeed");
@@ -6634,7 +6737,12 @@ fn test_squash_scenario_21b_completed_enrichment_updates_squash_marker() {
 
     // Run enrichment synchronously, as `spawn_possible_squash_enrichment`
     // would do on its background thread.
-    let updates = graph::compute_possible_squash_updates(dir, &snapshot, Some("main"));
+    let updates = graph::compute_possible_squash_updates(
+        dir,
+        &snapshot,
+        Some("main"),
+        &cache::CacheRoot::at(tmpdir.cache_root().to_path_buf()),
+    );
     graph::apply_squash_enrichment(&mut snapshot, &updates);
 
     assert!(
@@ -6658,7 +6766,7 @@ fn test_squash_scenario_21c_stale_enrichment_does_not_overwrite_newer_snapshot()
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("structural graph load should succeed");
@@ -6691,7 +6799,7 @@ fn test_squash_scenario_21c_stale_enrichment_does_not_overwrite_newer_snapshot()
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("structural graph load should succeed");
@@ -6745,7 +6853,7 @@ fn test_squash_scenario_21d_failed_enrichment_leaves_snapshot_usable_and_unmarke
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("structural graph load should succeed");
@@ -6785,7 +6893,7 @@ fn test_squash_scenario_21d_failed_enrichment_leaves_snapshot_usable_and_unmarke
 #[test]
 fn dump_branches_basic() {
     let (tmp, _repo) = setup_test_repo();
-    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+    let out = manager_command(&tmp)
         .args([
             "--repo",
             tmp.path().to_str().unwrap(),
@@ -6809,7 +6917,7 @@ fn dump_branches_basic() {
 #[test]
 fn dump_rejects_two_view_flags() {
     let (tmp, _repo) = setup_test_repo();
-    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+    let out = manager_command(&tmp)
         .args([
             "--repo",
             tmp.path().to_str().unwrap(),
@@ -6827,7 +6935,7 @@ fn dump_rejects_two_view_flags() {
 #[test]
 fn dump_list_is_branches_alias() {
     let (tmp, _repo) = setup_test_repo();
-    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+    let out = manager_command(&tmp)
         .args([
             "--repo",
             tmp.path().to_str().unwrap(),
@@ -6859,7 +6967,7 @@ fn dump_remotes_basic() {
     run_git(tmp.path(), &["push", "origin", "main"]);
     run_git(tmp.path(), &["fetch", "origin"]);
 
-    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+    let out = manager_command(&tmp)
         .args([
             "--repo",
             tmp.path().to_str().unwrap(),
@@ -6882,7 +6990,7 @@ fn dump_remotes_basic() {
 fn dump_tags_basic() {
     let (tmp, _repo) = setup_test_repo();
     run_git(tmp.path(), &["tag", "-a", "v1.0", "-m", "release one"]);
-    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+    let out = manager_command(&tmp)
         .args([
             "--repo",
             tmp.path().to_str().unwrap(),
@@ -6913,7 +7021,7 @@ fn dump_tags_message_is_left_aligned() {
     // Message "rel one" (7 chars) is shorter than the Message column width (10),
     // so alignment padding is observable (vs. truncated for longer messages).
     run_git(tmp.path(), &["tag", "-a", "v1.0", "-m", "rel one"]);
-    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+    let out = manager_command(&tmp)
         .args([
             "--repo",
             tmp.path().to_str().unwrap(),
@@ -6968,7 +7076,7 @@ fn dump_remotes_detects_squash_merged() {
 
     // ascii symbols make the SquashMerged Status cell deterministic:
     // "squash-merged ~" (status_squash_merged = "~", full text at wide width).
-    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+    let out = manager_command(&_tmpdir)
         .args([
             "--repo",
             work_dir.to_str().unwrap(),
@@ -7002,12 +7110,19 @@ fn dump_remotes_detects_squash_merged() {
         !row.contains("unmerged -"),
         "squash-feature must not show Unmerged: {row:?}"
     );
+    assert!(
+        std::fs::read_dir(_tmpdir.cache_root())
+            .unwrap()
+            .flatten()
+            .any(|entry| entry.path().extension().is_some_and(|ext| ext == "sqlite3")),
+        "the child process should write its cache under the TestDir cache root"
+    );
 }
 
 #[test]
 fn dump_worktrees_basic() {
     let (tmp, _repo) = setup_test_repo();
-    let out = Command::new(env!("CARGO_BIN_EXE_git-branch-manager"))
+    let out = manager_command(&tmp)
         .args([
             "--repo",
             tmp.path().to_str().unwrap(),
@@ -7356,18 +7471,20 @@ fn test_spawn_cache_verifier_applies_fix_and_persists() {
         .unwrap()
         .to_string();
 
-    // Poison the cache at the same OS-cache-dir path `spawn_cache_verifier`
-    // will load from internally (`BranchCache::load(repo_path)`, not a caller-
-    // supplied path — unlike the other audit_cache tests above, which pass an
-    // explicit `load_from_path` cache the caller controls directly).
+    let cache_root = cache::CacheRoot::at(tmpdir.cache_root().to_path_buf());
+    // Seed the same TestDir-owned cache root the verifier receives below.
     {
-        let mut c = cache::BranchCache::load(dir);
+        let mut c = cache::BranchCache::load_for_base(dir, "main", &cache_root);
         c.insert("feature/wip", &MergeStatus::SquashMerged, &tip);
         c.insert("feature/ghost", &MergeStatus::Merged, "deadbeef");
         c.save();
     }
 
-    let rx = diagnostics::spawn_cache_verifier(dir.to_path_buf(), "main".to_string());
+    let rx = diagnostics::spawn_cache_verifier(
+        dir.to_path_buf(),
+        "main".to_string(),
+        cache_root.clone(),
+    );
     let audit = rx.recv().expect("verifier should send a result");
 
     assert!(
@@ -7386,7 +7503,7 @@ fn test_spawn_cache_verifier_applies_fix_and_persists() {
 
     // The verifier applies + persists the fix itself, with no separate
     // apply_fix call from the caller.
-    let fixed = cache::BranchCache::load(dir);
+    let fixed = cache::BranchCache::load_for_base(dir, "main", &cache_root);
     assert_eq!(
         fixed.lookup("feature/wip", &tip),
         Some(MergeStatus::Unmerged),
@@ -7470,7 +7587,7 @@ fn test_worktree_merge_status_from_branches() {
 
     // --- exercise the real library APIs in production order ---
     let repo = git2::Repository::open(dir).expect("failed to re-open repo");
-    let branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let branches = test_branches(&tmpdir, &repo, "main").expect("list_branches failed");
 
     // sanity: branch statuses themselves are correct
     let branch_status = |name: &str| {
@@ -7593,7 +7710,7 @@ fn test_remote_branch_inherits_squash_merge_status_from_local() {
     let repo = git2::Repository::open(&work_dir).unwrap();
 
     // Load local branches and run squash detection
-    let local_branches = branch::list_branches(&repo, "main").expect("list_branches failed");
+    let local_branches = test_branches(&_tmpdir, &repo, "main").expect("list_branches failed");
     let local_feature = local_branches
         .iter()
         .find(|b| b.name == "squash-local-feature")
@@ -7680,7 +7797,10 @@ fn test_graph_patch_cache_hit_avoids_recomputation() {
     // branch tip's patch id, so any exact match the loader reports after this
     // point is the cache, not a fresh compute.
     {
-        let mut cache = cache::BranchCache::load(dir);
+        let mut cache = cache::BranchCache::load_with_root(
+            dir,
+            &cache::CacheRoot::at(tmpdir.cache_root().to_path_buf()),
+        );
         cache.insert_graph_patch(
             &parent_oid,
             &squash_oid,
@@ -7695,7 +7815,7 @@ fn test_graph_patch_cache_hit_avoids_recomputation() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -7732,7 +7852,7 @@ fn test_graph_patch_cache_populated_after_load() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("graph load should succeed");
@@ -7746,7 +7866,10 @@ fn test_graph_patch_cache_populated_after_load() {
         "real match should still be flagged before asserting cache state"
     );
 
-    let cache = cache::BranchCache::load(dir);
+    let cache = cache::BranchCache::load_with_root(
+        dir,
+        &cache::CacheRoot::at(tmpdir.cache_root().to_path_buf()),
+    );
     let cached = cache
         .lookup_graph_patch(&parent_oid, &squash_oid, 1)
         .expect("cache must hold an entry after a successful graph load");
@@ -7781,7 +7904,7 @@ fn test_graph_patch_cache_branch_change_invalidates() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("first graph load should succeed");
@@ -7810,7 +7933,7 @@ fn test_graph_patch_cache_branch_change_invalidates() {
         dir,
         graph::GraphLoadOptions {
             base_branch: Some("main".into()),
-            ..graph::GraphLoadOptions::default()
+            ..tmpdir.graph_options()
         },
     )
     .expect("second graph load should succeed");
@@ -7837,7 +7960,10 @@ fn test_graph_patch_cache_branch_change_invalidates() {
     );
 
     // And the second landing's OID pair should now itself be in the cache.
-    let cache = cache::BranchCache::load(dir);
+    let cache = cache::BranchCache::load_with_root(
+        dir,
+        &cache::CacheRoot::at(tmpdir.cache_root().to_path_buf()),
+    );
     assert!(
         cache
             .lookup_graph_patch(&second_parent_oid, &second_squash_oid, 1)
@@ -7872,11 +7998,13 @@ fn test_graph_and_branches_squash_loaders_concurrent_cache_access() {
     let _concurrent_parent = git_output(&work_dir, &["rev-parse", "HEAD^"]);
 
     let dir_clone = work_dir.clone();
+    let graph_cache_root = cache::CacheRoot::at(_tmpdir.cache_root().to_path_buf());
     let graph_thread = std::thread::spawn(move || {
         graph::load_graph_with_squash_annotations(
             &dir_clone,
             graph::GraphLoadOptions {
                 base_branch: Some("main".into()),
+                cache_root: graph_cache_root,
                 ..graph::GraphLoadOptions::default()
             },
         )
@@ -7891,7 +8019,11 @@ fn test_graph_and_branches_squash_loaders_concurrent_cache_access() {
         feature_tip_oid.clone(),
         None,
     )];
-    let squash_cache = cache::BranchCache::load(&work_dir);
+    let squash_cache = cache::BranchCache::load_for_base(
+        &work_dir,
+        "main",
+        &cache::CacheRoot::at(_tmpdir.cache_root().to_path_buf()),
+    );
     let squash_thread = std::thread::spawn(move || {
         let rx = squash_loader::spawn_squash_checker(
             work_dir_for_squash,
@@ -8074,7 +8206,11 @@ fn test_cherry_loader_drains_to_cherry_picked_status() {
     run_git(&dir, &["cherry-pick", &tip]);
 
     let candidates = vec![("feature/cherry-loader".to_string(), tip, None)];
-    let cache = cache::BranchCache::load(&dir);
+    let cache = cache::BranchCache::load_for_base(
+        &dir,
+        "main",
+        &cache::CacheRoot::at(tmpdir.cache_root().to_path_buf()),
+    );
     let rx =
         cherry_loader::spawn_cherry_checker(dir.clone(), "main".to_string(), candidates, cache);
 
@@ -8132,6 +8268,7 @@ fn test_graph_cherry_pick_enrichment_marks_branch_commits() {
         include_remotes: false,
         line_style: graph::GraphLineStyle::Thin,
         base_branch: Some("main".to_string()),
+        cache_root: tmpdir.graph_options().cache_root,
     };
     let snapshot =
         graph::load_graph_with_squash_annotations(dir, options).expect("graph load failed");
@@ -8170,6 +8307,7 @@ fn test_graph_remote_ref_visible_at_default_include_remotes_for_tracked_base() {
         include_remotes: false, // <-- explicit: default behavior under test
         line_style: graph::GraphLineStyle::Thin,
         base_branch: Some("main".to_string()),
+        cache_root: _tmpdir.graph_options().cache_root,
     };
     let snapshot =
         graph::load_graph_with_squash_annotations(&work_dir, options).expect("graph load failed");

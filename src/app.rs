@@ -66,6 +66,9 @@ pub struct App {
     // Core
     pub repo_path: PathBuf,
     pub base_branch: String,
+    cache_root: cache::CacheRoot,
+    #[cfg(test)]
+    _test_cache_root: Option<tempfile::TempDir>,
     pub config: Config,
     pub theme: Theme,
     pub symbols: SymbolSet,
@@ -243,7 +246,25 @@ fn drain_channel<T>(rx: &mut Option<Receiver<T>>, max_per_tick: usize, dirty: &m
 }
 
 impl App {
+    #[cfg(test)]
     pub fn new(repo_path: PathBuf, base_branch: String, config: Config) -> Self {
+        let test_cache_root = tempfile::tempdir().expect("create isolated app test cache");
+        let mut app = Self::with_cache_root(
+            repo_path,
+            base_branch,
+            config,
+            cache::CacheRoot::at(test_cache_root.path()),
+        );
+        app._test_cache_root = Some(test_cache_root);
+        app
+    }
+
+    pub fn with_cache_root(
+        repo_path: PathBuf,
+        base_branch: String,
+        config: Config,
+        cache_root: cache::CacheRoot,
+    ) -> Self {
         let theme = Theme::from_name(config.theme.as_deref().unwrap_or("dark"));
         let symbols = SymbolSet::from_name(config.symbols.as_deref().unwrap_or("auto"));
 
@@ -293,7 +314,7 @@ impl App {
         worktree_state.set_sort(worktree_sort_col, worktree_sort_asc);
 
         let remote_fetched = config.auto_fetch == Some(true);
-        let cache = cache::BranchCache::load(&repo_path);
+        let cache = cache::BranchCache::load_for_base(&repo_path, &base_branch, &cache_root);
         let has_configured_remote = git2::Repository::open(&repo_path)
             .and_then(|r| r.remotes())
             .map(|r| !r.is_empty())
@@ -303,6 +324,9 @@ impl App {
         Self {
             repo_path,
             base_branch,
+            cache_root,
+            #[cfg(test)]
+            _test_cache_root: None,
             config,
             theme,
             symbols,
@@ -492,6 +516,7 @@ impl App {
                     self.repo_path.clone(),
                     Some(self.base_branch.clone()),
                     self.graph_generation,
+                    self.cache_root.clone(),
                 ));
             }
         }
@@ -537,8 +562,16 @@ impl App {
                     // Now spawn squash checker on the updated (merged-filtered) set.
                     let repo_path = self.repo_path.clone();
                     let base_branch = self.base_branch.clone();
-                    let cache_for_squash = cache::BranchCache::load(&repo_path);
-                    let cache_for_cherry = cache::BranchCache::load(&repo_path);
+                    let cache_for_squash = cache::BranchCache::load_for_base(
+                        &repo_path,
+                        &base_branch,
+                        &self.cache_root,
+                    );
+                    let cache_for_cherry = cache::BranchCache::load_for_base(
+                        &repo_path,
+                        &base_branch,
+                        &self.cache_root,
+                    );
                     if let Ok(repo) = git2::Repository::open(&repo_path) {
                         // MergeBaseCommits is sent before MergeStatuses, so merge_base_commit
                         // is populated here. A Pending branch with no merge base is disjoint
@@ -3661,6 +3694,7 @@ impl App {
                 include_remotes,
                 line_style: graph::GraphLineStyle::from_symbol_name(self.symbols.name),
                 base_branch: Some(self.base_branch.clone()),
+                cache_root: self.cache_root.clone(),
             },
         ));
         self.toast = Some(Toast::new("Loading graph...".into(), 300));
@@ -3720,6 +3754,7 @@ impl App {
         self.remotes.loading = true;
         let repo_path = self.repo_path.clone();
         let base_branch = self.base_branch.clone();
+        let cache_root = self.cache_root.clone();
         let (tx, rx) = mpsc::channel();
         self.remote_load_rx = Some(rx);
         self.toast = Some(Toast::new("Loading remote branches...".into(), 300));
@@ -3732,7 +3767,8 @@ impl App {
                 return;
             };
 
-            let branch_cache = cache::BranchCache::load(&repo_path);
+            let branch_cache =
+                cache::BranchCache::load_for_base(&repo_path, &base_branch, &cache_root);
             // Remote branches don't precompute a merge base, so the merge-base slot is
             // None and is_squash_merged falls back to `git merge-base` for them.
             let candidates: Vec<(String, String, Option<String>)> = remote_branches
@@ -3807,8 +3843,10 @@ impl App {
             return;
         };
 
-        let new_cache = cache::BranchCache::load(&repo_path);
-        let cache_for_cherry = cache::BranchCache::load(&repo_path);
+        let new_cache =
+            cache::BranchCache::load_for_base(&repo_path, &base_branch, &self.cache_root);
+        let cache_for_cherry =
+            cache::BranchCache::load_for_base(&repo_path, &base_branch, &self.cache_root);
 
         // list_branches_phase1 already filled merge bases; skip disjoint branches
         // (no merge base) and carry the precomputed merge base into the squash check.
@@ -3943,7 +3981,8 @@ impl App {
     }
 
     fn clear_cache_and_refresh(&mut self) {
-        let mut bc = cache::BranchCache::load(&self.repo_path);
+        let mut bc =
+            cache::BranchCache::load_for_base(&self.repo_path, &self.base_branch, &self.cache_root);
         bc.clear();
         self.refresh_branches("manual_refresh_R");
         self.toast = Some(Toast::new("Cache cleared".into(), 3));
@@ -3957,6 +3996,7 @@ impl App {
     fn run_cache_audit(&mut self) {
         let repo_path = self.repo_path.clone();
         let base_branch = self.base_branch.clone();
+        let cache_root = self.cache_root.clone();
 
         let (diag_tx, diag_rx) = mpsc::channel();
         let (prog_tx, prog_rx) = mpsc::channel();
@@ -3975,7 +4015,8 @@ impl App {
             let Ok(repo) = git2::Repository::open(&repo_path) else {
                 return;
             };
-            let branch_cache = cache::BranchCache::load(&repo_path);
+            let branch_cache =
+                cache::BranchCache::load_for_base(&repo_path, &base_branch, &cache_root);
             let audit = diagnostics::audit_cache(
                 &repo,
                 &repo_path,
@@ -3997,7 +4038,8 @@ impl App {
     /// Write the audit's freshly-computed corrections back to the cache and
     /// reload the view so the screen reflects the corrected data.
     fn apply_cache_fix(&mut self, audit: CacheAudit) {
-        let mut branch_cache = cache::BranchCache::load(&self.repo_path);
+        let mut branch_cache =
+            cache::BranchCache::load_for_base(&self.repo_path, &self.base_branch, &self.cache_root);
         diagnostics::apply_fix(&mut branch_cache, &audit);
         self.toast = Some(Toast::new("Cache corrected".into(), 3));
         self.refresh_after_operation();
@@ -6412,7 +6454,13 @@ mod tests {
         }
 
         let repo = git2::Repository::open(dir).expect("open temporary repository");
-        let branches = branch::list_branches(&repo, "main").expect("load real branch facts");
+        let cache_dir = tempfile::tempdir().expect("isolated branch test cache");
+        let branches = branch::list_branches_with_cache_root(
+            &repo,
+            "main",
+            &cache::CacheRoot::at(cache_dir.path()),
+        )
+        .expect("load real branch facts");
         let mut worktrees = worktree::list_worktrees(dir);
         let enrich_rx = worktree::enrich_worktrees(worktrees.clone());
         for update in enrich_rx {
