@@ -5066,6 +5066,20 @@ pub(crate) fn render_remote_row(
     for &col_idx in visible_cols {
         match col_idx {
             0 => {
+                // Local indicator: tracking link when a local branch exists.
+                let text = if item.has_local {
+                    symbols.tracking_link.to_string()
+                } else {
+                    "-".to_string()
+                };
+                let style = if item.has_local {
+                    theme.merged
+                } else {
+                    theme.secondary_text
+                };
+                lines.push(Line::from(Span::styled(text, style)));
+            }
+            1 => {
                 // Name: full remote branch name (e.g. "origin/feature/test")
                 let prefix = item
                     .short_name
@@ -5079,20 +5093,6 @@ pub(crate) fn render_remote_row(
                     item.full_ref.clone()
                 };
                 lines.push(Line::from(Span::styled(name, style)));
-            }
-            1 => {
-                // Local indicator: checkmark symbol when local branch exists
-                let text = if item.has_local {
-                    symbols.status_merged.to_string()
-                } else {
-                    "-".to_string()
-                };
-                let style = if item.has_local {
-                    theme.merged
-                } else {
-                    theme.secondary_text
-                };
-                lines.push(Line::from(Span::styled(text, style)));
             }
             2 => {
                 // Disjoint remotes share no history with base; their ahead/behind are
@@ -8585,7 +8585,7 @@ mod tests {
             area_width: 120,
             compact: false,
             data_col_widths: vec![30, 20, 12, 8, 12],
-            first_col_width: 30,
+            first_col_width: 2,
         };
 
         // Base-branch worktree: a branch can't be merged into itself, so the
@@ -8620,8 +8620,8 @@ mod tests {
             symbols: &symbols,
             area_width: 120,
             compact: false,
-            data_col_widths: vec![30, 6, 8, 5, 12],
-            first_col_width: 30,
+            data_col_widths: vec![2, 30, 8, 5, 12],
+            first_col_width: 2,
         };
         let rows = render_remote_row(&remote_branch(), 0, false, false, &[0, 1, 2, 3, 4], &ctx);
 
@@ -8638,13 +8638,63 @@ mod tests {
             symbols: &symbols,
             area_width: 120,
             compact: false,
-            data_col_widths: vec![30, 6, 8, 5, 14],
-            first_col_width: 30,
+            data_col_widths: vec![2, 30, 8, 5, 14],
+            first_col_width: 2,
         };
         let rows = render_remote_row(&remote_branch(), 0, false, false, &[0, 1, 2, 3, 4], &ctx);
 
         assert_eq!(cell_text(&rows[4]), "5 minutes ago");
         assert_eq!(rows[4].alignment, Some(Alignment::Right));
+    }
+
+    #[test]
+    fn remote_local_cell_renders_tracking_link_or_dash() {
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: 120,
+            compact: false,
+            data_col_widths: vec![2, 30, 8, 5, 12],
+            first_col_width: 2,
+        };
+
+        let without_local = render_remote_row(
+            &remote_branch(),
+            0,
+            false,
+            false,
+            &[0, 1, 2, 3, 4],
+            &ctx,
+        );
+        assert_eq!(cell_text(&without_local[0]), "-");
+
+        let mut with_local = remote_branch();
+        with_local.has_local = true;
+        let with_local = render_remote_row(&with_local, 0, false, false, &[0, 1], &ctx);
+        assert_eq!(cell_text(&with_local[0]), "<>");
+        assert_eq!(cell_text(&with_local[1]), "origin/feature/remote-age");
+    }
+
+    #[test]
+    fn rendered_remotes_header_clicks_sort_local_then_name() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(tmpdir.path().to_path_buf(), "main".into(), Config::default());
+        app.active_view = ViewId::Remotes;
+        let mut with_local = remote_branch();
+        with_local.has_local = true;
+        app.remotes.set_items(vec![remote_branch(), with_local]);
+        let _ = render_app(&mut app, 120, 20);
+
+        assert_eq!(app.remotes.header_columns[0].1, 0);
+        assert_eq!(app.remotes.header_columns[1].1, 1);
+        let first_x = app.remotes.header_columns[0].0;
+        let second_x = app.remotes.header_columns[1].0;
+        app.handle_left_click(first_x, 1);
+        assert_eq!(app.remotes.sort_column(), Some(0));
+        app.handle_left_click(second_x, 1);
+        assert_eq!(app.remotes.sort_column(), Some(1));
     }
 
     #[test]

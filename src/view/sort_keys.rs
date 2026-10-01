@@ -30,6 +30,20 @@ fn legacy_index(key: &str) -> Option<usize> {
 /// meaning of legacy sort keys independently of the current display order.
 const LEGACY_BRANCH_KEYS: [&str; 6] = ["name", "remote", "ahead_behind", "pr", "age", "merge"];
 
+/// Translate a legacy shared sort index to the pre-reorder Remotes column key.
+/// Remotes used to place Name at index 0 and Local at index 1.
+fn legacy_remote_key(idx: usize) -> Option<&'static str> {
+    match idx {
+        0 => Some("name"),
+        1 => Some("local"),
+        2 => Some("ahead_behind"),
+        3 => Some("pr"),
+        4 => Some("age"),
+        5 => Some("merge"),
+        _ => None,
+    }
+}
+
 /// If a config was written before per-view sort fields existed (only has the
 /// legacy top-level `sort_column`/`sort_asc`), populate Branches' and Remotes'
 /// per-view fields from it (those were the only two views the legacy fields
@@ -47,9 +61,8 @@ pub fn migrate_legacy_config(config: &mut Config) {
         return;
     };
 
-    let remote_cols = crate::view::remotes::RemotesViewDef.columns();
     config.sort_column_branches = LEGACY_BRANCH_KEYS.get(idx).map(|key| (*key).to_string());
-    config.sort_column_remotes = key_for_index(&remote_cols, idx).map(|s| s.to_string());
+    config.sort_column_remotes = legacy_remote_key(idx).map(str::to_string);
     config.sort_asc_branches = config.sort_asc;
     config.sort_asc_remotes = config.sort_asc;
 }
@@ -98,8 +111,8 @@ mod tests {
     #[test]
     fn index_for_key_remotes() {
         let cols = crate::view::remotes::RemotesViewDef.columns();
-        assert_eq!(index_for_key(&cols, "name"), Some(0));
-        assert_eq!(index_for_key(&cols, "local"), Some(1));
+        assert_eq!(index_for_key(&cols, "local"), Some(0));
+        assert_eq!(index_for_key(&cols, "name"), Some(1));
         assert_eq!(index_for_key(&cols, "ahead_behind"), Some(2));
         assert_eq!(index_for_key(&cols, "pr"), Some(3));
         assert_eq!(index_for_key(&cols, "age"), Some(4));
@@ -139,6 +152,15 @@ mod tests {
     #[test]
     fn roundtrip_branches() {
         let cols = crate::view::branches::BranchesViewDef.columns();
+        for (idx, col) in cols.iter().enumerate() {
+            assert_eq!(index_for_key(&cols, col.key), Some(idx));
+            assert_eq!(key_for_index(&cols, idx), Some(col.key));
+        }
+    }
+
+    #[test]
+    fn roundtrip_remotes() {
+        let cols = crate::view::remotes::RemotesViewDef.columns();
         for (idx, col) in cols.iter().enumerate() {
             assert_eq!(index_for_key(&cols, col.key), Some(idx));
             assert_eq!(key_for_index(&cols, idx), Some(col.key));

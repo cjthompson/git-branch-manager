@@ -6988,6 +6988,8 @@ fn dump_remotes_basic() {
             tmp.path().to_str().unwrap(),
             "--remotes",
             "--color=never",
+            "--symbols",
+            "ascii",
         ])
         .output()
         .expect("failed to run binary");
@@ -6998,6 +7000,14 @@ fn dump_remotes_basic() {
     );
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.contains("Name"), "header missing: {s:?}");
+    assert!(!s.contains("Local"), "Local header should be hidden: {s:?}");
+    assert!(
+        s.find("<>").is_some_and(|indicator| {
+            s.find("origin/main")
+                .is_some_and(|remote| indicator < remote)
+        }),
+        "tracking marker should precede remote name: {s:?}"
+    );
     assert!(s.contains("origin/main"), "remote row missing: {s:?}");
 }
 

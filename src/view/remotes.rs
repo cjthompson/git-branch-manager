@@ -8,6 +8,16 @@ impl RemotesViewDef {
     pub fn columns(&self) -> Vec<ColumnDef<RemoteBranchInfo>> {
         vec![
             ColumnDef {
+                key: "local",
+                name: "",
+                show_header: false,
+                min_width: 2,
+                content_min_width: None,
+                wide_width: None,
+                hide_below_width: None,
+                compare: Some(|a, b| a.has_local.cmp(&b.has_local)),
+            },
+            ColumnDef {
                 key: "name",
                 name: "Name",
                 show_header: true,
@@ -16,16 +26,6 @@ impl RemotesViewDef {
                 wide_width: None,
                 hide_below_width: None,
                 compare: Some(|a, b| a.short_name.cmp(&b.short_name)),
-            },
-            ColumnDef {
-                key: "local",
-                name: "Local",
-                show_header: true,
-                min_width: 6,
-                content_min_width: None,
-                wide_width: None,
-                hide_below_width: Some(80),
-                compare: Some(|a, b| a.has_local.cmp(&b.has_local)),
             },
             super::column::ahead_behind_column(),
             super::column::pr_column(),
@@ -54,17 +54,22 @@ mod tests {
     }
 
     #[test]
-    fn name_column_is_sortable() {
+    fn local_column_is_first_and_sortable() {
         let view = RemotesViewDef;
         let name_col = &view.columns()[0];
+        assert_eq!(name_col.key, "local");
+        assert_eq!(name_col.name, "");
+        assert_eq!(name_col.min_width, 2);
+        assert!(name_col.hide_below_width.is_none());
         assert!(name_col.compare.is_some());
     }
 
     #[test]
-    fn local_column_is_sortable() {
+    fn name_column_is_second_and_sortable() {
         let view = RemotesViewDef;
-        let local_col = &view.columns()[1];
-        assert!(local_col.compare.is_some());
+        let name_col = &view.columns()[1];
+        assert_eq!(name_col.key, "name");
+        assert!(name_col.compare.is_some());
     }
 
     #[test]
