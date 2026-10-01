@@ -80,6 +80,36 @@ All LRT markers, as well as the Powerline merge marker, must remain one terminal
 
 Changing the global symbol set with `Y` reloads the graph. The selected symbol set also determines whether the loader asks Gleisbau for rounded or thin line characters.
 
+## Implementation research and glyph rationale
+
+### Current implementation boundary
+
+The current implementation keeps the graph responsibilities split across four layers:
+
+- `src/git/graph.rs` owns snapshot construction, the primary Gleisbau layout, the `git log --graph --topo-order` fallback, and git2 ref enrichment.
+- `src/view/graph.rs` owns the synchronized cursor and the bounded 500-commit window.
+- `src/ui/graph_render.rs` styles and translates already-laid-out graph cells while preserving their topology.
+- `src/symbols.rs` owns commit/ref glyph selection and one-cell width assertions.
+
+### External research comparison
+
+- [Git `graph.c`](https://github.com/git/git/blob/master/graph.c) and the [`git log --graph` documentation](https://git-scm.com/docs/git-log#Documentation/git-log.txt---graph) describe the canonical terminal DAG renderer, which emits connector rows as needed. The CLI fallback remains authoritative, and the loader should parse its graph prefix rather than recreate topology.
+- [Gleisbau](https://github.com/git-bahn/gleisbau) is a Rust graph layout library with configurable branch tracks and ASCII-capable output. It remains the primary engine here.
+- [gitlimes' lane renderer](https://docs.rs/gitlimes/latest/gitlimes/graph/lanes/) and its [terminal drawing model](https://docs.rs/gitlimes/latest/gitlimes/graph/draw/) separate bounded open-lane geometry from drawing and use connector rows. That validates the existing engine and renderer presentation split; this project should not add a second graph engine.
+- The [libgit2 commit-graph API](https://github.com/libgit2/libgit2/blob/main/include/git2/sys/commit_graph.h) provides storage and access infrastructure, rather than terminal lane rendering. git2 therefore remains responsible for refs, tracking, and metadata.
+- [GitHub's Network documentation](https://docs.github.com/en/repositories/viewing-activity-and-data-for-your-repository/understanding-connections-between-repositories) describes a hosted web graph focused on forks and up to 100 recently pushed branches. This local TUI should retain local refs, tags, the current branch, and branch actions.
+- [GitLab's Repository graph documentation](https://docs.gitlab.com/user/project/repository/) describes branch and merge history; the [tag-only-history issue](https://gitlab.com/gitlab-org/gitlab/-/issues/386449) reports tag-only omissions. That motivates preserving existing tag attachment and the `--all` fallback when remotes are enabled.
+
+### Glyph rationale
+
+ASCII (`o`, `+`, `<`, `>`, with `|`, `/`, `\\`, and `-`) is the universal Git CLI-compatible fallback. Unicode standard markers (`●`, `○`, `◀`, `▶`) combined with standard [Box Drawing](https://www.unicode.org/charts/PDF/U2500.pdf) lane geometry provide one-cell terminal glyphs without hiding topology.
+
+Powerline or Nerd Font glyphs are optional for semantic branch/ref badges and the merge marker, using the [Nerd Fonts glyph catalog](https://github.com/ryanoasis/nerd-fonts/wiki/Glyph-Sets-and-Code-Points). Dots, arrows, and connectors remain standard Unicode. Existing Ratatui width tests check one-cell accounting, but cannot guarantee that a Nerd Font is installed.
+
+### Non-goal
+
+This research does not change `GraphLineStyle`, `SymbolSet`, graph engines, parsing, fallback conditions, remote handling, or tests.
+
 ## Input and overlays
 
 Global controls continue to work as before:
