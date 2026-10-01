@@ -7,6 +7,8 @@
 use ratatui::prelude::*;
 
 use crate::config::Config;
+use crate::git;
+use crate::git::graph;
 use crate::symbols::SymbolSet;
 use crate::theme::Theme;
 use crate::types::*;
@@ -19,6 +21,8 @@ use crate::view::ViewItem;
 
 use crate::job_queue::JobStatusView;
 
+use super::commit_details::{draw_commit_details, CommitDetailsFocus};
+use super::commit_diff::draw_commit_diff;
 use super::confirm::{
     draw_confirm, draw_confirm_cancel, ConfirmChoice, ConfirmStage, DeletePreflight,
 };
@@ -53,6 +57,26 @@ pub enum Overlay {
         info_cursor: usize,
         focus: InfoModalFocus,
         row: InfoModalRow,
+    },
+    CommitDetails {
+        commit: graph::GraphCommit,
+        details: git::commit_details::CommitDetails,
+        items: Vec<MenuItem>,
+        cursor: usize,
+        file_cursor: usize,
+        focus: CommitDetailsFocus,
+        scroll: ModalScroll,
+    },
+    CommitDiff {
+        commit: graph::GraphCommit,
+        details: git::commit_details::CommitDetails,
+        items: Vec<MenuItem>,
+        cursor: usize,
+        file_cursor: usize,
+        focus: CommitDetailsFocus,
+        details_scroll: ModalScroll,
+        diff: git::commit_details::CommitFileDiff,
+        scroll: ModalScroll,
     },
     Confirm {
         preflight: DeletePreflight,
@@ -325,6 +349,28 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                     ctx.theme,
                     ctx.symbols,
                 );
+            }
+            Overlay::CommitDetails {
+                details,
+                items,
+                cursor,
+                file_cursor,
+                focus,
+                scroll,
+                ..
+            } => draw_commit_details(
+                frame,
+                details,
+                items,
+                *cursor,
+                *file_cursor,
+                *focus,
+                scroll,
+                ctx.theme,
+                ctx.symbols,
+            ),
+            Overlay::CommitDiff { diff, scroll, .. } => {
+                draw_commit_diff(frame, diff, scroll, ctx.theme);
             }
             Overlay::Confirm {
                 preflight,

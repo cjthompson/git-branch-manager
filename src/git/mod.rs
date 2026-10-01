@@ -2,6 +2,7 @@ pub mod branch;
 pub mod cache;
 pub mod capability;
 pub mod cherry_loader;
+pub mod commit_details;
 pub mod diagnostics;
 pub mod fuzzy_match;
 pub mod github;

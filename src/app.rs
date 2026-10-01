@@ -13,8 +13,8 @@ use ratatui::Terminal;
 
 use git_branch_manager::config::Config;
 use git_branch_manager::git::{
-    branch, cache, capability, cherry_loader, diagnostics, graph, operations, pr_loader,
-    squash_loader, tags, worktree,
+    branch, cache, capability, cherry_loader, commit_details, diagnostics, graph, operations,
+    pr_loader, squash_loader, tags, worktree,
 };
 use git_branch_manager::job_queue::{ActionJobQueue, JobEvent};
 use git_branch_manager::symbols::SymbolSet;
@@ -24,6 +24,7 @@ use git_branch_manager::ui::cells::{
     age_line, ahead_behind_line, fit_text, merge_status_line, merge_status_line_for_branch,
     pr_line, worktree_status_line,
 };
+use git_branch_manager::ui::commit_details::CommitDetailsFocus;
 use git_branch_manager::ui::confirm::{
     ConfirmChoice, ConfirmStage, ConfirmTarget, DeletePreflight, DeleteRisk,
 };
@@ -144,6 +145,16 @@ pub struct App {
     /// generation does not match are dropped (they belong to a stale
     /// snapshot the user no longer sees).
     pub graph_enrich_rx: Option<Receiver<graph::GraphEnrichmentMsg>>,
+    pub commit_details_rx:
+        Option<Receiver<(String, Result<commit_details::CommitDetails, String>)>>,
+    pub commit_details_target: Option<String>,
+    pub commit_file_diff_rx: Option<
+        Receiver<(
+            (String, String),
+            Result<commit_details::CommitFileDiff, String>,
+        )>,
+    >,
+    pub commit_file_diff_target: Option<(String, String)>,
     /// Bumped once per `spawn_graph_load` call. Both the structural snapshot
     /// we just received and any in-flight enrichment are tagged with it, so
     /// a stale enrichment result cannot overwrite a newer snapshot.
@@ -379,6 +390,10 @@ impl App {
             phase1_rx: None,
             graph_rx: None,
             graph_enrich_rx: None,
+            commit_details_rx: None,
+            commit_details_target: None,
+            commit_file_diff_rx: None,
+            commit_file_diff_target: None,
             graph_generation: 0,
             cache,
             toast: None,
@@ -532,6 +547,91 @@ impl App {
             // mid-compute, the worker thread exits on its next `tx.send`.
             if msg.generation == self.graph_generation {
                 self.graph.apply_squash_enrichment(&msg.updates);
+            }
+        }
+
+        if self.commit_details_target.is_some() && !self.commit_details_context_is_current() {
+            self.invalidate_commit_details_request();
+        }
+        for (oid, result) in drain_channel(&mut self.commit_details_rx, 1, &mut dirty) {
+            if self.commit_details_target.as_deref() != Some(oid.as_str()) {
+                continue;
+            }
+            self.commit_details_target = None;
+            if !self.commit_details_context_matches(&oid) {
+                continue;
+            }
+            match result {
+                Ok(details) => {
+                    let commit = self
+                        .graph
+                        .snapshot()
+                        .and_then(|snapshot| snapshot.commits.iter().find(|c| c.oid == oid))
+                        .cloned();
+                    if let Some(commit) = commit {
+                        let items = self.build_graph_menu_for(&commit);
+                        let cursor = first_enabled_index(&items).unwrap_or(0);
+                        let focus = if items.iter().any(|item| item.enabled) {
+                            CommitDetailsFocus::Actions
+                        } else {
+                            CommitDetailsFocus::Files
+                        };
+                        self.overlay = Some(Overlay::CommitDetails {
+                            commit,
+                            details,
+                            items,
+                            cursor,
+                            file_cursor: 0,
+                            focus,
+                            scroll: ModalScroll::default(),
+                        });
+                    }
+                }
+                Err(error) => self.toast = Some(Toast::new(error, 5)),
+            }
+        }
+
+        for ((oid, path), result) in drain_channel(&mut self.commit_file_diff_rx, 1, &mut dirty) {
+            if self.commit_file_diff_target.as_ref() != Some(&(oid.clone(), path.clone())) {
+                continue;
+            }
+            self.commit_file_diff_target = None;
+            let valid_context = matches!(
+                self.overlay.as_ref(),
+                Some(Overlay::CommitDetails { commit, details, file_cursor, .. })
+                    if commit.oid == oid
+                        && details.oid == oid
+                        && details.files.get(*file_cursor).is_some_and(|file| file.path == path)
+            );
+            if !valid_context {
+                continue;
+            }
+            match result {
+                Ok(diff) => {
+                    if let Some(Overlay::CommitDetails {
+                        commit,
+                        details,
+                        items,
+                        cursor,
+                        file_cursor,
+                        focus,
+                        scroll: details_scroll,
+                    }) = self.overlay.take()
+                    {
+                        self.overlay = Some(Overlay::CommitDiff {
+                            commit,
+                            details,
+                            items,
+                            cursor,
+                            file_cursor,
+                            focus,
+                            details_scroll,
+                            diff,
+                            scroll: ModalScroll::default(),
+                        });
+                    }
+                }
+                Err(error) => self.toast = Some(Toast::new(error, 5)),
             }
         }
 
@@ -1011,6 +1111,13 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        self.handle_key_inner(key);
+        if self.commit_details_target.is_some() && !self.commit_details_context_is_current() {
+            self.invalidate_commit_details_request();
+        }
+    }
+
+    fn handle_key_inner(&mut self, key: KeyEvent) {
         // If search is active, route to search handler first
         if self.is_search_active() {
             self.handle_search_key(key);
@@ -1246,7 +1353,7 @@ impl App {
 
     fn handle_graph_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Enter => self.open_context_menu(),
+            KeyCode::Enter => self.open_graph_commit_details(),
             KeyCode::Char('j') | KeyCode::Down => self.graph.move_down(),
             KeyCode::Char('k') | KeyCode::Up => self.graph.move_up(),
             KeyCode::PageDown => self.graph.page_down(),
@@ -1605,6 +1712,282 @@ impl App {
                     }
                 }
             }
+            Some(Overlay::CommitDetails {
+                commit,
+                details,
+                items,
+                cursor,
+                file_cursor,
+                focus,
+                mut scroll,
+            }) => {
+                let cursor = normalize_info_action_state(cursor, InfoModalFocus::Actions, &items).0;
+                match key.code {
+                    KeyCode::Tab | KeyCode::BackTab => {
+                        let focus = match focus {
+                            CommitDetailsFocus::Files if !items.is_empty() => {
+                                CommitDetailsFocus::Actions
+                            }
+                            CommitDetailsFocus::Actions if !details.files.is_empty() => {
+                                CommitDetailsFocus::Files
+                            }
+                            other => other,
+                        };
+                        self.overlay = Some(Overlay::CommitDetails {
+                            commit,
+                            details,
+                            items,
+                            cursor,
+                            file_cursor,
+                            focus,
+                            scroll,
+                        });
+                    }
+                    KeyCode::Char('j') | KeyCode::Down if focus == CommitDetailsFocus::Files => {
+                        let file_cursor = file_cursor
+                            .saturating_add(1)
+                            .min(details.files.len().saturating_sub(1));
+                        self.overlay = Some(Overlay::CommitDetails {
+                            commit,
+                            details,
+                            items,
+                            cursor,
+                            file_cursor,
+                            focus,
+                            scroll,
+                        });
+                    }
+                    KeyCode::Char('k') | KeyCode::Up if focus == CommitDetailsFocus::Files => {
+                        let file_cursor = file_cursor.saturating_sub(1);
+                        self.overlay = Some(Overlay::CommitDetails {
+                            commit,
+                            details,
+                            items,
+                            cursor,
+                            file_cursor,
+                            focus,
+                            scroll,
+                        });
+                    }
+                    KeyCode::Char('j') | KeyCode::Down if focus == CommitDetailsFocus::Actions => {
+                        let cursor = next_enabled_index(&items, cursor).unwrap_or(cursor);
+                        self.overlay = Some(Overlay::CommitDetails {
+                            commit,
+                            details,
+                            items,
+                            cursor,
+                            file_cursor,
+                            focus,
+                            scroll,
+                        });
+                    }
+                    KeyCode::Char('k') | KeyCode::Up if focus == CommitDetailsFocus::Actions => {
+                        let cursor = previous_enabled_index(&items, cursor).unwrap_or(cursor);
+                        self.overlay = Some(Overlay::CommitDetails {
+                            commit,
+                            details,
+                            items,
+                            cursor,
+                            file_cursor,
+                            focus,
+                            scroll,
+                        });
+                    }
+                    KeyCode::PageDown => {
+                        scroll.page_down(5);
+                        self.overlay = Some(Overlay::CommitDetails {
+                            commit,
+                            details,
+                            items,
+                            cursor,
+                            file_cursor,
+                            focus,
+                            scroll,
+                        });
+                    }
+                    KeyCode::PageUp => {
+                        scroll.page_up(5);
+                        self.overlay = Some(Overlay::CommitDetails {
+                            commit,
+                            details,
+                            items,
+                            cursor,
+                            file_cursor,
+                            focus,
+                            scroll,
+                        });
+                    }
+                    KeyCode::Enter if focus == CommitDetailsFocus::Files => {
+                        if let Some(file) = details.files.get(file_cursor).cloned() {
+                            let target = (details.oid.clone(), file.path.clone());
+                            self.commit_file_diff_target = Some(target.clone());
+                            let loader = commit_details::spawn_commit_file_diff_loader(
+                                self.repo_path.clone(),
+                                details.clone(),
+                                file,
+                            );
+                            let (tx, rx) = mpsc::channel();
+                            let target = target.clone();
+                            std::thread::spawn(move || {
+                                if let Ok(result) = loader.recv() {
+                                    let _ = tx.send((target, result));
+                                }
+                            });
+                            self.commit_file_diff_rx = Some(rx);
+                        }
+                        self.overlay = Some(Overlay::CommitDetails {
+                            commit,
+                            details,
+                            items,
+                            cursor,
+                            file_cursor,
+                            focus,
+                            scroll,
+                        });
+                    }
+                    KeyCode::Enter if focus == CommitDetailsFocus::Actions => {
+                        if let Some(item) = items.get(cursor).cloned().filter(|item| item.enabled) {
+                            self.invalidate_commit_file_diff_request();
+                            self.execute_menu_action(item);
+                        } else {
+                            self.overlay = Some(Overlay::CommitDetails {
+                                commit,
+                                details,
+                                items,
+                                cursor,
+                                file_cursor,
+                                focus,
+                                scroll,
+                            });
+                        }
+                    }
+                    KeyCode::Char(c) if focus == CommitDetailsFocus::Actions => {
+                        if let Some(item) = items
+                            .iter()
+                            .find(|item| item.shortcut == Some(c) && item.enabled)
+                            .cloned()
+                        {
+                            self.invalidate_commit_file_diff_request();
+                            self.execute_menu_action(item);
+                        } else {
+                            self.overlay = Some(Overlay::CommitDetails {
+                                commit,
+                                details,
+                                items,
+                                cursor,
+                                file_cursor,
+                                focus,
+                                scroll,
+                            });
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => self.invalidate_commit_file_diff_request(),
+                    _ => {
+                        self.overlay = Some(Overlay::CommitDetails {
+                            commit,
+                            details,
+                            items,
+                            cursor,
+                            file_cursor,
+                            focus,
+                            scroll,
+                        })
+                    }
+                }
+            }
+            Some(Overlay::CommitDiff {
+                commit,
+                details,
+                items,
+                cursor,
+                file_cursor,
+                focus,
+                details_scroll,
+                diff,
+                mut scroll,
+            }) => match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    scroll.offset = scroll.offset.saturating_add(1);
+                    self.overlay = Some(Overlay::CommitDiff {
+                        commit,
+                        details,
+                        items,
+                        cursor,
+                        file_cursor,
+                        focus,
+                        details_scroll,
+                        diff,
+                        scroll,
+                    });
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    scroll.offset = scroll.offset.saturating_sub(1);
+                    self.overlay = Some(Overlay::CommitDiff {
+                        commit,
+                        details,
+                        items,
+                        cursor,
+                        file_cursor,
+                        focus,
+                        details_scroll,
+                        diff,
+                        scroll,
+                    });
+                }
+                KeyCode::PageDown => {
+                    scroll.page_down(5);
+                    self.overlay = Some(Overlay::CommitDiff {
+                        commit,
+                        details,
+                        items,
+                        cursor,
+                        file_cursor,
+                        focus,
+                        details_scroll,
+                        diff,
+                        scroll,
+                    });
+                }
+                KeyCode::PageUp => {
+                    scroll.page_up(5);
+                    self.overlay = Some(Overlay::CommitDiff {
+                        commit,
+                        details,
+                        items,
+                        cursor,
+                        file_cursor,
+                        focus,
+                        details_scroll,
+                        diff,
+                        scroll,
+                    });
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.invalidate_commit_file_diff_request();
+                    self.overlay = Some(Overlay::CommitDetails {
+                        commit,
+                        details,
+                        items,
+                        cursor,
+                        file_cursor,
+                        focus,
+                        scroll: details_scroll,
+                    });
+                }
+                _ => {
+                    self.overlay = Some(Overlay::CommitDiff {
+                        commit,
+                        details,
+                        items,
+                        cursor,
+                        file_cursor,
+                        focus,
+                        details_scroll,
+                        diff,
+                        scroll,
+                    })
+                }
+            },
             Some(Overlay::InfoModal {
                 cursor,
                 info_cursor,
@@ -2504,6 +2887,54 @@ impl App {
 
     // ---- Context Menu Building ----
 
+    fn open_graph_commit_details(&mut self) {
+        self.invalidate_commit_file_diff_request();
+        self.invalidate_commit_details_request();
+        self.return_view = self.active_view;
+        let Some(commit) = self.graph.selected_commit().cloned() else {
+            return;
+        };
+        self.commit_details_target = Some(commit.oid.clone());
+        let loader = commit_details::spawn_commit_details_loader(
+            self.repo_path.clone(),
+            commit,
+            self.base_branch.clone(),
+        );
+        let (tx, rx) = mpsc::channel();
+        let oid = self.commit_details_target.clone().unwrap_or_default();
+        std::thread::spawn(move || {
+            if let Ok(result) = loader.recv() {
+                let _ = tx.send((oid, result));
+            }
+        });
+        self.commit_details_rx = Some(rx);
+    }
+
+    fn commit_details_context_matches(&self, oid: &str) -> bool {
+        self.active_view == ViewId::Graph
+            && self.overlay.is_none()
+            && self
+                .graph
+                .selected_commit()
+                .is_some_and(|commit| commit.oid == oid)
+    }
+
+    fn commit_details_context_is_current(&self) -> bool {
+        self.commit_details_target
+            .as_deref()
+            .is_some_and(|oid| self.commit_details_context_matches(oid))
+    }
+
+    fn invalidate_commit_details_request(&mut self) {
+        self.commit_details_target = None;
+        self.commit_details_rx = None;
+    }
+
+    fn invalidate_commit_file_diff_request(&mut self) {
+        self.commit_file_diff_target = None;
+        self.commit_file_diff_rx = None;
+    }
+
     fn open_context_menu(&mut self) {
         let items = self.build_menu_items();
         let Some(row) = self.build_info_modal_row() else {
@@ -2619,6 +3050,105 @@ impl App {
     }
 
     fn refresh_open_graph_menu(&mut self) {
+        if matches!(self.overlay, Some(Overlay::CommitDiff { .. })) {
+            let Some(Overlay::CommitDiff {
+                commit,
+                details,
+                items: old_items,
+                cursor,
+                file_cursor,
+                focus,
+                details_scroll,
+                diff,
+                scroll,
+            }) = self.overlay.take()
+            else {
+                return;
+            };
+            let commit = self
+                .graph
+                .snapshot()
+                .and_then(|snapshot| snapshot.commits.iter().find(|item| item.oid == details.oid))
+                .cloned()
+                .unwrap_or(commit);
+            let items = self.build_graph_menu_for(&commit);
+            let selected = old_items
+                .get(cursor)
+                .map(|item| (item.action, item.target.as_str(), item.remote.as_deref()));
+            let cursor = selected
+                .and_then(|(action, target, remote)| {
+                    items.iter().position(|item| {
+                        item.action == action
+                            && item.target == target
+                            && item.remote.as_deref() == remote
+                    })
+                })
+                .filter(|cursor| items[*cursor].enabled)
+                .or_else(|| first_enabled_index(&items))
+                .unwrap_or(0);
+            self.overlay = Some(Overlay::CommitDiff {
+                commit,
+                details,
+                items,
+                cursor,
+                file_cursor,
+                focus,
+                details_scroll,
+                diff,
+                scroll,
+            });
+            return;
+        }
+        if matches!(self.overlay, Some(Overlay::CommitDetails { .. })) {
+            let Some(Overlay::CommitDetails {
+                commit,
+                details,
+                items: old_items,
+                cursor,
+                file_cursor,
+                focus,
+                scroll,
+            }) = self.overlay.take()
+            else {
+                return;
+            };
+            let commit = self
+                .graph
+                .snapshot()
+                .and_then(|snapshot| snapshot.commits.iter().find(|item| item.oid == details.oid))
+                .cloned()
+                .unwrap_or(commit);
+            let items = self.build_graph_menu_for(&commit);
+            let selected = old_items
+                .get(cursor)
+                .map(|item| (item.action, item.target.as_str(), item.remote.as_deref()));
+            let cursor = selected
+                .and_then(|(action, target, remote)| {
+                    items.iter().position(|item| {
+                        item.action == action
+                            && item.target == target
+                            && item.remote.as_deref() == remote
+                    })
+                })
+                .filter(|cursor| items[*cursor].enabled)
+                .or_else(|| first_enabled_index(&items))
+                .unwrap_or(0);
+            let focus = if first_enabled_index(&items).is_none() {
+                CommitDetailsFocus::Files
+            } else {
+                focus
+            };
+            self.overlay = Some(Overlay::CommitDetails {
+                commit,
+                details,
+                items,
+                cursor,
+                file_cursor,
+                focus,
+                scroll,
+            });
+            return;
+        }
         let Some(old_commit) = (match self.overlay.as_ref() {
             Some(Overlay::InfoModal {
                 row: InfoModalRow::GraphCommit(commit),
@@ -4258,6 +4788,14 @@ fn previous_enabled_index(items: &[MenuItem], cursor: usize) -> Option<usize> {
         .and_then(|preceding| preceding.iter().rposition(|item| item.enabled))
 }
 
+fn next_enabled_index(items: &[MenuItem], cursor: usize) -> Option<usize> {
+    items
+        .iter()
+        .enumerate()
+        .skip(cursor.saturating_add(1))
+        .find_map(|(index, item)| item.enabled.then_some(index))
+}
+
 fn normalize_info_action_state(
     cursor: usize,
     focus: InfoModalFocus,
@@ -4894,6 +5432,50 @@ mod tests {
         match app.overlay.as_ref() {
             Some(Overlay::InfoModal { items, .. }) => items,
             other => panic!("expected info modal, got {other:?}"),
+        }
+    }
+
+    fn commit_details_items(app: &App) -> &[MenuItem] {
+        match app.overlay.as_ref() {
+            Some(Overlay::CommitDetails { items, .. }) => items,
+            other => panic!("expected commit details, got {other:?}"),
+        }
+    }
+
+    fn complete_graph_commit_details(app: &mut App) {
+        let commit = app.graph.selected_commit().cloned().expect("selected graph commit");
+        let details = commit_details::CommitDetails {
+            oid: commit.oid.clone(),
+            summary: commit.summary.clone(),
+            author_name: String::new(),
+            author_email: String::new(),
+            authored_at: None,
+            message_lines: vec![commit.summary.clone()],
+            mode: commit_details::CommitDetailMode::Commit {
+                oid: commit.oid.clone(),
+            },
+            files: Vec::new(),
+            branch_log: Vec::new(),
+        };
+        let (tx, rx) = mpsc::channel();
+        app.commit_details_rx = Some(rx);
+        tx.send((commit.oid, Ok(details))).unwrap();
+        app.drain_channels();
+    }
+
+    fn details_for(commit: &graph::GraphCommit, files: Vec<commit_details::ChangedCommitFile>) -> commit_details::CommitDetails {
+        commit_details::CommitDetails {
+            oid: commit.oid.clone(),
+            summary: commit.summary.clone(),
+            author_name: String::new(),
+            author_email: String::new(),
+            authored_at: None,
+            message_lines: vec![commit.summary.clone()],
+            mode: commit_details::CommitDetailMode::Commit {
+                oid: commit.oid.clone(),
+            },
+            files,
+            branch_log: Vec::new(),
         }
     }
 
@@ -5664,7 +6246,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_enter_uses_local_branch_metadata_for_actions() {
+    fn graph_commit_details_uses_local_branch_metadata_for_actions() {
         let mut app = graph_app(vec![graph_ref(
             "feature/local",
             graph::GraphRefKind::LocalBranch,
@@ -5691,8 +6273,9 @@ mod tests {
             KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ));
+        complete_graph_commit_details(&mut app);
 
-        let items = info_modal_items(&app);
+        let items = commit_details_items(&app);
         let push = items
             .iter()
             .find(|item| item.action == BranchAction::Push)
@@ -5705,7 +6288,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_enter_uses_remote_branch_metadata_for_actions() {
+    fn graph_commit_details_uses_remote_branch_metadata_for_actions() {
         let mut app = graph_app(vec![graph_ref(
             "upstream/feature/remote",
             graph::GraphRefKind::RemoteBranch,
@@ -5717,8 +6300,9 @@ mod tests {
             KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ));
+        complete_graph_commit_details(&mut app);
 
-        let items = info_modal_items(&app);
+        let items = commit_details_items(&app);
         assert!(items
             .iter()
             .any(|item| { item.action == BranchAction::CheckoutRemote && item.enabled }));
@@ -5732,7 +6316,7 @@ mod tests {
     }
 
     #[test]
-    fn info_modal_open_selects_first_enabled_action_after_disabled_checkout() {
+    fn commit_details_open_selects_first_enabled_action_after_disabled_checkout() {
         let mut app = graph_app(vec![
             graph_ref("feature/local", graph::GraphRefKind::LocalBranch),
             graph_ref("origin/feature/remote", graph::GraphRefKind::RemoteBranch),
@@ -5747,8 +6331,9 @@ mod tests {
             KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ));
+        complete_graph_commit_details(&mut app);
 
-        let items = info_modal_items(&app);
+        let items = commit_details_items(&app);
         let first_enabled = items
             .iter()
             .position(|item| item.enabled)
@@ -5756,9 +6341,9 @@ mod tests {
         assert!(!items[0].enabled, "local Checkout must be disabled");
         assert!(matches!(
             app.overlay,
-            Some(Overlay::InfoModal {
+            Some(Overlay::CommitDetails {
                 cursor,
-                focus: InfoModalFocus::Actions,
+                focus: CommitDetailsFocus::Actions,
                 ..
             }) if cursor == first_enabled
         ));
@@ -5896,7 +6481,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_enter_uses_tag_metadata_and_keeps_ref_free_commits_informational() {
+    fn graph_commit_details_uses_tag_metadata_and_ref_free_commits_have_no_actions() {
         let mut tag_app = graph_app(vec![graph_ref("v1.2.3", graph::GraphRefKind::Tag)]);
         tag_app.tags.set_items(vec![tag("v1.2.3")]);
 
@@ -5904,7 +6489,8 @@ mod tests {
             KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert!(info_modal_items(&tag_app)
+        complete_graph_commit_details(&mut tag_app);
+        assert!(commit_details_items(&tag_app)
             .iter()
             .any(|item| item.action == BranchAction::PushTag));
 
@@ -5913,37 +6499,40 @@ mod tests {
             KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ));
+        complete_graph_commit_details(&mut ref_free_app);
         assert!(matches!(
             ref_free_app.overlay,
-            Some(Overlay::InfoModal {
+            Some(Overlay::CommitDetails {
                 ref items,
-                focus: InfoModalFocus::Info,
+                focus: CommitDetailsFocus::Files,
                 ..
             }) if items.is_empty()
         ));
     }
 
     #[test]
-    fn graph_info_modal_picks_up_authoritative_metadata_loaded_in_background() {
+    fn graph_commit_details_picks_up_authoritative_metadata_loaded_in_background() {
         let mut app = graph_app(vec![graph_ref("v1.2.3", graph::GraphRefKind::Tag)]);
         app.handle_key(KeyEvent::new(
             KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert!(info_modal_items(&app).is_empty());
+        complete_graph_commit_details(&mut app);
+        assert!(commit_details_items(&app).is_empty());
 
         let (tx, rx) = mpsc::channel();
         tx.send(vec![tag("v1.2.3")]).unwrap();
         app.tag_load_rx = Some(rx);
         app.drain_channels();
 
-        assert!(info_modal_items(&app)
+        app.refresh_open_graph_menu();
+        assert!(commit_details_items(&app)
             .iter()
             .any(|item| item.action == BranchAction::PushTag));
     }
 
     #[test]
-    fn graph_info_modal_refreshes_when_selected_commit_is_reloaded() {
+    fn graph_commit_details_refreshes_selected_commit_when_graph_reloads() {
         let mut app = graph_app(vec![graph_ref(
             "feature/local",
             graph::GraphRefKind::LocalBranch,
@@ -5952,6 +6541,7 @@ mod tests {
             KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ));
+        complete_graph_commit_details(&mut app);
 
         let mut snapshot = graph_snapshot(vec![graph_ref(
             "feature/local",
@@ -5963,10 +6553,151 @@ mod tests {
 
         assert!(matches!(
             app.overlay,
-            Some(Overlay::InfoModal {
-                row: InfoModalRow::GraphCommit(ref commit),
+            Some(Overlay::CommitDetails {
+                ref commit,
+                ref details,
                 ..
-            }) if commit.summary == "reloaded commit"
+            }) if commit.summary == "reloaded commit" && details.summary == "selected commit"
+        ));
+    }
+
+    #[test]
+    fn pending_graph_details_success_is_abandoned_when_help_opens() {
+        let mut app = graph_app(vec![]);
+        let commit = app.graph.selected_commit().unwrap().clone();
+        let (tx, rx) = mpsc::channel();
+        app.commit_details_target = Some(commit.oid.clone());
+        app.commit_details_rx = Some(rx);
+        tx.send((commit.oid.clone(), Ok(details_for(&commit, Vec::new()))))
+            .unwrap();
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('?'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.drain_channels();
+
+        assert!(matches!(app.overlay, Some(Overlay::Help { .. })));
+        assert!(app.commit_details_target.is_none());
+        assert!(app.commit_details_rx.is_none());
+        assert!(app.toast.is_none());
+    }
+
+    #[test]
+    fn pending_graph_details_error_is_abandoned_when_view_changes() {
+        let mut app = graph_app(vec![]);
+        let commit = app.graph.selected_commit().unwrap();
+        let (tx, rx) = mpsc::channel();
+        app.commit_details_target = Some(commit.oid.clone());
+        app.commit_details_rx = Some(rx);
+        tx.send((commit.oid.clone(), Err("late details error".into())))
+            .unwrap();
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.toast = None;
+        app.drain_channels();
+
+        assert_ne!(app.active_view, ViewId::Graph);
+        assert!(app.overlay.is_none());
+        assert!(app.commit_details_target.is_none());
+        assert!(app.commit_details_rx.is_none());
+        assert!(app.toast.is_none());
+    }
+
+    #[test]
+    fn tag_metadata_refreshes_commit_diff_and_parent_details_on_escape() {
+        let mut app = graph_app(vec![
+            graph_ref("feature/local", graph::GraphRefKind::LocalBranch),
+            graph_ref("v1.2.3", graph::GraphRefKind::Tag),
+        ]);
+        app.branches
+            .set_items(vec![branch("feature/local", TrackingStatus::Local)]);
+        let commit = app.graph.selected_commit().unwrap().clone();
+        let initial_items = app.build_graph_menu_for(&commit);
+        let initial_cursor = first_enabled_index(&initial_items).expect("local action");
+        let selected_action = &initial_items[initial_cursor];
+        let selected_identity = (
+            selected_action.action,
+            selected_action.target.clone(),
+            selected_action.remote.clone(),
+        );
+        let files = ["first.txt", "second.txt"]
+            .into_iter()
+            .map(|path| commit_details::ChangedCommitFile {
+                path: path.into(),
+                old_path: None,
+                kind: commit_details::CommitFileKind::Modified,
+            })
+            .collect();
+        let details = details_for(&commit, files);
+        let mut parent_scroll = ModalScroll::default();
+        parent_scroll.offset = 7;
+        app.overlay = Some(Overlay::CommitDetails {
+            commit: commit.clone(),
+            details,
+            items: initial_items,
+            cursor: initial_cursor,
+            file_cursor: 1,
+            focus: CommitDetailsFocus::Files,
+            scroll: parent_scroll,
+        });
+
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let target = app.commit_file_diff_target.clone().unwrap();
+        let (diff_tx, diff_rx) = mpsc::channel();
+        app.commit_file_diff_rx = Some(diff_rx);
+        diff_tx
+            .send((
+                target,
+                Ok(commit_details::CommitFileDiff {
+                    path: "second.txt".into(),
+                    patch: "@@ -1 +1 @@\n-old\n+new".into(),
+                }),
+            ))
+            .unwrap();
+        app.drain_channels();
+        assert!(matches!(app.overlay, Some(Overlay::CommitDiff { .. })));
+
+        if let Some(Overlay::CommitDiff { scroll, .. }) = app.overlay.as_mut() {
+            scroll.offset = 4;
+        }
+        let (tag_tx, tag_rx) = mpsc::channel();
+        tag_tx.send(vec![tag("v1.2.3")]).unwrap();
+        app.tag_load_rx = Some(tag_rx);
+        app.drain_channels();
+
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::CommitDiff {
+                cursor,
+                file_cursor: 1,
+                focus: CommitDetailsFocus::Files,
+                details_scroll: ModalScroll { offset: 7, .. },
+                scroll: ModalScroll { offset: 4, .. },
+                ref items,
+                ..
+            }) if items.get(cursor).is_some_and(|item| (item.action, item.target.clone(), item.remote.clone()) == selected_identity)
+                && items.iter().any(|item| item.action == BranchAction::PushTag)
+        ));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::CommitDetails {
+                file_cursor: 1,
+                focus: CommitDetailsFocus::Files,
+                scroll: ModalScroll { offset: 7, .. },
+                ref items,
+                ..
+            }) if items.iter().any(|item| item.action == BranchAction::PushTag)
         ));
     }
 
@@ -5988,8 +6719,9 @@ mod tests {
             KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ));
+        complete_graph_commit_details(&mut app);
 
-        let items = info_modal_items(&app);
+        let items = commit_details_items(&app);
         assert!(items
             .iter()
             .all(|item| item.shortcut.is_none() && item.label.contains(":")));
@@ -6005,22 +6737,26 @@ mod tests {
             .position(|item| item.action == BranchAction::DeleteRemoteBranch)
             .expect("remote Delete action");
         let overlay = app.overlay.take().unwrap();
-        let Overlay::InfoModal {
+        let Overlay::CommitDetails {
+            commit,
+            details,
             items,
-            info_cursor,
+            file_cursor,
             focus,
-            row,
+            scroll,
             ..
         } = overlay
         else {
             unreachable!();
         };
-        app.overlay = Some(Overlay::InfoModal {
+        app.overlay = Some(Overlay::CommitDetails {
+            commit,
+            details,
             items,
             cursor: remote_delete_cursor,
-            info_cursor,
+            file_cursor,
             focus,
-            row,
+            scroll,
         });
 
         app.handle_overlay_key(KeyEvent::new(
@@ -8508,5 +9244,108 @@ mod tests {
         assert!(app.overlay.is_none());
         assert!(cancel_flag.load(Ordering::Relaxed));
         assert!(app.job_queue.is_draining_for_test());
+    }
+
+    #[test]
+    fn commit_details_nested_navigation_preserves_file_cursor() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(dir.join("one.txt"), "one\n").unwrap();
+        std::fs::write(dir.join("two.txt"), "two\n").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "initial"]);
+        let oid = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        let details = commit_details::CommitDetails {
+            oid: oid.clone(),
+            summary: "initial".into(),
+            author_name: String::new(),
+            author_email: String::new(),
+            authored_at: None,
+            message_lines: vec!["initial".into()],
+            mode: commit_details::CommitDetailMode::Commit { oid: oid.clone() },
+            files: vec![
+                commit_details::ChangedCommitFile {
+                    path: "one.txt".into(),
+                    old_path: None,
+                    kind: commit_details::CommitFileKind::Added,
+                },
+                commit_details::ChangedCommitFile {
+                    path: "two.txt".into(),
+                    old_path: None,
+                    kind: commit_details::CommitFileKind::Added,
+                },
+            ],
+            branch_log: Vec::new(),
+        };
+        let file_menu = Vec::new();
+        let mut details_scroll = ModalScroll::default();
+        details_scroll.offset = 3;
+        app.overlay = Some(Overlay::CommitDetails {
+            commit: graph::GraphCommit {
+                oid: oid.clone(),
+                ..Default::default()
+            },
+            details,
+            items: file_menu,
+            cursor: 0,
+            file_cursor: 0,
+            focus: CommitDetailsFocus::Files,
+            scroll: details_scroll,
+        });
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(app.commit_file_diff_rx.is_some());
+        let (tx, rx) = mpsc::channel();
+        app.commit_file_diff_rx = Some(rx);
+        tx.send((
+            (oid.clone(), "two.txt".into()),
+            Ok(commit_details::CommitFileDiff {
+                path: "two.txt".into(),
+                patch: "@@ -0,0 +1 @@\n+two".into(),
+            }),
+        ))
+        .unwrap();
+        app.drain_channels();
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::CommitDiff { file_cursor: 1, .. })
+        ));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::CommitDetails {
+                file_cursor: 1,
+                scroll: ModalScroll { offset: 3, .. },
+                ..
+            })
+        ));
+        app.handle_overlay_key(KeyEvent::new(
+            KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(app.overlay.is_none());
     }
 }

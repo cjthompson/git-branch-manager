@@ -39,7 +39,7 @@ git branch-manager
 - **Batch operations** — delete local branches, or delete local + remote in one action
 - **Auto-detect base branch** — reads `origin/HEAD`, falls back to main/master/develop
 - **Non-destructive loop** — after an operation, results are shown and the branch list refreshes so you can keep working
-- **Graph view** — first tab; commit DAG with live-ref pane, remote overlay, and automatic Git-CLI fallback
+- **Graph view** — first tab; commit DAG with live-ref pane, remote overlay, commit details, and automatic Git-CLI fallback
 
 ## Graph View
 
@@ -92,10 +92,18 @@ git branch-manager --list
 | `h` / `l` / `←` / `→` | Scroll commit text and refs |
 | `g` / `G` | Home / End |
 | `PgUp` / `PgDn` | Page scroll |
-| `Enter` | Open action menu for commit's refs |
+| `Enter` | Open commit details; inspect changed files and ref actions |
 | `o` | Open Graph options |
 | `L` | Load 500 older commits |
 | `r` | Reload graph |
+
+Commit details show the first four full message lines, author and local date,
+the selected commit's changed files, and the existing actions for its live refs.
+Use `Tab` to switch between the file list and actions. Press `Enter` on a file
+to open its patch; `Esc` returns to the same file selection. When the selected
+commit is a local non-base branch tip, the details view also shows the
+`base..branch` log and the aggregate file list from the merge base through the
+branch tip, matching squash-merge detection.
 
 ### Branch List
 

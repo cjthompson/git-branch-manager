@@ -1,4 +1,8 @@
 use chrono::Utc;
+use git_branch_manager::git::commit_details::{
+    ChangedCommitFile, CommitDetailMode, CommitDetails, CommitFileDiff, CommitFileKind,
+};
+use git_branch_manager::git::graph::GraphCommit;
 use git_branch_manager::{
     config::Config,
     job_queue::JobStatusView,
@@ -84,6 +88,72 @@ fn base_overlay_fixtures() -> Vec<BaseOverlayFixture> {
             },
             expected_title: "v1.0.0",
             expected_footer: "[Tab] Switch  [j/k] Navigate  [Enter] Invoke  [Esc] Close",
+        },
+        BaseOverlayFixture {
+            name: "CommitDetails",
+            overlay: Overlay::CommitDetails {
+                commit: GraphCommit::default(),
+                details: CommitDetails {
+                    oid: "abcdef0123456789".to_string(),
+                    summary: "Commit summary".to_string(),
+                    author_name: "Test User".to_string(),
+                    author_email: "test@example.com".to_string(),
+                    authored_at: None,
+                    message_lines: vec![
+                        "Subject".to_string(),
+                        "".to_string(),
+                        "Body".to_string(),
+                        "Line 4".to_string(),
+                    ],
+                    mode: CommitDetailMode::Commit {
+                        oid: "abcdef0123456789".to_string(),
+                    },
+                    files: vec![ChangedCommitFile {
+                        path: "changed.txt".to_string(),
+                        old_path: None,
+                        kind: CommitFileKind::Modified,
+                    }],
+                    branch_log: Vec::new(),
+                },
+                items: vec![menu_item()],
+                cursor: 0,
+                file_cursor: 0,
+                focus: git_branch_manager::ui::commit_details::CommitDetailsFocus::Files,
+                scroll: ModalScroll::default(),
+            },
+            expected_title: "abcdef0 Commit summary",
+            expected_footer: "[j/k] Navigate  [Enter] Diff/action  [Tab] Switch  [Esc] Close",
+        },
+        BaseOverlayFixture {
+            name: "CommitDiff",
+            overlay: Overlay::CommitDiff {
+                commit: GraphCommit::default(),
+                details: CommitDetails {
+                    oid: "abcdef0123456789".to_string(),
+                    summary: "Commit summary".to_string(),
+                    author_name: String::new(),
+                    author_email: String::new(),
+                    authored_at: None,
+                    message_lines: Vec::new(),
+                    mode: CommitDetailMode::Commit {
+                        oid: "abcdef0123456789".to_string(),
+                    },
+                    files: Vec::new(),
+                    branch_log: Vec::new(),
+                },
+                items: Vec::new(),
+                cursor: 0,
+                file_cursor: 0,
+                focus: git_branch_manager::ui::commit_details::CommitDetailsFocus::Files,
+                details_scroll: ModalScroll::default(),
+                diff: CommitFileDiff {
+                    path: "changed.txt".to_string(),
+                    patch: "@@ -1 +1 @@\n-old\n+new".to_string(),
+                },
+                scroll: ModalScroll::default(),
+            },
+            expected_title: "Diff: changed.txt",
+            expected_footer: "[j/k] Scroll  [PgUp/Dn] Page  [Esc] Back",
         },
         BaseOverlayFixture {
             name: "Confirm",
@@ -943,6 +1013,176 @@ fn shell_pins_footer_when_body_is_taller_than_viewport() {
         .map(|cell| cell.symbol())
         .collect::<String>()
         .contains("six"));
+}
+
+#[test]
+fn branch_tip_details_render_message_metadata_log_and_files() {
+    let details = CommitDetails {
+        oid: "abcdef0123456789".into(),
+        summary: "tip summary".into(),
+        author_name: "Branch Author".into(),
+        author_email: "author@example.com".into(),
+        authored_at: Some(Utc::now().fixed_offset()),
+        message_lines: vec![
+            "message one".into(),
+            "message two".into(),
+            "message three".into(),
+            "message four".into(),
+        ],
+        mode: CommitDetailMode::BranchTip {
+            branch: "feature/details".into(),
+            base: "main".into(),
+            merge_base: "baseoid".into(),
+            tip: "tipoid".into(),
+        },
+        files: vec![ChangedCommitFile {
+            path: "aggregate.txt".into(),
+            old_path: None,
+            kind: CommitFileKind::Modified,
+        }],
+        branch_log: vec![
+            "abc123 latest branch change".into(),
+            "def456 earlier branch change".into(),
+        ],
+    };
+    let mut overlay = Overlay::CommitDetails {
+        commit: GraphCommit {
+            oid: details.oid.clone(),
+            summary: details.summary.clone(),
+            ..GraphCommit::default()
+        },
+        details,
+        items: vec![MenuItem {
+            label: "Delete local".into(),
+            shortcut: Some('d'),
+            action: BranchAction::DeleteLocal,
+            target: "feature/details".into(),
+            remote: None,
+            enabled: true,
+            reason: None,
+        }],
+        cursor: 0,
+        file_cursor: 0,
+        focus: git_branch_manager::ui::commit_details::CommitDetailsFocus::Files,
+        scroll: ModalScroll::default(),
+    };
+    let buffer = render_overlay_buffer(&mut overlay, 100, 32, &Theme::dark());
+    let rendered = buffer
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    for expected in [
+        "tip summary",
+        "Branch Author",
+        "author@example.com",
+        "Date ",
+        "Message",
+        "message one",
+        "message two",
+        "message three",
+        "message four",
+        "Branch tip feature/details",
+        "abc123 latest branch change",
+        "aggregate.txt",
+    ] {
+        assert!(rendered.contains(expected), "missing {expected:?}");
+    }
+}
+
+#[test]
+fn commit_details_page_position_survives_render_until_focus_moves() {
+    let details = CommitDetails {
+        oid: "abcdef0123456789".into(),
+        summary: "long log".into(),
+        author_name: "Author".into(),
+        author_email: "author@example.com".into(),
+        authored_at: Some(Utc::now().fixed_offset()),
+        message_lines: vec![
+            "message at top".into(),
+            "second line".into(),
+            "third line".into(),
+            "fourth line".into(),
+        ],
+        mode: CommitDetailMode::BranchTip {
+            branch: "feature/long".into(),
+            base: "main".into(),
+            merge_base: "baseoid".into(),
+            tip: "tipoid".into(),
+        },
+        files: vec![ChangedCommitFile {
+            path: "selected.txt".into(),
+            old_path: None,
+            kind: CommitFileKind::Modified,
+        }],
+        branch_log: (0..36)
+            .map(|index| format!("commit {index:02} change"))
+            .collect(),
+    };
+    let mut overlay = Overlay::CommitDetails {
+        commit: GraphCommit {
+            oid: details.oid.clone(),
+            summary: details.summary.clone(),
+            ..GraphCommit::default()
+        },
+        details: details.clone(),
+        items: vec![MenuItem {
+            label: "Delete local".into(),
+            shortcut: Some('d'),
+            action: BranchAction::DeleteLocal,
+            target: "feature/long".into(),
+            remote: None,
+            enabled: true,
+            reason: None,
+        }],
+        cursor: 0,
+        file_cursor: 0,
+        focus: git_branch_manager::ui::commit_details::CommitDetailsFocus::Files,
+        scroll: ModalScroll::default(),
+    };
+    let _ = render_overlay_buffer(&mut overlay, 100, 28, &Theme::dark());
+    let Overlay::CommitDetails {
+        scroll,
+        file_cursor,
+        focus,
+        ..
+    } = &mut overlay
+    else {
+        unreachable!()
+    };
+    *focus = git_branch_manager::ui::commit_details::CommitDetailsFocus::Files;
+    *file_cursor = 0;
+    scroll.page_up(u16::MAX);
+    let top_buffer = render_overlay_buffer(&mut overlay, 100, 28, &Theme::dark());
+    let Overlay::CommitDetails {
+        scroll,
+        file_cursor,
+        ..
+    } = &overlay
+    else {
+        unreachable!()
+    };
+    assert_eq!(scroll.offset, 0);
+    assert_eq!(*file_cursor, 0);
+    let top_text = top_buffer
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(top_text.contains("message at top"));
+    assert!(top_text.contains("commit 00 change"));
+
+    let Overlay::CommitDetails { focus, .. } = &mut overlay else {
+        unreachable!()
+    };
+    *focus = git_branch_manager::ui::commit_details::CommitDetailsFocus::Actions;
+    let action_buffer = render_overlay_buffer(&mut overlay, 100, 28, &Theme::dark());
+    assert!(action_buffer
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>()
+        .contains("Delete local"));
 }
 
 #[test]

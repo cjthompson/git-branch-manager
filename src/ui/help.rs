@@ -71,6 +71,7 @@ const WORKTREE_KEYS: &[(&str, &str)] = &[
 
 /// Graph-view-specific keys.
 const GRAPH_KEYS: &[(&str, &str)] = &[
+    ("ENTER", "Commit details"),
     ("g/G", "Home / End"),
     ("h/l or ←/→", "Scroll commit text and refs"),
     ("o", "Graph options"),
@@ -84,6 +85,8 @@ const GRAPH_CONCEPTS: &[&str] = &[
     "o toggles remote refs (saved)",
     "L adds +500 commits (session)",
     "Falls back to git log if needed",
+    "Details: Tab files/actions, Enter patch, Esc back",
+    "Branch tips show squash-content comparison from merge-base",
 ];
 
 /// Renders the help overlay on top of the current view.

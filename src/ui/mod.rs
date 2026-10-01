@@ -1,4 +1,6 @@
 pub mod cells;
+pub mod commit_details;
+pub mod commit_diff;
 pub mod confirm;
 pub mod diagnostics;
 pub mod dump_render;
