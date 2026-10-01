@@ -137,6 +137,21 @@ fn header_alignment(wants_right: bool, label_len: usize, resolved_width: u16) ->
     }
 }
 
+/// Return the indices of columns that remain visible at the given terminal
+/// width. Kept separate so the final narrow-width fallback can be tested
+/// against a real view's column definitions.
+fn visible_column_indices<T: ViewItem>(columns: &[ColumnDef<T>], area_width: u16) -> Vec<usize> {
+    columns
+        .iter()
+        .enumerate()
+        .filter(|(_, col)| {
+            col.hide_below_width
+                .is_none_or(|threshold| area_width >= threshold)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
 /// Renders any list view generically.
 ///
 /// The checkbox cell is automatically prepended; the `render_row` callback should
@@ -156,15 +171,7 @@ pub fn render_list_view<T: ViewItem>(
     let symbols = params.symbols;
 
     // Determine which columns are visible at this width
-    let visible_col_indices: Vec<usize> = columns
-        .iter()
-        .enumerate()
-        .filter(|(_, col)| {
-            col.hide_below_width
-                .is_none_or(|threshold| area.width >= threshold)
-        })
-        .map(|(i, _)| i)
-        .collect();
+    let visible_col_indices = visible_column_indices(columns, area.width);
 
     let visible_columns: Vec<&ColumnDef<T>> =
         visible_col_indices.iter().map(|&i| &columns[i]).collect();
@@ -388,6 +395,7 @@ pub fn render_list_view<T: ViewItem>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view::branches::BranchesViewDef;
 
     fn col(
         key: &'static str,
@@ -504,5 +512,13 @@ mod tests {
         let columns = branches_like_columns();
         let level = resolve_ladder_level(&columns, 69, 500);
         assert_eq!(level, FULLY_COMPACT_LEVEL);
+    }
+
+    #[test]
+    fn age_is_hidden_only_after_the_final_compact_width_rung() {
+        let columns = BranchesViewDef.columns();
+
+        assert_eq!(visible_column_indices(&columns, 60), vec![0, 2, 3, 4, 5]);
+        assert_eq!(visible_column_indices(&columns, 59), vec![0, 2, 3, 5]);
     }
 }

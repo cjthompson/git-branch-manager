@@ -68,7 +68,8 @@ pub fn ahead_behind_cmp<T: ViewItem>(a: &T, b: &T) -> Ordering {
 
 /// Build a standard "A/B" column definition. `wide_width` fits full counts
 /// (e.g. `↑1 ↓164`); `min_width` fits just the "A/B" header / arrows-only
-/// compact form (see `ui::cells::ahead_behind_parts`).
+/// compact form (see `ui::cells::ahead_behind_parts`). This column stays
+/// visible at every terminal width and compacts before Age is hidden.
 pub fn ahead_behind_column<T: ViewItem>() -> ColumnDef<T> {
     ColumnDef {
         key: "ahead_behind",
@@ -77,7 +78,7 @@ pub fn ahead_behind_column<T: ViewItem>() -> ColumnDef<T> {
         min_width: 3,
         content_min_width: None,
         wide_width: Some(8),
-        hide_below_width: Some(80),
+        hide_below_width: None,
         compare: Some(ahead_behind_cmp),
     }
 }
@@ -462,7 +463,7 @@ mod tests {
         assert_eq!(col.name, "A/B");
         assert_eq!(col.min_width, 3);
         assert_eq!(col.wide_width, Some(8));
-        assert_eq!(col.hide_below_width, Some(80));
+        assert_eq!(col.hide_below_width, None);
         assert!(col.compare.is_some());
     }
 
