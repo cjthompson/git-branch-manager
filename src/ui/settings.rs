@@ -33,6 +33,11 @@ pub fn settings_rows(
     } else {
         "off".to_string()
     };
+    let horizontal_scrolling_display = if config.horizontal_scrolling == Some(true) {
+        "on".to_string()
+    } else {
+        "off".to_string()
+    };
 
     vec![
         SettingsRow {
@@ -66,6 +71,10 @@ pub fn settings_rows(
         SettingsRow {
             label: "Load worktrees on launch",
             value: load_worktrees_display,
+        },
+        SettingsRow {
+            label: "Horizontal table scrolling",
+            value: horizontal_scrolling_display,
         },
     ]
 }
@@ -103,4 +112,35 @@ pub fn draw_settings(frame: &mut Frame, cursor: usize, rows: &[SettingsRow], the
         .collect();
 
     frame.render_widget(Paragraph::new(lines).scroll((scroll.offset, 0)), areas.body);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn horizontal_scrolling_setting_is_off_by_default_and_shows_enabled_value() {
+        let symbols = SymbolSet::ascii();
+        let theme = Theme::dark();
+        let sort = "Name (ascending)";
+
+        let rows = settings_rows(&symbols, &theme, &Config::default(), sort, sort, sort, sort);
+        let horizontal = rows.last().expect("horizontal scrolling row");
+        assert_eq!(horizontal.label, "Horizontal table scrolling");
+        assert_eq!(horizontal.value, "off");
+
+        let enabled_rows = settings_rows(
+            &symbols,
+            &theme,
+            &Config {
+                horizontal_scrolling: Some(true),
+                ..Config::default()
+            },
+            sort,
+            sort,
+            sort,
+            sort,
+        );
+        assert_eq!(enabled_rows.last().unwrap().value, "on");
+    }
 }

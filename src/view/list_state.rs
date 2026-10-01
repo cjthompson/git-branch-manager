@@ -16,11 +16,13 @@ pub struct ListState<T: ViewItem> {
     search_query: String,
     search_active: bool,
     filter_query: String,
+    horizontal_offset: usize,
+    max_horizontal_offset: usize,
     /// Cached display indices (after filter + pinned-first reorder).
     /// Recalculated when items, filter, or search change.
     display_indices: Vec<usize>,
     /// Column positions for mouse click detection on headers
-    pub header_columns: Vec<(u16, usize)>,
+    pub header_columns: Vec<(u16, u16, usize)>,
     /// Status bar clickable regions: (x_start, x_end, key_code)
     pub status_bar_items: Vec<(u16, u16, crossterm::event::KeyCode)>,
     /// Loading state for lazy-loaded views
@@ -46,6 +48,8 @@ impl<T: ViewItem> ListState<T> {
             search_query: String::new(),
             search_active: false,
             filter_query: String::new(),
+            horizontal_offset: 0,
+            max_horizontal_offset: 0,
             display_indices,
             header_columns: Vec::new(),
             status_bar_items: Vec::new(),
@@ -100,13 +104,44 @@ impl<T: ViewItem> ListState<T> {
     pub fn display_indices(&self) -> &[usize] {
         &self.display_indices
     }
+    pub fn horizontal_offset(&self) -> usize {
+        self.horizontal_offset
+    }
+    pub fn max_horizontal_offset(&self) -> usize {
+        self.max_horizontal_offset
+    }
 
     // --- Mutators ---
 
     pub fn set_items(&mut self, items: Vec<T>) {
         let (cursor_id, cursor_display_position, selected_ids) = self.snapshot_row_state();
         self.items = items;
+        self.reset_horizontal_scroll();
         self.restore_row_state(cursor_id, cursor_display_position, selected_ids);
+    }
+
+    /// Update the maximum horizontal offset after resolving the current
+    /// content and viewport widths. Shrinking the terminal clamps the current
+    /// position immediately.
+    pub fn set_horizontal_scroll_bounds(&mut self, max_offset: usize) {
+        self.max_horizontal_offset = max_offset;
+        self.horizontal_offset = self.horizontal_offset.min(max_offset);
+    }
+
+    pub fn scroll_left(&mut self) {
+        self.horizontal_offset = self.horizontal_offset.saturating_sub(1);
+    }
+
+    pub fn scroll_right(&mut self) {
+        self.horizontal_offset = self
+            .horizontal_offset
+            .saturating_add(1)
+            .min(self.max_horizontal_offset);
+    }
+
+    pub fn reset_horizontal_scroll(&mut self) {
+        self.horizontal_offset = 0;
+        self.max_horizontal_offset = 0;
     }
 
     pub fn set_cursor(&mut self, cursor: usize) {
@@ -638,6 +673,42 @@ mod tests {
         state.selected_mut()[0] = true;
         let targets = collect_targets(&state, |b| (!b.is_pinned()).then(|| b.name.clone()));
         assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn horizontal_scroll_is_bounded_and_does_not_change_list_state() {
+        let mut state = ListState::new(sample_branches());
+        state.set_cursor(1);
+        state.selected_mut()[2] = true;
+        state.set_sort(Some(0), false);
+        state.set_horizontal_scroll_bounds(3);
+
+        state.scroll_right();
+        state.scroll_right();
+        state.scroll_right();
+        state.scroll_right();
+        assert_eq!(state.horizontal_offset(), 3);
+        assert_eq!(state.cursor(), 1);
+        assert_eq!(state.selected(), &[false, false, true]);
+        assert_eq!(state.sort_column(), Some(0));
+        assert!(!state.sort_ascending());
+
+        state.set_horizontal_scroll_bounds(1);
+        assert_eq!(state.horizontal_offset(), 1);
+        state.scroll_left();
+        state.scroll_left();
+        assert_eq!(state.horizontal_offset(), 0);
+    }
+
+    #[test]
+    fn replacing_list_items_resets_horizontal_scroll() {
+        let mut state = ListState::new(sample_branches());
+        state.set_horizontal_scroll_bounds(8);
+        state.scroll_right();
+        state.set_items(sample_branches());
+
+        assert_eq!(state.horizontal_offset(), 0);
+        assert_eq!(state.max_horizontal_offset(), 0);
     }
 
     fn name_column() -> ColumnDef<BranchInfo> {

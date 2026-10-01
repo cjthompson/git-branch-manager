@@ -108,10 +108,15 @@ pub fn draw_help(frame: &mut Frame, active_view: ViewId, scroll: &mut usize, the
     all_entries.extend_from_slice(view_keys);
     // We'll interleave with section headers below
 
+    let mut common_keys = COMMON_KEYS.to_vec();
+    if active_view != ViewId::Graph {
+        common_keys.insert(0, ("h/l or ←/→", "Scroll table (when enabled)"));
+    }
+
     let all_lines: Vec<HelpEntry> = build_help_entries(
         &section_header,
         view_keys,
-        COMMON_KEYS,
+        &common_keys,
         (active_view != ViewId::Graph).then_some(("g", "Jump selected ref to Graph")),
         if active_view == ViewId::Graph {
             GRAPH_CONCEPTS

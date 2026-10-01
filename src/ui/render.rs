@@ -212,6 +212,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 render_row: ctx.render_branch_row,
                 theme: ctx.theme,
                 symbols: ctx.symbols,
+                horizontal_scrolling: ctx.config.horizontal_scrolling == Some(true),
             };
             super::list_render::render_list_view(frame, main_area, &mut params);
         }
@@ -223,6 +224,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 render_row: ctx.render_remote_row,
                 theme: ctx.theme,
                 symbols: ctx.symbols,
+                horizontal_scrolling: ctx.config.horizontal_scrolling == Some(true),
             };
             super::list_render::render_list_view(frame, main_area, &mut params);
         }
@@ -234,6 +236,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 render_row: ctx.render_tag_row,
                 theme: ctx.theme,
                 symbols: ctx.symbols,
+                horizontal_scrolling: ctx.config.horizontal_scrolling == Some(true),
             };
             super::list_render::render_list_view(frame, main_area, &mut params);
         }
@@ -245,6 +248,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 render_row: ctx.render_worktree_row,
                 theme: ctx.theme,
                 symbols: ctx.symbols,
+                horizontal_scrolling: ctx.config.horizontal_scrolling == Some(true),
             };
             super::list_render::render_list_view(frame, main_area, &mut params);
         }

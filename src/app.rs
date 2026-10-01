@@ -1264,6 +1264,32 @@ impl App {
             };
         }
 
+        if self.config.horizontal_scrolling == Some(true) {
+            match key.code {
+                KeyCode::Char('h') | KeyCode::Left => {
+                    match self.active_view {
+                        ViewId::Branches => self.branches.scroll_left(),
+                        ViewId::Remotes => self.remotes.scroll_left(),
+                        ViewId::Tags => self.tags.scroll_left(),
+                        ViewId::Worktrees => self.worktrees.scroll_left(),
+                        ViewId::Graph => {}
+                    }
+                    return true;
+                }
+                KeyCode::Char('l') | KeyCode::Right => {
+                    match self.active_view {
+                        ViewId::Branches => self.branches.scroll_right(),
+                        ViewId::Remotes => self.remotes.scroll_right(),
+                        ViewId::Tags => self.tags.scroll_right(),
+                        ViewId::Worktrees => self.worktrees.scroll_right(),
+                        ViewId::Graph => {}
+                    }
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 with_state!(list_state::nav_down);
@@ -2458,7 +2484,7 @@ impl App {
     }
 
     fn handle_settings_key(&mut self, key: KeyEvent, cursor: usize) {
-        const NUM_ROWS: usize = 8;
+        const NUM_ROWS: usize = 9;
 
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
@@ -2499,6 +2525,7 @@ impl App {
                         self.config.load_worktrees_on_launch =
                             Some(self.config.load_worktrees_on_launch != Some(true));
                     }
+                    8 => self.toggle_horizontal_scrolling(),
                     _ => {}
                 }
                 self.save_settings_field(cursor);
@@ -2537,6 +2564,7 @@ impl App {
                         self.config.load_worktrees_on_launch =
                             Some(self.config.load_worktrees_on_launch != Some(true));
                     }
+                    8 => self.toggle_horizontal_scrolling(),
                     _ => {}
                 }
                 self.save_settings_field(cursor);
@@ -2831,7 +2859,7 @@ impl App {
 
     fn find_header_click(&self, x: u16) -> Option<usize> {
         let header_columns = match self.active_view {
-            ViewId::Graph => &[] as &[(u16, usize)],
+            ViewId::Graph => &[] as &[(u16, u16, usize)],
             ViewId::Branches => &self.branches.header_columns,
             ViewId::Remotes => &self.remotes.header_columns,
             ViewId::Tags => &self.tags.header_columns,
@@ -2840,17 +2868,10 @@ impl App {
         if header_columns.is_empty() {
             return None;
         }
-        for (i, &(col_x, sort_idx)) in header_columns.iter().enumerate() {
-            let next_x = if i + 1 < header_columns.len() {
-                header_columns[i + 1].0
-            } else {
-                u16::MAX
-            };
-            if x >= col_x && x < next_x {
-                return Some(sort_idx);
-            }
-        }
-        None
+        header_columns
+            .iter()
+            .find(|&&(start, end, _)| x >= start && x < end)
+            .map(|&(_, _, sort_idx)| sort_idx)
     }
 
     fn handle_right_click(&mut self, _x: u16, y: u16) {
@@ -4612,6 +4633,19 @@ impl App {
         });
     }
 
+    fn toggle_horizontal_scrolling(&mut self) {
+        self.config.horizontal_scrolling = Some(self.config.horizontal_scrolling != Some(true));
+        self.branches.reset_horizontal_scroll();
+        self.remotes.reset_horizontal_scroll();
+        self.tags.reset_horizontal_scroll();
+        self.worktrees.reset_horizontal_scroll();
+    }
+
+    fn save_horizontal_scrolling(&mut self) {
+        let horizontal_scrolling = self.config.horizontal_scrolling;
+        self.config = Config::update(|c| c.horizontal_scrolling = horizontal_scrolling);
+    }
+
     /// Persist only the given view's sort column/direction.
     fn save_sort_field(&mut self, view: ViewId) {
         match view {
@@ -4669,7 +4703,7 @@ impl App {
 
     /// Persist only the settings-overlay field the given cursor row controls.
     /// Row order matches the overlay: 0=symbols, 1=theme, 2-5=per-view sort,
-    /// 6=auto_fetch, 7=load_worktrees_on_launch.
+    /// 6=auto_fetch, 7=load_worktrees_on_launch, 8=horizontal_scrolling.
     fn save_settings_field(&mut self, cursor: usize) {
         match cursor {
             0 => self.save_symbols(),
@@ -4680,6 +4714,7 @@ impl App {
             5 => self.save_sort_field(ViewId::Worktrees),
             6 => self.save_auto_fetch(),
             7 => self.save_load_worktrees_on_launch(),
+            8 => self.save_horizontal_scrolling(),
             _ => {}
         }
     }
@@ -6018,6 +6053,61 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert_eq!(app.active_view, ViewId::Branches);
+    }
+
+    #[test]
+    fn horizontal_table_scroll_is_configured_per_list_view() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        app.branches.set_items(vec![
+            branch("feature/a", TrackingStatus::Local),
+            branch("feature/b", TrackingStatus::Local),
+        ]);
+        app.branches.set_cursor(1);
+        app.branches.selected_mut()[0] = true;
+        app.branches.set_sort(Some(0), false);
+        app.branches.set_horizontal_scroll_bounds(4);
+
+        app.active_view = ViewId::Branches;
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('l'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.branches.horizontal_offset(), 0);
+
+        app.config.horizontal_scrolling = Some(true);
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('l'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_key(KeyEvent::new(
+            KeyCode::Right,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.branches.horizontal_offset(), 2);
+        assert_eq!(app.branches.cursor(), 1);
+        assert_eq!(app.branches.selected(), &[true, false]);
+        assert_eq!(app.branches.sort_column(), Some(0));
+        assert!(!app.branches.sort_ascending());
+
+        app.remotes.set_horizontal_scroll_bounds(2);
+        app.active_view = ViewId::Remotes;
+        app.handle_key(KeyEvent::new(
+            KeyCode::Right,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.remotes.horizontal_offset(), 1);
+        app.active_view = ViewId::Branches;
+        assert_eq!(app.branches.horizontal_offset(), 2);
+
+        app.branches.header_columns = vec![(10, 14, 5), (30, 34, 2)];
+        assert_eq!(app.find_header_click(11), Some(5));
+        assert_eq!(app.find_header_click(20), None);
+        assert_eq!(app.find_header_click(32), Some(2));
     }
 
     #[test]
@@ -7606,6 +7696,18 @@ mod tests {
             app.theme.name, original_theme,
             "Enter must choose the setting"
         );
+
+        app.branches.set_horizontal_scroll_bounds(5);
+        app.branches.scroll_right();
+        for _ in 0..7 {
+            press_overlay_key(&mut app, KeyCode::Down);
+        }
+        assert!(matches!(app.overlay, Some(Overlay::Settings { cursor: 8 })));
+        press_overlay_key(&mut app, KeyCode::Enter);
+        assert_eq!(app.config.horizontal_scrolling, Some(true));
+        assert_eq!(app.branches.horizontal_offset(), 0);
+        press_overlay_key(&mut app, KeyCode::Left);
+        assert_eq!(app.config.horizontal_scrolling, Some(false));
 
         press_overlay_key(&mut app, KeyCode::Esc);
         assert!(

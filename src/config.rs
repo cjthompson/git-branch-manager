@@ -20,6 +20,9 @@ pub struct Config {
     pub auto_fetch: Option<bool>,
     pub load_worktrees_on_launch: Option<bool>,
     pub include_remotes: Option<bool>,
+    /// Scroll wide list tables horizontally instead of collapsing columns.
+    /// Absent means disabled to preserve the current responsive layout.
+    pub horizontal_scrolling: Option<bool>,
     /// Silently verify and correct the cache in the background on launch.
     /// Defaults to enabled (`None`/absent means on) — unlike `auto_fetch`, it
     /// has no visible cost in the common case (no network I/O, no toast, no
@@ -176,6 +179,7 @@ mod tests {
         assert_eq!(c.theme, None);
         assert_eq!(c.auto_fetch, None);
         assert_eq!(c.include_remotes, None);
+        assert_eq!(c.horizontal_scrolling, None);
     }
 
     #[test]
@@ -198,6 +202,15 @@ mod tests {
 
         assert_eq!(parsed.include_remotes, Some(true));
         assert!(serialized.contains("include_remotes = true"));
+    }
+
+    #[test]
+    fn config_roundtrip_preserves_horizontal_scrolling_preference() {
+        let parsed: Config = toml::from_str("horizontal_scrolling = true\n").unwrap();
+        let serialized = toml::to_string(&parsed).unwrap();
+
+        assert_eq!(parsed.horizontal_scrolling, Some(true));
+        assert!(serialized.contains("horizontal_scrolling = true"));
     }
 
     /// Serializes access to `GBM_CONFIG_DIR`-dependent tests, since env vars

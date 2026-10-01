@@ -1,6 +1,8 @@
 use ratatui::prelude::*;
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{
+    Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -41,6 +43,7 @@ pub struct ListRenderParams<'a, T: ViewItem> {
     pub render_row: RowRenderer<T>,
     pub theme: &'a Theme,
     pub symbols: &'a SymbolSet,
+    pub horizontal_scrolling: bool,
 }
 
 /// One column's sizing inputs for the responsive compaction-ladder decision
@@ -163,7 +166,7 @@ pub fn render_list_view<T: ViewItem>(
     params: &mut ListRenderParams<T>,
 ) {
     let width = area.width as usize;
-    let compact = width < 120;
+    let horizontal_scrolling = params.horizontal_scrolling;
     let columns = params.columns;
     let state = &mut *params.state;
     let display_indices = state.display_indices().to_vec();
@@ -171,7 +174,11 @@ pub fn render_list_view<T: ViewItem>(
     let symbols = params.symbols;
 
     // Determine which columns are visible at this width
-    let visible_col_indices = visible_column_indices(columns, area.width);
+    let visible_col_indices = if horizontal_scrolling {
+        (0..columns.len()).collect()
+    } else {
+        visible_column_indices(columns, area.width)
+    };
 
     let visible_columns: Vec<&ColumnDef<T>> =
         visible_col_indices.iter().map(|&i| &columns[i]).collect();
@@ -187,7 +194,22 @@ pub fn render_list_view<T: ViewItem>(
     // Worktrees Branch column) stretches by name, so a preceding fixed
     // indicator such as Branches Up does not change which column grows.
     let highlight_width = symbols.cursor_prefix.len() as u16 + 1;
-    let table_width = area.width.saturating_sub(2);
+    let wide_data_width: u32 = visible_columns
+        .iter()
+        .map(|col| col.wide_width.unwrap_or(col.min_width) as u32)
+        .sum();
+    let minimum_full_width =
+        2u32 + highlight_width as u32 + 3 + wide_data_width + visible_columns.len() as u32;
+    let logical_width = if horizontal_scrolling {
+        (area.width as u32)
+            .max(120)
+            .max(minimum_full_width)
+            .min(u16::MAX as u32) as u16
+    } else {
+        area.width
+    };
+    let compact = !horizontal_scrolling && width < 120;
+    let table_width = logical_width.saturating_sub(2);
     let [_highlight_area, columns_area] =
         Layout::horizontal([Constraint::Length(highlight_width), Constraint::Fill(0)])
             .areas(Rect::new(0, 0, table_width, 1));
@@ -228,7 +250,11 @@ pub fn render_list_view<T: ViewItem>(
         })
         .collect();
     let available = columns_area.width as u32;
-    let level = resolve_ladder_level(&ladder_columns, area.width, available);
+    let level = if horizontal_scrolling {
+        0
+    } else {
+        resolve_ladder_level(&ladder_columns, area.width, available)
+    };
 
     let mut widths: Vec<Constraint> = vec![Constraint::Length(3)]; // checkbox
     for (col, &min_width) in visible_columns.iter().zip(&effective_min_widths) {
@@ -282,14 +308,25 @@ pub fn render_list_view<T: ViewItem>(
     let ctx = CellContext {
         theme,
         symbols,
-        area_width: area.width,
+        area_width: logical_width,
         compact,
         data_col_widths,
         first_col_width,
     };
 
+    let viewport_width = area.width.saturating_sub(2);
+    let logical_viewport_width = logical_width.saturating_sub(2);
+    let max_horizontal_offset = if horizontal_scrolling {
+        logical_viewport_width.saturating_sub(viewport_width) as usize
+    } else {
+        0
+    };
+    state.set_horizontal_scroll_bounds(max_horizontal_offset);
+    let overflow = max_horizontal_offset > 0;
+
     // Build rows from display indices
     if display_indices.is_empty() && state.loading {
+        state.header_columns.clear();
         let tab_title = tab_bar_line(params.active_view, theme);
         let block = Block::default()
             .title(tab_title)
@@ -352,36 +389,13 @@ pub fn render_list_view<T: ViewItem>(
         .title_top(Line::from(format!(" v{VERSION} ")).right_aligned())
         .borders(Borders::ALL);
 
-    // Store header column positions for mouse click sorting
-    {
-        let x = area.x + 1 + highlight_width; // +1 for left border
-
-        // Build sort column map: checkbox=skip, then visible columns -> sort indices
-        let mut sort_col_map: Vec<Option<usize>> = vec![None]; // checkbox
-        for &col_idx in &visible_col_indices {
-            if columns[col_idx].compare.is_some() {
-                sort_col_map.push(Some(col_idx));
-            } else {
-                sort_col_map.push(None);
-            }
-        }
-
-        // `resolved` (the per-column rects) was computed above when building ctx.
-        let mut col_positions: Vec<(u16, usize)> = Vec::new();
-        for (i, rect) in resolved.iter().enumerate() {
-            if let Some(&Some(sort_idx)) = sort_col_map.get(i) {
-                col_positions.push((x + rect.x, sort_idx));
-            }
-        }
-
-        state.header_columns = col_positions;
-    }
-
     let highlight_sym = format!("{} ", symbols.cursor_prefix);
 
-    // Render
+    // Render the border on the real viewport. When horizontal scrolling is
+    // needed, render the table into a full-width buffer and copy the visible
+    // slice into the viewport inside this border.
     let inner_area = block.inner(area);
-    frame.render_widget(block, area);
+    frame.render_widget(block.clone(), area);
 
     let table = Table::new(rows, widths)
         .header(header)
@@ -389,13 +403,115 @@ pub fn render_list_view<T: ViewItem>(
         .highlight_symbol(highlight_sym)
         .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
 
-    frame.render_stateful_widget(table, inner_area, state.table_state_mut());
+    let reserve_scrollbar = overflow && inner_area.height >= 2 && inner_area.width > 0;
+    let table_height = inner_area
+        .height
+        .saturating_sub(u16::from(reserve_scrollbar));
+
+    if overflow {
+        let virtual_area = Rect::new(0, 0, logical_width, area.height);
+        let virtual_inner = block.inner(virtual_area);
+        let virtual_table_area = Rect::new(
+            virtual_inner.x,
+            virtual_inner.y,
+            virtual_inner.width,
+            table_height,
+        );
+        let mut virtual_buffer = ratatui::buffer::Buffer::empty(virtual_area);
+        ratatui::widgets::StatefulWidget::render(
+            table,
+            virtual_table_area,
+            &mut virtual_buffer,
+            state.table_state_mut(),
+        );
+
+        let source_x = virtual_inner
+            .x
+            .saturating_add(state.horizontal_offset().min(u16::MAX as usize) as u16);
+        for row in 0..table_height {
+            let source_y = virtual_table_area.y + row;
+            let target_y = inner_area.y + row;
+            for column in 0..inner_area.width {
+                let from_x = source_x + column;
+                let to_x = inner_area.x + column;
+                frame
+                    .buffer_mut()
+                    .cell_mut((to_x, target_y))
+                    .expect("list viewport cell is in the frame")
+                    .clone_from(
+                        virtual_buffer
+                            .cell((from_x, source_y))
+                            .expect("scrolled table cell is in its virtual buffer"),
+                    );
+            }
+        }
+
+        if reserve_scrollbar {
+            let scrollbar_area = Rect::new(
+                inner_area.x,
+                inner_area.y + inner_area.height - 1,
+                inner_area.width,
+                1,
+            );
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
+                .track_symbol(Some("─"))
+                .thumb_symbol("━")
+                .begin_symbol(Some("◂"))
+                .end_symbol(Some("▸"))
+                .track_style(theme.dim)
+                .thumb_style(theme.title);
+            let mut scrollbar_state = ScrollbarState::new(logical_viewport_width as usize)
+                .position(state.horizontal_offset())
+                .viewport_content_length(inner_area.width as usize);
+            frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+        }
+    } else {
+        frame.render_stateful_widget(
+            table,
+            Rect::new(inner_area.x, inner_area.y, inner_area.width, table_height),
+            state.table_state_mut(),
+        );
+    }
+
+    // Keep exact bounded sort hit regions. Clipping the original cell ranges
+    // against the rendered viewport makes sorting work after a horizontal
+    // scroll even when non-sortable or hidden columns precede a header.
+    let virtual_inner = block.inner(Rect::new(0, 0, logical_width, area.height));
+    let source_view_start = virtual_inner
+        .x
+        .saturating_add(state.horizontal_offset().min(u16::MAX as usize) as u16);
+    let source_view_end = source_view_start.saturating_add(inner_area.width);
+    let mut sort_col_map: Vec<Option<usize>> = vec![None]; // checkbox
+    sort_col_map.extend(
+        visible_col_indices
+            .iter()
+            .map(|&col_idx| columns[col_idx].compare.is_some().then_some(col_idx)),
+    );
+    state.header_columns = resolved
+        .iter()
+        .enumerate()
+        .filter_map(|(i, rect)| {
+            let sort_idx = sort_col_map.get(i).copied().flatten()?;
+            let source_start = virtual_inner.x.saturating_add(rect.x);
+            let source_end = source_start.saturating_add(rect.width);
+            let clipped_start = source_start.max(source_view_start);
+            let clipped_end = source_end.min(source_view_end);
+            (clipped_start < clipped_end).then(|| {
+                let screen_start = inner_area.x + clipped_start - source_view_start;
+                let screen_end = screen_start + clipped_end - clipped_start;
+                (screen_start, screen_end, sort_idx)
+            })
+        })
+        .collect();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::view::branches::BranchesViewDef;
+    use crate::types::{BranchInfo, MergeStatus, TrackingStatus};
+    use chrono::Utc;
+    use ratatui::backend::TestBackend;
 
     fn col(
         key: &'static str,
@@ -505,6 +621,189 @@ mod tests {
         let columns = branches_like_columns();
         let level = resolve_ladder_level(&columns, 100, 50);
         assert_eq!(level, FULLY_COMPACT_LEVEL);
+    }
+
+    fn scroll_test_branch(name: &str) -> BranchInfo {
+        BranchInfo {
+            name: name.to_string(),
+            is_current: false,
+            is_base: false,
+            tracking: TrackingStatus::Local,
+            ahead: None,
+            behind: None,
+            last_commit_date: Utc::now(),
+            merge_status: MergeStatus::Unmerged,
+            base_branch: "main".into(),
+            merge_base_commit: None,
+            pr: None,
+            squash_confidence: None,
+        }
+    }
+
+    fn scroll_test_columns() -> Vec<ColumnDef<BranchInfo>> {
+        vec![
+            ColumnDef {
+                key: "name",
+                name: "Name",
+                show_header: true,
+                min_width: 12,
+                content_min_width: None,
+                wide_width: None,
+                hide_below_width: None,
+                compare: Some(|a, b| a.name.cmp(&b.name)),
+            },
+            ColumnDef {
+                key: "extra",
+                name: "Extra",
+                show_header: true,
+                min_width: 10,
+                content_min_width: None,
+                wide_width: Some(12),
+                hide_below_width: Some(80),
+                compare: None,
+            },
+            ColumnDef {
+                key: "late",
+                name: "Late",
+                show_header: true,
+                min_width: 10,
+                content_min_width: None,
+                wide_width: Some(12),
+                hide_below_width: Some(100),
+                compare: Some(|a, b| a.name.cmp(&b.name)),
+            },
+        ]
+    }
+
+    fn scroll_test_row(
+        _item: &BranchInfo,
+        _raw_index: usize,
+        _is_selected: bool,
+        _is_cursor_row: bool,
+        visible_columns: &[usize],
+        _context: &CellContext,
+    ) -> Vec<Line<'static>> {
+        visible_columns
+            .iter()
+            .map(|index| Line::from(format!("value-{index}")))
+            .collect()
+    }
+
+    fn scroll_test_output(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn horizontal_scrolling_reveals_all_columns_and_preserves_row_styles() {
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let columns = scroll_test_columns();
+        let mut state = ListState::new(vec![
+            scroll_test_branch("cursor"),
+            scroll_test_branch("selected"),
+        ]);
+        state.selected_mut()[1] = true;
+        let mut terminal = Terminal::new(TestBackend::new(48, 8)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let mut params = ListRenderParams {
+                    state: &mut state,
+                    columns: &columns,
+                    active_view: ViewId::Branches,
+                    render_row: scroll_test_row,
+                    theme: &theme,
+                    symbols: &symbols,
+                    horizontal_scrolling: true,
+                };
+                let area = frame.area();
+                render_list_view(frame, area, &mut params);
+            })
+            .unwrap();
+        assert!(state.max_horizontal_offset() > 0);
+
+        let max_offset = state.max_horizontal_offset();
+        state.set_horizontal_scroll_bounds(max_offset);
+        for _ in 0..max_offset {
+            state.scroll_right();
+        }
+        terminal
+            .draw(|frame| {
+                let mut params = ListRenderParams {
+                    state: &mut state,
+                    columns: &columns,
+                    active_view: ViewId::Branches,
+                    render_row: scroll_test_row,
+                    theme: &theme,
+                    symbols: &symbols,
+                    horizontal_scrolling: true,
+                };
+                let area = frame.area();
+                render_list_view(frame, area, &mut params);
+            })
+            .unwrap();
+
+        let output = scroll_test_output(&terminal);
+        assert!(
+            output.contains("Late"),
+            "right header was not revealed: {output}"
+        );
+        assert!(
+            output.contains("value-2"),
+            "right cell was not revealed: {output}"
+        );
+        assert!(
+            output.contains('━'),
+            "horizontal scrollbar is missing: {output}"
+        );
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|cell| theme.checked_row.bg.is_some_and(|bg| cell.bg == bg)),
+            "scrolling should preserve the checked-row styling"
+        );
+    }
+
+    #[test]
+    fn horizontal_scrolling_disabled_keeps_responsive_column_hiding() {
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let columns = scroll_test_columns();
+        let mut state = ListState::new(vec![scroll_test_branch("feature/x")]);
+        let mut terminal = Terminal::new(TestBackend::new(48, 8)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let mut params = ListRenderParams {
+                    state: &mut state,
+                    columns: &columns,
+                    active_view: ViewId::Branches,
+                    render_row: scroll_test_row,
+                    theme: &theme,
+                    symbols: &symbols,
+                    horizontal_scrolling: false,
+                };
+                let area = frame.area();
+                render_list_view(frame, area, &mut params);
+            })
+            .unwrap();
+
+        let output = scroll_test_output(&terminal);
+        assert!(
+            !output.contains("Extra"),
+            "hidden column appeared: {output}"
+        );
+        assert!(!output.contains("Late"), "hidden column appeared: {output}");
+        assert_eq!(state.max_horizontal_offset(), 0);
     }
 
     #[test]
