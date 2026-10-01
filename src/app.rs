@@ -4497,7 +4497,7 @@ impl App {
         if origin != ViewId::Graph && !graph_affected_views(action).contains(&origin) {
             self.refresh_view_data(origin);
         }
-        if origin == ViewId::Graph {
+        if action_affects_graph(action) && self.graph.snapshot().is_some() {
             self.refresh_view_data(ViewId::Graph);
         }
     }
@@ -4964,6 +4964,42 @@ fn graph_affected_views(action: BranchAction) -> &'static [ViewId] {
         }
         BranchAction::ViewRemotePR => &[],
     }
+}
+
+/// Whether a completed confirmed action can change the refs or metadata shown
+/// by Graph. Remote-only writes are excluded because their local remote-tracking
+/// refs stay unchanged until a fetch updates them.
+fn action_affects_graph(action: BranchAction) -> bool {
+    matches!(
+        action,
+        BranchAction::DeleteLocal
+            | BranchAction::DeleteLocalForce
+            | BranchAction::DeleteLocalAndRemote
+            | BranchAction::Checkout
+            | BranchAction::Fetch
+            | BranchAction::FetchPrune
+            | BranchAction::FastForward
+            | BranchAction::Merge
+            | BranchAction::SquashMerge
+            | BranchAction::Rebase
+            | BranchAction::Worktree
+            | BranchAction::Pull
+            | BranchAction::DeleteTag
+            | BranchAction::DeleteTagAndRemote
+            | BranchAction::DeleteRemoteAndLocal
+            | BranchAction::CheckoutRemote
+            | BranchAction::FetchRemote
+            | BranchAction::PullRemote
+            | BranchAction::MergeRemoteIntoCurrent
+            | BranchAction::CherryPickRemote
+            | BranchAction::WorktreeRemove
+            | BranchAction::WorktreeForceRemove
+            | BranchAction::WorktreeRemoveAndDeleteBranch
+            | BranchAction::WorktreeRemoveAndDeleteBranchRemote
+            | BranchAction::DeleteBranchAndRemoveWorktree
+            | BranchAction::DeleteBranchAndRemoveWorktreeForce
+            | BranchAction::DeleteBranchAndRemoveWorktreeRemote
+    )
 }
 
 /// Get branch prefix style: extract prefix before first '/' and look up color.
@@ -5460,6 +5496,45 @@ mod tests {
         app.active_view = ViewId::Graph;
         app.graph.apply_result(Ok(graph_snapshot(refs)));
         app
+    }
+
+    fn action_refresh_app(repo_path: &std::path::Path) -> App {
+        run_git(repo_path, &["init", "-b", "main"]);
+        run_git(repo_path, &["config", "user.email", "test@example.com"]);
+        run_git(repo_path, &["config", "user.name", "Test User"]);
+        std::fs::write(repo_path.join("README.md"), "base\n").unwrap();
+        run_git(repo_path, &["add", "README.md"]);
+        run_git(repo_path, &["commit", "-m", "initial"]);
+        run_git(repo_path, &["branch", "feature/refresh"]);
+
+        App::new(repo_path.to_path_buf(), "main".into(), Config::default())
+    }
+
+    fn complete_action_job_for_test(app: &mut App, action: BranchAction, origin: ViewId) {
+        let (op_tx, op_rx) = mpsc::channel();
+        let (_progress_tx, progress_rx) = mpsc::channel();
+        app.job_queue.inject_running_for_test(
+            git_branch_manager::job_queue::ActionJob {
+                action,
+                targets: vec!["feature/refresh".into()],
+                remote: None,
+                return_view: origin,
+                dispatch_path: None,
+            },
+            op_rx,
+            progress_rx,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        op_tx
+            .send(vec![OperationResult::success(
+                "feature/refresh",
+                action,
+                "Completed feature/refresh",
+            )])
+            .unwrap();
+
+        app.drain_channels();
     }
 
     fn info_modal_items(app: &App) -> &[MenuItem] {
@@ -7083,6 +7158,57 @@ mod tests {
             graph_affected_views(BranchAction::FetchRemote),
             &[ViewId::Branches, ViewId::Remotes, ViewId::Tags]
         );
+    }
+
+    #[test]
+    fn relevant_action_from_another_view_refreshes_loaded_graph_without_navigating() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = action_refresh_app(tmpdir.path());
+        app.active_view = ViewId::Branches;
+        app.graph.apply_result(Ok(graph_snapshot(vec![graph_ref(
+            "feature/refresh",
+            graph::GraphRefKind::LocalBranch,
+        )])));
+        let generation = app.graph_generation;
+
+        complete_action_job_for_test(&mut app, BranchAction::Checkout, ViewId::Branches);
+
+        assert!(app.graph.is_loading());
+        assert_eq!(app.graph_generation, generation + 1);
+        assert_eq!(app.active_view, ViewId::Branches);
+    }
+
+    #[test]
+    fn remote_only_action_does_not_refresh_graph() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = action_refresh_app(tmpdir.path());
+        app.active_view = ViewId::Branches;
+        app.graph.apply_result(Ok(graph_snapshot(vec![graph_ref(
+            "feature/refresh",
+            graph::GraphRefKind::LocalBranch,
+        )])));
+        let generation = app.graph_generation;
+
+        complete_action_job_for_test(&mut app, BranchAction::Push, ViewId::Branches);
+
+        assert!(!app.graph.is_loading());
+        assert_eq!(app.graph_generation, generation);
+        assert_eq!(app.active_view, ViewId::Branches);
+        assert!(app.graph.snapshot().is_some());
+    }
+
+    #[test]
+    fn relevant_action_does_not_load_graph_before_a_snapshot_exists() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = action_refresh_app(tmpdir.path());
+        app.active_view = ViewId::Branches;
+
+        complete_action_job_for_test(&mut app, BranchAction::Checkout, ViewId::Branches);
+
+        assert!(!app.graph.is_loading());
+        assert!(app.graph.snapshot().is_none());
+        assert_eq!(app.graph_generation, 0);
+        assert_eq!(app.active_view, ViewId::Branches);
     }
 
     #[test]
