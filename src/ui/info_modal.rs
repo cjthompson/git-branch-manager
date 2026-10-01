@@ -766,7 +766,8 @@ mod tests {
             changed_file("modified-b", ChangedFileKind::Modified),
         ]);
 
-        let changed_fields: Vec<(&str, &str)> = worktree_fields(&worktree)
+        let fields = worktree_fields(&worktree);
+        let changed_fields: Vec<(&str, &str)> = fields
             .iter()
             .filter(|field| ["staged", "modified", "untracked", ""].contains(&field.label))
             .map(|field| (field.label, field.value.as_str()))
