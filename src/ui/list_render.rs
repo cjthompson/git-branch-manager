@@ -817,7 +817,7 @@ mod tests {
     fn age_is_hidden_only_after_the_final_compact_width_rung() {
         let columns = BranchesViewDef.columns();
 
-        assert_eq!(visible_column_indices(&columns, 60), vec![0, 2, 3, 4, 5]);
-        assert_eq!(visible_column_indices(&columns, 59), vec![0, 2, 3, 5]);
+        assert_eq!(visible_column_indices(&columns, 60), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(visible_column_indices(&columns, 59), vec![0, 1, 2, 3, 5]);
     }
 }
