@@ -4977,6 +4977,18 @@ pub(crate) fn render_branch_row(
     for &col_idx in visible_cols {
         match col_idx {
             0 => {
+                let (text, style) = match &item.tracking {
+                    TrackingStatus::Tracked { gone: false, .. } => {
+                        (symbols.tracking_link.to_string(), theme.secondary_text)
+                    }
+                    TrackingStatus::Tracked { gone: true, .. } => {
+                        ("gone".to_string(), theme.secondary_text)
+                    }
+                    TrackingStatus::Local => ("-".to_string(), theme.secondary_text),
+                };
+                lines.push(Line::from(Span::styled(text, style)));
+            }
+            1 => {
                 // Branch name
                 let style = if item.is_current {
                     theme.current_branch
@@ -4999,19 +5011,6 @@ pub(crate) fn render_branch_row(
                 };
                 let name = format!("{prefix}{}{suffix}", item.name);
                 lines.push(Line::from(Span::styled(name, style)));
-            }
-            1 => {
-                let (text, style) = match &item.tracking {
-                    TrackingStatus::Tracked { remote_ref, gone } => {
-                        if *gone {
-                            ("gone".to_string(), theme.secondary_text)
-                        } else {
-                            (remote_ref.clone(), theme.secondary_text)
-                        }
-                    }
-                    TrackingStatus::Local => ("local".to_string(), theme.secondary_text),
-                };
-                lines.push(Line::from(Span::styled(text, style)));
             }
             2 => {
                 lines.push(ahead_behind_line(
@@ -5487,7 +5486,7 @@ mod tests {
     }
 
     #[test]
-    fn branch_row_renders_base_info_and_full_remote_ref() {
+    fn branch_row_renders_up_indicator_before_branch_name() {
         let theme = Theme::dark();
         let symbols = SymbolSet::ascii();
         let ctx = CellContext {
@@ -5495,8 +5494,8 @@ mod tests {
             symbols: &symbols,
             area_width: 120,
             compact: false,
-            data_col_widths: vec![40, 28],
-            first_col_width: 40,
+            data_col_widths: vec![2, 40],
+            first_col_width: 2,
         };
         let item = BranchInfo {
             name: "feature/test".into(),
@@ -5518,8 +5517,38 @@ mod tests {
 
         let rows = render_branch_row(&item, 0, false, false, &[0, 1], &ctx);
 
-        assert_eq!(cell_text(&rows[0]), "feature/test (main - ac13ef04)");
-        assert_eq!(cell_text(&rows[1]), "origin/feature/test");
+        assert_eq!(cell_text(&rows[0]), "<>");
+        assert_eq!(cell_text(&rows[1]), "feature/test (main - ac13ef04)");
+    }
+
+    #[test]
+    fn branch_row_distinguishes_gone_and_local_upstreams() {
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: 120,
+            compact: false,
+            data_col_widths: vec![4, 40],
+            first_col_width: 4,
+        };
+        let gone = branch(
+            "feature/gone",
+            TrackingStatus::Tracked {
+                remote_ref: "origin/feature/gone".into(),
+                gone: true,
+            },
+        );
+        let local = branch("feature/local", TrackingStatus::Local);
+
+        let gone_row = render_branch_row(&gone, 0, false, false, &[0, 1], &ctx);
+        let local_row = render_branch_row(&local, 0, false, false, &[0, 1], &ctx);
+
+        assert_eq!(cell_text(&gone_row[0]), "gone");
+        assert_eq!(cell_text(&local_row[0]), "-");
+        assert_eq!(cell_text(&gone_row[1]), "feature/gone");
+        assert_eq!(cell_text(&local_row[1]), "feature/local");
     }
 
     #[test]

@@ -6913,8 +6913,19 @@ fn dump_branches_basic() {
     );
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.starts_with("base: main"), "got: {s:?}");
-    assert!(s.contains("Branch"), "header missing: {s:?}");
+    let lines: Vec<&str> = s.lines().collect();
+    let header = lines.get(2).expect("table header");
+    assert_eq!(
+        header.trim_start().split_whitespace().next(),
+        Some("Branch")
+    );
+    assert!(!header.contains("Up"), "Up must not have a header: {s:?}");
     assert!(s.contains("main"), "base branch row missing: {s:?}");
+    let base_row = lines.get(3).expect("base branch row");
+    assert!(
+        base_row.find('-').unwrap() < base_row.find("main").unwrap(),
+        "upstream marker should precede branch name: {base_row:?}"
+    );
     assert!(!s.contains('\x1b'), "--color=never must be plain: {s:?}");
 }
 

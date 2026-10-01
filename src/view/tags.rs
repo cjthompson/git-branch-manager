@@ -10,7 +10,9 @@ impl TagsViewDef {
             ColumnDef {
                 key: "name",
                 name: "Name",
+                show_header: true,
                 min_width: 15,
+                content_min_width: None,
                 wide_width: None,
                 hide_below_width: None,
                 compare: Some(|a, b| a.name.cmp(&b.name)),
@@ -18,7 +20,9 @@ impl TagsViewDef {
             ColumnDef {
                 key: "hash",
                 name: "Hash",
+                show_header: true,
                 min_width: 8,
+                content_min_width: None,
                 wide_width: None,
                 hide_below_width: Some(80),
                 compare: Some(|a, b| a.commit_hash.cmp(&b.commit_hash)),
@@ -27,7 +31,9 @@ impl TagsViewDef {
             ColumnDef {
                 key: "message",
                 name: "Message",
+                show_header: true,
                 min_width: 10,
+                content_min_width: None,
                 wide_width: None,
                 hide_below_width: Some(100),
                 compare: Some(|a, b| {

@@ -644,7 +644,9 @@ mod tests {
         ColumnDef::<BranchInfo> {
             key: "name",
             name: "Name",
+            show_header: true,
             min_width: 10,
+            content_min_width: None,
             wide_width: None,
             hide_below_width: None,
             compare: Some(|a, b| a.name.cmp(&b.name)),
@@ -692,7 +694,9 @@ mod tests {
         let age_col = ColumnDef::<BranchInfo> {
             key: "age",
             name: "Age",
+            show_header: true,
             min_width: 5,
+            content_min_width: None,
             wide_width: None,
             hide_below_width: None,
             compare: Some(|a, b| a.last_commit_date.cmp(&b.last_commit_date)),
@@ -943,7 +947,9 @@ mod tests {
         let columns = vec![ColumnDef::<BranchInfo> {
             key: "name",
             name: "Name",
+            show_header: true,
             min_width: 10,
+            content_min_width: None,
             wide_width: None,
             hide_below_width: None,
             compare: Some(|a, b| a.name.cmp(&b.name)),
@@ -962,7 +968,9 @@ mod tests {
         let columns = vec![ColumnDef::<BranchInfo> {
             key: "name",
             name: "Name",
+            show_header: true,
             min_width: 10,
+            content_min_width: None,
             wide_width: None,
             hide_below_width: None,
             compare: Some(|a, b| a.name.cmp(&b.name)),
@@ -983,7 +991,9 @@ mod tests {
         let columns = vec![ColumnDef::<BranchInfo> {
             key: "name",
             name: "Name",
+            show_header: true,
             min_width: 10,
+            content_min_width: None,
             wide_width: None,
             hide_below_width: None,
             compare: Some(|a, b| a.name.cmp(&b.name)),
@@ -999,7 +1009,9 @@ mod tests {
         let columns = vec![ColumnDef::<BranchInfo> {
             key: "name",
             name: "Name",
+            show_header: true,
             min_width: 10,
+            content_min_width: None,
             wide_width: None,
             hide_below_width: None,
             compare: Some(|a, b| a.name.cmp(&b.name)),
@@ -1018,7 +1030,9 @@ mod tests {
             ColumnDef::<BranchInfo> {
                 key: "name",
                 name: "Name",
+                show_header: true,
                 min_width: 10,
+                content_min_width: None,
                 wide_width: None,
                 hide_below_width: None,
                 compare: Some(|a, b| a.name.cmp(&b.name)),
@@ -1026,7 +1040,9 @@ mod tests {
             ColumnDef::<BranchInfo> {
                 key: "unsortable",
                 name: "Unsortable",
+                show_header: true,
                 min_width: 5,
+                content_min_width: None,
                 wide_width: None,
                 hide_below_width: None,
                 compare: None,
@@ -1034,7 +1050,9 @@ mod tests {
             ColumnDef::<BranchInfo> {
                 key: "age",
                 name: "Age",
+                show_header: true,
                 min_width: 5,
+                content_min_width: None,
                 wide_width: None,
                 hide_below_width: None,
                 compare: Some(|a, b| a.last_commit_date.cmp(&b.last_commit_date)),

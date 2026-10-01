@@ -22,7 +22,7 @@ pub struct CellContext<'a> {
     /// Resolved render widths for visible data columns, in the same order as
     /// the `visible_col_indices` passed to row renderers.
     pub data_col_widths: Vec<u16>,
-    /// Resolved render width of the first (stretchy) data column, in cells.
+    /// Resolved render width of the first data column, in cells.
     /// Used by views that fit content to the first column (e.g. worktree paths).
     pub first_col_width: u16,
 }
@@ -151,6 +151,7 @@ pub fn render_list_view<T: ViewItem>(
     let compact = width < 120;
     let columns = params.columns;
     let state = &mut *params.state;
+    let display_indices = state.display_indices().to_vec();
     let theme = params.theme;
     let symbols = params.symbols;
 
@@ -175,22 +176,19 @@ pub fn render_list_view<T: ViewItem>(
         "\u{25bc}"
     };
 
-    // Build column widths: checkbox + visible columns.
-    // Branches/remotes/tags keep the original shape: first data column stretches,
-    // later columns are fixed. Worktrees also lets Branch stretch because Path
-    // would otherwise take all spare width and squeeze branch names.
+    // Build column widths: checkbox + visible columns. Branch (and the
+    // Worktrees Branch column) stretches by name, so a preceding fixed
+    // indicator such as Branches Up does not change which column grows.
     let highlight_width = symbols.cursor_prefix.len() as u16 + 1;
     let table_width = area.width.saturating_sub(2);
     let [_highlight_area, columns_area] =
         Layout::horizontal([Constraint::Length(highlight_width), Constraint::Fill(0)])
             .areas(Rect::new(0, 0, table_width, 1));
 
-    // The stretchy (first, growable) column, identified by name rather than
-    // position: "Branch" (Branches' first column; also Worktrees' second
-    // stretchy column), "Name" (Remotes'/Tags' first column), and "Path"
-    // (Worktrees' first column). Matching by name — not column index — means
-    // moving another column ahead of the stretchy column won't silently
-    // change which column claims the priority width.
+    // The stretchy column is identified by name rather than position:
+    // "Branch" (Branches and Worktrees), "Name" (Remotes/Tags), and "Path"
+    // (Worktrees). Matching by name means a fixed indicator can move ahead of
+    // Branch without changing which column claims the priority width.
     let is_stretchy =
         |col: &ColumnDef<T>| -> bool { matches!(col.name, "Branch" | "Name" | "Path") };
 
@@ -202,11 +200,22 @@ pub fn render_list_view<T: ViewItem>(
     // as the fixed columns combined. See `resolve_ladder_level` /
     // `demoted_at_level` above for the algorithm and the rationale for using
     // direct arithmetic instead of resolving a trial `Layout`.
+    let effective_min_widths: Vec<u16> = visible_columns
+        .iter()
+        .map(|col| {
+            display_indices
+                .iter()
+                .map(|&raw_idx| col.min_width_for(&state.items()[raw_idx]))
+                .max()
+                .unwrap_or(col.min_width)
+        })
+        .collect();
     let ladder_columns: Vec<LadderColumn> = visible_columns
         .iter()
-        .map(|col| LadderColumn {
+        .zip(&effective_min_widths)
+        .map(|(col, &min_width)| LadderColumn {
             key: col.key,
-            min_width: col.min_width,
+            min_width,
             wide_width: col.wide_width,
             is_stretchy: is_stretchy(col),
         })
@@ -215,11 +224,11 @@ pub fn render_list_view<T: ViewItem>(
     let level = resolve_ladder_level(&ladder_columns, area.width, available);
 
     let mut widths: Vec<Constraint> = vec![Constraint::Length(3)]; // checkbox
-    for col in visible_columns.iter() {
+    for (col, &min_width) in visible_columns.iter().zip(&effective_min_widths) {
         let col_width = if demoted_at_level(col.key, level) {
-            col.min_width
+            min_width
         } else {
-            col.wide_width.unwrap_or(col.min_width)
+            col.wide_width.unwrap_or(min_width)
         };
         if is_stretchy(col) {
             widths.push(Constraint::Min(col_width));
@@ -242,7 +251,9 @@ pub fn render_list_view<T: ViewItem>(
 
     for (pos, &col_idx) in visible_col_indices.iter().enumerate() {
         let col = &columns[col_idx];
-        let label = if state.sort_column() == Some(col_idx) && col.compare.is_some() {
+        let label = if !col.show_header {
+            String::new()
+        } else if state.sort_column() == Some(col_idx) && col.compare.is_some() {
             format!("{}{}", col.name, sort_arrow)
         } else {
             col.name.to_string()
@@ -271,8 +282,6 @@ pub fn render_list_view<T: ViewItem>(
     };
 
     // Build rows from display indices
-    let display_indices: Vec<usize> = state.display_indices().to_vec();
-
     if display_indices.is_empty() && state.loading {
         let tab_title = tab_bar_line(params.active_view, theme);
         let block = Block::default()
@@ -395,11 +404,12 @@ mod tests {
     }
 
     // A Branches-shaped column set mirroring `view::branches::BranchesViewDef`:
-    // Branch (stretchy) + Up (no compact form) + A/B + PR + Age + Merge.
+    // Up (compact unless a gone upstream needs four cells), Branch (stretchy),
+    // A/B, PR, Age, and Merge.
     fn branches_like_columns() -> Vec<LadderColumn> {
         vec![
+            col("remote", 2, None, false),          // Up indicator
             col("name", 15, None, true),            // Branch (stretchy)
-            col("remote", 4, None, false),          // Up (no wide form)
             col("ahead_behind", 3, Some(8), false), // A/B
             col("pr", 2, Some(9), false),           // PR
             col("age", 5, Some(14), false),         // Age

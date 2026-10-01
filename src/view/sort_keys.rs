@@ -26,6 +26,10 @@ fn legacy_index(key: &str) -> Option<usize> {
     }
 }
 
+/// Branches' old column order, before Up moved ahead of Branch. Preserve the
+/// meaning of legacy sort keys independently of the current display order.
+const LEGACY_BRANCH_KEYS: [&str; 6] = ["name", "remote", "ahead_behind", "pr", "age", "merge"];
+
 /// If a config was written before per-view sort fields existed (only has the
 /// legacy top-level `sort_column`/`sort_asc`), populate Branches' and Remotes'
 /// per-view fields from it (those were the only two views the legacy fields
@@ -43,9 +47,8 @@ pub fn migrate_legacy_config(config: &mut Config) {
         return;
     };
 
-    let branch_cols = crate::view::branches::BranchesViewDef.columns();
     let remote_cols = crate::view::remotes::RemotesViewDef.columns();
-    config.sort_column_branches = key_for_index(&branch_cols, idx).map(|s| s.to_string());
+    config.sort_column_branches = LEGACY_BRANCH_KEYS.get(idx).map(|key| (*key).to_string());
     config.sort_column_remotes = key_for_index(&remote_cols, idx).map(|s| s.to_string());
     config.sort_asc_branches = config.sort_asc;
     config.sort_asc_remotes = config.sort_asc;
@@ -84,8 +87,8 @@ mod tests {
     #[test]
     fn index_for_key_branches() {
         let cols = crate::view::branches::BranchesViewDef.columns();
-        assert_eq!(index_for_key(&cols, "name"), Some(0));
-        assert_eq!(index_for_key(&cols, "remote"), Some(1));
+        assert_eq!(index_for_key(&cols, "remote"), Some(0));
+        assert_eq!(index_for_key(&cols, "name"), Some(1));
         assert_eq!(index_for_key(&cols, "ahead_behind"), Some(2));
         assert_eq!(index_for_key(&cols, "pr"), Some(3));
         assert_eq!(index_for_key(&cols, "age"), Some(4));
@@ -125,8 +128,8 @@ mod tests {
     #[test]
     fn key_for_index_branches() {
         let cols = crate::view::branches::BranchesViewDef.columns();
-        assert_eq!(key_for_index(&cols, 0), Some("name"));
-        assert_eq!(key_for_index(&cols, 1), Some("remote"));
+        assert_eq!(key_for_index(&cols, 0), Some("remote"));
+        assert_eq!(key_for_index(&cols, 1), Some("name"));
         assert_eq!(key_for_index(&cols, 2), Some("ahead_behind"));
         assert_eq!(key_for_index(&cols, 3), Some("pr"));
         assert_eq!(key_for_index(&cols, 4), Some("age"));
@@ -157,6 +160,36 @@ mod tests {
         assert_eq!(config.sort_asc_remotes, Some(false));
         assert_eq!(config.sort_column_tags, None);
         assert_eq!(config.sort_column_worktrees, None);
+    }
+
+    #[test]
+    fn migrate_legacy_config_keeps_branch_and_up_sort_meanings() {
+        for (legacy_key, expected_branch_key, expected_remote_key) in [
+            ("name", "name", "name"),
+            ("remote", "remote", "local"),
+            ("ahead", "ahead_behind", "ahead_behind"),
+            ("pr", "pr", "pr"),
+            ("age", "age", "age"),
+            ("status", "merge", "merge"),
+        ] {
+            let mut config = Config {
+                sort_column: Some(legacy_key.into()),
+                ..Default::default()
+            };
+
+            migrate_legacy_config(&mut config);
+
+            assert_eq!(
+                config.sort_column_branches.as_deref(),
+                Some(expected_branch_key),
+                "legacy Branches sort {legacy_key:?}"
+            );
+            assert_eq!(
+                config.sort_column_remotes.as_deref(),
+                Some(expected_remote_key),
+                "legacy Remotes sort {legacy_key:?}"
+            );
+        }
     }
 
     #[test]
@@ -193,10 +226,11 @@ mod tests {
         assert_eq!(cycle[0], (None, true));
 
         // Then alternating asc/desc for each sortable column
-        // Branches: name, remote, ahead_behind, pr, age, merge (all sortable)
+        // Branches: remote (Up), name (Branch), ahead_behind, pr, age, merge.
         assert!(!cycle.is_empty());
-        assert!(cycle.iter().any(|&(col, asc)| col == Some(0) && asc)); // name asc
-        assert!(cycle.iter().any(|&(col, asc)| col == Some(0) && !asc)); // name desc
+        assert!(cycle.iter().any(|&(col, asc)| col == Some(0) && asc)); // Up asc
+        assert!(cycle.iter().any(|&(col, asc)| col == Some(0) && !asc)); // Up desc
+        assert!(cycle.iter().any(|&(col, asc)| col == Some(1) && asc)); // Branch asc
     }
 
     #[test]

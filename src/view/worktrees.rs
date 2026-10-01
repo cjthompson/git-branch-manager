@@ -13,7 +13,9 @@ impl WorktreesViewDef {
                 // (see the Worktrees Min-constraint handling in ui/list_render.rs).
                 key: "path",
                 name: "Path",
+                show_header: true,
                 min_width: 25,
+                content_min_width: None,
                 wide_width: Some(40),
                 hide_below_width: None,
                 compare: Some(|a, b| a.path.cmp(&b.path)),
@@ -21,7 +23,9 @@ impl WorktreesViewDef {
             ColumnDef {
                 key: "branch",
                 name: "Branch",
+                show_header: true,
                 min_width: 20,
+                content_min_width: None,
                 wide_width: Some(32),
                 hide_below_width: None,
                 compare: Some(|a, b| a.branch.cmp(&b.branch)),

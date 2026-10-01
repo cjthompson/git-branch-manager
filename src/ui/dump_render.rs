@@ -116,10 +116,14 @@ pub fn render_table<T: ViewItem>(
     let mut widths: Vec<usize> = columns
         .iter()
         .map(|c| {
-            c.name
-                .chars()
-                .count()
+            let header_width = if c.show_header {
+                c.name.chars().count()
+            } else {
+                0
+            };
+            header_width
                 .max(c.wide_width.unwrap_or(c.min_width) as usize)
+                .max(c.min_width_for_items(rows) as usize)
         })
         .collect();
     for lines in &rendered {
@@ -143,7 +147,11 @@ pub fn render_table<T: ViewItem>(
 
     let header_fields: Vec<String> = all_cols
         .iter()
-        .map(|&i| pad_plain(columns[i].name, widths[i], header_right_align(i)))
+        .map(|&i| {
+            let column = &columns[i];
+            let label = if column.show_header { column.name } else { "" };
+            pad_plain(label, widths[i], header_right_align(i))
+        })
         .collect();
     out.push_str(header_fields.join("  ").trim_end());
     out.push('\n');
@@ -280,7 +288,9 @@ mod tests {
             ColumnDef {
                 key: "name",
                 name: "Name",
+                show_header: true,
                 min_width: 6,
+                content_min_width: None,
                 wide_width: None,
                 hide_below_width: None,
                 compare: None,
@@ -288,7 +298,9 @@ mod tests {
             ColumnDef {
                 key: "age",
                 name: "Age",
+                show_header: true,
                 min_width: 5,
+                content_min_width: None,
                 wide_width: None,
                 hide_below_width: None,
                 compare: None,
@@ -344,6 +356,38 @@ mod tests {
         assert!(out.contains("Name"));
         assert!(out.contains("main"));
         assert!(!out.contains('\x1b'), "Never must not emit ANSI: {out:?}");
+    }
+
+    #[test]
+    fn render_table_keeps_hidden_header_column_data() {
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let ctx = CellContext {
+            theme: &theme,
+            symbols: &symbols,
+            area_width: DUMP_AREA_WIDTH,
+            compact: false,
+            data_col_widths: Vec::new(),
+            first_col_width: DUMP_AREA_WIDTH,
+        };
+        let rows = vec![Dummy {
+            name: "main".into(),
+            pinned: true,
+        }];
+        let mut cols = dummy_cols();
+        cols[0].name = "Up";
+        cols[0].show_header = false;
+
+        let out = render_table(None, &rows, &cols, dummy_row, &ctx, ColorChoice::Never);
+        let header = out.lines().next().expect("header line");
+        let data = out.lines().nth(1).expect("row line");
+
+        assert!(
+            !header.contains("Up"),
+            "hidden header should be blank: {out:?}"
+        );
+        assert!(header.contains("Age"), "other headers remain: {out:?}");
+        assert!(data.contains("main"), "hidden column data remains: {out:?}");
     }
 
     #[test]

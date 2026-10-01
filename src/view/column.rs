@@ -7,13 +7,36 @@ use std::cmp::Ordering;
 pub struct ColumnDef<T: ViewItem> {
     pub key: &'static str,
     pub name: &'static str,
+    /// Whether the column's name should appear in the table header.
+    pub show_header: bool,
     pub min_width: u16,
+    /// Optional row-specific minimum width, widened to the largest value in
+    /// the list. Used when a compact marker is usually enough but some rows
+    /// need a longer value (for example, an upstream marked `gone`).
+    pub content_min_width: Option<fn(&T) -> u16>,
     /// When Some(w), use width w instead of min_width when terminal width >= 70.
     pub wide_width: Option<u16>,
     /// Hide this column when terminal width is below this threshold
     pub hide_below_width: Option<u16>,
     /// Comparison function for sorting. None = column is not sortable.
     pub compare: Option<fn(&T, &T) -> Ordering>,
+}
+
+impl<T: ViewItem> ColumnDef<T> {
+    /// Resolve a column's minimum width for one row.
+    pub fn min_width_for(&self, item: &T) -> u16 {
+        self.content_min_width
+            .map_or(self.min_width, |width| self.min_width.max(width(item)))
+    }
+
+    /// Resolve a column's minimum width for the given rows.
+    pub fn min_width_for_items(&self, items: &[T]) -> u16 {
+        items
+            .iter()
+            .map(|item| self.min_width_for(item))
+            .max()
+            .unwrap_or(self.min_width)
+    }
 }
 
 /// Comparator: sort by last commit date (ascending = oldest first).
@@ -26,7 +49,9 @@ pub fn age_column<T: ViewItem>() -> ColumnDef<T> {
     ColumnDef {
         key: "age",
         name: "Age",
+        show_header: true,
         min_width: 5,
+        content_min_width: None,
         wide_width: Some(14),
         hide_below_width: Some(60),
         compare: Some(age_cmp),
@@ -48,7 +73,9 @@ pub fn ahead_behind_column<T: ViewItem>() -> ColumnDef<T> {
     ColumnDef {
         key: "ahead_behind",
         name: "A/B",
+        show_header: true,
         min_width: 3,
+        content_min_width: None,
         wide_width: Some(8),
         hide_below_width: Some(80),
         compare: Some(ahead_behind_cmp),
@@ -73,7 +100,9 @@ pub fn pr_column<T: ViewItem>() -> ColumnDef<T> {
     ColumnDef {
         key: "pr",
         name: "PR",
+        show_header: true,
         min_width: 2,
+        content_min_width: None,
         wide_width: Some(9),
         hide_below_width: None,
         compare: Some(pr_cmp),
@@ -128,7 +157,9 @@ pub fn merge_status_column<T: ViewItem>(name: &'static str) -> ColumnDef<T> {
     ColumnDef {
         key: "merge",
         name,
+        show_header: true,
         min_width: 5,
+        content_min_width: None,
         wide_width: Some(16),
         hide_below_width: None,
         compare: Some(merge_status_cmp),
@@ -153,9 +184,11 @@ pub fn worktree_status_column() -> ColumnDef<WorktreeInfo> {
     ColumnDef {
         key: "status",
         name: "Status",
+        show_header: true,
         // min_width must be >= "Status".len() (6) so the header itself never
         // gets clipped; the compact single-letter values (c/s/u/t) fit easily.
         min_width: 6,
+        content_min_width: None,
         wide_width: Some(9),
         hide_below_width: Some(80),
         compare: Some(wt_status_cmp),
@@ -210,7 +243,9 @@ mod tests {
         let col = ColumnDef::<BranchInfo> {
             key: "name",
             name: "Name",
+            show_header: true,
             min_width: 10,
+            content_min_width: None,
             wide_width: None,
             hide_below_width: None,
             compare: Some(|a, b| a.name.cmp(&b.name)),
@@ -226,7 +261,9 @@ mod tests {
         let col = ColumnDef::<BranchInfo> {
             key: "age",
             name: "Age",
+            show_header: true,
             min_width: 5,
+            content_min_width: None,
             wide_width: None,
             hide_below_width: Some(60),
             compare: Some(|a, b| a.last_commit_date.cmp(&b.last_commit_date)),
@@ -240,7 +277,9 @@ mod tests {
         let col = ColumnDef::<BranchInfo> {
             key: "remote",
             name: "Remote",
+            show_header: true,
             min_width: 8,
+            content_min_width: None,
             wide_width: None,
             hide_below_width: None,
             compare: None,

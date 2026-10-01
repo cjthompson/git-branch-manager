@@ -10,7 +10,9 @@ impl RemotesViewDef {
             ColumnDef {
                 key: "name",
                 name: "Name",
+                show_header: true,
                 min_width: 15,
+                content_min_width: None,
                 wide_width: None,
                 hide_below_width: None,
                 compare: Some(|a, b| a.short_name.cmp(&b.short_name)),
@@ -18,7 +20,9 @@ impl RemotesViewDef {
             ColumnDef {
                 key: "local",
                 name: "Local",
+                show_header: true,
                 min_width: 6,
+                content_min_width: None,
                 wide_width: None,
                 hide_below_width: Some(80),
                 compare: Some(|a, b| a.has_local.cmp(&b.has_local)),
