@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -30,8 +30,14 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Self {
-        let path = Self::config_path();
-        let legacy = Self::legacy_config_path();
+        Self::load_from(&Self::default_root())
+    }
+
+    /// Load from `<root>/git-branch-manager/config.toml`, falling back to the
+    /// legacy `<root>/git-bm/config.toml`.
+    pub fn load_from(root: &Path) -> Self {
+        let path = Self::config_path(root);
+        let legacy = Self::legacy_config_path(root);
 
         // Try new path first, then legacy path
         let (used_path, content) = match fs::read_to_string(&path) {
@@ -86,7 +92,11 @@ impl Config {
     }
 
     pub fn save(&self) {
-        let path = Self::config_path();
+        self.save_to(&Self::default_root());
+    }
+
+    pub fn save_to(&self, root: &Path) {
+        let path = Self::config_path(root);
         if let Some(parent) = path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
                 warn!(
@@ -126,26 +136,28 @@ impl Config {
     /// snapshot that may be stale outside the field(s) `mutate` touches, this
     /// always starts from a fresh read of disk.
     pub fn update(mutate: impl FnOnce(&mut Config)) -> Config {
-        let mut fresh = Self::load();
+        Self::update_at(&Self::default_root(), mutate)
+    }
+
+    /// [`Config::update`] against an explicit config root.
+    pub fn update_at(root: &Path, mutate: impl FnOnce(&mut Config)) -> Config {
+        let mut fresh = Self::load_from(root);
         mutate(&mut fresh);
-        fresh.save();
+        fresh.save_to(root);
         fresh
     }
 
-    fn config_path() -> PathBuf {
-        Self::config_dir_root()
-            .join("git-branch-manager")
-            .join("config.toml")
+    fn config_path(root: &Path) -> PathBuf {
+        root.join("git-branch-manager").join("config.toml")
     }
 
-    fn legacy_config_path() -> PathBuf {
-        Self::config_dir_root().join("git-bm").join("config.toml")
+    fn legacy_config_path(root: &Path) -> PathBuf {
+        root.join("git-bm").join("config.toml")
     }
 
-    /// The root directory config paths are resolved under. Overridable via
-    /// `GBM_CONFIG_DIR` so tests can exercise `load`/`save`/`update` without
-    /// touching the real user config file.
-    fn config_dir_root() -> PathBuf {
+    /// The root directory config paths are resolved under: `GBM_CONFIG_DIR`
+    /// if set, else the platform config dir.
+    pub fn default_root() -> PathBuf {
         if let Ok(dir) = std::env::var("GBM_CONFIG_DIR") {
             return PathBuf::from(dir);
         }

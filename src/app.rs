@@ -69,6 +69,8 @@ pub struct App {
     cache_root: cache::CacheRoot,
     #[cfg(test)]
     _test_cache_root: Option<tempfile::TempDir>,
+    /// Root that settings saves resolve `config.toml` under; tests point it at a tempdir.
+    config_root: PathBuf,
     pub config: Config,
     pub theme: Theme,
     pub symbols: SymbolSet,
@@ -255,6 +257,7 @@ impl App {
             config,
             cache::CacheRoot::at(test_cache_root.path()),
         );
+        app.config_root = test_cache_root.path().join("config");
         app._test_cache_root = Some(test_cache_root);
         app
     }
@@ -327,6 +330,7 @@ impl App {
             cache_root,
             #[cfg(test)]
             _test_cache_root: None,
+            config_root: Config::default_root(),
             config,
             theme,
             symbols,
@@ -1268,10 +1272,7 @@ impl App {
                 .remotes
                 .cursor_item()
                 .map(|branch| (branch.full_ref.clone(), true)),
-            ViewId::Tags => self
-                .tags
-                .cursor_item()
-                .map(|tag| (tag.name.clone(), false)),
+            ViewId::Tags => self.tags.cursor_item().map(|tag| (tag.name.clone(), false)),
             ViewId::Worktrees => self.worktrees.cursor_item().map(|worktree| {
                 (
                     worktree
@@ -3058,10 +3059,7 @@ impl App {
             .clone()
             .or((!has_remote).then(|| "no remote".into()));
         let target = wt.path.to_string_lossy().to_string();
-        let graph_target = wt
-            .branch
-            .clone()
-            .unwrap_or_else(|| wt.commit_hash.clone());
+        let graph_target = wt.branch.clone().unwrap_or_else(|| wt.commit_hash.clone());
 
         vec![
             MenuItem {
@@ -4057,27 +4055,31 @@ impl App {
 
     fn save_theme(&mut self) {
         let theme = self.theme.name.to_string();
-        self.config = Config::update(|c| c.theme = Some(theme.clone()));
+        self.config = Config::update_at(&self.config_root, |c| c.theme = Some(theme.clone()));
     }
 
     fn save_symbols(&mut self) {
         let symbols = self.symbols.name.to_string();
-        self.config = Config::update(|c| c.symbols = Some(symbols.clone()));
+        self.config = Config::update_at(&self.config_root, |c| c.symbols = Some(symbols.clone()));
     }
 
     fn save_include_remotes(&mut self) {
         let include_remotes = self.graph.includes_remotes();
-        self.config = Config::update(|c| c.include_remotes = Some(include_remotes));
+        self.config = Config::update_at(&self.config_root, |c| {
+            c.include_remotes = Some(include_remotes)
+        });
     }
 
     fn save_auto_fetch(&mut self) {
         let auto_fetch = self.config.auto_fetch;
-        self.config = Config::update(|c| c.auto_fetch = auto_fetch);
+        self.config = Config::update_at(&self.config_root, |c| c.auto_fetch = auto_fetch);
     }
 
     fn save_load_worktrees_on_launch(&mut self) {
         let load_worktrees_on_launch = self.config.load_worktrees_on_launch;
-        self.config = Config::update(|c| c.load_worktrees_on_launch = load_worktrees_on_launch);
+        self.config = Config::update_at(&self.config_root, |c| {
+            c.load_worktrees_on_launch = load_worktrees_on_launch
+        });
     }
 
     /// Persist only the given view's sort column/direction.
@@ -4091,7 +4093,7 @@ impl App {
                     .and_then(|i| sort_keys::key_for_index(&self.branch_columns, i))
                     .map(str::to_string);
                 let asc = self.branches.sort_ascending();
-                self.config = Config::update(|c| {
+                self.config = Config::update_at(&self.config_root, |c| {
                     c.sort_column_branches = col.clone();
                     c.sort_asc_branches = Some(asc);
                 });
@@ -4103,7 +4105,7 @@ impl App {
                     .and_then(|i| sort_keys::key_for_index(&self.remote_columns, i))
                     .map(str::to_string);
                 let asc = self.remotes.sort_ascending();
-                self.config = Config::update(|c| {
+                self.config = Config::update_at(&self.config_root, |c| {
                     c.sort_column_remotes = col.clone();
                     c.sort_asc_remotes = Some(asc);
                 });
@@ -4115,7 +4117,7 @@ impl App {
                     .and_then(|i| sort_keys::key_for_index(&self.tag_columns, i))
                     .map(str::to_string);
                 let asc = self.tags.sort_ascending();
-                self.config = Config::update(|c| {
+                self.config = Config::update_at(&self.config_root, |c| {
                     c.sort_column_tags = col.clone();
                     c.sort_asc_tags = Some(asc);
                 });
@@ -4127,7 +4129,7 @@ impl App {
                     .and_then(|i| sort_keys::key_for_index(&self.worktree_columns, i))
                     .map(str::to_string);
                 let asc = self.worktrees.sort_ascending();
-                self.config = Config::update(|c| {
+                self.config = Config::update_at(&self.config_root, |c| {
                     c.sort_column_worktrees = col.clone();
                     c.sort_asc_worktrees = Some(asc);
                 });
@@ -4936,6 +4938,25 @@ mod tests {
 
         assert_eq!(cell_text(&rows[0]), "feature/test (main - ac13ef04)");
         assert_eq!(cell_text(&rows[1]), "origin/feature/test");
+    }
+
+    #[test]
+    fn test_app_settings_saves_stay_in_isolated_config_root() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        assert_ne!(app.config_root, Config::default_root());
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('T'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        let saved = Config::load_from(&app.config_root);
+        assert_eq!(saved.theme.as_deref(), Some(app.theme.name));
     }
 
     #[test]
