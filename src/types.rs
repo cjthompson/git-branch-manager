@@ -144,9 +144,7 @@ impl BranchAction {
                 "Remove worktree + branch (local + remote)"
             }
             Self::DeleteBranchAndRemoveWorktree => "Remove worktree + delete branch",
-            Self::DeleteBranchAndRemoveWorktreeForce => {
-                "Force-remove worktree + delete branch"
-            }
+            Self::DeleteBranchAndRemoveWorktreeForce => "Force-remove worktree + delete branch",
             Self::DeleteBranchAndRemoveWorktreeRemote => {
                 "Remove worktree + delete branch (local + remote)"
             }
@@ -463,7 +461,7 @@ pub struct RemoteEnrichResult {
 
 #[derive(Debug, Clone)]
 pub struct WorktreeEnrichResult {
-    pub index: usize,
+    pub path: PathBuf,
     pub wt_status: WorkingTreeStatus,
     pub age_date: DateTime<Utc>,
 }

@@ -344,9 +344,8 @@ fn test_load_graph_preserves_merge_lanes_and_local_refs() {
         ],
     );
 
-    let snapshot =
-        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
-            .expect("graph loader should handle an ordinary merged local branch");
+    let snapshot = graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
+        .expect("graph loader should handle an ordinary merged local branch");
 
     assert!(matches!(snapshot.source, graph::GraphSource::Gleisbau));
     assert!(snapshot
@@ -382,9 +381,8 @@ fn test_graph_branch_labels_follow_visual_branch_tracks() {
         &["merge", "--no-ff", "release/0.3", "-m", "merge release/0.3"],
     );
 
-    let snapshot =
-        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
-            .expect("graph loader should preserve live branch tracks");
+    let snapshot = graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
+        .expect("graph loader should preserve live branch tracks");
     let release_commit = snapshot
         .commits
         .iter()
@@ -790,9 +788,8 @@ fn test_graph_does_not_expose_a_deleted_merge_branch_as_a_live_ref() {
     );
     run_git(dir, &["branch", "-D", "worktree-agent-deleted"]);
 
-    let snapshot =
-        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
-            .expect("graph loader should handle deleted merge branches");
+    let snapshot = graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
+        .expect("graph loader should handle deleted merge branches");
     let deleted_commit = snapshot
         .commits
         .iter()
@@ -811,11 +808,8 @@ fn test_graph_does_not_expose_a_deleted_merge_branch_as_a_live_ref() {
 #[test]
 fn test_graph_labels_deleted_merge_branch_from_conventional_subject() {
     let tmpdir = setup_graph_label_fixture();
-    let snapshot = graph::load_graph_with_squash_annotations(
-        tmpdir.path(),
-        tmpdir.graph_options(),
-    )
-    .expect("graph loader should preserve the composed fixture");
+    let snapshot = graph::load_graph_with_squash_annotations(tmpdir.path(), tmpdir.graph_options())
+        .expect("graph loader should preserve the composed fixture");
     let deleted_commit = snapshot
         .commits
         .iter()
@@ -834,11 +828,8 @@ fn test_graph_labels_deleted_merge_branch_from_conventional_subject() {
 #[test]
 fn test_graph_label_fixture_labels_nested_and_first_parent_tracks() {
     let tmpdir = setup_graph_label_fixture();
-    let snapshot = graph::load_graph_with_squash_annotations(
-        tmpdir.path(),
-        tmpdir.graph_options(),
-    )
-    .expect("graph loader should preserve the composed fixture");
+    let snapshot = graph::load_graph_with_squash_annotations(tmpdir.path(), tmpdir.graph_options())
+        .expect("graph loader should preserve the composed fixture");
 
     let nested_commit = snapshot
         .commits
@@ -914,9 +905,8 @@ fn test_load_graph_includes_remote_refs_only_when_requested() {
     run_git(&work_dir, &["checkout", "main"]);
     run_git(&work_dir, &["branch", "-D", "remote-only"]);
 
-    let local_only =
-        graph::load_graph_with_squash_annotations(&work_dir, _tmpdir.graph_options())
-            .expect("local graph load should succeed");
+    let local_only = graph::load_graph_with_squash_annotations(&work_dir, _tmpdir.graph_options())
+        .expect("local graph load should succeed");
     assert!(!local_only
         .commits
         .iter()
@@ -1021,9 +1011,8 @@ fn test_graph_refs_mark_only_linked_worktrees() {
         &["worktree", "add", &linked_path_string, "feature/linked"],
     );
 
-    let snapshot =
-        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
-            .expect("graph load should include linked worktree metadata");
+    let snapshot = graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
+        .expect("graph load should include linked worktree metadata");
     let linked = snapshot
         .commits
         .iter()
@@ -1050,9 +1039,8 @@ fn test_load_graph_caps_history_at_five_hundred_commits() {
         run_git(dir, &["commit", "--allow-empty", "-m", &message]);
     }
 
-    let snapshot =
-        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
-            .expect("bounded graph load should succeed");
+    let snapshot = graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
+        .expect("bounded graph load should succeed");
     assert_eq!(snapshot.commits.len(), 500);
     assert_eq!(snapshot.max_count, 500);
 }
@@ -1064,9 +1052,8 @@ fn test_load_graph_uses_cli_fallback_for_shallow_repository() {
     let head = repo.head().unwrap().target().unwrap();
     std::fs::write(dir.join(".git/shallow"), format!("{head}\n")).unwrap();
 
-    let snapshot =
-        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
-            .expect("git CLI fallback should handle a shallow repository");
+    let snapshot = graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options())
+        .expect("git CLI fallback should handle a shallow repository");
 
     assert!(matches!(
         snapshot.source,
@@ -1749,10 +1736,11 @@ fn test_dirty_linked_worktree_reports_all_changes_and_remains_recoverable() {
         "the dirty linked worktree must be non-primary"
     );
 
+    let linked_path = worktrees[linked_index].path.clone();
     let statuses = worktree::enrich_worktrees(worktrees);
     let linked_status = statuses
         .iter()
-        .find(|result| result.index == linked_index)
+        .find(|result| result.path == linked_path)
         .expect("linked worktree should be enriched")
         .wt_status;
     assert!(linked_status.has_modified, "README.md is modified");
@@ -1840,7 +1828,7 @@ fn worktrees_with_status(dir: &std::path::Path) -> Vec<git_branch_manager::types
     let mut worktrees = worktree::list_worktrees(dir);
     let rx = worktree::enrich_worktrees(worktrees.clone());
     for result in rx.iter() {
-        if let Some(wt) = worktrees.get_mut(result.index) {
+        if let Some(wt) = worktrees.iter_mut().find(|wt| wt.path == result.path) {
             wt.wt_status = result.wt_status;
             wt.age_date = result.age_date;
         }
@@ -3182,13 +3170,17 @@ fn test_worktree_status_reports_modified_not_staged() {
     let worktrees = worktree::list_worktrees(dir);
     let rx = worktree::enrich_worktrees(worktrees.clone());
     let mut results: Vec<_> = rx.iter().collect();
-    results.sort_by_key(|r| r.index);
+    results.sort_by_key(|r| r.path.clone());
 
     // The crux of the regression: a modified-not-staged file must classify as
     // modified, never staged. (We don't assert on has_untracked here: the main
     // worktree legitimately sees the in-repo `.worktrees/` dir as untracked.)
-    for (idx, wt) in worktrees.iter().enumerate() {
-        let status = &results[idx].wt_status;
+    for wt in &worktrees {
+        let status = &results
+            .iter()
+            .find(|result| result.path == wt.path)
+            .unwrap()
+            .wt_status;
         assert!(
             status.has_modified,
             "{:?}: modified-not-staged file should be reported as modified",
@@ -4330,11 +4322,11 @@ fn test_enrich_worktrees_clean() {
     let worktrees = worktree::list_worktrees(dir);
     assert_eq!(worktrees.len(), 1);
 
-    let rx = worktree::enrich_worktrees(worktrees);
+    let rx = worktree::enrich_worktrees(worktrees.clone());
     let results: Vec<_> = rx.iter().collect();
 
     assert_eq!(results.len(), 1, "should receive one enrichment result");
-    assert_eq!(results[0].index, 0);
+    assert_eq!(results[0].path, worktrees[0].path);
     assert!(
         results[0].wt_status.is_clean(),
         "clean repo worktree should report clean status"
@@ -7684,15 +7676,24 @@ fn test_worktree_merge_status_from_branches() {
         .unwrap();
     let rx = worktree::enrich_worktrees(worktrees.clone());
     let mut results: Vec<_> = rx.iter().collect();
-    results.sort_by_key(|r| r.index);
+    results.sort_by_key(|r| r.path.clone());
     // The dirty file is untracked specifically — assert the exact buckets, not
     // just !is_clean (which would pass under a staged/modified misclassification).
-    let unmerged_status = &results[unmerged_idx].wt_status;
+    let unmerged_status = &results
+        .iter()
+        .find(|r| r.path == worktrees[unmerged_idx].path)
+        .unwrap()
+        .wt_status;
     assert!(unmerged_status.has_untracked, "dirty file is untracked");
     assert!(!unmerged_status.has_staged, "nothing staged");
     assert!(!unmerged_status.has_modified, "no tracked modifications");
     assert!(
-        results[merged_idx].wt_status.is_clean(),
+        results
+            .iter()
+            .find(|r| r.path == worktrees[merged_idx].path)
+            .unwrap()
+            .wt_status
+            .is_clean(),
         "merged worktree is untouched -> clean"
     );
 

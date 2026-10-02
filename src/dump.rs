@@ -228,7 +228,7 @@ pub fn run(
             // Drain the enricher to completion (runs on a worker thread; we block).
             let rx = worktree::enrich_worktrees(rows.clone());
             for res in rx.iter() {
-                if let Some(w) = rows.get_mut(res.index) {
+                if let Some(w) = rows.iter_mut().find(|w| w.path == res.path) {
                     w.wt_status = res.wt_status;
                     w.age_date = res.age_date;
                 }

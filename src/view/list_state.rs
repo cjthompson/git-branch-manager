@@ -449,7 +449,10 @@ pub fn select_merged<T: ViewItem>(state: &mut ListState<T>) {
             continue;
         }
         if let Some(status) = state.items[i].merge_status() {
-            if matches!(status, MergeStatus::Merged | MergeStatus::SquashMerged | MergeStatus::CherryPicked) {
+            if matches!(
+                status,
+                MergeStatus::Merged | MergeStatus::SquashMerged | MergeStatus::CherryPicked
+            ) {
                 state.selected[i] = true;
             }
         }
@@ -490,20 +493,14 @@ pub fn sort_items<T: ViewItem>(
 /// Apply sort based on current sort_column and sort_ascending.
 /// Pinned items always stay at the top, only non-pinned items are sorted.
 pub fn apply_sort<T: ViewItem>(state: &mut ListState<T>, columns: &[ColumnDef<T>]) {
-    let Some(col_idx) = state.sort_column else {
-        return;
-    };
-    let Some(column) = columns.get(col_idx) else {
-        return;
-    };
-    let Some(compare) = column.compare else {
-        return;
-    };
-
-    let asc = state.sort_ascending;
     let (cursor_id, cursor_display_position, selected_ids) = state.snapshot_row_state();
-
-    sort_items(&mut state.items, compare, asc);
+    if let Some(compare) = state
+        .sort_column
+        .and_then(|col_idx| columns.get(col_idx))
+        .and_then(|column| column.compare)
+    {
+        sort_items(&mut state.items, compare, state.sort_ascending);
+    }
     state.restore_row_state(cursor_id, cursor_display_position, selected_ids);
 }
 

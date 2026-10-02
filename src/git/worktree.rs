@@ -209,19 +209,19 @@ pub fn enrich_worktrees(worktrees: Vec<WorktreeInfo>) -> Receiver<WorktreeEnrich
         );
         let _worker_entered = worker_span.enter();
         let mut handles = Vec::with_capacity(worker_count);
-        for (index, wt) in worktrees.into_iter().enumerate() {
+        for wt in worktrees {
             let tx = tx.clone();
             handles.push(std::thread::spawn(move || {
+                let path = wt.path.clone();
                 let (wt_status, age_date) = info_span!(
                     "enrich_worktree_entry",
-                    index,
                     path = ?wt.path,
                     branch = wt.branch.as_deref().unwrap_or("(detached)"),
                     is_main = wt.is_main,
                 )
                 .in_scope(|| status_and_age(&wt.path));
                 let _ = tx.send(WorktreeEnrichResult {
-                    index,
+                    path,
                     wt_status,
                     age_date,
                 });
