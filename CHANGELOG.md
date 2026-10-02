@@ -2,6 +2,16 @@
 
 ## 2026-10-01
 
+### Follow up on partially implemented tasks #002–#037 (P002)
+- Refresh Graph when completed jobs change its refs
+- Add user-selectable horizontal scrolling for list tables (#ui, #responsive-width)
+- Hide Age only at the final narrow-width fallback (#ui, #responsive-width)
+- Group worktree changed files by kind (#ui, #worktrees)
+- Move Remotes local indicator to the first column (#ui)
+- Move Branches upstream indicator to the first column (#ui)
+- Complete commit details and per-file diff navigation
+- Document graph implementation and glyph research
+
 ### Fixes
 - Apply saved default sorts to loaded list data (#sorting)
 
