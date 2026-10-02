@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-10-01
+
+### Fixes
+- Apply saved default sorts to loaded list data (#sorting)
+
+### Tasks
+- Investigate missing graph squash/cherry detection for P002 branches 043, 045, and 046 (#graph, #squash-merge)
+
+## 2026-09-30
+
+### Plan: Graph view: detect squash commits on origin/<base> (P001)
+- Confirm commit.branch assignment for origin/<base>-only commits
+- Create worktree and branch for implementation
+- Test Graph view displays squash on d3821f4
+
+### Tasks
+- Add option in Actions pane to check if code exists in primary branch
+- Implement git commit graph similar to git log --graph --oneline
+- Add commit detail overlay: press Enter on a commit to view changes
+- Branches view: move Up column to front, drop header, use tracking-link symbol (#ui)
+- Remotes view: move Local column to front, drop header, use tracking-link symbol (#ui)
+- Worktree details: group Changed Files under Staged/Modified/Untracked sub-headers (#ui, #worktrees)
+- BL-022 stage 5: drop Age column entirely as last resort (depends on #018) (#ui, #responsive-width)
+- BL-022 stage 6: horizontal scrollbar as alternative to trimming (#ui, #responsive-width)
+- Job completion only refreshes return_view; other views an action mutates go stale (src/app.rs)
+
 ## 2026-09-17
 
 ### Fixes
