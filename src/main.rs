@@ -15,7 +15,7 @@ use std::io;
 
 use git_branch_manager::cli::Cli;
 use git_branch_manager::config::Config;
-use git_branch_manager::git::{branch, cache, diagnostics, merge_detection, operations, worktree};
+use git_branch_manager::git::{branch, cache, diagnostics, merge_detection, worktree};
 use git_branch_manager::symbols::SymbolSet;
 use git_branch_manager::types::MergeStatus;
 use tracing::{field, info, info_span, instrument, Span};
@@ -312,13 +312,7 @@ fn main() -> Result<()> {
 
     // Auto-fetch if configured
     if app.config.auto_fetch == Some(true) {
-        let path = repo_path.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        app.remote_fetch_rx = Some(rx);
-        std::thread::spawn(move || {
-            let success = operations::fetch_sync(&path);
-            let _ = tx.send(success);
-        });
+        app.start_auto_fetch();
     }
 
     // Preload worktrees if configured

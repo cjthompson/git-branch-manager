@@ -17,6 +17,7 @@ use std::sync::Arc;
 use chrono::{DateTime, TimeDelta, Utc};
 
 use crate::git::{operations, tags, worktree};
+use crate::git::graph::{GraphRepositoryDelta, GraphRepositoryState};
 use crate::types::{BranchAction, FailureCause, OperationResult, ProgressUpdate};
 use crate::view::ViewId;
 
@@ -42,6 +43,7 @@ pub struct ActionJob {
 struct RunningJob {
     job: ActionJob,
     op_rx: Receiver<Vec<OperationResult>>,
+    graph_delta_rx: Receiver<Result<GraphRepositoryDelta, String>>,
     progress_rx: Receiver<ProgressUpdate>,
     cancel_flag: Arc<AtomicBool>,
     partial_delete_risk: Arc<AtomicBool>,
@@ -60,6 +62,7 @@ struct RunningJob {
 struct DrainingJob {
     job: ActionJob,
     op_rx: Receiver<Vec<OperationResult>>,
+    graph_delta_rx: Receiver<Result<GraphRepositoryDelta, String>>,
 }
 
 /// Outcome of the most recently completed job, shown briefly in the status area.
@@ -120,6 +123,7 @@ pub struct JobEvent {
     pub remote: Option<String>,
     pub return_view: ViewId,
     pub results: Vec<OperationResult>,
+    pub graph_delta: Result<GraphRepositoryDelta, String>,
     /// Failed results excluding `BranchNotFound`. Mirrors
     /// [`CompletionSummary::failures`] so the caller doesn't need a
     /// separate accessor in the same tick. Non-empty triggers the
@@ -227,12 +231,14 @@ impl ActionJobQueue {
             .dispatch_path
             .clone()
             .unwrap_or_else(|| self.repo_path.clone());
+        let graph_head_path = self.repo_path.clone();
         let base_branch = self.base_branch.clone();
         let item_names = job.targets.clone();
         let action = job.action;
         let remote = job.remote.clone();
 
         let (op_tx, op_rx) = mpsc::channel();
+        let (graph_delta_tx, graph_delta_rx) = mpsc::channel();
         let (prog_tx, prog_rx) = mpsc::channel();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_clone = Arc::clone(&cancel_flag);
@@ -240,6 +246,7 @@ impl ActionJobQueue {
         let partial_delete_risk_clone = Arc::clone(&partial_delete_risk);
 
         std::thread::spawn(move || {
+            let before = GraphRepositoryState::capture_with_head(&repo_path, &graph_head_path);
             let needs_stash =
                 !crate::git::status::detect_working_tree_status(&repo_path).is_clean();
             let results = execute_action_with_remote(
@@ -253,12 +260,19 @@ impl ActionJobQueue {
                 &cancel_clone,
                 &partial_delete_risk_clone,
             );
+            let after = GraphRepositoryState::capture_with_head(&repo_path, &graph_head_path);
+            let graph_delta = match (before, after) {
+                (Ok(before), Ok(after)) => Ok(GraphRepositoryDelta::between(before, after)),
+                (Err(error), _) | (_, Err(error)) => Err(error),
+            };
+            let _ = graph_delta_tx.send(graph_delta);
             let _ = op_tx.send(results);
         });
 
         self.current = Some(RunningJob {
             job,
             op_rx,
+            graph_delta_rx,
             progress_rx: prog_rx,
             cancel_flag,
             partial_delete_risk,
@@ -293,7 +307,8 @@ impl ActionJobQueue {
         // repo may already have changed on disk.
         match self.draining.as_ref().map(|d| d.op_rx.try_recv()) {
             Some(Ok(results)) => {
-                let DrainingJob { job, .. } = self.draining.take().unwrap();
+                let DrainingJob { job, graph_delta_rx, .. } = self.draining.take().unwrap();
+                let graph_delta = graph_delta_rx.try_recv().unwrap_or_else(|_| Err("repository state observation was unavailable".into()));
                 self.targets_done_before_current += job.targets.len();
                 let summary = CompletionSummary::new(job.action, &results);
                 let failures = summary.failures.clone();
@@ -306,6 +321,7 @@ impl ActionJobQueue {
                     remote: job.remote,
                     return_view: job.return_view,
                     results,
+                    graph_delta,
                     failures,
                 });
             }
@@ -335,7 +351,8 @@ impl ActionJobQueue {
         if event.is_none() {
             event = match self.current.as_ref().map(|r| r.op_rx.try_recv()) {
                 Some(Ok(results)) => {
-                    let RunningJob { job, .. } = self.current.take().unwrap();
+                    let RunningJob { job, graph_delta_rx, .. } = self.current.take().unwrap();
+                    let graph_delta = graph_delta_rx.try_recv().unwrap_or_else(|_| Err("repository state observation was unavailable".into()));
                     self.targets_done_before_current += job.targets.len();
                     let summary = CompletionSummary::new(job.action, &results);
                     let failures = summary.failures.clone();
@@ -348,6 +365,7 @@ impl ActionJobQueue {
                         remote: job.remote,
                         return_view: job.return_view,
                         results,
+                        graph_delta,
                         failures,
                     })
                 }
@@ -379,6 +397,7 @@ impl ActionJobQueue {
         self.draining = Some(DrainingJob {
             job: running.job,
             op_rx: running.op_rx,
+            graph_delta_rx: running.graph_delta_rx,
         });
     }
 
@@ -442,9 +461,26 @@ impl ActionJobQueue {
         cancel_flag: Arc<AtomicBool>,
         partial_delete_risk: Arc<AtomicBool>,
     ) {
+        let (_delta_tx, graph_delta_rx) = mpsc::channel();
+        self.inject_running_with_graph_delta_for_test(job, op_rx, graph_delta_rx, progress_rx, cancel_flag, partial_delete_risk);
+    }
+
+    /// Inject a fake running job with an explicitly controlled repository
+    /// observation receiver. Tests of the normal Graph route should use this
+    /// seam or a real queued operation, never an implicit disconnected delta.
+    pub fn inject_running_with_graph_delta_for_test(
+        &mut self,
+        job: ActionJob,
+        op_rx: Receiver<Vec<OperationResult>>,
+        graph_delta_rx: Receiver<Result<GraphRepositoryDelta, String>>,
+        progress_rx: Receiver<ProgressUpdate>,
+        cancel_flag: Arc<AtomicBool>,
+        partial_delete_risk: Arc<AtomicBool>,
+    ) {
         self.current = Some(RunningJob {
             job,
             op_rx,
+            graph_delta_rx,
             progress_rx,
             cancel_flag,
             partial_delete_risk,
@@ -1139,11 +1175,7 @@ mod tests {
         assert_eq!(q.queued_len_for_test(), 1);
 
         op_tx
-            .send(vec![OperationResult::success(
-                "a",
-                BranchAction::DeleteLocal,
-                "ok",
-            )])
+            .send(vec![OperationResult::success("a", BranchAction::DeleteLocal, "ok")])
             .unwrap();
 
         let poll = q.poll();

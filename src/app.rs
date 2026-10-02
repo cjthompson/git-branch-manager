@@ -63,6 +63,11 @@ pub enum Phase1Msg {
     MergeBaseCommits(Vec<(String, String)>),
 }
 
+pub struct RemoteFetchCompletion {
+    pub success: bool,
+    pub graph_delta: Result<graph::GraphRepositoryDelta, String>,
+}
+
 pub struct App {
     // Core
     pub repo_path: PathBuf,
@@ -113,6 +118,8 @@ pub struct App {
     pub pr_rx: Option<Receiver<PrMap>>,
     pub pr_map: PrMap,
     pub op_rx: Option<Receiver<Vec<OperationResult>>>,
+    fetch_graph_delta_rx: Option<Receiver<Result<graph::GraphRepositoryDelta, String>>>,
+    fetch_overlay_dismissed: bool,
     pub progress_rx: Option<Receiver<ProgressUpdate>>,
     pub progress: Option<ProgressUpdate>,
     /// Result channel for the background cache-accuracy audit.
@@ -126,7 +133,7 @@ pub struct App {
     /// handler so a late-arriving stale cached status can't silently overwrite
     /// a verified correction, regardless of which one lands first.
     pub verified_branches: HashSet<String>,
-    pub remote_fetch_rx: Option<Receiver<bool>>,
+    pub remote_fetch_rx: Option<Receiver<RemoteFetchCompletion>>,
     pub tag_load_rx: Option<Receiver<Vec<TagInfo>>>,
     pub worktree_load_rx: Option<Receiver<Vec<WorktreeInfo>>>,
     #[allow(clippy::type_complexity)]
@@ -139,6 +146,7 @@ pub struct App {
     >,
     pub phase1_rx: Option<Receiver<Phase1Msg>>,
     pub graph_rx: Option<Receiver<Result<graph::GraphSnapshot, graph::GraphLoadError>>>,
+    graph_update_rx: Option<Receiver<graph::GraphUpdateMsg>>,
     /// Result channel for the asynchronous squash-merge enrichment spawned
     /// after each successful structural graph load. The current reload
     /// generation lives in `graph_generation`; enrichment messages whose
@@ -159,6 +167,12 @@ pub struct App {
     /// we just received and any in-flight enrichment are tagged with it, so
     /// a stale enrichment result cannot overwrite a newer snapshot.
     pub graph_generation: u64,
+    graph_revision: u64,
+    graph_repository_state: Option<graph::GraphRepositoryState>,
+    pending_graph_deltas: Vec<Result<graph::GraphRepositoryDelta, String>>,
+    graph_update_invalidates_enrichment: bool,
+    staged_graph_snapshot: Option<graph::GraphSnapshot>,
+    reconciling_initial_graph: bool,
 
     // Cache (used for R-key cache clearing)
     #[allow(dead_code)]
@@ -378,6 +392,8 @@ impl App {
             pr_rx: None,
             pr_map: PrMap::new(),
             op_rx: None,
+            fetch_graph_delta_rx: None,
+            fetch_overlay_dismissed: false,
             progress_rx: None,
             progress: None,
             diag_rx: None,
@@ -389,12 +405,19 @@ impl App {
             remote_load_rx: None,
             phase1_rx: None,
             graph_rx: None,
+            graph_update_rx: None,
             graph_enrich_rx: None,
             commit_details_rx: None,
             commit_details_target: None,
             commit_file_diff_rx: None,
             commit_file_diff_target: None,
             graph_generation: 0,
+            graph_revision: 0,
+            graph_repository_state: None,
+            pending_graph_deltas: Vec::new(),
+            graph_update_invalidates_enrichment: false,
+            staged_graph_snapshot: None,
+            reconciling_initial_graph: false,
             cache,
             toast: None,
             cancel_flag: None,
@@ -526,8 +549,18 @@ impl App {
                 }
                 err => err,
             };
-            self.graph.apply_result(result);
             self.clear_toast();
+            self.graph_repository_state = graph::GraphRepositoryState::capture(&self.repo_path).ok();
+            let mut pending = std::mem::take(&mut self.pending_graph_deltas);
+            if let (Ok(snapshot), Some(first)) = (result.as_ref().map(Clone::clone), pending.first().cloned()) {
+                self.staged_graph_snapshot = Some(snapshot);
+                self.reconciling_initial_graph = true;
+                let _ = pending.remove(0);
+                self.pending_graph_deltas = pending;
+                self.request_graph_update(first);
+                continue;
+            }
+            self.graph.apply_result(result);
 
             if let Some(snapshot) = self.graph.snapshot().cloned() {
                 self.graph_enrich_rx = Some(graph::spawn_possible_squash_enrichment(
@@ -538,6 +571,94 @@ impl App {
                     self.cache_root.clone(),
                 ));
             }
+        }
+
+        let mut update_failed = false;
+        let update_result = if let Some(rx) = self.graph_update_rx.take() {
+            match rx.try_recv() {
+                Ok(message) => Some(message),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => { update_failed = true; None },
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.graph_update_rx = Some(rx);
+                    None
+                }
+            }
+        } else { None };
+        if let Some(message) = update_result {
+            let options_are_current = message.options.max_count == self.graph.max_count()
+                && message.options.include_remotes == self.graph.includes_remotes()
+                && message.options.base_branch.as_deref() == Some(self.base_branch.as_str())
+                && message.options.line_style == graph::GraphLineStyle::from_symbol_name(self.symbols.name);
+            if message.revision == self.graph_revision && options_are_current {
+                match message.result {
+                    Ok(mut snapshot) => {
+                        if snapshot.max_count != message.options.max_count
+                            || snapshot.includes_remotes != message.options.include_remotes
+                        {
+                            self.pending_graph_deltas.insert(0, Ok(message.delta));
+                        } else {
+                        snapshot.generation = Some(self.graph_generation);
+                        // A metadata-only worker may have captured an
+                        // unenriched snapshot before the async enrichment
+                        // completed. Carry the latest values forward by OID.
+                        if !self.graph_update_invalidates_enrichment {
+                            if let Some(current) = self.graph.snapshot() {
+                                let enriched = current.commits.iter().map(|commit| (commit.oid.as_str(), commit)).collect::<std::collections::HashMap<_, _>>();
+                                for commit in &mut snapshot.commits {
+                                    if let Some(old) = enriched.get(commit.oid.as_str()) {
+                                        commit.is_possible_squash_merge = old.is_possible_squash_merge;
+                                        commit.possible_squash_merge_sources = old.possible_squash_merge_sources.clone();
+                                        commit.fuzzy_squash_match = old.fuzzy_squash_match.clone();
+                                        commit.is_cherry_picked_commit = old.is_cherry_picked_commit;
+                                    }
+                                }
+                            }
+                        }
+                        if self.reconciling_initial_graph {
+                            self.staged_graph_snapshot = Some(snapshot);
+                            if self.pending_graph_deltas.is_empty() {
+                                if let Some(snapshot) = self.staged_graph_snapshot.take() {
+                                    self.graph.apply_result(Ok(snapshot));
+                                }
+                                self.reconciling_initial_graph = false;
+                            }
+                        } else {
+                            self.graph.apply_incremental_result(Ok(snapshot));
+                        }
+                        if self.graph_update_invalidates_enrichment {
+                            self.graph_update_invalidates_enrichment = false;
+                            self.graph_enrich_rx = None;
+                        }
+                        if self.graph_enrich_rx.is_none() && !self.reconciling_initial_graph {
+                            if let Some(snapshot) = self.graph.snapshot().cloned() {
+                                self.graph_enrich_rx = Some(graph::spawn_possible_squash_enrichment(
+                                    snapshot, self.repo_path.clone(), Some(self.base_branch.clone()), self.graph_generation, self.cache_root.clone(),
+                                ));
+                            }
+                        }
+                        }
+                    }
+                    Err(error) => {
+                        self.toast = Some(Toast::new(format!("Graph update failed: {error}"), 4));
+                        self.reconciling_initial_graph = false;
+                        self.staged_graph_snapshot = None;
+                        self.reload_graph();
+                    }
+                }
+            } else {
+                self.pending_graph_deltas.insert(0, Ok(message.delta));
+            }
+            if !self.pending_graph_deltas.is_empty() && self.graph_update_rx.is_none() {
+                let next = self.pending_graph_deltas.remove(0);
+                self.request_graph_update(next);
+            }
+            dirty = true;
+        }
+        if update_failed {
+            self.reconciling_initial_graph = false;
+            self.staged_graph_snapshot = None;
+            self.reload_graph();
+            dirty = true;
         }
 
         for msg in drain_channel(&mut self.graph_enrich_rx, 1, &mut dirty) {
@@ -981,8 +1102,20 @@ impl App {
             self.cancel_flag = None;
             self.progress_rx = None;
             self.progress = None;
-            self.refresh_after_operation();
-            self.overlay = Some(Overlay::results(results));
+            let graph_delta = self.fetch_graph_delta_rx.take()
+                .and_then(|rx| rx.try_recv().ok())
+                .unwrap_or_else(|| Err("fetch repository state observation was unavailable".into()));
+            match self.return_view {
+                ViewId::Branches => self.refresh_branches("post_fetch"),
+                ViewId::Remotes => self.spawn_remote_load(),
+                ViewId::Tags => self.spawn_tag_load(),
+                ViewId::Worktrees | ViewId::Graph => {}
+            }
+            self.request_graph_update(graph_delta);
+            if !self.fetch_overlay_dismissed {
+                self.overlay = Some(Overlay::results(results));
+            }
+            self.fetch_overlay_dismissed = false;
         }
 
         // Confirmed-action job queue (delete, push, merge, worktree ops, ...)
@@ -992,14 +1125,15 @@ impl App {
         }
         if let Some(JobEvent {
             action,
+            targets,
             remote,
             results,
+            graph_delta,
             failures,
             return_view,
-            ..
         }) = job_poll.event
         {
-            self.refresh_after_job(action, return_view);
+            self.refresh_after_job(action, return_view, &targets, remote.as_deref(), &results, graph_delta);
 
             // Plan P005 §5: when the job produced any typed failures,
             // auto-open the Results overlay so the user sees the cause
@@ -1090,15 +1224,23 @@ impl App {
             }
         }
 
-        // Remote fetch completion
-        for success in drain_channel(&mut self.remote_fetch_rx, 1, &mut dirty) {
-            if success {
+        // Remote fetch is a one-shot receiver: consume it explicitly as soon
+        // as its completion arrives so a later Remotes request can start.
+        let fetch_completion = match self.remote_fetch_rx.as_ref().map(Receiver::try_recv) {
+            Some(Ok(completion)) => { self.remote_fetch_rx = None; Some(completion) }
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => { self.remote_fetch_rx = None; None }
+            _ => None,
+        };
+        if let Some(completion) = fetch_completion {
+            dirty = true;
+            if completion.success {
                 self.remote_fetched = true;
                 // Reload remote branches if we're on that view
                 if self.active_view == ViewId::Remotes {
                     self.spawn_remote_load();
                 }
             }
+            self.request_graph_update(completion.graph_delta);
             self.clear_toast();
         }
 
@@ -1108,6 +1250,15 @@ impl App {
                 self.toast = None;
                 dirty = true;
             }
+        }
+
+        if self.graph_update_rx.is_none()
+            && !self.pending_graph_deltas.is_empty()
+            && (!self.graph.is_loading() || self.reconciling_initial_graph)
+        {
+            let next = self.pending_graph_deltas.remove(0);
+            self.request_graph_update(next);
+            dirty = true;
         }
 
         if dirty {
@@ -2226,13 +2377,12 @@ impl App {
                     if let Some(flag) = &self.cancel_flag {
                         flag.store(true, Ordering::Relaxed);
                     }
-                    // Option 3: drop receivers so UI recovers immediately;
-                    // the background thread will fail on its next send and exit.
-                    self.op_rx = None;
+                    // Keep the fetch receiver alive so partial repository
+                    // changes are observed and reconciled after cancellation.
+                    self.fetch_overlay_dismissed = true;
                     self.diag_rx = None;
                     self.progress_rx = None;
                     self.progress = None;
-                    self.cancel_flag = None;
                     // overlay stays None (already taken at top of function)
                     return;
                 }
@@ -4252,6 +4402,10 @@ impl App {
 
     pub fn spawn_graph_load(&mut self, max_count: usize, include_remotes: bool) {
         self.graph_generation = self.graph_generation.saturating_add(1);
+        self.graph_revision = self.graph_revision.saturating_add(1);
+        self.graph_update_invalidates_enrichment = false;
+        self.staged_graph_snapshot = None;
+        self.reconciling_initial_graph = false;
         // Drop any in-flight enrichment from a previous load. The
         // background thread will see the dropped receiver and exit on its
         // next `tx.send`; no stale update can be applied to the new
@@ -4380,13 +4534,34 @@ impl App {
     }
 
     fn start_remote_fetch(&mut self) {
+        self.start_observed_remote_fetch(false);
+    }
+
+    pub fn start_auto_fetch(&mut self) {
+        self.start_observed_remote_fetch(true);
+    }
+
+    fn start_observed_remote_fetch(&mut self, startup: bool) {
+        // Startup fetch already covers any immediate request from the
+        // Remotes view. Keep its completion receiver until its delta is routed.
+        if self.remote_fetch_rx.is_some() {
+            return;
+        }
         let repo_path = self.repo_path.clone();
         let (tx, rx) = mpsc::channel();
         self.remote_fetch_rx = Some(rx);
-        self.toast = Some(Toast::new("Fetching remote branches...".into(), 300));
+        if !startup {
+            self.toast = Some(Toast::new("Fetching remote branches...".into(), 300));
+        }
         std::thread::spawn(move || {
-            let ok = operations::fetch_sync(&repo_path);
-            let _ = tx.send(ok);
+            let before = graph::GraphRepositoryState::capture(&repo_path);
+            let success = operations::fetch_sync(&repo_path);
+            let after = graph::GraphRepositoryState::capture(&repo_path);
+            let graph_delta = match (before, after) {
+                (Ok(before), Ok(after)) => Ok(graph::GraphRepositoryDelta::between(before, after)),
+                (Err(error), _) | (_, Err(error)) => Err(error),
+            };
+            let _ = tx.send(RemoteFetchCompletion { success, graph_delta });
         });
     }
 
@@ -4513,24 +4688,91 @@ impl App {
         }
     }
 
-    fn refresh_after_job(&mut self, action: BranchAction, origin: ViewId) {
+    fn refresh_after_job(&mut self, action: BranchAction, origin: ViewId, _targets: &[String], _remote: Option<&str>, _results: &[OperationResult], graph_delta: Result<graph::GraphRepositoryDelta, String>) {
+        let graph_affecting = graph_affected_views(action).contains(&ViewId::Graph);
+
+        // Refresh the other (non-Graph) views affected by this action. Graph
+        // gets its own two-tier treatment below.
         for view in graph_affected_views(action) {
+            if *view == ViewId::Graph {
+                continue;
+            }
             self.refresh_view_data(*view);
         }
         if origin != ViewId::Graph && !graph_affected_views(action).contains(&origin) {
             self.refresh_view_data(origin);
         }
-        if action_affects_graph(action) && self.graph.snapshot().is_some() {
-            self.refresh_view_data(ViewId::Graph);
+
+        if graph_affecting {
+            self.request_graph_update(graph_delta);
         }
     }
 
+    fn request_graph_update(&mut self, delta: Result<graph::GraphRepositoryDelta, String>) {
+        self.graph_revision = self.graph_revision.saturating_add(1);
+        let invalidates_enrichment = match delta.as_ref() {
+            Err(_) => true,
+            Ok(delta) => {
+            let topology_ref = |id: &graph::GraphRefId| id.kind == graph::GraphRefKind::LocalBranch || self.graph.includes_remotes();
+                delta.added_refs.iter().any(|(id, _)| topology_ref(id))
+                || delta.removed_refs.iter().any(|(id, _)| topology_ref(id))
+                || delta.moved_refs.iter().any(|(id, _, _)| topology_ref(id))
+                || (self.graph.includes_remotes() && delta.additional_roots_changed)
+            }
+        };
+        self.graph_update_invalidates_enrichment |= invalidates_enrichment;
+        if ((self.graph.is_loading() || self.graph_rx.is_some()) && !self.reconciling_initial_graph)
+            || self.graph_update_rx.is_some()
+        {
+            self.pending_graph_deltas.push(delta);
+            return;
+        }
+        let Some(snapshot) = self.staged_graph_snapshot.clone().or_else(|| self.graph.snapshot().cloned()) else {
+            // Graph has never loaded; its first open reads current state.
+            if !self.reconciling_initial_graph {
+                return;
+            }
+            self.pending_graph_deltas.push(delta);
+            self.reload_graph();
+            return;
+        };
+        let delta = match delta {
+            Ok(delta) => delta,
+            Err(_) => {
+                self.graph_enrich_rx = None;
+                self.reload_graph();
+                return;
+            }
+        };
+        if invalidates_enrichment {
+            self.graph_generation = self.graph_generation.saturating_add(1);
+            self.graph_enrich_rx = None;
+        }
+        let options = graph::GraphLoadOptions {
+                max_count: self.graph.max_count(),
+                include_remotes: self.graph.includes_remotes(),
+                line_style: graph::GraphLineStyle::from_symbol_name(self.symbols.name),
+                base_branch: Some(self.base_branch.clone()),
+                cache_root: self.cache_root.clone(),
+            };
+        self.graph_repository_state = Some(delta.after.clone());
+        self.graph_update_rx = Some(graph::spawn_graph_updater(
+            self.repo_path.clone(), snapshot, delta, options, self.graph_revision,
+        ));
+    }
+
     fn start_fetch(&mut self, prune: bool) {
+        if self.op_rx.is_some() {
+            return;
+        }
         let repo_path = self.repo_path.clone();
         let (tx, rx) = mpsc::channel();
+        let (graph_tx, graph_rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_clone = Arc::clone(&cancel);
         self.op_rx = Some(rx);
+        self.fetch_graph_delta_rx = Some(graph_rx);
+        self.fetch_overlay_dismissed = false;
         self.cancel_flag = Some(cancel);
         self.return_view = self.active_view;
         let label = if prune {
@@ -4543,11 +4785,18 @@ impl App {
             progress: None,
         });
         std::thread::spawn(move || {
+            let before = graph::GraphRepositoryState::capture(&repo_path);
             let result = if prune {
                 operations::fetch_prune(&repo_path, &cancel_clone)
             } else {
                 operations::fetch(&repo_path, &cancel_clone)
             };
+            let after = graph::GraphRepositoryState::capture(&repo_path);
+            let observed = match (before, after) {
+                (Ok(before), Ok(after)) => Ok(graph::GraphRepositoryDelta::between(before, after)),
+                (Err(error), _) | (_, Err(error)) => Err(error),
+            };
+            let _ = graph_tx.send(observed);
             let _ = tx.send(vec![result]);
         });
     }
@@ -4940,90 +5189,60 @@ fn confirmation_command_for_target(
 }
 
 fn graph_affected_views(action: BranchAction) -> &'static [ViewId] {
+    // P110: every action that mutates repository state (refs or OIDs) should
+    // refresh the Graph view. The two UI-only actions (JumpToGraph and
+    // ViewRemotePR) stay empty.
     match action {
-        BranchAction::JumpToGraph => &[],
-        BranchAction::DeleteLocal => &[ViewId::Branches, ViewId::Remotes],
-        BranchAction::DeleteLocalAndRemote => &[ViewId::Branches, ViewId::Remotes],
+        BranchAction::JumpToGraph | BranchAction::ViewRemotePR => &[],
+        BranchAction::DeleteLocal
+        | BranchAction::DeleteLocalAndRemote
+        | BranchAction::DeleteLocalForce
+        | BranchAction::DeleteRemoteBranch
+        | BranchAction::DeleteRemoteAndLocal => {
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Graph]
+        }
         BranchAction::Checkout
         | BranchAction::FastForward
         | BranchAction::Merge
         | BranchAction::SquashMerge
-        | BranchAction::Rebase => &[ViewId::Branches, ViewId::Worktrees],
+        | BranchAction::Rebase => &[ViewId::Branches, ViewId::Worktrees, ViewId::Graph],
         BranchAction::Fetch | BranchAction::FetchPrune => {
-            &[ViewId::Branches, ViewId::Remotes, ViewId::Tags]
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Tags, ViewId::Graph]
         }
-        BranchAction::Push | BranchAction::ForcePush => &[ViewId::Branches, ViewId::Remotes],
-        BranchAction::Pull => &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees],
-        BranchAction::Worktree => &[ViewId::Worktrees],
+        BranchAction::Push | BranchAction::ForcePush => {
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Graph]
+        }
+        BranchAction::Pull => {
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees, ViewId::Graph]
+        }
+        BranchAction::Worktree => &[ViewId::Worktrees, ViewId::Graph],
         BranchAction::DeleteTag | BranchAction::DeleteTagAndRemote | BranchAction::PushTag => {
-            &[ViewId::Tags]
+            &[ViewId::Tags, ViewId::Graph]
         }
-        BranchAction::DeleteRemoteBranch => &[ViewId::Branches, ViewId::Remotes],
-        BranchAction::DeleteRemoteAndLocal => &[ViewId::Branches, ViewId::Remotes],
-        BranchAction::CheckoutRemote => &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees],
-        BranchAction::FetchRemote => &[ViewId::Branches, ViewId::Remotes, ViewId::Tags],
+        BranchAction::CheckoutRemote => {
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees, ViewId::Graph]
+        }
+        BranchAction::FetchRemote => {
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Tags, ViewId::Graph]
+        }
         BranchAction::PullRemote
         | BranchAction::MergeRemoteIntoCurrent
-        | BranchAction::CherryPickRemote => &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees],
-        BranchAction::WorktreeRemove | BranchAction::WorktreeForceRemove => &[ViewId::Worktrees],
-        BranchAction::WorktreeRemoveAndDeleteBranch => {
-            &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees]
+        | BranchAction::CherryPickRemote => {
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees, ViewId::Graph]
         }
-        BranchAction::WorktreeRemoveAndDeleteBranchRemote => {
-            &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees]
+        BranchAction::WorktreeRemove | BranchAction::WorktreeForceRemove => {
+            &[ViewId::Worktrees, ViewId::Graph]
         }
-        // P005 #067: new cascade-by-name variants. They are reached from the
-        // Branches view's Confirm/Results overlay (`!`/`r` recovery keys and
-        // the menu), and touch worktrees; the Remote variant also needs the
-        // Remotes view so menu discovery stays consistent with the
-        // path-based siblings above.
-        BranchAction::DeleteLocalForce => &[ViewId::Branches, ViewId::Remotes],
-        BranchAction::DeleteBranchAndRemoveWorktree
-        | BranchAction::DeleteBranchAndRemoveWorktreeForce => {
-            &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees]
+        BranchAction::WorktreeRemoveAndDeleteBranch
+        | BranchAction::WorktreeRemoveAndDeleteBranchRemote
+        | BranchAction::DeleteBranchAndRemoveWorktree
+        | BranchAction::DeleteBranchAndRemoveWorktreeForce
+        | BranchAction::DeleteBranchAndRemoveWorktreeRemote => {
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees, ViewId::Graph]
         }
-        BranchAction::DeleteBranchAndRemoveWorktreeRemote => {
-            &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees]
-        }
-        BranchAction::ViewRemotePR => &[],
     }
 }
 
-/// Whether a completed confirmed action can change the refs or metadata shown
-/// by Graph. Remote-only writes are excluded because their local remote-tracking
-/// refs stay unchanged until a fetch updates them.
-fn action_affects_graph(action: BranchAction) -> bool {
-    matches!(
-        action,
-        BranchAction::DeleteLocal
-            | BranchAction::DeleteLocalForce
-            | BranchAction::DeleteLocalAndRemote
-            | BranchAction::Checkout
-            | BranchAction::Fetch
-            | BranchAction::FetchPrune
-            | BranchAction::FastForward
-            | BranchAction::Merge
-            | BranchAction::SquashMerge
-            | BranchAction::Rebase
-            | BranchAction::Worktree
-            | BranchAction::Pull
-            | BranchAction::DeleteTag
-            | BranchAction::DeleteTagAndRemote
-            | BranchAction::DeleteRemoteAndLocal
-            | BranchAction::CheckoutRemote
-            | BranchAction::FetchRemote
-            | BranchAction::PullRemote
-            | BranchAction::MergeRemoteIntoCurrent
-            | BranchAction::CherryPickRemote
-            | BranchAction::WorktreeRemove
-            | BranchAction::WorktreeForceRemove
-            | BranchAction::WorktreeRemoveAndDeleteBranch
-            | BranchAction::WorktreeRemoveAndDeleteBranchRemote
-            | BranchAction::DeleteBranchAndRemoveWorktree
-            | BranchAction::DeleteBranchAndRemoveWorktreeForce
-            | BranchAction::DeleteBranchAndRemoveWorktreeRemote
-    )
-}
 
 /// Get branch prefix style: extract prefix before first '/' and look up color.
 fn branch_prefix_style(name: &str, theme: &Theme) -> Style {
@@ -5703,6 +5922,13 @@ mod tests {
             .unwrap();
 
         app.drain_channels();
+    }
+
+    fn unchanged_graph_observation(path: &std::path::Path) -> Receiver<Result<graph::GraphRepositoryDelta, String>> {
+        let state = graph::GraphRepositoryState::capture(path).unwrap();
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(graph::GraphRepositoryDelta::between(state.clone(), state))).unwrap();
+        rx
     }
 
     fn info_modal_items(app: &App) -> &[MenuItem] {
@@ -7173,7 +7399,7 @@ mod tests {
 
         let (op_tx, op_rx) = mpsc::channel();
         let (_prog_tx, prog_rx) = mpsc::channel();
-        app.job_queue.inject_running_for_test(
+        app.job_queue.inject_running_with_graph_delta_for_test(
             git_branch_manager::job_queue::ActionJob {
                 action: BranchAction::Push,
                 targets: vec!["feature/refresh".into()],
@@ -7182,6 +7408,7 @@ mod tests {
                 dispatch_path: None,
             },
             op_rx,
+            unchanged_graph_observation(dir),
             prog_rx,
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
@@ -7202,7 +7429,7 @@ mod tests {
             .iter()
             .any(|branch| branch.name == "feature/refresh"));
         assert!(app.remotes.loading);
-        assert!(app.graph.is_loading());
+        assert!(app.graph.snapshot().is_some());
         assert_eq!(app.active_view, ViewId::Tags);
     }
 
@@ -7229,7 +7456,7 @@ mod tests {
 
         let (op_tx, op_rx) = mpsc::channel();
         let (_prog_tx, prog_rx) = mpsc::channel();
-        app.job_queue.inject_running_for_test(
+        app.job_queue.inject_running_with_graph_delta_for_test(
             git_branch_manager::job_queue::ActionJob {
                 action: BranchAction::CheckoutRemote,
                 targets: vec!["feature/remote".into()],
@@ -7238,6 +7465,7 @@ mod tests {
                 dispatch_path: None,
             },
             op_rx,
+            unchanged_graph_observation(dir),
             prog_rx,
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
@@ -7259,7 +7487,7 @@ mod tests {
             .any(|branch| branch.name == "feature/remote"));
         assert!(app.remotes.loading);
         assert!(app.worktrees.loading);
-        assert!(app.graph.is_loading());
+        assert!(app.graph.snapshot().is_some());
         assert_eq!(app.active_view, ViewId::Tags);
     }
 
@@ -7286,7 +7514,7 @@ mod tests {
 
         let (op_tx, op_rx) = mpsc::channel();
         let (_prog_tx, prog_rx) = mpsc::channel();
-        app.job_queue.inject_running_for_test(
+        app.job_queue.inject_running_with_graph_delta_for_test(
             git_branch_manager::job_queue::ActionJob {
                 action: BranchAction::DeleteRemoteAndLocal,
                 targets: vec!["feature/remote".into()],
@@ -7295,6 +7523,7 @@ mod tests {
                 dispatch_path: None,
             },
             op_rx,
+            unchanged_graph_observation(dir),
             prog_rx,
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
@@ -7315,24 +7544,313 @@ mod tests {
             .iter()
             .any(|branch| branch.name == "feature/remote"));
         assert!(app.remotes.loading);
-        assert!(app.graph.is_loading());
+        assert!(app.graph.snapshot().is_some());
         assert_eq!(app.active_view, ViewId::Tags);
     }
 
     #[test]
     fn graph_action_refreshes_dependent_ref_views() {
+        // P110: every state-mutating action now also refreshes the Graph view.
         assert_eq!(
             graph_affected_views(BranchAction::DeleteLocal),
-            &[ViewId::Branches, ViewId::Remotes]
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Graph]
         );
         assert_eq!(
             graph_affected_views(BranchAction::DeleteRemoteBranch),
-            &[ViewId::Branches, ViewId::Remotes]
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Graph]
         );
         assert_eq!(
             graph_affected_views(BranchAction::FetchRemote),
-            &[ViewId::Branches, ViewId::Remotes, ViewId::Tags]
+            &[ViewId::Branches, ViewId::Remotes, ViewId::Tags, ViewId::Graph]
         );
+        // UI-only actions stay empty.
+        assert_eq!(graph_affected_views(BranchAction::JumpToGraph), &[]);
+        assert_eq!(graph_affected_views(BranchAction::ViewRemotePR), &[]);
+    }
+
+    #[test]
+    fn queued_delete_observation_reaches_graph_publication_without_full_reload() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.name", "Test"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["commit", "--allow-empty", "-m", "root"]);
+        run_git(dir, &["branch", "feature/queued-delete"]);
+        let before = graph::load_graph(dir, graph::GraphLoadOptions { base_branch: Some("main".into()), ..Default::default() }).unwrap();
+        assert!(before.commits.iter().flat_map(|commit| &commit.refs).any(|reference| reference.name == "feature/queued-delete"));
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.graph.apply_result(Ok(before));
+        app.active_view = ViewId::Worktrees;
+        app.job_queue.enqueue_or_start(BranchAction::DeleteLocal, vec!["feature/queued-delete".into()], ViewId::Graph);
+        for _ in 0..400 {
+            app.drain_channels();
+            if app.job_queue.current_action().is_none() && app.graph_update_rx.is_none() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let updated = app.graph.snapshot().expect("Graph snapshot remains published");
+        assert!(!updated.commits.iter().flat_map(|commit| &commit.refs).any(|reference| reference.name == "feature/queued-delete"));
+        assert!(app.graph_rx.is_none(), "queued Git mutation must use the incremental updater");
+        assert_eq!(app.active_view, ViewId::Worktrees);
+    }
+
+    #[test]
+    fn graph_state_patch_leaves_revision_ownership_to_app() {
+        // P110: a ref-only action (DeleteLocal) with a loaded Graph snapshot
+        // must use the surgical patch path — apply_ref_delta mutates the
+        // snapshot in place while App owns generation revisions.
+        let mut app = graph_app(vec![graph_ref(
+            "feature/surgical",
+            graph::GraphRefKind::LocalBranch,
+        )]);
+        let before_gen = app
+            .graph
+            .snapshot()
+            .expect("graph_app loads a snapshot")
+            .generation;
+
+        // Ref identities are applied from observed repository state by the
+        // same GraphState patch path used for queued completions.
+        let _ = app.graph.apply_ref_delta(vec!["feature/surgical".into()]);
+        let after_gen = app
+            .graph
+            .snapshot()
+            .expect("snapshot still present")
+            .generation;
+        assert_eq!(after_gen, before_gen, "GraphState must not bump App revisions");
+    }
+
+    #[test]
+    fn observed_commit_change_updates_loaded_graph_without_full_reload_or_navigation() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.name", "Test"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["commit", "--allow-empty", "-m", "root"]);
+        let before = graph::GraphRepositoryState::capture(dir).unwrap();
+        let old_snapshot = graph::load_graph(dir, graph::GraphLoadOptions { base_branch: Some("main".into()), ..Default::default() }).unwrap();
+        run_git(dir, &["checkout", "-b", "feature/incremental"]);
+        run_git(dir, &["commit", "--allow-empty", "-m", "feature"]);
+        let feature_oid = String::from_utf8(Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir).output().unwrap().stdout).unwrap();
+        let after = graph::GraphRepositoryState::capture(dir).unwrap();
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.graph.apply_result(Ok(old_snapshot));
+        app.active_view = ViewId::Worktrees;
+        app.request_graph_update(Ok(graph::GraphRepositoryDelta::between(before, after)));
+        for _ in 0..200 {
+            app.drain_channels();
+            if app.graph_update_rx.is_none() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let updated = app.graph.snapshot().expect("incremental snapshot remains loaded");
+        assert!(updated.commits.iter().any(|commit| commit.oid == feature_oid.trim()));
+        assert!(updated.commits.iter().any(|commit| commit.summary == "root"));
+        assert!(app.graph_rx.is_none(), "normal loaded-snapshot update must not start a full Graph load");
+        assert_eq!(app.active_view, ViewId::Worktrees);
+    }
+
+    #[test]
+    fn automatic_fetch_completion_uses_graph_update_scheduler_without_full_reload() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.name", "Test"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["commit", "--allow-empty", "-m", "root"]);
+        let snapshot = graph::load_graph(dir, graph::GraphLoadOptions { base_branch: Some("main".into()), ..Default::default() }).unwrap();
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.graph.apply_result(Ok(snapshot));
+        app.active_view = ViewId::Tags;
+        app.start_auto_fetch();
+        for _ in 0..200 {
+            app.drain_channels();
+            if app.remote_fetch_rx.is_none() && app.graph_update_rx.is_none() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.graph.snapshot().is_some());
+        assert!(app.graph_rx.is_none(), "automatic fetch must not force a full Graph load");
+        assert_eq!(app.active_view, ViewId::Tags);
+    }
+
+    #[test]
+    fn startup_fetch_completion_is_retained_while_another_auto_fetch_is_requested() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.name", "Test"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["commit", "--allow-empty", "-m", "root"]);
+        let before = graph::GraphRepositoryState::capture(dir).unwrap();
+        let options = graph::GraphLoadOptions { include_remotes: true, base_branch: Some("main".into()), ..Default::default() };
+        let snapshot = graph::load_graph(dir, options).unwrap();
+        let repo = git2::Repository::open(dir).unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let remote_tip = repo.commit(None, &sig, &sig, "fetched topic", &parent.tree().unwrap(), &[&parent]).unwrap();
+        repo.reference("refs/remotes/origin/topic", remote_tip, true, "test fetch").unwrap();
+        let after = graph::GraphRepositoryState::capture(dir).unwrap();
+        let (tx, rx) = mpsc::channel();
+        tx.send(RemoteFetchCompletion {
+            success: true,
+            graph_delta: Ok(graph::GraphRepositoryDelta::between(before, after)),
+        }).unwrap();
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.graph.apply_result(Ok(snapshot));
+        app.active_view = ViewId::Tags;
+        app.remote_fetch_rx = Some(rx);
+        app.start_auto_fetch();
+        assert!(app.remote_fetch_rx.is_some(), "active completion receiver must not be replaced");
+        for _ in 0..300 {
+            app.drain_channels();
+            if app.remote_fetch_rx.is_none() && app.graph_update_rx.is_none() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let updated = app.graph.snapshot().unwrap();
+        assert!(updated.commits.iter().any(|commit| commit.oid == remote_tip.to_string()));
+        assert!(updated.commits.iter().flat_map(|commit| &commit.refs).any(|reference| reference.name == "origin/topic"));
+        assert!(app.graph_rx.is_none());
+        assert_eq!(app.active_view, ViewId::Tags);
+    }
+
+    #[test]
+    fn modal_fetch_completion_uses_graph_update_scheduler_without_double_reload() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.name", "Test"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["commit", "--allow-empty", "-m", "root"]);
+        let snapshot = graph::load_graph(dir, graph::GraphLoadOptions { base_branch: Some("main".into()), ..Default::default() }).unwrap();
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.graph.apply_result(Ok(snapshot));
+        app.active_view = ViewId::Graph;
+        app.start_fetch(false);
+        for _ in 0..200 {
+            app.drain_channels();
+            if app.op_rx.is_none() && app.graph_update_rx.is_none() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.graph.snapshot().is_some());
+        assert!(app.graph_rx.is_none(), "modal fetch must not trigger a second full Graph load");
+        assert_eq!(app.active_view, ViewId::Graph);
+    }
+
+    #[test]
+    fn cancelled_modal_fetch_keeps_and_applies_partial_observation_without_reopening_overlay() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.name", "Test"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["commit", "--allow-empty", "-m", "root"]);
+        let before = graph::GraphRepositoryState::capture(dir).unwrap();
+        let options = graph::GraphLoadOptions { include_remotes: true, base_branch: Some("main".into()), ..Default::default() };
+        let snapshot = graph::load_graph(dir, options.clone()).unwrap();
+        let repo = git2::Repository::open(dir).unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        let tree = parent.tree().unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let topic = repo.commit(None, &sig, &sig, "partial fetched commit", &tree, &[&parent]).unwrap();
+        repo.reference("refs/remotes/origin/topic", topic, true, "test fetch").unwrap();
+        let after = graph::GraphRepositoryState::capture(dir).unwrap();
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.graph.apply_result(Ok(snapshot));
+        app.active_view = ViewId::Worktrees;
+        app.return_view = ViewId::Worktrees;
+        let (op_tx, op_rx) = mpsc::channel();
+        let (delta_tx, delta_rx) = mpsc::channel();
+        app.op_rx = Some(op_rx);
+        app.fetch_graph_delta_rx = Some(delta_rx);
+        app.cancel_flag = Some(Arc::new(AtomicBool::new(false)));
+        app.overlay = Some(Overlay::Executing { label: "Fetching...".into(), progress: None });
+        app.handle_overlay_key(KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE));
+        assert!(app.op_rx.is_some(), "cancellation must retain the completion receiver");
+
+        delta_tx.send(Ok(graph::GraphRepositoryDelta::between(before, after))).unwrap();
+        op_tx.send(Vec::new()).unwrap();
+        for _ in 0..200 {
+            app.drain_channels();
+            if app.op_rx.is_none() && app.graph_update_rx.is_none() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.graph.snapshot().unwrap().commits.iter().any(|commit| commit.oid == topic.to_string()));
+        assert!(app.overlay.is_none(), "a dismissed modal must stay dismissed after completion");
+        assert_eq!(app.active_view, ViewId::Worktrees);
+    }
+
+    #[test]
+    fn initial_graph_load_is_not_published_until_pending_mutation_is_reconciled() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.name", "Test"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["commit", "--allow-empty", "-m", "root"]);
+        let before_state = graph::GraphRepositoryState::capture(dir).unwrap();
+        let old_snapshot = graph::load_graph(dir, graph::GraphLoadOptions { base_branch: Some("main".into()), ..Default::default() }).unwrap();
+        run_git(dir, &["checkout", "-b", "feature/racing-load"]);
+        run_git(dir, &["commit", "--allow-empty", "-m", "racing feature"]);
+        let new_oid = String::from_utf8(Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir).output().unwrap().stdout).unwrap();
+        let after_state = graph::GraphRepositoryState::capture(dir).unwrap();
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.graph.begin_load(500, false);
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(old_snapshot)).unwrap();
+        app.graph_rx = Some(rx);
+        app.request_graph_update(Ok(graph::GraphRepositoryDelta::between(before_state, after_state)));
+        app.drain_channels();
+        assert!(app.graph.snapshot().is_none(), "stale initial snapshot stays staged until reconciliation");
+        for _ in 0..200 {
+            app.drain_channels();
+            if !app.graph.is_loading() && app.graph_update_rx.is_none() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.graph.snapshot().is_some(), "snapshot missing: error={:?}, loading={}, update_rx={}, graph_rx={}", app.graph.error(), app.graph.is_loading(), app.graph_update_rx.is_some(), app.graph_rx.is_some());
+        assert!(app.graph.snapshot().unwrap().commits.iter().any(|commit| commit.oid == new_oid.trim()));
+    }
+
+    #[test]
+    fn pending_mutation_reconciles_from_staged_snapshot_with_new_graph_options() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.name", "Test"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["commit", "--allow-empty", "-m", "root"]);
+        let before = graph::GraphRepositoryState::capture(dir).unwrap();
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.graph.apply_result(Ok(graph::load_graph(dir, graph::GraphLoadOptions { base_branch: Some("main".into()), ..Default::default() }).unwrap()));
+        app.active_view = ViewId::Worktrees;
+        app.spawn_graph_load(2, true);
+        let repo = git2::Repository::open(dir).unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tip = repo.commit(None, &sig, &sig, "during load", &parent.tree().unwrap(), &[&parent]).unwrap();
+        repo.reference("refs/remotes/origin/during-load", tip, true, "test mutation").unwrap();
+        let after = graph::GraphRepositoryState::capture(dir).unwrap();
+        app.request_graph_update(Ok(graph::GraphRepositoryDelta::between(before, after)));
+
+        for _ in 0..400 {
+            app.drain_channels();
+            if !app.graph.is_loading() && app.graph_rx.is_none() && app.graph_update_rx.is_none() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let updated = app.graph.snapshot().expect("reconciled snapshot");
+        assert_eq!(updated.max_count, 2);
+        assert!(updated.includes_remotes);
+        assert!(updated.commits.iter().any(|commit| commit.oid == tip.to_string()));
+        assert!(updated.commits.iter().flat_map(|commit| &commit.refs).any(|reference| reference.name == "origin/during-load"));
+        assert!(app.graph_rx.is_none(), "reconciliation must not strand a newer load");
+        assert_eq!(app.active_view, ViewId::Worktrees);
     }
 
     #[test]
@@ -7351,25 +7869,6 @@ mod tests {
         assert!(app.graph.is_loading());
         assert_eq!(app.graph_generation, generation + 1);
         assert_eq!(app.active_view, ViewId::Branches);
-    }
-
-    #[test]
-    fn remote_only_action_does_not_refresh_graph() {
-        let tmpdir = tempfile::tempdir().expect("temp repo");
-        let mut app = action_refresh_app(tmpdir.path());
-        app.active_view = ViewId::Branches;
-        app.graph.apply_result(Ok(graph_snapshot(vec![graph_ref(
-            "feature/refresh",
-            graph::GraphRefKind::LocalBranch,
-        )])));
-        let generation = app.graph_generation;
-
-        complete_action_job_for_test(&mut app, BranchAction::Push, ViewId::Branches);
-
-        assert!(!app.graph.is_loading());
-        assert_eq!(app.graph_generation, generation);
-        assert_eq!(app.active_view, ViewId::Branches);
-        assert!(app.graph.snapshot().is_some());
     }
 
     #[test]
@@ -9457,6 +9956,52 @@ mod tests {
             !current.commits[0].is_possible_squash_merge,
             "stale enrichment must not overwrite the newer snapshot's marker"
         );
+    }
+
+    #[test]
+    fn metadata_update_preserves_enrichment_completed_after_worker_snapshot() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.name", "Test"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["commit", "--allow-empty", "-m", "root"]);
+        let mut enriched = graph_snapshot(vec![]);
+        enriched.commits[0].is_possible_squash_merge = true;
+        enriched.commits[0].possible_squash_merge_sources = vec!["feature/source".into()];
+        enriched.commits[0].fuzzy_squash_match = Some(graph::FuzzySquashMatch { similarity_percent: 87 });
+        enriched.commits[0].is_cherry_picked_commit = true;
+        let mut stale_worker_snapshot = enriched.clone();
+        stale_worker_snapshot.commits[0].is_possible_squash_merge = false;
+        stale_worker_snapshot.commits[0].possible_squash_merge_sources.clear();
+        stale_worker_snapshot.commits[0].fuzzy_squash_match = None;
+        stale_worker_snapshot.commits[0].is_cherry_picked_commit = false;
+        let state = graph::GraphRepositoryState::capture(dir).unwrap();
+        let delta = graph::GraphRepositoryDelta::between(state.clone(), state);
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.graph.apply_result(Ok(enriched));
+        let options = graph::GraphLoadOptions {
+            max_count: app.graph.max_count(),
+            include_remotes: app.graph.includes_remotes(),
+            line_style: graph::GraphLineStyle::from_symbol_name(app.symbols.name),
+            base_branch: Some(app.base_branch.clone()),
+            cache_root: app.cache_root.clone(),
+        };
+        let (tx, rx) = mpsc::channel();
+        tx.send(graph::GraphUpdateMsg {
+            revision: app.graph_revision,
+            options,
+            delta,
+            result: Ok(stale_worker_snapshot),
+        }).unwrap();
+        app.graph_update_rx = Some(rx);
+        app.drain_channels();
+
+        let commit = &app.graph.snapshot().unwrap().commits[0];
+        assert!(commit.is_possible_squash_merge);
+        assert_eq!(commit.possible_squash_merge_sources, ["feature/source"]);
+        assert_eq!(commit.fuzzy_squash_match.as_ref().unwrap().similarity_percent, 87);
+        assert!(commit.is_cherry_picked_commit);
     }
 
     #[test]

@@ -50,6 +50,29 @@ pub struct GraphEnrichmentMsg {
     pub updates: Vec<GraphEnrichmentUpdate>,
 }
 
+#[derive(Debug)]
+pub struct GraphUpdateMsg {
+    pub revision: u64,
+    pub options: GraphLoadOptions,
+    pub delta: GraphRepositoryDelta,
+    pub result: Result<GraphSnapshot, GraphLoadError>,
+}
+
+pub fn spawn_graph_updater(
+    repo_path: PathBuf,
+    snapshot: GraphSnapshot,
+    delta: GraphRepositoryDelta,
+    options: GraphLoadOptions,
+    revision: u64,
+) -> Receiver<GraphUpdateMsg> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = update_graph_incrementally(&repo_path, snapshot, &delta, options.clone());
+        let _ = tx.send(GraphUpdateMsg { revision, options, delta, result });
+    });
+    rx
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphSource {
     Gleisbau,
@@ -138,11 +161,127 @@ pub struct GraphRefCounts {
     pub remote: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GraphRefKind {
     LocalBranch,
     RemoteBranch,
     Tag,
+}
+
+/// Canonical identity for a repository ref. `full_name` retains the namespace
+/// (for example `refs/remotes/origin/topic`) so equal display names cannot
+/// alias across local, remote, and tag refs.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GraphRefId {
+    pub kind: GraphRefKind,
+    pub full_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GraphRepositoryState {
+    pub refs: HashMap<GraphRefId, String>,
+    /// Non-branch/tag history roots (for example refs/stash and custom refs).
+    /// Full remote-inclusive loaders use these as traversal roots too.
+    pub additional_roots: HashMap<String, String>,
+    pub head_ref: Option<String>,
+    pub head_oid: Option<String>,
+    pub worktrees: HashMap<String, Option<String>>,
+    pub tracking: HashMap<String, (String, Option<u32>, Option<u32>)>,
+}
+
+impl GraphRepositoryState {
+    pub fn capture(repo_path: &Path) -> Result<Self, String> {
+        Self::capture_with_head(repo_path, repo_path)
+    }
+
+    pub fn capture_with_head(repo_path: &Path, head_repo_path: &Path) -> Result<Self, String> {
+        let repo = git2::Repository::open(repo_path).map_err(|error| error.message().to_string())?;
+        let head_repo = git2::Repository::open(head_repo_path).map_err(|error| error.message().to_string())?;
+        let mut state = Self::default();
+        let references = repo.references().map_err(|error| error.message().to_string())?;
+        for reference in references {
+            let reference = reference.map_err(|error| error.message().to_string())?;
+            let Ok(full_name) = reference.name().map(str::to_string) else { continue };
+            let kind = if full_name.starts_with("refs/heads/") {
+                GraphRefKind::LocalBranch
+            } else if full_name.starts_with("refs/remotes/") {
+                GraphRefKind::RemoteBranch
+            } else if full_name.starts_with("refs/tags/") {
+                GraphRefKind::Tag
+            } else {
+                if let Ok(commit) = reference.peel_to_commit() {
+                    state.additional_roots.insert(full_name, commit.id().to_string());
+                }
+                continue
+            };
+            let oid = reference.peel_to_commit().map(|commit| commit.id().to_string()).ok();
+            if let Some(oid) = oid {
+                state.refs.insert(GraphRefId { kind, full_name }, oid);
+            }
+        }
+        for branch in repo.branches(Some(git2::BranchType::Local)).map_err(|error| error.message().to_string())? {
+            let (branch, _) = branch.map_err(|error| error.message().to_string())?;
+            let Some(name) = branch.name().map_err(|error| error.message().to_string())?.map(str::to_string) else { continue };
+            let Ok(upstream) = branch.upstream() else { continue };
+            let Some(upstream_name) = upstream.name().ok().flatten().map(str::to_string) else { continue };
+            let tracking = match (branch.get().target(), upstream.get().target()) {
+                (Some(local), Some(remote)) => repo.graph_ahead_behind(local, remote).ok().map(|(ahead, behind)| (Some(ahead.try_into().unwrap_or(u32::MAX)), Some(behind.try_into().unwrap_or(u32::MAX)))),
+                _ => None,
+            }.unwrap_or((None, None));
+            state.tracking.insert(name, (upstream_name, tracking.0, tracking.1));
+        }
+        if let Ok(head) = head_repo.head() {
+            state.head_ref = head.name().ok().map(str::to_string);
+            state.head_oid = head.peel_to_commit().ok().map(|commit| commit.id().to_string());
+        }
+        for worktree in crate::git::worktree::try_list_worktrees(repo_path)? {
+            let path = std::fs::canonicalize(&worktree.path).unwrap_or(worktree.path);
+            state.worktrees.insert(path.to_string_lossy().into_owned(), worktree.branch);
+        }
+        Ok(state)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphRepositoryDelta {
+    pub before: GraphRepositoryState,
+    pub after: GraphRepositoryState,
+    pub added_refs: Vec<(GraphRefId, String)>,
+    pub removed_refs: Vec<(GraphRefId, String)>,
+    pub moved_refs: Vec<(GraphRefId, String, String)>,
+    pub head_changed: bool,
+    pub worktrees_changed: bool,
+    pub tracking_changed: bool,
+    pub additional_roots_changed: bool,
+}
+
+impl GraphRepositoryDelta {
+    pub fn between(before: GraphRepositoryState, after: GraphRepositoryState) -> Self {
+        let mut added_refs = Vec::new();
+        let mut removed_refs = Vec::new();
+        let mut moved_refs = Vec::new();
+        for (id, old_oid) in &before.refs {
+            match after.refs.get(id) {
+                None => removed_refs.push((id.clone(), old_oid.clone())),
+                Some(new_oid) if new_oid != old_oid => moved_refs.push((id.clone(), old_oid.clone(), new_oid.clone())),
+                _ => {}
+            }
+        }
+        for (id, oid) in &after.refs {
+            if !before.refs.contains_key(id) { added_refs.push((id.clone(), oid.clone())); }
+        }
+        Self {
+            head_changed: before.head_ref != after.head_ref || before.head_oid != after.head_oid,
+            worktrees_changed: before.worktrees != after.worktrees,
+            tracking_changed: before.tracking != after.tracking,
+            additional_roots_changed: before.additional_roots != after.additional_roots,
+            before,
+            after,
+            added_refs,
+            removed_refs,
+            moved_refs,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,6 +354,182 @@ pub fn load_graph(
             })
         }
     }
+}
+
+/// Rebuilds topology over only the configured display window from the
+/// resulting ref roots. The repository history is never loaded through the
+/// normal full Graph loaders on this path; `revwalk.take(max_count)` bounds
+/// commit discovery and the resulting owned records are laid out directly.
+pub fn update_graph_incrementally(
+    repo_path: &Path,
+    previous: GraphSnapshot,
+    delta: &GraphRepositoryDelta,
+    options: GraphLoadOptions,
+) -> Result<GraphSnapshot, GraphLoadError> {
+    if delta.added_refs.is_empty() && delta.removed_refs.is_empty() && delta.moved_refs.is_empty()
+        && !delta.additional_roots_changed {
+        let mut patched = previous;
+        let refs = collect_ref_data(repo_path, options.include_remotes, options.base_branch.as_deref())
+            .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
+        for commit in &mut patched.commits {
+            commit.refs = refs.refs_by_oid.get(&commit.oid).cloned().unwrap_or_default();
+        }
+        patched.ref_counts = refs.ref_counts;
+        assign_graph_branch_labels(&mut patched.commits, &refs.branch_labels, refs.base_branch.as_deref());
+        return Ok(patched);
+    }
+
+    let repository = git2::Repository::open(repo_path)
+        .map_err(|error| GraphLoadError::Both { gleisbau: error.message().to_string(), fallback: error.message().to_string() })?;
+    let resulting_state = GraphRepositoryState::capture(repo_path)
+        .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
+    let previous_generation = previous.generation;
+    let previous_topology = previous.commits.iter().map(|commit| (commit.oid.clone(), commit.parents.clone())).collect::<Vec<_>>();
+    let old_by_oid = previous.commits.iter().map(|commit| (commit.oid.clone(), commit.clone())).collect::<HashMap<_, _>>();
+    let ref_data = collect_ref_data(repo_path, options.include_remotes, options.base_branch.as_deref())
+        .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
+    let mut eligible_roots = resulting_state.refs.iter().filter_map(|(id, oid)| {
+        (id.kind == GraphRefKind::LocalBranch || options.include_remotes)
+            .then(|| git2::Oid::from_str(oid).ok()).flatten()
+    }).collect::<Vec<_>>();
+    if options.include_remotes {
+        eligible_roots.extend(resulting_state.additional_roots.values().filter_map(|oid| git2::Oid::from_str(oid).ok()));
+    }
+    let mut cached_by_oid = old_by_oid.clone();
+    let mut records = previous.commits.clone();
+    records.retain(|commit| {
+        git2::Oid::from_str(&commit.oid).ok().is_some_and(|commit_oid| {
+            eligible_roots.iter().any(|root| *root == commit_oid || repository.graph_descendant_of(*root, commit_oid).unwrap_or(false))
+        })
+    });
+    // Traverse all eligible resulting roots together. This gives Git one
+    // deterministic global ordering and lets cached commits count toward the
+    // window without hiding their ancestry from refill discovery.
+    eligible_roots.sort_by_key(|oid| oid.to_string());
+    eligible_roots.dedup();
+    let mut walk = repository.revwalk().map_err(|error| GraphLoadError::Both { gleisbau: error.message().to_string(), fallback: error.message().to_string() })?;
+    walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|error| GraphLoadError::Both { gleisbau: error.message().to_string(), fallback: error.message().to_string() })?;
+    for root in &eligible_roots {
+        walk.push(*root).map_err(|error| GraphLoadError::Both { gleisbau: error.message().to_string(), fallback: error.message().to_string() })?;
+    }
+    records.clear();
+    let mut included = HashSet::new();
+    for oid in walk {
+        let oid = oid.map_err(|error| GraphLoadError::Both { gleisbau: error.message().to_string(), fallback: error.message().to_string() })?;
+        let oid_text = oid.to_string();
+        if !included.insert(oid_text.clone()) { continue; }
+        if let Some(cached) = cached_by_oid.remove(&oid_text) {
+            records.push(cached);
+        } else {
+            let commit = repository.find_commit(oid).map_err(|error| GraphLoadError::Both { gleisbau: error.message().to_string(), fallback: error.message().to_string() })?;
+            records.push(GraphCommit {
+                oid: oid_text, summary: commit.summary().ok().flatten().unwrap_or_default().to_string(),
+                parents: commit.parent_ids().map(|parent| parent.to_string()).collect(), lane: None,
+                branch: None, refs: Vec::new(), is_possible_squash_merge: false,
+                possible_squash_merge_sources: Vec::new(), fuzzy_squash_match: None,
+                is_cherry_picked_commit: false, author_name: commit.author().name().unwrap_or("").to_string(),
+                author_email: commit.author().email().unwrap_or("").to_string(),
+                authored_at: Utc.timestamp_opt(commit.author().when().seconds(), 0).single(),
+            });
+        }
+        if records.len() >= options.max_count.max(1) { break; }
+    }
+    for record in &mut records {
+        record.refs = ref_data.refs_by_oid.get(&record.oid).cloned().unwrap_or_default();
+        record.branch = None;
+        if let Some(old) = old_by_oid.get(&record.oid) {
+            record.is_possible_squash_merge = old.is_possible_squash_merge;
+            record.possible_squash_merge_sources = old.possible_squash_merge_sources.clone();
+            record.fuzzy_squash_match = old.fuzzy_squash_match.clone();
+            record.is_cherry_picked_commit = old.is_cherry_picked_commit;
+        }
+    }
+    records = topological_commit_order(records);
+    records.truncate(options.max_count.max(1));
+    let same_topology = previous_topology == records.iter().map(|commit| (commit.oid.clone(), commit.parents.clone())).collect::<Vec<_>>();
+    if same_topology {
+        assign_graph_branch_labels(&mut records, &ref_data.branch_labels, ref_data.base_branch.as_deref());
+        let mut patched = previous;
+        patched.commits = records;
+        patched.ref_counts = ref_data.ref_counts;
+        patched.max_count = options.max_count;
+        patched.includes_remotes = options.include_remotes;
+        return Ok(patched);
+    }
+    assign_graph_branch_labels(&mut records, &ref_data.branch_labels, ref_data.base_branch.as_deref());
+
+    let settings = gleisbau_settings(options.include_remotes, options.line_style, options.base_branch.as_deref())
+        .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
+    let mut commits = records.iter().map(|record| {
+        let oid = git2::Oid::from_str(&record.oid).expect("record OID was read from repository");
+        gleisbau::backend::git2::CommitInfo {
+            oid,
+            parents: record.parents.iter().filter_map(|parent| git2::Oid::from_str(parent).ok()).collect(),
+            children: Vec::new(),
+            branch_trace: None,
+        }
+    }).collect::<Vec<_>>();
+    let indices = commits.iter().enumerate().map(|(index, commit)| (commit.oid, index)).collect::<HashMap<_, _>>();
+    gleisbau::backend::git2::assign_children(&mut commits, &indices);
+    let mut branches = gleisbau::backend::git2::assign_branches(&repository, &mut commits, &indices, &settings)
+        .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
+    gleisbau::backend::git2::correct_fork_merges(&commits, &indices, &mut branches)
+        .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
+    gleisbau::backend::git2::assign_sources_targets(&commits, &indices, &mut branches);
+    let tracks = gleisbau::graph::TrackMap { commits, indices, all_branches: branches };
+    let remote_base = if options.include_remotes {
+        options.base_branch.as_deref().and_then(|base| tracks.all_branches.iter().position(|branch| branch.is_remote && branch.name == format!("origin/{base}")))
+    } else { None };
+    let saved_remote_name = remote_base.map(|index| (index, tracks.all_branches[index].name.clone()));
+    let mut tracks = tracks;
+    if let Some((index, name)) = &saved_remote_name { tracks.all_branches[*index].name = format!("__gbm_remote_base__/{name}"); }
+    let layout = gleisbau::layout::layout_track_range(&tracks, 0..tracks.commits.len(), &settings)
+        .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
+    if let Some((index, name)) = saved_remote_name { tracks.all_branches[index].name = name; }
+    let rendered = gleisbau::print::unicode::print_graph_terminal(&settings, &tracks, &layout, &vec![1; layout.commit_count()]);
+    let mut line_to_commit = HashMap::new();
+    for (relative, line) in rendered.commit2line.iter().copied().enumerate() {
+        line_to_commit.insert(line, layout.commit_index_start() + relative);
+    }
+    for (index, track_commit) in tracks.commits.iter().enumerate() {
+        records[index].lane = track_commit.branch_trace.and_then(|trace| layout.track_visual(trace)).and_then(|visual| visual.column);
+    }
+    Ok(GraphSnapshot {
+        source: GraphSource::Gleisbau,
+        commits: records,
+        lines: rendered.graph_lines.into_iter().enumerate().map(|(index, graph)| GraphLine { graph, commit_index: line_to_commit.get(&index).copied() }).collect(),
+        ref_counts: ref_data.ref_counts,
+        max_count: options.max_count,
+        includes_remotes: options.include_remotes,
+        generation: previous_generation,
+    })
+}
+
+fn topological_commit_order(records: Vec<GraphCommit>) -> Vec<GraphCommit> {
+    let mut by_oid = records.into_iter().map(|record| (record.oid.clone(), record)).collect::<HashMap<_, _>>();
+    let mut child_counts = by_oid.keys().map(|oid| (oid.clone(), 0usize)).collect::<HashMap<_, _>>();
+    for record in by_oid.values() {
+        for parent in &record.parents {
+            if let Some(count) = child_counts.get_mut(parent) { *count += 1; }
+        }
+    }
+    let mut ordered = Vec::with_capacity(by_oid.len());
+    while !by_oid.is_empty() {
+        let next = child_counts.iter().filter(|(_, count)| **count == 0)
+            .filter_map(|(oid, _)| by_oid.get(oid).map(|record| (oid.clone(), record.authored_at.map(|time| time.timestamp()).unwrap_or_default())))
+            .max_by(|(oid_a, time_a), (oid_b, time_b)| time_a.cmp(time_b).then_with(|| oid_b.cmp(oid_a)))
+            .map(|(oid, _)| oid);
+        let Some(oid) = next else { break };
+        let Some(record) = by_oid.remove(&oid) else { break };
+        for parent in &record.parents {
+            if let Some(count) = child_counts.get_mut(parent) { *count = count.saturating_sub(1); }
+        }
+        child_counts.remove(&oid);
+        ordered.push(record);
+    }
+    ordered.extend(by_oid.into_values());
+    ordered
 }
 
 /// Synchronous, single-call helper for tests: loads the structural snapshot
@@ -801,19 +1116,13 @@ fn compute_cherry_pick_updates(
         }
     }
 
-    let mut updates: Vec<GraphEnrichmentUpdate> = Vec::new();
-    for commit in &snapshot.commits {
-        if cherry_picked.contains(&commit.oid) {
-            updates.push(GraphEnrichmentUpdate {
-                oid: commit.oid.clone(),
-                is_possible_squash_merge: false,
-                possible_squash_merge_sources: Vec::new(),
-                fuzzy_squash_match: None,
-                is_cherry_picked_commit: true,
-            });
-        }
-    }
-    updates
+    snapshot.commits.iter().map(|commit| GraphEnrichmentUpdate {
+        oid: commit.oid.clone(),
+        is_possible_squash_merge: false,
+        possible_squash_merge_sources: Vec::new(),
+        fuzzy_squash_match: None,
+        is_cherry_picked_commit: cherry_picked.contains(&commit.oid),
+    }).collect()
 }
 
 fn merge_enrichment_updates(base: &mut Vec<GraphEnrichmentUpdate>, extra: Vec<GraphEnrichmentUpdate>) {
@@ -1169,7 +1478,7 @@ fn collect_ref_data(
             target_oid: target_oid.clone(),
             kind: GraphRefKind::LocalBranch,
         };
-        data.branch_labels.insert(name.clone(), label);
+        data.branch_labels.insert(format!("refs/heads/{name}"), label);
     }
 
     for branch in repository
@@ -1195,7 +1504,7 @@ fn collect_ref_data(
         if include_remotes {
             data.ref_counts.remote += 1;
             data.branch_labels.insert(
-                name.clone(),
+                format!("refs/remotes/{name}"),
                 GraphBranchLabel {
                     name: name.clone(),
                     target_oid: target_oid.clone(),
@@ -1206,20 +1515,12 @@ fn collect_ref_data(
     }
 
     for (name, target_oid) in &local_refs {
-        let tracking = remote_refs
-            .iter()
-            .filter(|(remote_name, _)| remote_short_name(remote_name) == name)
-            .find_map(|(_remote_name, remote_oid)| {
-                let (ahead, behind) = repository
-                    .graph_ahead_behind(
-                        git2::Oid::from_str(target_oid).ok()?,
-                        git2::Oid::from_str(remote_oid).ok()?,
-                    )
-                    .ok()?;
-                Some(GraphRefTracking {
-                    ahead: ahead.try_into().unwrap_or(u32::MAX),
-                    behind: behind.try_into().unwrap_or(u32::MAX),
-                })
+        let tracking = repository.find_branch(name, git2::BranchType::Local).ok()
+            .and_then(|branch| branch.upstream().ok())
+            .and_then(|upstream| {
+                let upstream_oid = upstream.get().target()?;
+                let (ahead, behind) = repository.graph_ahead_behind(git2::Oid::from_str(target_oid).ok()?, upstream_oid).ok()?;
+                Some(GraphRefTracking { ahead: ahead.try_into().unwrap_or(u32::MAX), behind: behind.try_into().unwrap_or(u32::MAX) })
             });
         insert_ref(
             &mut data.refs_by_oid,
@@ -1315,6 +1616,9 @@ fn assign_graph_branch_labels(
     branch_labels: &HashMap<String, GraphBranchLabel>,
     base_branch: Option<&str>,
 ) {
+    for commit in commits.iter_mut() {
+        commit.branch = None;
+    }
     assign_first_parent_branch_labels(commits, branch_labels, base_branch);
     assign_merge_subject_branch_labels(commits);
 }
@@ -1446,6 +1750,114 @@ fn insert_ref(refs_by_oid: &mut HashMap<String, Vec<GraphRef>>, oid: &str, refer
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repository_state_uses_canonical_typed_refs_and_observes_head_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let mut index = repo.index().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@example.com").unwrap();
+        let oid = repo.commit(Some("refs/heads/main"), &sig, &sig, "root", &tree, &[]).unwrap();
+        repo.reference("refs/heads/feature/foo", oid, true, "test").unwrap();
+        repo.reference("refs/remotes/origin/feature/foo", oid, true, "test").unwrap();
+        repo.reference("refs/remotes/origin/origin/topic", oid, true, "test").unwrap();
+        repo.reference("refs/remotes/upstream/topic", oid, true, "test").unwrap();
+        repo.reference("refs/tags/feature/foo", oid, true, "test").unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+
+        let before = GraphRepositoryState::capture(dir.path()).unwrap();
+        assert!(before.refs.keys().any(|id| id.full_name == "refs/heads/feature/foo"));
+        assert!(before.refs.keys().any(|id| id.full_name == "refs/remotes/origin/feature/foo"));
+        assert!(before.refs.keys().any(|id| id.full_name == "refs/tags/feature/foo"));
+        assert_eq!(before.head_ref.as_deref(), Some("refs/heads/main"));
+
+        repo.set_head("refs/heads/feature/foo").unwrap();
+        repo.find_reference("refs/remotes/origin/origin/topic").unwrap().delete().unwrap();
+        let after = GraphRepositoryState::capture(dir.path()).unwrap();
+        let delta = GraphRepositoryDelta::between(before, after);
+        assert!(delta.head_changed);
+        assert!(delta.added_refs.is_empty());
+        assert!(delta.removed_refs.iter().any(|(id, _)| id.full_name == "refs/remotes/origin/origin/topic"));
+        assert!(!delta.removed_refs.iter().any(|(id, _)| id.full_name == "refs/remotes/upstream/topic"));
+    }
+
+    #[test]
+    fn incremental_update_adds_new_tip_history_without_dropping_cached_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@example.com").unwrap();
+        let root = repo.commit(Some("refs/heads/main"), &sig, &sig, "root", &tree, &[]).unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+        let options = GraphLoadOptions { max_count: 10, ..GraphLoadOptions::default() };
+        let snapshot = load_graph(dir.path(), options.clone()).unwrap();
+        let before = GraphRepositoryState::capture(dir.path()).unwrap();
+        let parent = repo.find_commit(root).unwrap();
+        let next = repo.commit(None, &sig, &sig, "feature", &tree, &[&parent]).unwrap();
+        repo.reference("refs/heads/feature/new", next, true, "test").unwrap();
+        let after = GraphRepositoryState::capture(dir.path()).unwrap();
+        let updated = update_graph_incrementally(
+            dir.path(), snapshot, &GraphRepositoryDelta::between(before, after), options,
+        ).unwrap();
+        assert!(updated.commits.iter().any(|commit| commit.oid == next.to_string()));
+        assert!(updated.commits.iter().any(|commit| commit.oid == root.to_string()));
+        assert!(updated.commits.iter().flat_map(|commit| &commit.refs).any(|reference| reference.name == "feature/new"));
+    }
+
+    #[test]
+    fn remote_inclusive_incremental_update_keeps_history_from_additional_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@example.com").unwrap();
+        let main = repo.commit(Some("refs/heads/main"), &sig, &sig, "main root", &tree, &[]).unwrap();
+        let stash = main;
+        repo.reference("refs/stash", stash, true, "test stash").unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+        let options = GraphLoadOptions { max_count: 10, include_remotes: true, ..GraphLoadOptions::default() };
+        let before = GraphRepositoryState::capture(dir.path()).unwrap();
+        assert_eq!(before.additional_roots.get("refs/stash"), Some(&stash.to_string()));
+        let snapshot = load_graph(dir.path(), options.clone()).unwrap();
+
+        let parent = repo.find_commit(main).unwrap();
+        let next = repo.commit(None, &sig, &sig, "new branch tip", &tree, &[&parent]).unwrap();
+        repo.reference("refs/heads/feature/new", next, true, "test").unwrap();
+        let after = GraphRepositoryState::capture(dir.path()).unwrap();
+        let updated = update_graph_incrementally(
+            dir.path(), snapshot, &GraphRepositoryDelta::between(before, after), options,
+        ).unwrap();
+
+        assert!(updated.commits.iter().any(|commit| commit.oid == stash.to_string()));
+        assert!(updated.commits.iter().any(|commit| commit.oid == next.to_string()));
+    }
+
+    #[test]
+    fn local_tracking_metadata_uses_configured_upstream_not_matching_short_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@example.com").unwrap();
+        let root = repo.commit(Some("refs/heads/main"), &sig, &sig, "root", &tree, &[]).unwrap();
+        let parent = repo.find_commit(root).unwrap();
+        let local = repo.commit(Some("refs/heads/topic"), &sig, &sig, "local", &tree, &[&parent]).unwrap();
+        let origin = repo.commit(None, &sig, &sig, "origin", &tree, &[&parent]).unwrap();
+        repo.reference("refs/remotes/origin/topic", origin, true, "test").unwrap();
+        repo.reference("refs/remotes/upstream/topic", root, true, "test").unwrap();
+        repo.remote("upstream", "https://example.invalid/upstream.git").unwrap();
+        repo.find_branch("topic", git2::BranchType::Local).unwrap().set_upstream(Some("upstream/topic")).unwrap();
+        repo.set_head("refs/heads/topic").unwrap();
+
+        let refs = collect_ref_data(dir.path(), true, Some("main")).unwrap();
+        let local_ref = refs.refs_by_oid.get(&local.to_string()).unwrap().iter()
+            .find(|reference| reference.kind == GraphRefKind::LocalBranch).unwrap();
+        let tracking = local_ref.tracking.as_ref().unwrap();
+        assert_eq!((tracking.ahead, tracking.behind), (1, 0));
+    }
 
     fn commit(oid: &str, parents: &[&str]) -> GraphCommit {
         GraphCommit {
