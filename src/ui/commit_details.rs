@@ -2,6 +2,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
 use crate::git::commit_details::{CommitDetailMode, CommitDetails};
+use crate::git::graph::GraphCommit;
 use crate::symbols::SymbolSet;
 use crate::theme::Theme;
 
@@ -17,6 +18,7 @@ pub enum CommitDetailsFocus {
 #[allow(clippy::too_many_arguments)]
 pub fn draw_commit_details(
     frame: &mut Frame,
+    commit: &GraphCommit,
     details: &CommitDetails,
     items: &[MenuItem],
     cursor: usize,
@@ -48,6 +50,17 @@ pub fn draw_commit_details(
         Span::styled("Commit ", theme.modal_secondary),
         Span::styled(details.oid.clone(), theme.modal_commit),
     ]));
+    if !commit.is_possible_squash_merge && !commit.is_cherry_picked_commit {
+        if let Some(fuzzy) = commit.fuzzy_squash_match.as_ref() {
+            lines.push(Line::from(vec![
+                Span::styled("Possible squash merge (fuzzy): ", theme.modal_secondary),
+                Span::styled(
+                    format!("{}% similarity", fuzzy.similarity_percent),
+                    theme.modal_commit,
+                ),
+            ]));
+        }
+    }
     let author = match (
         details.author_name.is_empty(),
         details.author_email.is_empty(),

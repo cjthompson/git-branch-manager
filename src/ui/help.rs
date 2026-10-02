@@ -87,6 +87,7 @@ const GRAPH_CONCEPTS: &[&str] = &[
     "Falls back to git log if needed",
     "Details: Tab files/actions, Enter patch, Esc back",
     "Branch tips show squash-content comparison from merge-base",
+    "Fuzzy labels show % similarity; Enter opens commit details",
 ];
 
 /// Renders the help overlay on top of the current view.

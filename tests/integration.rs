@@ -11,11 +11,17 @@ use git_branch_manager::git::{
     operations, squash_loader, status, tags, worktree,
 };
 use git_branch_manager::job_queue::{ActionJob, ActionJobQueue};
+use git_branch_manager::symbols::SymbolSet;
+use git_branch_manager::theme::Theme;
 use git_branch_manager::types::{
     BranchAction, ChangedFileKind, DiagKind, FailureCause, MergeStatus, SquashConfidence,
     TrackingStatus,
 };
+use git_branch_manager::ui::graph_render::render_graph_view;
+use git_branch_manager::view::graph::GraphState;
 use git_branch_manager::view::ViewId;
+use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 
 /// A temp directory for tests. Deletes itself on drop, EXCEPT when the
 /// `GBM_KEEP_TEST_REPOS` env var is set — then it leaks the directory and prints
@@ -5059,6 +5065,41 @@ fn test_squash_scenario_08a_conflict_resolution_extra_lines_fuzzy_positive() {
         fuzzy.similarity_percent >= 75,
         "expected high similarity for a near-exact match with one extra resolution edit, got {}",
         fuzzy.similarity_percent
+    );
+
+    let mut graph_state = GraphState::new();
+    graph_state.apply_result(Ok(snapshot.clone()));
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal
+        .draw(|frame| {
+            render_graph_view(
+                frame,
+                frame.area(),
+                &mut graph_state,
+                &Theme::dark(),
+                &SymbolSet::ascii(),
+            )
+        })
+        .unwrap();
+    let short_oid = &squash_oid[..7];
+    let rendered_lines: Vec<String> = terminal
+        .backend()
+        .buffer()
+        .content()
+        .chunks(120)
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+        .collect();
+    let landing_row = rendered_lines
+        .iter()
+        .find(|line| line.contains(short_oid))
+        .expect("fuzzy landing should have a rendered graph row");
+    assert!(
+        landing_row.contains(&format!("[fuzzy squash {}%]", fuzzy.similarity_percent)),
+        "rendered fuzzy landing should show its computed similarity, got: {landing_row}"
+    );
+    assert!(
+        landing_row.contains("│o"),
+        "fuzzy classification should keep the ordinary DAG glyph, got: {landing_row}"
     );
     let _ = branch_tip;
 }

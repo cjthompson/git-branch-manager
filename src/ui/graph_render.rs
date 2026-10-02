@@ -221,6 +221,14 @@ fn render_graph_rows(
                 short_oid(&commit.oid),
                 selected_style(theme.squash_merged, selected, theme),
             ));
+            if !commit.is_possible_squash_merge && !commit.is_cherry_picked_commit {
+                if let Some(fuzzy) = commit.fuzzy_squash_match.as_ref() {
+                    detail.push(Span::styled(
+                        format!(" [fuzzy squash {}%]", fuzzy.similarity_percent),
+                        selected_style(theme.secondary_text, selected, theme),
+                    ));
+                }
+            }
             detail.push(Span::styled(
                 format!(" {}", commit.summary),
                 selected_style(commit_summary_style(commit, theme), selected, theme),
@@ -967,6 +975,150 @@ mod tests {
             generation: None,
         }));
         state
+    }
+
+    fn render_commit_lines(
+        commit: GraphCommit,
+        width: u16,
+        horizontal_offset: usize,
+    ) -> Vec<String> {
+        let mut state = GraphState::new();
+        state.apply_result(Ok(crate::git::graph::GraphSnapshot {
+            source: GraphSource::Gleisbau,
+            commits: vec![commit],
+            lines: vec![GraphLine {
+                graph: "*".into(),
+                commit_index: Some(0),
+            }],
+            ref_counts: Default::default(),
+            max_count: 500,
+            includes_remotes: false,
+            generation: None,
+        }));
+        for _ in 0..horizontal_offset {
+            state.scroll_right();
+        }
+
+        let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_graph_view(
+                    frame,
+                    frame.area(),
+                    &mut state,
+                    &Theme::dark(),
+                    &SymbolSet::ascii(),
+                )
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(width as usize)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect()
+    }
+
+    fn fuzzy_commit(score: u8) -> GraphCommit {
+        GraphCommit {
+            oid: "abcdef0123456789".into(),
+            summary: "fuzzy landing".into(),
+            fuzzy_squash_match: Some(crate::git::graph::FuzzySquashMatch {
+                similarity_percent: score,
+            }),
+            ..GraphCommit::default()
+        }
+    }
+
+    #[test]
+    fn graph_commit_row_shows_fuzzy_score_after_short_oid() {
+        for score in [84, 97, 100] {
+            let lines = render_commit_lines(fuzzy_commit(score), 100, 0);
+            let row = lines
+                .iter()
+                .find(|line| line.contains("abcdef0"))
+                .expect("commit row should be visible");
+
+            assert!(
+                row.contains("o abcdef0"),
+                "ordinary DAG marker should remain: {row}"
+            );
+            assert!(
+                row.contains(&format!("[fuzzy squash {score}%] fuzzy landing")),
+                "fuzzy annotation should follow the short oid for {score}%: {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn graph_commit_row_keeps_dag_glyph_and_fixed_ref_geometry_when_fuzzy_label_scrolls() {
+        let initial = render_commit_lines(fuzzy_commit(84), 34, 0);
+        let initial_row = initial
+            .iter()
+            .find(|line| line.contains("abcdef0"))
+            .expect("commit row should be visible");
+        assert!(initial_row.contains("o abcdef0"), "got: {initial_row}");
+        assert!(!initial_row.contains("[fuzzy squash 84%]"));
+
+        let scrolled = render_commit_lines(fuzzy_commit(84), 34, 8);
+        let row = scrolled
+            .iter()
+            .find(|line| line.contains("[fuzzy squash 84%]"))
+            .expect("horizontal scrolling should reveal the clipped fuzzy label");
+        let header = scrolled
+            .iter()
+            .find(|line| line.contains("LRT|State"))
+            .expect("narrow graph should keep the compact LRT/State header");
+        assert!(
+            row.starts_with('│'),
+            "row should retain its outer border: {row}"
+        );
+        assert!(
+            row.contains('o'),
+            "fuzzy status must keep the ordinary DAG glyph: {row}"
+        );
+        assert_eq!(
+            row.find('|'),
+            header.find("LRT|State").map(|label_start| label_start - 1),
+            "fuzzy annotation must not shift the fixed LRT/State columns"
+        );
+    }
+
+    #[test]
+    fn graph_commit_row_omits_fuzzy_label_without_a_match() {
+        let lines = render_commit_lines(
+            GraphCommit {
+                oid: "abcdef0123456789".into(),
+                summary: "ordinary commit".into(),
+                ..GraphCommit::default()
+            },
+            100,
+            0,
+        );
+        let row = lines
+            .iter()
+            .find(|line| line.contains("abcdef0"))
+            .expect("commit row should be visible");
+        assert!(row.contains("ordinary commit"), "got: {row}");
+        assert!(!row.contains("[fuzzy squash"), "got: {row}");
+    }
+
+    #[test]
+    fn graph_commit_row_gives_exact_squash_and_cherry_labels_precedence_over_fuzzy() {
+        for (is_possible_squash_merge, is_cherry_picked_commit) in
+            [(true, false), (false, true), (true, true)]
+        {
+            let mut commit = fuzzy_commit(97);
+            commit.is_possible_squash_merge = is_possible_squash_merge;
+            commit.is_cherry_picked_commit = is_cherry_picked_commit;
+            let lines = render_commit_lines(commit, 100, 0);
+            let row = lines
+                .iter()
+                .find(|line| line.contains("abcdef0"))
+                .expect("commit row should be visible");
+            assert!(!row.contains("[fuzzy squash"), "got: {row}");
+        }
     }
 
     #[test]

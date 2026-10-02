@@ -272,6 +272,13 @@ fn graph_commit_fields(commit: &GraphCommit) -> Vec<InfoField> {
                 value: commit.possible_squash_merge_sources.join(", "),
             });
         }
+    } else if !commit.is_cherry_picked_commit {
+        if let Some(fuzzy) = commit.fuzzy_squash_match.as_ref() {
+            fields.push(InfoField {
+                label: "Possible Squash Merge (fuzzy)",
+                value: format!("{}% similarity", fuzzy.similarity_percent),
+            });
+        }
     }
 
     fields
@@ -941,6 +948,53 @@ mod tests {
             .find(|field| field.label == "Possible Squash Merge From")
             .expect("source field should be present for an exact squash match");
         assert_eq!(sources.value, "feature/auth, feature/login");
+    }
+
+    #[test]
+    fn graph_commit_fields_shows_fuzzy_similarity_without_inventing_a_source_branch() {
+        let commit = GraphCommit {
+            oid: "abcdef1234567".into(),
+            summary: "near squash landing".into(),
+            fuzzy_squash_match: Some(crate::git::graph::FuzzySquashMatch {
+                similarity_percent: 84,
+            }),
+            ..GraphCommit::default()
+        };
+
+        let fields = graph_commit_fields(&commit);
+        let fuzzy = fields
+            .iter()
+            .find(|field| field.label == "Possible Squash Merge (fuzzy)")
+            .expect("fuzzy similarity should be visible in commit info");
+        assert_eq!(fuzzy.value, "84% similarity");
+        assert!(!fields
+            .iter()
+            .any(|field| field.label == "Possible Squash Merge From"));
+    }
+
+    #[test]
+    fn graph_commit_fields_keeps_exact_squash_and_cherry_classifications_ahead_of_fuzzy() {
+        for (is_possible_squash_merge, is_cherry_picked_commit) in
+            [(true, false), (false, true), (true, true)]
+        {
+            let commit = GraphCommit {
+                is_possible_squash_merge,
+                is_cherry_picked_commit,
+                fuzzy_squash_match: Some(crate::git::graph::FuzzySquashMatch {
+                    similarity_percent: 97,
+                }),
+                ..GraphCommit::default()
+            };
+            let fields = graph_commit_fields(&commit);
+            assert!(!fields
+                .iter()
+                .any(|field| field.label == "Possible Squash Merge (fuzzy)"));
+            if is_possible_squash_merge {
+                assert!(fields
+                    .iter()
+                    .any(|field| field.label == "Possible Squash Merge"));
+            }
+        }
     }
 
     #[test]

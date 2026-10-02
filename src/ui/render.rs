@@ -355,6 +355,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 );
             }
             Overlay::CommitDetails {
+                commit,
                 details,
                 items,
                 cursor,
@@ -364,6 +365,7 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
                 ..
             } => draw_commit_details(
                 frame,
+                commit,
                 details,
                 items,
                 *cursor,
@@ -582,6 +584,107 @@ mod tests {
     use super::*;
     use chrono::Utc;
 
+    fn empty_renderer<T>(
+        _: &T,
+        _: usize,
+        _: bool,
+        _: bool,
+        _: &[usize],
+        _: &crate::ui::list_render::CellContext,
+    ) -> Vec<Line<'static>> {
+        Vec::new()
+    }
+
+    fn render_commit_details_overlay(commit: graph::GraphCommit) -> String {
+        use crate::git::commit_details::{CommitDetailMode, CommitDetails};
+        use crate::job_queue::JobStatusView;
+        use crate::symbols::SymbolSet;
+        use crate::theme::Theme;
+        use crate::ui::info_modal::InfoHitRegion;
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let oid = commit.oid.clone();
+        let summary = commit.summary.clone();
+        let mut overlay = Some(Overlay::CommitDetails {
+            commit,
+            details: CommitDetails {
+                oid: oid.clone(),
+                summary,
+                author_name: String::new(),
+                author_email: String::new(),
+                authored_at: None,
+                message_lines: Vec::new(),
+                mode: CommitDetailMode::Commit { oid },
+                files: Vec::new(),
+                branch_log: Vec::new(),
+            },
+            items: Vec::new(),
+            cursor: 0,
+            file_cursor: 0,
+            focus: CommitDetailsFocus::Files,
+            scroll: ModalScroll::default(),
+        });
+        let theme = Theme::dark();
+        let symbols = SymbolSet::ascii();
+        let config = Config::default();
+        let mut info_hit_regions: Vec<InfoHitRegion> = Vec::new();
+        let mut info_modal_scroll_offset = 0;
+        let mut branches = ListState::<BranchInfo>::empty();
+        let mut remotes = ListState::<RemoteBranchInfo>::empty();
+        let mut tags = ListState::<TagInfo>::empty();
+        let mut worktrees = ListState::<WorktreeInfo>::empty();
+        let mut graph = GraphState::new();
+        let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let mut context = RenderContext {
+                    active_view: ViewId::Graph,
+                    overlay: overlay.as_mut(),
+                    toast: None,
+                    theme: &theme,
+                    symbols: &symbols,
+                    config: &config,
+                    info_copied_msg: None,
+                    info_hit_regions: &mut info_hit_regions,
+                    info_modal_scroll_offset: &mut info_modal_scroll_offset,
+                    job_status: JobStatusView {
+                        visible: false,
+                        current_label: None,
+                        current_progress: None,
+                        queued_count: 0,
+                        targets_done: 0,
+                        targets_total: 0,
+                        summary: None,
+                    },
+                    branches: &mut branches,
+                    remotes: &mut remotes,
+                    tags: &mut tags,
+                    worktrees: &mut worktrees,
+                    graph: &mut graph,
+                    branch_columns: &[],
+                    remote_columns: &[],
+                    tag_columns: &[],
+                    worktree_columns: &[],
+                    active_filter_tokens: &[],
+                    render_branch_row: empty_renderer::<BranchInfo>,
+                    render_remote_row: empty_renderer::<RemoteBranchInfo>,
+                    render_tag_row: empty_renderer::<TagInfo>,
+                    render_worktree_row: empty_renderer::<WorktreeInfo>,
+                };
+                draw(frame, &mut context);
+            })
+            .unwrap();
+
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
     fn branch(name: &str, status: MergeStatus) -> BranchInfo {
         BranchInfo {
             name: name.to_string(),
@@ -633,5 +736,51 @@ mod tests {
             text,
             " 4 branches | 2 selected | 2 merged | 1 squashed | 1 cherry-picked \u{2014} [/]search [q]uit"
         );
+    }
+
+    #[test]
+    fn commit_details_overlay_renders_fuzzy_similarity_from_the_graph_commit() {
+        use crate::git::graph::{FuzzySquashMatch, GraphCommit};
+        let rendered = render_commit_details_overlay(GraphCommit {
+            oid: "abcdef1234567890".into(),
+            summary: "near squash landing".into(),
+            fuzzy_squash_match: Some(FuzzySquashMatch {
+                similarity_percent: 84,
+            }),
+            ..GraphCommit::default()
+        });
+        assert!(
+            rendered.contains("Possible squash merge (fuzzy): 84% similarity"),
+            "commit details overlay should include fuzzy similarity metadata; got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn commit_details_overlay_hides_fuzzy_metadata_without_a_match() {
+        let rendered = render_commit_details_overlay(graph::GraphCommit {
+            oid: "abcdef1234567890".into(),
+            summary: "ordinary commit".into(),
+            ..graph::GraphCommit::default()
+        });
+        assert!(!rendered.contains("Possible squash merge (fuzzy)"));
+    }
+
+    #[test]
+    fn commit_details_overlay_keeps_exact_squash_and_cherry_classifications_ahead_of_fuzzy() {
+        for (is_possible_squash_merge, is_cherry_picked_commit) in
+            [(true, false), (false, true), (true, true)]
+        {
+            let rendered = render_commit_details_overlay(graph::GraphCommit {
+                oid: "abcdef1234567890".into(),
+                summary: "classified commit".into(),
+                is_possible_squash_merge,
+                is_cherry_picked_commit,
+                fuzzy_squash_match: Some(graph::FuzzySquashMatch {
+                    similarity_percent: 97,
+                }),
+                ..graph::GraphCommit::default()
+            });
+            assert!(!rendered.contains("Possible squash merge (fuzzy)"));
+        }
     }
 }
