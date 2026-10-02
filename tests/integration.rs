@@ -1,4 +1,5 @@
 use std::process::Command;
+use std::io::Write;
 use std::sync::atomic::AtomicBool;
 use std::sync::{mpsc, Arc};
 
@@ -198,6 +199,38 @@ fn git_output(dir: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
+fn snapshot_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    fn collect(
+        root: &std::path::Path,
+        current: &std::path::Path,
+        files: &mut Vec<(std::path::PathBuf, Vec<u8>)>,
+    ) {
+        for entry in std::fs::read_dir(current).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                collect(root, &path, files);
+            } else {
+                files.push((path.strip_prefix(root).unwrap().to_path_buf(), std::fs::read(path).unwrap()));
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    collect(root, root, &mut files);
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
+}
+
+fn check_primary_code(
+    repo: &git2::Repository,
+    base: &str,
+    selected_ref: &str,
+) -> anyhow::Result<git_branch_manager::types::PrimaryBranchCodeMatch> {
+    let primary = merge_detection::resolve_primary_ref_for_code_check(repo, base, None)?;
+    merge_detection::check_ref_code_in_primary(repo, &primary, selected_ref, None)
+}
+
 /// Run a git command with scoped environment variables in the given directory,
 /// panicking on failure.
 fn run_git_with_env(dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]) {
@@ -211,6 +244,20 @@ fn run_git_with_env(dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]) 
         let stderr = String::from_utf8_lossy(&output.stderr);
         panic!("git {:?} failed in {}: {}", args, dir.display(), stderr);
     }
+}
+
+fn git_blob_oid(dir: &std::path::Path, contents: &[u8]) -> String {
+    let mut child = Command::new("git")
+        .args(["hash-object", "--stdin"])
+        .current_dir(dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(contents).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
 /// Build one graph with live, nested, deleted, squashed, and tag-only topics.
@@ -4452,6 +4499,413 @@ fn test_is_squash_merged_direct() {
         None,
         None
     ));
+}
+
+#[test]
+fn test_primary_branch_code_check_canonical_ref_types_and_outcomes() {
+    use git_branch_manager::types::PrimaryBranchCodeMatch as Match;
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    // A regular merge is an ancestry match.
+    run_git(dir, &["checkout", "-b", "regular"]);
+    std::fs::write(dir.join("regular.txt"), "regular").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "regular"]);
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--no-ff", "regular", "-m", "merge regular"]);
+    assert_eq!(
+        check_primary_code(&repo, "main", "refs/heads/regular").unwrap(),
+        Match::Merged
+    );
+
+    // A branch whose tree was integrated with squash semantics is equivalent
+    // even though its tip is not an ancestor of main.
+    run_git(dir, &["checkout", "-b", "squashed"]);
+    std::fs::write(dir.join("squashed.txt"), "squashed").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "squashed source"]);
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "squashed"]);
+    run_git(dir, &["commit", "-m", "squashed integration"]);
+    let integrated_oid = repo.head().unwrap().target().unwrap().to_string();
+    assert_eq!(
+        check_primary_code(&repo, "main", "refs/heads/squashed").unwrap(),
+        Match::ContentEquivalent {
+            commit_oid: integrated_oid
+        }
+    );
+
+    // Two separate commits cherry-picked into main retain neither ancestry nor
+    // the aggregate squash patch-id of the source branch.
+    run_git(dir, &["checkout", "-b", "cherry-source", "main"]);
+    std::fs::write(dir.join("cherry-a.txt"), "a").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git_with_env(
+        dir,
+        &["commit", "-m", "cherry a"],
+        &[
+            ("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z"),
+            ("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z"),
+        ],
+    );
+    let cherry_a = repo.head().unwrap().target().unwrap().to_string();
+    std::fs::write(dir.join("cherry-b.txt"), "b").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git_with_env(
+        dir,
+        &["commit", "-m", "cherry b"],
+        &[
+            ("GIT_AUTHOR_DATE", "2001-01-02T00:00:00Z"),
+            ("GIT_COMMITTER_DATE", "2001-01-02T00:00:00Z"),
+        ],
+    );
+    let cherry_tip = repo.head().unwrap().target().unwrap().to_string();
+    run_git(dir, &["checkout", "main"]);
+    run_git_with_env(
+        dir,
+        &["cherry-pick", &cherry_a],
+        &[("GIT_COMMITTER_DATE", "2002-01-01T00:00:00Z")],
+    );
+    run_git_with_env(
+        dir,
+        &["cherry-pick", &cherry_tip],
+        &[("GIT_COMMITTER_DATE", "2002-01-02T00:00:00Z")],
+    );
+    assert!(!repo
+        .graph_descendant_of(repo.head().unwrap().target().unwrap(), git2::Oid::from_str(&cherry_tip).unwrap())
+        .unwrap());
+    assert_eq!(
+        check_primary_code(&repo, "main", "refs/heads/cherry-source").unwrap(),
+        Match::ContentEquivalent {
+            commit_oid: repo.head().unwrap().target().unwrap().to_string()
+        }
+    );
+
+    // A tag and synthetic remote ref resolve through their canonical names.
+    run_git(dir, &["tag", "-a", "release", "-m", "annotated release"]);
+    run_git(
+        dir,
+        &["update-ref", "refs/remotes/origin/regular", "regular"],
+    );
+    assert_eq!(
+        check_primary_code(&repo, "main", "refs/tags/release").unwrap(),
+        Match::Merged
+    );
+    assert_eq!(
+        check_primary_code(&repo, "main", "refs/remotes/origin/regular").unwrap(),
+        Match::Merged
+    );
+
+    // A detached worktree target is accepted as an abbreviated OID.
+    let oid = repo
+        .find_branch("regular", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .target()
+        .unwrap()
+        .to_string();
+    let detached = &oid[..8];
+    assert_eq!(
+        check_primary_code(&repo, "main", detached).unwrap(),
+        Match::Merged
+    );
+
+    // A ref with no change represented in the primary branch is absent.
+    run_git(dir, &["checkout", "-b", "absent"]);
+    std::fs::write(dir.join("absent.txt"), "absent").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "absent"]);
+    assert_eq!(
+        check_primary_code(&repo, "main", "refs/heads/absent").unwrap(),
+        Match::NotFound
+    );
+}
+
+#[test]
+fn test_primary_branch_code_check_finds_integrated_change_after_revert() {
+    use git_branch_manager::types::PrimaryBranchCodeMatch as Match;
+
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/historical"]);
+    std::fs::write(dir.join("historical.txt"), "integrated content\n").unwrap();
+    run_git(dir, &["add", "historical.txt"]);
+    run_git(dir, &["commit", "-m", "selected change"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(
+        dir,
+        &[
+            "merge",
+            "--no-ff",
+            "feature/historical",
+            "-m",
+            "integrate selected change",
+        ],
+    );
+    run_git(dir, &["revert", "-m", "1", "--no-edit", "HEAD"]);
+
+    let outcome = check_primary_code(&repo, "main", "refs/heads/feature/historical").unwrap();
+    assert_eq!(outcome, Match::Merged);
+}
+
+#[test]
+fn test_primary_branch_code_check_finds_manual_integration_with_unrelated_changes() {
+    use git_branch_manager::types::PrimaryBranchCodeMatch as Match;
+
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["checkout", "-b", "feature/manual"]);
+    std::fs::write(dir.join("feature.txt"), "feature code\n").unwrap();
+    run_git(dir, &["add", "feature.txt"]);
+    run_git(dir, &["commit", "-m", "feature code"]);
+
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("feature.txt"), "feature code\n").unwrap();
+    std::fs::write(dir.join("unrelated.txt"), "primary-only change\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "manual integration with unrelated edit"]);
+
+    let outcome = check_primary_code(&repo, "main", "refs/heads/feature/manual").unwrap();
+    assert!(matches!(outcome, Match::ContentEquivalent { .. }));
+}
+
+#[test]
+fn test_primary_branch_code_check_finds_split_integration_at_complete_snapshot() {
+    use git_branch_manager::types::PrimaryBranchCodeMatch as Match;
+
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["checkout", "-b", "feature/split"]);
+    std::fs::write(dir.join("first.txt"), "first change\n").unwrap();
+    run_git(dir, &["add", "first.txt"]);
+    run_git(dir, &["commit", "-m", "first source change"]);
+    std::fs::write(dir.join("second.txt"), "second change\n").unwrap();
+    run_git(dir, &["add", "second.txt"]);
+    run_git(dir, &["commit", "-m", "second source change"]);
+
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("first.txt"), "first change\n").unwrap();
+    run_git(dir, &["add", "first.txt"]);
+    run_git(dir, &["commit", "-m", "integrate first source change"]);
+    std::fs::write(dir.join("unrelated.txt"), "unrelated\n").unwrap();
+    run_git(dir, &["add", "unrelated.txt"]);
+    run_git(dir, &["commit", "-m", "unrelated primary change"]);
+    std::fs::write(dir.join("second.txt"), "second change\n").unwrap();
+    run_git(dir, &["add", "second.txt"]);
+    run_git(dir, &["commit", "-m", "integrate second source change"]);
+    let final_snapshot = repo.head().unwrap().target().unwrap().to_string();
+
+    assert_eq!(
+        check_primary_code(&repo, "main", "refs/heads/feature/split").unwrap(),
+        Match::ContentEquivalent {
+            commit_oid: final_snapshot
+        }
+    );
+}
+
+#[test]
+fn test_primary_branch_code_check_rejects_partial_integration() {
+    use git_branch_manager::types::PrimaryBranchCodeMatch as Match;
+
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["checkout", "-b", "feature/partial"]);
+    std::fs::write(dir.join("first.txt"), "first change\n").unwrap();
+    run_git(dir, &["add", "first.txt"]);
+    run_git(dir, &["commit", "-m", "first source change"]);
+    std::fs::write(dir.join("second.txt"), "second change\n").unwrap();
+    run_git(dir, &["add", "second.txt"]);
+    run_git(dir, &["commit", "-m", "second source change"]);
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("first.txt"), "first change\n").unwrap();
+    run_git(dir, &["add", "first.txt"]);
+    run_git(dir, &["commit", "-m", "integrate only first source change"]);
+
+    assert_eq!(
+        check_primary_code(&repo, "main", "refs/heads/feature/partial").unwrap(),
+        Match::NotFound
+    );
+}
+
+#[test]
+fn test_primary_branch_code_check_keeps_repository_state_unchanged() {
+    use git_branch_manager::types::PrimaryBranchCodeMatch as Match;
+
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    std::fs::write(
+        dir.join("shared.txt"),
+        "alpha\none\ntwo\nthree\nfour\nfive\ngamma\n",
+    )
+    .unwrap();
+    run_git(dir, &["add", "shared.txt"]);
+    run_git(dir, &["commit", "-m", "add merge fixture"]);
+    run_git(dir, &["checkout", "-b", "feature/source"]);
+    std::fs::write(
+        dir.join("shared.txt"),
+        "source\none\ntwo\nthree\nfour\nfive\ngamma\n",
+    )
+    .unwrap();
+    run_git(dir, &["commit", "-am", "source change"]);
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(
+        dir.join("shared.txt"),
+        "alpha\none\ntwo\nthree\nfour\nfive\nprimary\ngamma\n",
+    )
+    .unwrap();
+    run_git(dir, &["commit", "-am", "diverged primary change"]);
+    std::fs::write(dir.join("README.md"), "# Dirty tracked README\n").unwrap();
+    std::fs::write(dir.join("staged-dirty.txt"), "dirty staged file\n").unwrap();
+    run_git(dir, &["add", "staged-dirty.txt"]);
+    std::fs::write(dir.join("untracked-dirty.txt"), "dirty untracked file\n").unwrap();
+
+    let head_before = git_output(dir, &["rev-parse", "HEAD"]);
+    let refs_before = git_output(dir, &["for-each-ref", "--format=%(refname) %(objectname)"]);
+    let status_before = git_output(dir, &["status", "--porcelain", "--untracked-files=all"]);
+    let index_before = std::fs::read(dir.join(".git/index")).unwrap();
+    let objects_before = snapshot_files(&repo.path().join("objects"));
+    let tracked_before = std::fs::read(dir.join("README.md")).unwrap();
+    let untracked_before = std::fs::read(dir.join("untracked-dirty.txt")).unwrap();
+    let temporary_merge_blob = git_blob_oid(
+        dir,
+        b"source\none\ntwo\nthree\nfour\nfive\nprimary\ngamma\n",
+    );
+    assert!(!Command::new("git")
+        .args(["cat-file", "-e", &temporary_merge_blob])
+        .current_dir(dir)
+        .status()
+        .unwrap()
+        .success());
+
+    assert_eq!(
+        check_primary_code(&repo, "main", "refs/heads/feature/source").unwrap(),
+        Match::NotFound
+    );
+
+    assert_eq!(git_output(dir, &["rev-parse", "HEAD"]), head_before);
+    assert_eq!(
+        git_output(dir, &["for-each-ref", "--format=%(refname) %(objectname)"]),
+        refs_before
+    );
+    assert_eq!(
+        git_output(dir, &["status", "--porcelain", "--untracked-files=all"]),
+        status_before
+    );
+    assert_eq!(std::fs::read(dir.join(".git/index")).unwrap(), index_before);
+    assert_eq!(snapshot_files(&repo.path().join("objects")), objects_before);
+    assert_eq!(std::fs::read(dir.join("README.md")).unwrap(), tracked_before);
+    assert_eq!(
+        std::fs::read(dir.join("untracked-dirty.txt")).unwrap(),
+        untracked_before
+    );
+    assert!(!Command::new("git")
+        .args(["cat-file", "-e", &temporary_merge_blob])
+        .current_dir(dir)
+        .status()
+        .unwrap()
+        .success());
+
+    std::fs::write(dir.join("post-check.txt"), "commit after comparison\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("post-check.txt")).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    let parent = repo.head().unwrap().peel_to_commit().unwrap();
+    let signature = repo.signature().unwrap();
+    let commit_oid = repo
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "commit after read-only comparison",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+    let reopened = git2::Repository::open(dir).unwrap();
+    assert_eq!(reopened.find_commit(commit_oid).unwrap().id(), commit_oid);
+}
+
+#[test]
+fn test_primary_branch_code_check_ignores_union_merge_attributes() {
+    use git_branch_manager::types::PrimaryBranchCodeMatch as Match;
+
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    std::fs::write(dir.join("conflict.txt"), "base content\nkeep\n").unwrap();
+    run_git(dir, &["add", "conflict.txt"]);
+    run_git(dir, &["commit", "-m", "add union fixture"]);
+
+    run_git(dir, &["checkout", "-b", "feature/delete"]);
+    std::fs::write(dir.join("conflict.txt"), "keep\n").unwrap();
+    run_git(dir, &["add", "conflict.txt"]);
+    run_git(dir, &["commit", "-m", "delete selected file"]);
+
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("conflict.txt"), "primary kept this line\nkeep\n").unwrap();
+    std::fs::write(dir.join(".git/info/attributes"), "conflict.txt merge=union\n").unwrap();
+    run_git(dir, &["commit", "-am", "retain primary-only content"]);
+
+    assert_eq!(
+        check_primary_code(&repo, "main", "refs/heads/feature/delete").unwrap(),
+        Match::NotFound
+    );
+}
+
+#[test]
+fn test_primary_branch_code_check_does_not_infer_merge_resolution_from_shared_parents() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    std::fs::write(dir.join("choice.txt"), "base\n").unwrap();
+    run_git(dir, &["add", "choice.txt"]);
+    run_git(dir, &["commit", "-m", "add merge fixture"]);
+
+    run_git(dir, &["checkout", "-b", "feature/left"]);
+    std::fs::write(dir.join("choice.txt"), "left\n").unwrap();
+    run_git(dir, &["commit", "-am", "left side"]);
+    let left = repo.head().unwrap().target().unwrap().to_string();
+
+    run_git(dir, &["checkout", "-b", "feature/right", "main"]);
+    std::fs::write(dir.join("choice.txt"), "right\n").unwrap();
+    run_git(dir, &["commit", "-am", "right side"]);
+    let right = repo.head().unwrap().target().unwrap().to_string();
+
+    run_git(dir, &["checkout", "feature/left"]);
+    let merge = Command::new("git")
+        .args(["merge", "--no-ff", &right, "-m", "feature merge"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "fixture merge must conflict");
+    std::fs::write(dir.join("choice.txt"), "feature resolution\n").unwrap();
+    run_git(dir, &["add", "choice.txt"]);
+    run_git(dir, &["commit", "-m", "feature merge resolution"]);
+
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--no-ff", &left, "-m", "primary left merge"]);
+    let merge = Command::new("git")
+        .args(["merge", "--no-ff", &right, "-m", "primary right merge"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "primary fixture merge must conflict");
+    std::fs::write(dir.join("choice.txt"), "primary resolution\n").unwrap();
+    run_git(dir, &["add", "choice.txt"]);
+    run_git(dir, &["commit", "-m", "primary merge resolution"]);
+
+    let primary = merge_detection::resolve_primary_ref_for_code_check(&repo, "main", None).unwrap();
+    let error = merge_detection::check_ref_code_in_primary(
+        &repo,
+        &primary,
+        "refs/heads/feature/left",
+        None,
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("found 2"));
 }
 
 #[test]

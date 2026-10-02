@@ -15,6 +15,13 @@ pub enum InfoModalRow {
     Remote(RemoteBranchInfo),
     Tag(TagInfo),
     Worktree(WorktreeInfo),
+    PrimaryBranchCodeCheck {
+        display_ref: String,
+        base_branch: String,
+        primary_reference: Option<String>,
+        primary_oid: Option<String>,
+        outcome: Result<PrimaryBranchCodeMatch, String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,21 +84,18 @@ pub fn draw_info_modal(
 
     let fields = build_fields(row);
     let title = get_title(row);
-    let areas = draw_modal_shell(
-        frame,
-        &ModalSpec::new(
-            title,
-            ModalFooter::hints(&[
-                ("Tab", "Switch"),
-                ("j/k", "Navigate"),
-                ("Enter", "Invoke"),
-                ("Esc", "Close"),
-            ]),
-            84,
-            22,
-        ),
-        theme,
-    );
+    let code_check = matches!(row, InfoModalRow::PrimaryBranchCodeCheck { .. });
+    let footer = if code_check {
+        ModalFooter::hints(&[("Esc", "Close")])
+    } else {
+        ModalFooter::hints(&[
+            ("Tab", "Switch"),
+            ("j/k", "Navigate"),
+            ("Enter", "Invoke"),
+            ("Esc", "Close"),
+        ])
+    };
+    let areas = draw_modal_shell(frame, &ModalSpec::new(title, footer, 84, 22), theme);
 
     let selected_field = (focus == InfoModalFocus::Info).then_some(info_cursor);
     let (mut lines, field_spans) = build_info_lines(
@@ -106,33 +110,39 @@ pub fn draw_info_modal(
             theme.modal_success,
         )));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Actions", theme.modal_title)));
-    let actions_start = lines.len() as u16;
-    for (index, item) in items.iter().enumerate() {
-        let selected = focus == InfoModalFocus::Actions && index == cursor && item.enabled;
-        let mut line = ModalActionRow::new(
-            item.shortcut,
-            item.label.clone(),
-            item.reason.clone().unwrap_or_default(),
-        )
-        .render_with_availability(selected, item.enabled, theme);
-        line.spans.insert(
-            0,
-            Span::styled(
-                if selected {
-                    format!("{} ", symbols.cursor_prefix)
-                } else {
-                    "  ".to_string()
-                },
-                if item.enabled {
-                    Style::default()
-                } else {
-                    theme.modal_action_unavailable
-                },
-            ),
-        );
-        lines.push(line);
+    let actions_start = if code_check {
+        lines.len() as u16
+    } else {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("Actions", theme.modal_title)));
+        lines.len() as u16
+    };
+    if !code_check {
+        for (index, item) in items.iter().enumerate() {
+            let selected = focus == InfoModalFocus::Actions && index == cursor && item.enabled;
+            let mut line = ModalActionRow::new(
+                item.shortcut,
+                item.label.clone(),
+                item.reason.clone().unwrap_or_default(),
+            )
+            .render_with_availability(selected, item.enabled, theme);
+            line.spans.insert(
+                0,
+                Span::styled(
+                    if selected {
+                        format!("{} ", symbols.cursor_prefix)
+                    } else {
+                        "  ".to_string()
+                    },
+                    if item.enabled {
+                        Style::default()
+                    } else {
+                        theme.modal_action_unavailable
+                    },
+                ),
+            );
+            lines.push(line);
+        }
     }
 
     let target = match focus {
@@ -177,6 +187,9 @@ fn get_title(row: &InfoModalRow) -> String {
         InfoModalRow::Remote(r) => r.short_name.clone(),
         InfoModalRow::Tag(t) => t.name.clone(),
         InfoModalRow::Worktree(w) => w.path.to_string_lossy().to_string(),
+        InfoModalRow::PrimaryBranchCodeCheck { display_ref, .. } => {
+            format!("Code in primary branch: {display_ref}")
+        }
     }
 }
 
@@ -187,7 +200,45 @@ fn build_fields(row: &InfoModalRow) -> Vec<InfoField> {
         InfoModalRow::Remote(r) => remote_fields(r),
         InfoModalRow::Tag(t) => tag_fields(t),
         InfoModalRow::Worktree(w) => worktree_fields(w),
+        InfoModalRow::PrimaryBranchCodeCheck {
+            display_ref,
+            base_branch,
+            primary_reference,
+            primary_oid,
+            outcome,
+        } => {
+            let evidence_ref = primary_reference.as_deref().unwrap_or(base_branch);
+            let mut fields = Vec::new();
+            if let (Some(reference), Some(oid)) = (primary_reference, primary_oid) {
+                fields.push(InfoField {
+                    label: "Primary",
+                    value: format!("{reference} @ {oid}"),
+                });
+            }
+            let value = match outcome {
+                Ok(PrimaryBranchCodeMatch::Merged) => format!(
+                    "The selected commit from {display_ref} is reachable in {evidence_ref}'s history. This is historical evidence and does not establish current-tip retention."
+                ),
+                Ok(PrimaryBranchCodeMatch::ContentEquivalent { commit_oid }) => format!(
+                    "All changes from {display_ref}, relative to the shared ancestor, are represented at {} in {evidence_ref}'s history. The selected ref itself need not be merged; this historical evidence does not establish current-tip retention.",
+                    short_oid(commit_oid)
+                ),
+                Ok(PrimaryBranchCodeMatch::NotFound) => format!(
+                    "No available snapshot in {evidence_ref}'s history contained the complete change from {display_ref}. Rewritten or split changes may not be recognized; this does not prove absence."
+                ),
+                Err(error) => format!("Could not check {display_ref} in {base_branch}: {error}"),
+            };
+            fields.push(InfoField {
+                label: "Result",
+                value,
+            });
+            fields
+        }
     }
+}
+
+fn short_oid(oid: &str) -> &str {
+    oid.get(..7).unwrap_or(oid)
 }
 
 fn graph_commit_fields(commit: &GraphCommit) -> Vec<InfoField> {
@@ -739,6 +790,60 @@ mod tests {
         ChangedFile {
             path: path.into(),
             kind,
+        }
+    }
+
+    #[test]
+    fn primary_code_results_show_historical_evidence_and_primary_snapshot() {
+        let primary_reference = "refs/remotes/origin/main".to_string();
+        let primary_oid = "0123456789abcdef".to_string();
+        let outcomes = vec![
+            (
+                Ok(PrimaryBranchCodeMatch::Merged),
+                &[
+                    "historical evidence",
+                    "does not establish current-tip retention",
+                ][..],
+            ),
+            (
+                Ok(PrimaryBranchCodeMatch::ContentEquivalent {
+                    commit_oid: "abcdef0123456789".into(),
+                }),
+                &[
+                    "abcdef0",
+                    "relative to the shared ancestor",
+                    "need not be merged",
+                    "current-tip retention",
+                ][..],
+            ),
+            (
+                Ok(PrimaryBranchCodeMatch::NotFound),
+                &["does not prove absence", "Rewritten or split changes"][..],
+            ),
+            (
+                Err("shared history could not be determined".into()),
+                &["Could not check", "shared history could not be determined"][..],
+            ),
+        ];
+
+        for (outcome, expected_fragments) in outcomes {
+            let row = InfoModalRow::PrimaryBranchCodeCheck {
+                display_ref: "feature/code".into(),
+                base_branch: "main".into(),
+                primary_reference: Some(primary_reference.clone()),
+                primary_oid: Some(primary_oid.clone()),
+                outcome,
+            };
+            let fields = build_fields(&row);
+            assert_eq!(fields[0].label, "Primary");
+            assert_eq!(
+                fields[0].value,
+                "refs/remotes/origin/main @ 0123456789abcdef"
+            );
+            assert_eq!(fields[1].label, "Result");
+            for fragment in expected_fragments {
+                assert!(fields[1].value.contains(fragment), "{}", fields[1].value);
+            }
         }
     }
 

@@ -59,6 +59,7 @@ pub enum BranchAction {
     /// Navigate to the selected ref or commit in the Graph view. This is a
     /// UI-only action and must never be enqueued as a Git operation.
     JumpToGraph,
+    CheckPrimaryBranchCode,
     // Local branch actions
     DeleteLocal,
     /// Skip the merge-status gate; bypass `BranchInfo.merge_status` and
@@ -112,6 +113,7 @@ impl BranchAction {
     pub fn label(&self) -> &'static str {
         match self {
             Self::JumpToGraph => "Jump to Graph",
+            Self::CheckPrimaryBranchCode => "Check code in primary branch",
             Self::DeleteLocal => "Delete local",
             Self::DeleteLocalForce => "Force-delete local",
             Self::DeleteLocalAndRemote => "Delete local + remote",
@@ -150,6 +152,13 @@ impl BranchAction {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrimaryBranchCodeMatch {
+    Merged,
+    ContentEquivalent { commit_oid: String },
+    NotFound,
 }
 
 // --- Working Tree Status ---

@@ -34,6 +34,7 @@ git branch-manager
 
 - **Squash-merge detection** — identifies branches that were squash-merged into the base branch, even though git considers them unmerged
 - **Regular merge detection** — also detects conventionally merged branches
+- **Primary-branch code check** — checks selected committed changes against primary-branch history, even when the selected ref was never merged
 - **Full-screen TUI** — scrollable branch list with merge status, remote tracking info, and branch age
 - **Multi-select** — toggle individual branches or use quick-select shortcuts (all, none, merged-only, invert)
 - **Batch operations** — delete local branches, or delete local + remote in one action
@@ -54,6 +55,16 @@ Press `Enter` on a commit to open the same branch/remote/tag context menu used b
 From the Branches, Remotes, Tags, or Worktrees view, press `g` to jump the selected branch, tag, or worktree commit to its row in Graph. The same navigation is available as `Jump to Graph` in each view's context menu. In Graph, `g` and `G` retain their Home and End meanings.
 
 Graph loads via the Gleisbau graph-layout crate first. If Gleisbau errors or panics (e.g. on shallow clones or unusual ref states), Graph falls back to `git log --graph --topo-order --decorate` and shows a "Git fallback: \<cause\>" banner.
+
+## Primary-Branch Code Check
+
+In Branches, Remotes, Tags, or Worktrees, press `Enter` and choose `Check code in primary branch` in Actions. Worktree checks use the committed branch tip or detached HEAD; staged, unstaged, and untracked changes are excluded. `Esc` cancels the check.
+
+The primary branch uses the app's detected base branch, or your `--base` override. The check compares its local ref with `origin/<base>` and chooses the descendant tip when one is ahead. For divergent tips, it chooses the longer reachable history, then the newer tip committer timestamp, then local on an exact tie. It uses whichever candidate exists and reports broken refs as errors. Remote tracking data is local; the check does not fetch. Results identify the chosen primary ref and full revision.
+
+The result reports historical evidence: either the selected commit is reachable, or a historical snapshot contains its complete change relative to the shared ancestor. A content match does not require the selected ref itself to have been merged. Changes that later reverted can still match history; a match does not establish that they remain at the current tip.
+
+If no matching snapshot is verified, the result does not prove absence: rewritten changes may be unrecognized, and split changes need a snapshot containing the complete change together. Missing or ambiguous shared history produces an error. The check compares committed content independently of local merge settings and preserves refs, HEAD, the index, working files, and the repository object store.
 
 ## Usage
 

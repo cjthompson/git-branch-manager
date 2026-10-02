@@ -1,10 +1,148 @@
 use crate::git::fuzzy_match;
-use crate::types::{BranchInfo, MergeStatus, SquashConfidence};
-use git2::Repository;
+use crate::types::{BranchInfo, MergeStatus, PrimaryBranchCodeMatch, SquashConfidence};
+use anyhow::Context;
+use git2::{ErrorCode, Repository};
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{field, instrument, Span};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPrimaryRef {
+    pub reference: String,
+    pub oid: git2::Oid,
+}
+
+fn check_cancel(cancel: Option<&AtomicBool>) -> anyhow::Result<()> {
+    if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        anyhow::bail!("primary branch code check canceled");
+    }
+    Ok(())
+}
+
+fn lookup_primary_candidate(
+    repo: &Repository,
+    reference: &str,
+) -> anyhow::Result<Option<ResolvedPrimaryRef>> {
+    let candidate = match repo.find_reference(reference) {
+        Ok(candidate) => candidate,
+        Err(error) if error.code() == ErrorCode::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("could not read {reference}")),
+    };
+    let resolved = candidate
+        .resolve()
+        .with_context(|| format!("could not resolve {reference}"))?;
+    let commit = resolved
+        .peel_to_commit()
+        .with_context(|| format!("{reference} does not resolve to a commit"))?;
+    Ok(Some(ResolvedPrimaryRef {
+        reference: reference.to_string(),
+        oid: commit.id(),
+    }))
+}
+
+fn unique_reachable_commit_count(
+    repo: &Repository,
+    tip: git2::Oid,
+    other: git2::Oid,
+    reference: &str,
+    cancel: Option<&AtomicBool>,
+) -> anyhow::Result<usize> {
+    let mut revwalk = repo
+        .revwalk()
+        .with_context(|| format!("could not walk history for {reference}"))?;
+    revwalk
+        .push(tip)
+        .with_context(|| format!("could not start history walk for {reference}"))?;
+    revwalk
+        .hide(other)
+        .with_context(|| format!("could not exclude shared history for {reference}"))?;
+    let mut count = 0usize;
+    for oid in revwalk {
+        check_cancel(cancel)?;
+        oid.with_context(|| format!("could not read history for {reference}"))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Select and snapshot the configured local primary branch or its origin tracking ref.
+/// The selector prefers ancestry, then unique reachable commit count, then tip committer time,
+/// and the local ref on an exact tie. It never fetches or consults same-name tags.
+pub fn resolve_primary_ref_for_code_check(
+    repo: &Repository,
+    configured_base: &str,
+    cancel: Option<&AtomicBool>,
+) -> anyhow::Result<ResolvedPrimaryRef> {
+    check_cancel(cancel)?;
+    let local_name = format!("refs/heads/{configured_base}");
+    let remote_name = format!("refs/remotes/origin/{configured_base}");
+    let local = lookup_primary_candidate(repo, &local_name)?;
+    check_cancel(cancel)?;
+    let remote = lookup_primary_candidate(repo, &remote_name)?;
+
+    match (local, remote) {
+        (Some(local), None) | (None, Some(local)) => Ok(local),
+        (None, None) => anyhow::bail!(
+            "configured primary branch `{configured_base}` has neither `{local_name}` nor `{remote_name}`"
+        ),
+        (Some(local), Some(remote)) => {
+            check_cancel(cancel)?;
+            if local.oid == remote.oid
+                || repo
+                    .graph_descendant_of(local.oid, remote.oid)
+                    .with_context(|| {
+                        format!("could not compare {} with {}", local.reference, remote.reference)
+                    })?
+            {
+                return Ok(local);
+            }
+            check_cancel(cancel)?;
+            if repo
+                .graph_descendant_of(remote.oid, local.oid)
+                .with_context(|| {
+                    format!("could not compare {} with {}", remote.reference, local.reference)
+                })?
+            {
+                return Ok(remote);
+            }
+
+            let local_count = unique_reachable_commit_count(
+                repo,
+                local.oid,
+                remote.oid,
+                &local.reference,
+                cancel,
+            )?;
+            let remote_count = unique_reachable_commit_count(
+                repo,
+                remote.oid,
+                local.oid,
+                &remote.reference,
+                cancel,
+            )?;
+            if local_count != remote_count {
+                return Ok(if local_count > remote_count { local } else { remote });
+            }
+
+            check_cancel(cancel)?;
+            let local_time = repo
+                .find_commit(local.oid)
+                .with_context(|| format!("could not read tip for {}", local.reference))?
+                .committer()
+                .when()
+                .seconds();
+            let remote_time = repo
+                .find_commit(remote.oid)
+                .with_context(|| format!("could not read tip for {}", remote.reference))?
+                .committer()
+                .when()
+                .seconds();
+            Ok(if remote_time > local_time { remote } else { local })
+        }
+    }
+}
 
 /// Holds the reachable sets for both the local base branch and its remote tracking ref.
 /// Used to determine whether a branch is merged, and if only into one side.
@@ -250,6 +388,190 @@ pub fn apply_merge_statuses(
             }
         }
     }
+}
+
+/// Check whether a selected committed ref's aggregate change appears in the
+/// historical snapshots reachable from an already-resolved primary ref.
+pub fn check_ref_code_in_primary(
+    repo: &Repository,
+    primary: &ResolvedPrimaryRef,
+    selected_ref: &str,
+    cancel: Option<&AtomicBool>,
+) -> anyhow::Result<PrimaryBranchCodeMatch> {
+    check_cancel(cancel)?;
+    let selected_oid = repo
+        .revparse_single(selected_ref)
+        .with_context(|| format!("could not resolve selected ref {selected_ref}"))?
+        .peel_to_commit()
+        .with_context(|| format!("selected ref {selected_ref} does not resolve to a commit"))?
+        .id();
+
+    let comparison_odb = git2::Odb::new_ext(repo.object_format())
+        .context("could not create isolated comparison object database")?;
+    let object_path = repo.commondir().join("objects");
+    comparison_odb
+        .add_disk_alternate(&object_path.to_string_lossy())
+        .with_context(|| format!("could not read objects from {}", object_path.display()))?;
+    let comparison_repo = Repository::from_odb(comparison_odb)
+        .context("could not create isolated comparison repository")?;
+    let clean_config = git2::Config::new().context("could not create isolated merge config")?;
+    comparison_repo
+        .set_config(&clean_config)
+        .context("could not isolate merge-driver configuration")?;
+    let odb = comparison_repo
+        .odb()
+        .context("could not read isolated comparison object database")?;
+    let mempack = odb
+        .add_new_mempack_backend(1000)
+        .context("could not add scratch in-memory object backend")?;
+
+    // Keep history walks and graph queries on the caller's repository: it may
+    // carry shallow graft metadata that the scratch repository deliberately lacks.
+    let base = repo
+        .find_commit(primary.oid)
+        .with_context(|| format!("could not read chosen primary tip {}", primary.reference))?;
+    let selected = repo
+        .find_commit(selected_oid)
+        .with_context(|| format!("could not read selected commit {selected_oid}"))?;
+    check_cancel(cancel)?;
+
+    if base.id() == selected.id()
+        || repo
+            .graph_descendant_of(base.id(), selected.id())
+            .with_context(|| {
+                format!(
+                    "could not compare chosen primary {} with {selected_ref}",
+                    primary.reference
+                )
+            })?
+    {
+        return Ok(PrimaryBranchCodeMatch::Merged);
+    }
+
+    check_cancel(cancel)?;
+    let merge_bases = repo
+        .merge_bases(base.id(), selected.id())
+        .with_context(|| {
+            format!(
+                "could not find shared history between {} and {selected_ref}",
+                primary.reference
+            )
+        })?;
+    if merge_bases.len() != 1 {
+        anyhow::bail!(
+            "expected one shared history base between {} and {selected_ref}, found {}",
+            primary.reference,
+            merge_bases.len()
+        );
+    }
+
+    let ancestor_tree = repo
+        .find_commit(merge_bases[0])
+        .context("could not read shared history commit")?
+        .tree()
+        .context("could not read shared history tree")?;
+    let selected_tree = selected
+        .tree()
+        .with_context(|| format!("could not read selected ref tree {selected_ref}"))?;
+
+    let mut revwalk = repo
+        .revwalk()
+        .context("could not start primary history walk")?;
+    revwalk
+        .push(base.id())
+        .with_context(|| format!("could not walk history for {}", primary.reference))?;
+    revwalk
+        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .context("could not order primary history walk")?;
+
+    let mut visited_trees = HashSet::new();
+    for oid in revwalk {
+        check_cancel(cancel)?;
+        let oid = oid.context("could not read primary history walk")?;
+        let history_commit = repo
+            .find_commit(oid)
+            .with_context(|| format!("could not read primary history commit {oid}"))?;
+        let history_tree = history_commit
+            .tree()
+            .with_context(|| format!("could not read tree for primary commit {oid}"))?;
+        if !visited_trees.insert(history_tree.id()) {
+            continue;
+        }
+
+        let found = {
+            let scratch_ancestor = comparison_repo
+                .find_tree(ancestor_tree.id())
+                .context("could not load shared history tree into scratch repository")?;
+            let scratch_history =
+                comparison_repo
+                    .find_tree(history_tree.id())
+                    .with_context(|| {
+                        format!("could not load primary tree {oid} into scratch repository")
+                    })?;
+            let scratch_selected = comparison_repo
+                .find_tree(selected_tree.id())
+                .context("could not load selected tree into scratch repository")?;
+            configure_scratch_merge_attributes(&comparison_repo, &odb)?;
+            let merged = comparison_repo
+                .merge_trees(&scratch_ancestor, &scratch_history, &scratch_selected, None)
+                .with_context(|| {
+                    format!("could not compare selected changes at primary commit {oid}")
+                })?;
+            if merged.has_conflicts() {
+                false
+            } else {
+                let mut options = git2::DiffOptions::new();
+                options.ignore_filemode(false).ignore_submodules(false);
+                let diff = comparison_repo
+                    .diff_tree_to_index(Some(&scratch_history), Some(&merged), Some(&mut options))
+                    .with_context(|| {
+                        format!("could not compare merged changes at primary commit {oid}")
+                    })?;
+                diff.deltas().len() == 0
+            }
+        };
+        mempack
+            .reset()
+            .context("could not clear temporary merge objects")?;
+        if found {
+            return Ok(PrimaryBranchCodeMatch::ContentEquivalent {
+                commit_oid: oid.to_string(),
+            });
+        }
+    }
+    Ok(PrimaryBranchCodeMatch::NotFound)
+}
+
+fn configure_scratch_merge_attributes(
+    repo: &Repository,
+    odb: &git2::Odb<'_>,
+) -> anyhow::Result<()> {
+    // A synthetic index makes merge-driver selection deterministic even if the
+    // user's worktree, global config, or info/attributes file chooses `union`.
+    let attributes = b"* merge=text\n";
+    let blob_oid = odb
+        .write(git2::ObjectType::Blob, attributes)
+        .context("could not write scratch merge attributes")?;
+    let mut index = git2::Index::new().context("could not create scratch merge index")?;
+    repo.set_index(&mut index)
+        .context("could not install scratch merge attributes")?;
+    index
+        .add(&git2::IndexEntry {
+            ctime: git2::IndexTime::new(0, 0),
+            mtime: git2::IndexTime::new(0, 0),
+            dev: 0,
+            ino: 0,
+            mode: 0o100644,
+            uid: 0,
+            gid: 0,
+            file_size: attributes.len() as u32,
+            id: blob_oid,
+            flags: 0,
+            flags_extended: 0,
+            path: b".gitattributes".to_vec(),
+        })
+        .context("could not add scratch merge attributes")?;
+    Ok(())
 }
 
 /// Detect if a branch was squash-merged into the base branch using git CLI.

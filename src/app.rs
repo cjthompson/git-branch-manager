@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -128,6 +128,7 @@ pub struct App {
     /// Separate from `diag_rx`: receiving here must never open the manual
     /// Diagnostics review overlay.
     pub cache_verify_rx: Option<Receiver<CacheAudit>>,
+    primary_code_check_request: Option<PrimaryCodeCheckRequest>,
     /// Branch names the launch-time verifier has already corrected in
     /// `self.branches` this session. Consulted by the `Phase1Msg::MergeStatuses`
     /// handler so a late-arriving stale cached status can't silently overwrite
@@ -209,6 +210,19 @@ pub struct App {
     // Fingerprint of the previous branch refresh inputs. Diagnostic spans use
     // this to show whether a full refresh recomputed identical branch tips.
     last_branch_fingerprint: Option<u64>,
+}
+
+struct PrimaryCodeCheckResult {
+    display_ref: String,
+    base_branch: String,
+    primary_reference: Option<String>,
+    primary_oid: Option<String>,
+    outcome: Result<PrimaryBranchCodeMatch, String>,
+}
+
+struct PrimaryCodeCheckRequest {
+    receiver: Receiver<PrimaryCodeCheckResult>,
+    cancel: Arc<AtomicBool>,
 }
 
 fn branch_input_fingerprint(repo: &git2::Repository, base_branch: &str) -> u64 {
@@ -398,6 +412,7 @@ impl App {
             progress: None,
             diag_rx: None,
             cache_verify_rx: None,
+            primary_code_check_request: None,
             verified_branches: HashSet::new(),
             remote_fetch_rx: None,
             tag_load_rx: None,
@@ -532,6 +547,24 @@ impl App {
     }
 
     // ---- Channel Draining ----
+
+    fn primary_code_check_owns_cancel_flag(&self) -> bool {
+        self.primary_code_check_request
+            .as_ref()
+            .zip(self.cancel_flag.as_ref())
+            .is_some_and(|(request, current)| Arc::ptr_eq(&request.cancel, current))
+    }
+
+    fn primary_code_check_is_executing(&self) -> bool {
+        self.primary_code_check_owns_cancel_flag()
+            && matches!(self.overlay, Some(Overlay::Executing { .. }))
+    }
+
+    fn clear_cancel_flag_unless_primary_code_check_owns_it(&mut self) {
+        if !self.primary_code_check_owns_cancel_flag() {
+            self.cancel_flag = None;
+        }
+    }
 
     fn drain_channels(&mut self) -> bool {
         let mut dirty = false;
@@ -1096,13 +1129,89 @@ impl App {
             self.worktree_enrich_rx = Some(rx);
         }
 
+        if let Some(request) = self.primary_code_check_request.as_ref() {
+            match request.receiver.try_recv() {
+                Ok(result) => {
+                    let request = self.primary_code_check_request.take().unwrap();
+                    let owns_execution = self
+                        .cancel_flag
+                        .as_ref()
+                        .is_some_and(|cancel| Arc::ptr_eq(cancel, &request.cancel));
+                    if owns_execution && matches!(self.overlay, Some(Overlay::Executing { .. })) {
+                        self.cancel_flag = None;
+                        self.toast = None;
+                        self.info_copied_msg = None;
+                        self.info_modal_scroll_offset = 0;
+                        self.overlay = Some(Overlay::InfoModal {
+                            items: Vec::new(),
+                            cursor: 0,
+                            info_cursor: 0,
+                            focus: InfoModalFocus::Info,
+                            row: InfoModalRow::PrimaryBranchCodeCheck {
+                                display_ref: result.display_ref,
+                                base_branch: result.base_branch,
+                                primary_reference: result.primary_reference,
+                                primary_oid: result.primary_oid,
+                                outcome: result.outcome,
+                            },
+                        });
+                    } else {
+                        request.cancel.store(true, Ordering::Relaxed);
+                        if owns_execution {
+                            self.cancel_flag = None;
+                        }
+                    }
+                    dirty = true;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    let request = self.primary_code_check_request.take().unwrap();
+                    let owns_execution = self
+                        .cancel_flag
+                        .as_ref()
+                        .is_some_and(|cancel| Arc::ptr_eq(cancel, &request.cancel));
+                    if owns_execution && matches!(self.overlay, Some(Overlay::Executing { .. })) {
+                        self.cancel_flag = None;
+                        self.overlay = None;
+                        self.toast = Some(Toast::new(
+                            "Primary branch check stopped unexpectedly".into(),
+                            60,
+                        ));
+                    } else {
+                        request.cancel.store(true, Ordering::Relaxed);
+                        if owns_execution {
+                            self.cancel_flag = None;
+                        }
+                    }
+                    dirty = true;
+                }
+                Err(TryRecvError::Empty) => {
+                    let owns_execution = self
+                        .cancel_flag
+                        .as_ref()
+                        .is_some_and(|cancel| Arc::ptr_eq(cancel, &request.cancel));
+                    let request_is_active =
+                        owns_execution && matches!(self.overlay, Some(Overlay::Executing { .. }));
+                    if !request_is_active {
+                        let request = self.primary_code_check_request.take().unwrap();
+                        request.cancel.store(true, Ordering::Relaxed);
+                        if owns_execution {
+                            self.cancel_flag = None;
+                        }
+                        dirty = true;
+                    }
+                }
+            }
+        }
+
         // Operation results (one-shot) -- fetch only; confirmed-action jobs
         // are handled by self.job_queue below, non-modally.
         for results in drain_channel(&mut self.op_rx, 1, &mut dirty) {
-            self.cancel_flag = None;
+            self.clear_cancel_flag_unless_primary_code_check_owns_it();
             self.progress_rx = None;
             self.progress = None;
-            let graph_delta = self.fetch_graph_delta_rx.take()
+            let graph_delta = self
+                .fetch_graph_delta_rx
+                .take()
                 .and_then(|rx| rx.try_recv().ok())
                 .unwrap_or_else(|| Err("fetch repository state observation was unavailable".into()));
             match self.return_view {
@@ -1112,7 +1221,7 @@ impl App {
                 ViewId::Worktrees | ViewId::Graph => {}
             }
             self.request_graph_update(graph_delta);
-            if !self.fetch_overlay_dismissed {
+            if !self.fetch_overlay_dismissed && !self.primary_code_check_is_executing() {
                 self.overlay = Some(Overlay::results(results));
             }
             self.fetch_overlay_dismissed = false;
@@ -1177,10 +1286,12 @@ impl App {
 
         // Cache-audit result (one-shot)
         for audit in drain_channel(&mut self.diag_rx, 1, &mut dirty) {
-            self.cancel_flag = None;
+            self.clear_cancel_flag_unless_primary_code_check_owns_it();
             self.progress_rx = None;
             self.progress = None;
-            self.overlay = Some(Overlay::DiagnosticsReport { audit, scroll: 0 });
+            if !self.primary_code_check_is_executing() {
+                self.overlay = Some(Overlay::DiagnosticsReport { audit, scroll: 0 });
+            }
         }
 
         // Silent, automatic launch-time cache verification (one-shot). The
@@ -2374,6 +2485,16 @@ impl App {
             ),
             Some(Overlay::Executing { label, progress }) => {
                 if key.code == KeyCode::Esc {
+                    if let Some(request) = self.primary_code_check_request.take() {
+                        request.cancel.store(true, Ordering::Relaxed);
+                        if self
+                            .cancel_flag
+                            .as_ref()
+                            .is_some_and(|cancel| Arc::ptr_eq(cancel, &request.cancel))
+                        {
+                            self.cancel_flag = None;
+                        }
+                    }
                     if let Some(flag) = &self.cancel_flag {
                         flag.store(true, Ordering::Relaxed);
                     }
@@ -3441,6 +3562,15 @@ impl App {
                 target: branch.name.clone(),
                 remote: None,
             },
+            MenuItem {
+                label: BranchAction::CheckPrimaryBranchCode.label().into(),
+                enabled: true,
+                reason: None,
+                shortcut: None,
+                action: BranchAction::CheckPrimaryBranchCode,
+                target: format!("refs/heads/{}", branch.name),
+                remote: None,
+            },
             self.row_from(
                 "Checkout",
                 Some('c'),
@@ -3606,6 +3736,15 @@ impl App {
                 remote: None,
             },
             MenuItem {
+                label: BranchAction::CheckPrimaryBranchCode.label().into(),
+                enabled: true,
+                reason: None,
+                shortcut: None,
+                action: BranchAction::CheckPrimaryBranchCode,
+                target: format!("refs/remotes/{}", branch.full_ref),
+                remote: None,
+            },
+            MenuItem {
                 label: "Checkout".into(),
                 enabled: !pinned && !has_local,
                 reason: if pinned {
@@ -3723,6 +3862,15 @@ impl App {
                 remote: None,
             },
             MenuItem {
+                label: BranchAction::CheckPrimaryBranchCode.label().into(),
+                enabled: true,
+                reason: None,
+                shortcut: None,
+                action: BranchAction::CheckPrimaryBranchCode,
+                target: format!("refs/tags/{}", tag.name),
+                remote: None,
+            },
+            MenuItem {
                 label: "Delete tag".into(),
                 enabled: true,
                 reason: None,
@@ -3795,6 +3943,19 @@ impl App {
                 remote: None,
             },
             MenuItem {
+                label: BranchAction::CheckPrimaryBranchCode.label().into(),
+                enabled: true,
+                reason: None,
+                shortcut: None,
+                action: BranchAction::CheckPrimaryBranchCode,
+                target: wt
+                    .branch
+                    .as_ref()
+                    .map(|branch| format!("refs/heads/{branch}"))
+                    .unwrap_or_else(|| wt.commit_hash.clone()),
+                remote: None,
+            },
+            MenuItem {
                 label: "Remove worktree".into(),
                 enabled: !is_main && !is_dirty,
                 reason: if is_main {
@@ -3845,6 +4006,10 @@ impl App {
 
     fn execute_menu_action(&mut self, item: MenuItem) {
         let action = item.action;
+        if action == BranchAction::CheckPrimaryBranchCode {
+            self.start_primary_code_check(item.target);
+            return;
+        }
         if action == BranchAction::JumpToGraph {
             self.jump_to_graph(item.target, self.return_view == ViewId::Remotes);
             return;
@@ -3879,6 +4044,73 @@ impl App {
         } else {
             self.open_confirm_with_remote(action, self.return_view, targets, item.remote);
         }
+    }
+
+    fn start_primary_code_check(&mut self, selected_ref: String) {
+        let repo_path = self.repo_path.clone();
+        let base_branch = self.base_branch.clone();
+        let display_ref = selected_ref
+            .strip_prefix("refs/heads/")
+            .or_else(|| selected_ref.strip_prefix("refs/remotes/"))
+            .or_else(|| selected_ref.strip_prefix("refs/tags/"))
+            .unwrap_or(&selected_ref)
+            .to_string();
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_for_worker = Arc::clone(&cancel);
+        self.primary_code_check_request = Some(PrimaryCodeCheckRequest {
+            receiver: rx,
+            cancel: Arc::clone(&cancel),
+        });
+        self.cancel_flag = Some(cancel);
+        self.return_view = self.active_view;
+        self.info_copied_msg = None;
+        self.info_modal_scroll_offset = 0;
+        self.toast = None;
+        self.overlay = Some(Overlay::Executing {
+            label: format!("Checking code from {display_ref} in {base_branch}..."),
+            progress: None,
+        });
+        std::thread::spawn(move || {
+            if cancel_for_worker.load(Ordering::Relaxed) {
+                return;
+            }
+            let (primary_reference, primary_oid, outcome) = match git2::Repository::open(&repo_path)
+            {
+                Ok(repo) => {
+                    match git_branch_manager::git::merge_detection::resolve_primary_ref_for_code_check(
+                        &repo,
+                        &base_branch,
+                        Some(&cancel_for_worker),
+                    ) {
+                        Ok(primary) => {
+                            let primary_reference = Some(primary.reference.clone());
+                            let primary_oid = Some(primary.oid.to_string());
+                            let outcome = git_branch_manager::git::merge_detection::check_ref_code_in_primary(
+                                &repo,
+                                &primary,
+                                &selected_ref,
+                                Some(&cancel_for_worker),
+                            )
+                            .map_err(|error| format!("{error:#}"));
+                            (primary_reference, primary_oid, outcome)
+                        }
+                        Err(error) => (None, None, Err(format!("{error:#}"))),
+                    }
+                }
+                Err(error) => (None, None, Err(format!("{error:#}"))),
+            };
+            if cancel_for_worker.load(Ordering::Relaxed) {
+                return;
+            }
+            let _ = tx.send(PrimaryCodeCheckResult {
+                display_ref,
+                base_branch,
+                primary_reference,
+                primary_oid,
+                outcome,
+            });
+        });
     }
 
     // ---- View-level action helpers ----
@@ -5190,10 +5422,11 @@ fn confirmation_command_for_target(
 
 fn graph_affected_views(action: BranchAction) -> &'static [ViewId] {
     // P110: every action that mutates repository state (refs or OIDs) should
-    // refresh the Graph view. The two UI-only actions (JumpToGraph and
-    // ViewRemotePR) stay empty.
+    // refresh the Graph view. UI-only and read-only actions stay empty.
     match action {
-        BranchAction::JumpToGraph | BranchAction::ViewRemotePR => &[],
+        BranchAction::JumpToGraph
+        | BranchAction::ViewRemotePR
+        | BranchAction::CheckPrimaryBranchCode => &[],
         BranchAction::DeleteLocal
         | BranchAction::DeleteLocalAndRemote
         | BranchAction::DeleteLocalForce
@@ -6605,6 +6838,13 @@ mod tests {
             .expect("Branches menu should expose Graph navigation");
         assert_eq!(branch_jump.shortcut, Some('g'));
         assert_eq!(branch_jump.target, "feature/nav");
+        let branch_check = app
+            .build_menu_items()
+            .into_iter()
+            .find(|item| item.action == BranchAction::CheckPrimaryBranchCode)
+            .expect("Branches menu should expose primary code check");
+        assert!(branch_check.enabled);
+        assert_eq!(branch_check.target, "refs/heads/feature/nav");
 
         app.active_view = ViewId::Remotes;
         app.remotes
@@ -6615,6 +6855,12 @@ mod tests {
             .find(|item| item.action == BranchAction::JumpToGraph)
             .expect("Remotes menu should expose Graph navigation");
         assert_eq!(remote_jump.target, "origin/feature/nav");
+        let remote_check = app
+            .build_menu_items()
+            .into_iter()
+            .find(|item| item.action == BranchAction::CheckPrimaryBranchCode)
+            .expect("Remotes menu should expose primary code check");
+        assert_eq!(remote_check.target, "refs/remotes/origin/feature/nav");
 
         app.active_view = ViewId::Tags;
         app.tags.set_items(vec![tag("v1.2.3")]);
@@ -6624,6 +6870,12 @@ mod tests {
             .find(|item| item.action == BranchAction::JumpToGraph)
             .expect("Tags menu should expose Graph navigation");
         assert_eq!(tag_jump.target, "v1.2.3");
+        let tag_check = app
+            .build_menu_items()
+            .into_iter()
+            .find(|item| item.action == BranchAction::CheckPrimaryBranchCode)
+            .expect("Tags menu should expose primary code check");
+        assert_eq!(tag_check.target, "refs/tags/v1.2.3");
 
         app.active_view = ViewId::Worktrees;
         app.worktrees.set_items(vec![worktree("feature/nav")]);
@@ -6633,6 +6885,366 @@ mod tests {
             .find(|item| item.action == BranchAction::JumpToGraph)
             .expect("Worktrees menu should expose Graph navigation");
         assert_eq!(worktree_jump.target, "feature/nav");
+        let worktree_check = app
+            .build_menu_items()
+            .into_iter()
+            .find(|item| item.action == BranchAction::CheckPrimaryBranchCode)
+            .expect("Worktrees menu should expose primary code check");
+        assert_eq!(worktree_check.target, "refs/heads/feature/nav");
+
+        let mut detached = worktree("detached");
+        detached.branch = None;
+        detached.commit_hash = "1234567890abcdef".into();
+        app.worktrees.set_items(vec![detached]);
+        let detached_check = app
+            .build_menu_items()
+            .into_iter()
+            .find(|item| item.action == BranchAction::CheckPrimaryBranchCode)
+            .expect("detached worktree menu should expose primary code check");
+        assert_eq!(detached_check.target, "1234567890abcdef");
+    }
+
+    #[test]
+    fn primary_code_menu_action_runs_read_only_and_keeps_chosen_primary_evidence() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let dir = tmpdir.path();
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.name", "Test"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["commit", "--allow-empty", "-m", "root"]);
+        run_git(dir, &["checkout", "-b", "feature/check"]);
+        std::fs::write(dir.join("feature.txt"), "feature\n").unwrap();
+        run_git(dir, &["add", "feature.txt"]);
+        run_git(dir, &["commit", "-m", "feature"]);
+        let primary_oid = git2::Repository::open(dir)
+            .unwrap()
+            .find_branch("main", git2::BranchType::Local)
+            .unwrap()
+            .get()
+            .target()
+            .unwrap()
+            .to_string();
+
+        let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
+        app.active_view = ViewId::Tags;
+        app.execute_menu_action(MenuItem {
+            label: BranchAction::CheckPrimaryBranchCode.label().into(),
+            enabled: true,
+            reason: None,
+            shortcut: None,
+            action: BranchAction::CheckPrimaryBranchCode,
+            target: "refs/heads/feature/check".into(),
+            remote: None,
+        });
+        assert!(matches!(app.overlay, Some(Overlay::Executing { .. })));
+        assert_eq!(app.job_queue.queued_len_for_test(), 0);
+        assert_eq!(app.job_queue.current_action(), None);
+
+        for _ in 0..1000 {
+            app.drain_channels();
+            if matches!(app.overlay, Some(Overlay::InfoModal { .. })) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::InfoModal {
+                row: InfoModalRow::PrimaryBranchCodeCheck {
+                    primary_reference: Some(reference),
+                    primary_oid: Some(oid),
+                    outcome: Ok(PrimaryBranchCodeMatch::NotFound),
+                    ..
+                },
+                ..
+            }) if reference == "refs/heads/main" && oid == primary_oid
+        ));
+    }
+
+    #[test]
+    fn late_primary_code_result_does_not_replace_another_executing_request() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let (tx, rx) = mpsc::channel();
+        let active_cancel = Arc::new(AtomicBool::new(false));
+        let primary_cancel = Arc::new(AtomicBool::new(false));
+        app.cancel_flag = Some(active_cancel);
+        app.primary_code_check_request = Some(PrimaryCodeCheckRequest {
+            receiver: rx,
+            cancel: Arc::clone(&primary_cancel),
+        });
+        app.overlay = Some(Overlay::Executing {
+            label: "Verifying cache accuracy...".into(),
+            progress: None,
+        });
+        tx.send(PrimaryCodeCheckResult {
+            display_ref: "feature/late".into(),
+            base_branch: "main".into(),
+            primary_reference: Some("refs/heads/main".into()),
+            primary_oid: Some("a1b2c3d".into()),
+            outcome: Ok(PrimaryBranchCodeMatch::Merged),
+        })
+        .unwrap();
+
+        app.drain_channels();
+
+        assert!(
+            matches!(app.overlay, Some(Overlay::Executing { label, .. }) if label == "Verifying cache accuracy...")
+        );
+        assert!(primary_cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn late_canceled_fetch_completion_preserves_primary_check_ownership() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let (op_tx, op_rx) = mpsc::channel();
+        let (delta_tx, delta_rx) = mpsc::channel();
+        app.op_rx = Some(op_rx);
+        app.fetch_graph_delta_rx = Some(delta_rx);
+        let fetch_cancel = Arc::new(AtomicBool::new(true));
+        let primary_cancel = Arc::new(AtomicBool::new(false));
+        app.cancel_flag = Some(Arc::clone(&fetch_cancel));
+        app.fetch_overlay_dismissed = true;
+
+        let (primary_tx, primary_rx) = mpsc::channel();
+        app.primary_code_check_request = Some(PrimaryCodeCheckRequest {
+            receiver: primary_rx,
+            cancel: Arc::clone(&primary_cancel),
+        });
+        app.cancel_flag = Some(Arc::clone(&primary_cancel));
+        app.overlay = Some(Overlay::Executing {
+            label: "Checking code from feature/a in main...".into(),
+            progress: None,
+        });
+        app.active_view = ViewId::Worktrees;
+        app.return_view = ViewId::Worktrees;
+
+        // Keep the scanner pending while the old fetch completion arrives.
+        app.drain_channels();
+        op_tx.send(Vec::new()).unwrap();
+        delta_tx.send(Err("fetch observation unavailable".into())).unwrap();
+        app.drain_channels();
+
+        assert!(!primary_cancel.load(Ordering::Relaxed));
+        assert!(Arc::ptr_eq(
+            app.cancel_flag.as_ref().expect("scanner still owns cancel flag"),
+            &primary_cancel
+        ));
+        assert!(app.primary_code_check_request.is_some());
+        assert!(matches!(app.overlay, Some(Overlay::Executing { .. })));
+
+        primary_tx
+            .send(PrimaryCodeCheckResult {
+                display_ref: "feature/a".into(),
+                base_branch: "main".into(),
+                primary_reference: Some("refs/heads/main".into()),
+                primary_oid: Some("a1b2c3d".into()),
+                outcome: Ok(PrimaryBranchCodeMatch::Merged),
+            })
+            .unwrap();
+        app.drain_channels();
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::InfoModal {
+                row: InfoModalRow::PrimaryBranchCodeCheck {
+                    outcome: Ok(PrimaryBranchCodeMatch::Merged),
+                    ..
+                },
+                ..
+            })
+        ));
+        assert!(app.cancel_flag.is_none());
+    }
+
+    #[test]
+    fn escape_cancels_and_drops_the_primary_code_check_request() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let (_tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        app.cancel_flag = Some(Arc::clone(&cancel));
+        app.primary_code_check_request = Some(PrimaryCodeCheckRequest {
+            receiver: rx,
+            cancel: Arc::clone(&cancel),
+        });
+        app.overlay = Some(Overlay::Executing {
+            label: "Checking code...".into(),
+            progress: None,
+        });
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert!(cancel.load(Ordering::Relaxed));
+        assert!(app.primary_code_check_request.is_none());
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn stale_empty_primary_code_request_is_canceled_without_touching_new_owner() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let (_tx, rx) = mpsc::channel();
+        let primary_cancel = Arc::new(AtomicBool::new(false));
+        let newer_cancel = Arc::new(AtomicBool::new(false));
+        app.cancel_flag = Some(Arc::clone(&newer_cancel));
+        app.primary_code_check_request = Some(PrimaryCodeCheckRequest {
+            receiver: rx,
+            cancel: Arc::clone(&primary_cancel),
+        });
+        app.overlay = Some(Overlay::Executing {
+            label: "Verifying cache accuracy...".into(),
+            progress: None,
+        });
+
+        app.drain_channels();
+
+        assert!(primary_cancel.load(Ordering::Relaxed));
+        assert!(!newer_cancel.load(Ordering::Relaxed));
+        assert!(Arc::ptr_eq(
+            app.cancel_flag.as_ref().unwrap(),
+            &newer_cancel
+        ));
+        assert!(app.primary_code_check_request.is_none());
+        assert!(
+            matches!(app.overlay, Some(Overlay::Executing { label, .. }) if label == "Verifying cache accuracy...")
+        );
+    }
+
+    #[test]
+    fn primary_code_success_resets_info_modal_state_and_shows_result() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        app.cancel_flag = Some(Arc::clone(&cancel));
+        app.primary_code_check_request = Some(PrimaryCodeCheckRequest {
+            receiver: rx,
+            cancel: Arc::clone(&cancel),
+        });
+        app.overlay = Some(Overlay::Executing {
+            label: "Checking code...".into(),
+            progress: None,
+        });
+        app.info_copied_msg = Some("old copy".into());
+        app.info_modal_scroll_offset = 12;
+        tx.send(PrimaryCodeCheckResult {
+            display_ref: "feature/a".into(),
+            base_branch: "main".into(),
+            primary_reference: Some("refs/remotes/origin/main".into()),
+            primary_oid: Some("1234567890abcdef".into()),
+            outcome: Ok(PrimaryBranchCodeMatch::Merged),
+        })
+        .unwrap();
+
+        app.drain_channels();
+
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::InfoModal {
+                row: InfoModalRow::PrimaryBranchCodeCheck {
+                    outcome: Ok(PrimaryBranchCodeMatch::Merged),
+                    ..
+                },
+                ..
+            })
+        ));
+        assert!(app.primary_code_check_request.is_none());
+        assert!(app.cancel_flag.is_none());
+        assert!(app.info_copied_msg.is_none());
+        assert_eq!(app.info_modal_scroll_offset, 0);
+    }
+
+    #[test]
+    fn primary_code_error_is_shown_in_the_result_modal() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        app.cancel_flag = Some(Arc::clone(&cancel));
+        app.primary_code_check_request = Some(PrimaryCodeCheckRequest {
+            receiver: rx,
+            cancel: Arc::clone(&cancel),
+        });
+        app.overlay = Some(Overlay::Executing {
+            label: "Checking code...".into(),
+            progress: None,
+        });
+        tx.send(PrimaryCodeCheckResult {
+            display_ref: "feature/a".into(),
+            base_branch: "main".into(),
+            primary_reference: None,
+            primary_oid: None,
+            outcome: Err("missing ref".into()),
+        })
+        .unwrap();
+
+        app.drain_channels();
+
+        assert!(
+            matches!(app.overlay, Some(Overlay::InfoModal { row: InfoModalRow::PrimaryBranchCodeCheck { outcome: Err(error), .. }, .. }) if error == "missing ref")
+        );
+        assert!(app.primary_code_check_request.is_none());
+        assert!(app.cancel_flag.is_none());
+    }
+
+    #[test]
+    fn disconnected_primary_code_request_clears_progress_and_shows_toast() {
+        let tmpdir = tempfile::tempdir().expect("temp repo");
+        let mut app = App::new(
+            tmpdir.path().to_path_buf(),
+            "main".into(),
+            Config::default(),
+        );
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
+        let cancel = Arc::new(AtomicBool::new(false));
+        app.cancel_flag = Some(Arc::clone(&cancel));
+        app.primary_code_check_request = Some(PrimaryCodeCheckRequest {
+            receiver: rx,
+            cancel: Arc::clone(&cancel),
+        });
+        app.overlay = Some(Overlay::Executing {
+            label: "Checking code...".into(),
+            progress: None,
+        });
+
+        app.drain_channels();
+
+        assert!(app.overlay.is_none());
+        assert!(app
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.message == "Primary branch check stopped unexpectedly"));
+        assert!(app.primary_code_check_request.is_none());
+        assert!(app.cancel_flag.is_none());
     }
 
     #[test]
@@ -6932,8 +7544,12 @@ mod tests {
         let first_enabled = items
             .iter()
             .position(|item| item.enabled)
-            .expect("remote checkout should be available");
-        assert!(!items[0].enabled, "local Checkout must be disabled");
+            .expect("an enabled read-only or remote action should be available");
+        let checkout = items
+            .iter()
+            .find(|item| item.action == BranchAction::Checkout)
+            .expect("local Checkout action");
+        assert!(!checkout.enabled, "local Checkout must be disabled");
         assert!(matches!(
             app.overlay,
             Some(Overlay::CommitDetails {
