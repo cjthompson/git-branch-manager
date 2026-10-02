@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-02
+
+### Follow up on partially implemented tasks #002–#037 (P002)
+- Add primary-branch code check to all ref views
+
 ## 2026-10-01
 
 ### Follow up on partially implemented tasks #002–#037 (P002)
