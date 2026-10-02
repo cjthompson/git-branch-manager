@@ -6157,6 +6157,15 @@ mod tests {
         app.drain_channels();
     }
 
+    /// Polls until `done` holds or 60s pass; background git work has taken
+    /// ~18s under parallel test load behind a slow `git` wrapper.
+    fn wait_until(mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !done() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     fn unchanged_graph_observation(path: &std::path::Path) -> Receiver<Result<graph::GraphRepositoryDelta, String>> {
         let state = graph::GraphRepositoryState::capture(path).unwrap();
         let (tx, rx) = mpsc::channel();
@@ -6940,13 +6949,10 @@ mod tests {
         assert_eq!(app.job_queue.queued_len_for_test(), 0);
         assert_eq!(app.job_queue.current_action(), None);
 
-        for _ in 0..1000 {
+        wait_until(|| {
             app.drain_channels();
-            if matches!(app.overlay, Some(Overlay::InfoModal { .. })) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            matches!(app.overlay, Some(Overlay::InfoModal { .. }))
+        });
         assert!(matches!(
             app.overlay,
             Some(Overlay::InfoModal {
@@ -8200,11 +8206,10 @@ mod tests {
         app.graph.apply_result(Ok(before));
         app.active_view = ViewId::Worktrees;
         app.job_queue.enqueue_or_start(BranchAction::DeleteLocal, vec!["feature/queued-delete".into()], ViewId::Graph);
-        for _ in 0..400 {
+        wait_until(|| {
             app.drain_channels();
-            if app.job_queue.current_action().is_none() && app.graph_update_rx.is_none() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            app.job_queue.current_action().is_none() && app.graph_update_rx.is_none()
+        });
 
         let updated = app.graph.snapshot().expect("Graph snapshot remains published");
         assert!(!updated.commits.iter().flat_map(|commit| &commit.refs).any(|reference| reference.name == "feature/queued-delete"));
@@ -8257,11 +8262,10 @@ mod tests {
         app.graph.apply_result(Ok(old_snapshot));
         app.active_view = ViewId::Worktrees;
         app.request_graph_update(Ok(graph::GraphRepositoryDelta::between(before, after)));
-        for _ in 0..200 {
+        wait_until(|| {
             app.drain_channels();
-            if app.graph_update_rx.is_none() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            app.graph_update_rx.is_none()
+        });
 
         let updated = app.graph.snapshot().expect("incremental snapshot remains loaded");
         assert!(updated.commits.iter().any(|commit| commit.oid == feature_oid.trim()));
@@ -8283,11 +8287,10 @@ mod tests {
         app.graph.apply_result(Ok(snapshot));
         app.active_view = ViewId::Tags;
         app.start_auto_fetch();
-        for _ in 0..200 {
+        wait_until(|| {
             app.drain_channels();
-            if app.remote_fetch_rx.is_none() && app.graph_update_rx.is_none() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            app.remote_fetch_rx.is_none() && app.graph_update_rx.is_none()
+        });
         assert!(app.graph.snapshot().is_some());
         assert!(app.graph_rx.is_none(), "automatic fetch must not force a full Graph load");
         assert_eq!(app.active_view, ViewId::Tags);
@@ -8322,11 +8325,10 @@ mod tests {
         app.remote_fetch_rx = Some(rx);
         app.start_auto_fetch();
         assert!(app.remote_fetch_rx.is_some(), "active completion receiver must not be replaced");
-        for _ in 0..300 {
+        wait_until(|| {
             app.drain_channels();
-            if app.remote_fetch_rx.is_none() && app.graph_update_rx.is_none() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            app.remote_fetch_rx.is_none() && app.graph_update_rx.is_none()
+        });
 
         let updated = app.graph.snapshot().unwrap();
         assert!(updated.commits.iter().any(|commit| commit.oid == remote_tip.to_string()));
@@ -8348,11 +8350,10 @@ mod tests {
         app.graph.apply_result(Ok(snapshot));
         app.active_view = ViewId::Graph;
         app.start_fetch(false);
-        for _ in 0..200 {
+        wait_until(|| {
             app.drain_channels();
-            if app.op_rx.is_none() && app.graph_update_rx.is_none() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            app.op_rx.is_none() && app.graph_update_rx.is_none()
+        });
         assert!(app.graph.snapshot().is_some());
         assert!(app.graph_rx.is_none(), "modal fetch must not trigger a second full Graph load");
         assert_eq!(app.active_view, ViewId::Graph);
@@ -8392,11 +8393,12 @@ mod tests {
 
         delta_tx.send(Ok(graph::GraphRepositoryDelta::between(before, after))).unwrap();
         op_tx.send(Vec::new()).unwrap();
-        for _ in 0..200 {
+        // The fetch thread exits after sending; `op_rx` clears only on disconnect.
+        drop(op_tx);
+        wait_until(|| {
             app.drain_channels();
-            if app.op_rx.is_none() && app.graph_update_rx.is_none() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            app.op_rx.is_none() && app.graph_update_rx.is_none()
+        });
         assert!(app.graph.snapshot().unwrap().commits.iter().any(|commit| commit.oid == topic.to_string()));
         assert!(app.overlay.is_none(), "a dismissed modal must stay dismissed after completion");
         assert_eq!(app.active_view, ViewId::Worktrees);
@@ -8425,11 +8427,10 @@ mod tests {
         app.request_graph_update(Ok(graph::GraphRepositoryDelta::between(before_state, after_state)));
         app.drain_channels();
         assert!(app.graph.snapshot().is_none(), "stale initial snapshot stays staged until reconciliation");
-        for _ in 0..200 {
+        wait_until(|| {
             app.drain_channels();
-            if !app.graph.is_loading() && app.graph_update_rx.is_none() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            !app.graph.is_loading() && app.graph_update_rx.is_none()
+        });
         assert!(app.graph.snapshot().is_some(), "snapshot missing: error={:?}, loading={}, update_rx={}, graph_rx={}", app.graph.error(), app.graph.is_loading(), app.graph_update_rx.is_some(), app.graph_rx.is_some());
         assert!(app.graph.snapshot().unwrap().commits.iter().any(|commit| commit.oid == new_oid.trim()));
     }
@@ -8455,11 +8456,10 @@ mod tests {
         let after = graph::GraphRepositoryState::capture(dir).unwrap();
         app.request_graph_update(Ok(graph::GraphRepositoryDelta::between(before, after)));
 
-        for _ in 0..400 {
+        wait_until(|| {
             app.drain_channels();
-            if !app.graph.is_loading() && app.graph_rx.is_none() && app.graph_update_rx.is_none() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            !app.graph.is_loading() && app.graph_rx.is_none() && app.graph_update_rx.is_none()
+        });
         let updated = app.graph.snapshot().expect("reconciled snapshot");
         assert_eq!(updated.max_count, 2);
         assert!(updated.includes_remotes);
@@ -9427,13 +9427,10 @@ mod tests {
             1,
             "the final recovery must enqueue exactly the expanded feature/unmerged branch"
         );
-        for _ in 0..100 {
+        wait_until(|| {
             app.job_queue.poll();
-            if app.job_queue.current_targets_for_test() == Some(&["feature/unmerged".to_string()]) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+            app.job_queue.current_targets_for_test() == Some(&["feature/unmerged".to_string()])
+        });
         assert_eq!(
             app.job_queue.current_targets_for_test(),
             Some(&["feature/unmerged".to_string()][..]),
