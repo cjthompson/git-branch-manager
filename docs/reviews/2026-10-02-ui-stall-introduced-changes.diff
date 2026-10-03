@@ -1,0 +1,431 @@
+diff --git a/src/app.rs b/src/app.rs
+index 0241622..03d656a 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -526,8 +549,18 @@ impl App {
+                 }
+                 err => err,
+             };
+-            self.graph.apply_result(result);
+             self.clear_toast();
++            self.graph_repository_state = graph::GraphRepositoryState::capture(&self.repo_path).ok();
++            let mut pending = std::mem::take(&mut self.pending_graph_deltas);
++            if let (Ok(snapshot), Some(first)) = (result.as_ref().map(Clone::clone), pending.first().cloned()) {
++                self.staged_graph_snapshot = Some(snapshot);
++                self.reconciling_initial_graph = true;
++                let _ = pending.remove(0);
++                self.pending_graph_deltas = pending;
++                self.request_graph_update(first);
++                continue;
++            }
++            self.graph.apply_result(result);
+ 
+             if let Some(snapshot) = self.graph.snapshot().cloned() {
+                 self.graph_enrich_rx = Some(graph::spawn_possible_squash_enrichment(
+@@ -4380,13 +4534,34 @@ impl App {
+     }
+ 
+     fn start_remote_fetch(&mut self) {
++        self.start_observed_remote_fetch(false);
++    }
++
++    pub fn start_auto_fetch(&mut self) {
++        self.start_observed_remote_fetch(true);
++    }
++
++    fn start_observed_remote_fetch(&mut self, startup: bool) {
++        // Startup fetch already covers any immediate request from the
++        // Remotes view. Keep its completion receiver until its delta is routed.
++        if self.remote_fetch_rx.is_some() {
++            return;
++        }
+         let repo_path = self.repo_path.clone();
+         let (tx, rx) = mpsc::channel();
+         self.remote_fetch_rx = Some(rx);
+-        self.toast = Some(Toast::new("Fetching remote branches...".into(), 300));
++        if !startup {
++            self.toast = Some(Toast::new("Fetching remote branches...".into(), 300));
++        }
+         std::thread::spawn(move || {
+-            let ok = operations::fetch_sync(&repo_path);
+-            let _ = tx.send(ok);
++            let before = graph::GraphRepositoryState::capture(&repo_path);
++            let success = operations::fetch_sync(&repo_path);
++            let after = graph::GraphRepositoryState::capture(&repo_path);
++            let graph_delta = match (before, after) {
++                (Ok(before), Ok(after)) => Ok(graph::GraphRepositoryDelta::between(before, after)),
++                (Err(error), _) | (_, Err(error)) => Err(error),
++            };
++            let _ = tx.send(RemoteFetchCompletion { success, graph_delta });
+         });
+     }
+ 
+@@ -4543,11 +4785,18 @@ impl App {
+             progress: None,
+         });
+         std::thread::spawn(move || {
++            let before = graph::GraphRepositoryState::capture(&repo_path);
+             let result = if prune {
+                 operations::fetch_prune(&repo_path, &cancel_clone)
+             } else {
+                 operations::fetch(&repo_path, &cancel_clone)
+             };
++            let after = graph::GraphRepositoryState::capture(&repo_path);
++            let observed = match (before, after) {
++                (Ok(before), Ok(after)) => Ok(graph::GraphRepositoryDelta::between(before, after)),
++                (Err(error), _) | (_, Err(error)) => Err(error),
++            };
++            let _ = graph_tx.send(observed);
+             let _ = tx.send(vec![result]);
+         });
+     }
+diff --git a/src/git/graph.rs b/src/git/graph.rs
+index 4cf84aa..64f52dc 100644
+--- a/src/git/graph.rs
++++ b/src/git/graph.rs
+@@ -138,13 +161,129 @@ pub struct GraphRefCounts {
+     pub remote: usize,
+ }
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+ pub enum GraphRefKind {
+     LocalBranch,
+     RemoteBranch,
+     Tag,
+ }
+ 
++/// Canonical identity for a repository ref. `full_name` retains the namespace
++/// (for example `refs/remotes/origin/topic`) so equal display names cannot
++/// alias across local, remote, and tag refs.
++#[derive(Debug, Clone, PartialEq, Eq, Hash)]
++pub struct GraphRefId {
++    pub kind: GraphRefKind,
++    pub full_name: String,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++pub struct GraphRepositoryState {
++    pub refs: HashMap<GraphRefId, String>,
++    /// Non-branch/tag history roots (for example refs/stash and custom refs).
++    /// Full remote-inclusive loaders use these as traversal roots too.
++    pub additional_roots: HashMap<String, String>,
++    pub head_ref: Option<String>,
++    pub head_oid: Option<String>,
++    pub worktrees: HashMap<String, Option<String>>,
++    pub tracking: HashMap<String, (String, Option<u32>, Option<u32>)>,
++}
++
++impl GraphRepositoryState {
++    pub fn capture(repo_path: &Path) -> Result<Self, String> {
++        Self::capture_with_head(repo_path, repo_path)
++    }
++
++    pub fn capture_with_head(repo_path: &Path, head_repo_path: &Path) -> Result<Self, String> {
++        let repo = git2::Repository::open(repo_path).map_err(|error| error.message().to_string())?;
++        let head_repo = git2::Repository::open(head_repo_path).map_err(|error| error.message().to_string())?;
++        let mut state = Self::default();
++        let references = repo.references().map_err(|error| error.message().to_string())?;
++        for reference in references {
++            let reference = reference.map_err(|error| error.message().to_string())?;
++            let Ok(full_name) = reference.name().map(str::to_string) else { continue };
++            let kind = if full_name.starts_with("refs/heads/") {
++                GraphRefKind::LocalBranch
++            } else if full_name.starts_with("refs/remotes/") {
++                GraphRefKind::RemoteBranch
++            } else if full_name.starts_with("refs/tags/") {
++                GraphRefKind::Tag
++            } else {
++                if let Ok(commit) = reference.peel_to_commit() {
++                    state.additional_roots.insert(full_name, commit.id().to_string());
++                }
++                continue
++            };
++            let oid = reference.peel_to_commit().map(|commit| commit.id().to_string()).ok();
++            if let Some(oid) = oid {
++                state.refs.insert(GraphRefId { kind, full_name }, oid);
++            }
++        }
++        for branch in repo.branches(Some(git2::BranchType::Local)).map_err(|error| error.message().to_string())? {
++            let (branch, _) = branch.map_err(|error| error.message().to_string())?;
++            let Some(name) = branch.name().map_err(|error| error.message().to_string())?.map(str::to_string) else { continue };
++            let Ok(upstream) = branch.upstream() else { continue };
++            let Some(upstream_name) = upstream.name().ok().flatten().map(str::to_string) else { continue };
++            let tracking = match (branch.get().target(), upstream.get().target()) {
++                (Some(local), Some(remote)) => repo.graph_ahead_behind(local, remote).ok().map(|(ahead, behind)| (Some(ahead.try_into().unwrap_or(u32::MAX)), Some(behind.try_into().unwrap_or(u32::MAX)))),
++                _ => None,
++            }.unwrap_or((None, None));
++            state.tracking.insert(name, (upstream_name, tracking.0, tracking.1));
++        }
++        if let Ok(head) = head_repo.head() {
++            state.head_ref = head.name().ok().map(str::to_string);
++            state.head_oid = head.peel_to_commit().ok().map(|commit| commit.id().to_string());
++        }
++        for worktree in crate::git::worktree::try_list_worktrees(repo_path)? {
++            let path = std::fs::canonicalize(&worktree.path).unwrap_or(worktree.path);
++            state.worktrees.insert(path.to_string_lossy().into_owned(), worktree.branch);
++        }
++        Ok(state)
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct GraphRepositoryDelta {
++    pub before: GraphRepositoryState,
++    pub after: GraphRepositoryState,
++    pub added_refs: Vec<(GraphRefId, String)>,
++    pub removed_refs: Vec<(GraphRefId, String)>,
++    pub moved_refs: Vec<(GraphRefId, String, String)>,
++    pub head_changed: bool,
++    pub worktrees_changed: bool,
++    pub tracking_changed: bool,
++    pub additional_roots_changed: bool,
++}
++
++impl GraphRepositoryDelta {
++    pub fn between(before: GraphRepositoryState, after: GraphRepositoryState) -> Self {
++        let mut added_refs = Vec::new();
++        let mut removed_refs = Vec::new();
++        let mut moved_refs = Vec::new();
++        for (id, old_oid) in &before.refs {
++            match after.refs.get(id) {
++                None => removed_refs.push((id.clone(), old_oid.clone())),
++                Some(new_oid) if new_oid != old_oid => moved_refs.push((id.clone(), old_oid.clone(), new_oid.clone())),
++                _ => {}
++            }
++        }
++        for (id, oid) in &after.refs {
++            if !before.refs.contains_key(id) { added_refs.push((id.clone(), oid.clone())); }
++        }
++        Self {
++            head_changed: before.head_ref != after.head_ref || before.head_oid != after.head_oid,
++            worktrees_changed: before.worktrees != after.worktrees,
++            tracking_changed: before.tracking != after.tracking,
++            additional_roots_changed: before.additional_roots != after.additional_roots,
++            before,
++            after,
++            added_refs,
++            removed_refs,
++            moved_refs,
++        }
++    }
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct GraphLoadOptions {
+     pub max_count: usize,
+@@ -217,6 +356,182 @@ pub fn load_graph(
+     }
+ }
+ 
++/// Rebuilds topology over only the configured display window from the
++/// resulting ref roots. The repository history is never loaded through the
++/// normal full Graph loaders on this path; `revwalk.take(max_count)` bounds
++/// commit discovery and the resulting owned records are laid out directly.
++pub fn update_graph_incrementally(
++    repo_path: &Path,
++    previous: GraphSnapshot,
++    delta: &GraphRepositoryDelta,
++    options: GraphLoadOptions,
++) -> Result<GraphSnapshot, GraphLoadError> {
++    if delta.added_refs.is_empty() && delta.removed_refs.is_empty() && delta.moved_refs.is_empty()
++        && !delta.additional_roots_changed {
++        let mut patched = previous;
++        let refs = collect_ref_data(repo_path, options.include_remotes, options.base_branch.as_deref())
++            .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
++        for commit in &mut patched.commits {
++            commit.refs = refs.refs_by_oid.get(&commit.oid).cloned().unwrap_or_default();
++        }
++        patched.ref_counts = refs.ref_counts;
++        assign_graph_branch_labels(&mut patched.commits, &refs.branch_labels, refs.base_branch.as_deref());
++        return Ok(patched);
++    }
++
++    let repository = git2::Repository::open(repo_path)
++        .map_err(|error| GraphLoadError::Both { gleisbau: error.message().to_string(), fallback: error.message().to_string() })?;
++    let resulting_state = GraphRepositoryState::capture(repo_path)
++        .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
++    let previous_generation = previous.generation;
++    let previous_topology = previous.commits.iter().map(|commit| (commit.oid.clone(), commit.parents.clone())).collect::<Vec<_>>();
++    let old_by_oid = previous.commits.iter().map(|commit| (commit.oid.clone(), commit.clone())).collect::<HashMap<_, _>>();
++    let ref_data = collect_ref_data(repo_path, options.include_remotes, options.base_branch.as_deref())
++        .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
++    let mut eligible_roots = resulting_state.refs.iter().filter_map(|(id, oid)| {
++        (id.kind == GraphRefKind::LocalBranch || options.include_remotes)
++            .then(|| git2::Oid::from_str(oid).ok()).flatten()
++    }).collect::<Vec<_>>();
++    if options.include_remotes {
++        eligible_roots.extend(resulting_state.additional_roots.values().filter_map(|oid| git2::Oid::from_str(oid).ok()));
++    }
++    let mut cached_by_oid = old_by_oid.clone();
++    let mut records = previous.commits.clone();
++    records.retain(|commit| {
++        git2::Oid::from_str(&commit.oid).ok().is_some_and(|commit_oid| {
++            eligible_roots.iter().any(|root| *root == commit_oid || repository.graph_descendant_of(*root, commit_oid).unwrap_or(false))
++        })
++    });
++    // Traverse all eligible resulting roots together. This gives Git one
++    // deterministic global ordering and lets cached commits count toward the
++    // window without hiding their ancestry from refill discovery.
++    eligible_roots.sort_by_key(|oid| oid.to_string());
++    eligible_roots.dedup();
++    let mut walk = repository.revwalk().map_err(|error| GraphLoadError::Both { gleisbau: error.message().to_string(), fallback: error.message().to_string() })?;
++    walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
++        .map_err(|error| GraphLoadError::Both { gleisbau: error.message().to_string(), fallback: error.message().to_string() })?;
++    for root in &eligible_roots {
++        walk.push(*root).map_err(|error| GraphLoadError::Both { gleisbau: error.message().to_string(), fallback: error.message().to_string() })?;
++    }
++    records.clear();
++    let mut included = HashSet::new();
++    for oid in walk {
++        let oid = oid.map_err(|error| GraphLoadError::Both { gleisbau: error.message().to_string(), fallback: error.message().to_string() })?;
++        let oid_text = oid.to_string();
++        if !included.insert(oid_text.clone()) { continue; }
++        if let Some(cached) = cached_by_oid.remove(&oid_text) {
++            records.push(cached);
++        } else {
++            let commit = repository.find_commit(oid).map_err(|error| GraphLoadError::Both { gleisbau: error.message().to_string(), fallback: error.message().to_string() })?;
++            records.push(GraphCommit {
++                oid: oid_text, summary: commit.summary().ok().flatten().unwrap_or_default().to_string(),
++                parents: commit.parent_ids().map(|parent| parent.to_string()).collect(), lane: None,
++                branch: None, refs: Vec::new(), is_possible_squash_merge: false,
++                possible_squash_merge_sources: Vec::new(), fuzzy_squash_match: None,
++                is_cherry_picked_commit: false, author_name: commit.author().name().unwrap_or("").to_string(),
++                author_email: commit.author().email().unwrap_or("").to_string(),
++                authored_at: Utc.timestamp_opt(commit.author().when().seconds(), 0).single(),
++            });
++        }
++        if records.len() >= options.max_count.max(1) { break; }
++    }
++    for record in &mut records {
++        record.refs = ref_data.refs_by_oid.get(&record.oid).cloned().unwrap_or_default();
++        record.branch = None;
++        if let Some(old) = old_by_oid.get(&record.oid) {
++            record.is_possible_squash_merge = old.is_possible_squash_merge;
++            record.possible_squash_merge_sources = old.possible_squash_merge_sources.clone();
++            record.fuzzy_squash_match = old.fuzzy_squash_match.clone();
++            record.is_cherry_picked_commit = old.is_cherry_picked_commit;
++        }
++    }
++    records = topological_commit_order(records);
++    records.truncate(options.max_count.max(1));
++    let same_topology = previous_topology == records.iter().map(|commit| (commit.oid.clone(), commit.parents.clone())).collect::<Vec<_>>();
++    if same_topology {
++        assign_graph_branch_labels(&mut records, &ref_data.branch_labels, ref_data.base_branch.as_deref());
++        let mut patched = previous;
++        patched.commits = records;
++        patched.ref_counts = ref_data.ref_counts;
++        patched.max_count = options.max_count;
++        patched.includes_remotes = options.include_remotes;
++        return Ok(patched);
++    }
++    assign_graph_branch_labels(&mut records, &ref_data.branch_labels, ref_data.base_branch.as_deref());
++
++    let settings = gleisbau_settings(options.include_remotes, options.line_style, options.base_branch.as_deref())
++        .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
++    let mut commits = records.iter().map(|record| {
++        let oid = git2::Oid::from_str(&record.oid).expect("record OID was read from repository");
++        gleisbau::backend::git2::CommitInfo {
++            oid,
++            parents: record.parents.iter().filter_map(|parent| git2::Oid::from_str(parent).ok()).collect(),
++            children: Vec::new(),
++            branch_trace: None,
++        }
++    }).collect::<Vec<_>>();
++    let indices = commits.iter().enumerate().map(|(index, commit)| (commit.oid, index)).collect::<HashMap<_, _>>();
++    gleisbau::backend::git2::assign_children(&mut commits, &indices);
++    let mut branches = gleisbau::backend::git2::assign_branches(&repository, &mut commits, &indices, &settings)
++        .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
++    gleisbau::backend::git2::correct_fork_merges(&commits, &indices, &mut branches)
++        .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
++    gleisbau::backend::git2::assign_sources_targets(&commits, &indices, &mut branches);
++    let tracks = gleisbau::graph::TrackMap { commits, indices, all_branches: branches };
++    let remote_base = if options.include_remotes {
++        options.base_branch.as_deref().and_then(|base| tracks.all_branches.iter().position(|branch| branch.is_remote && branch.name == format!("origin/{base}")))
++    } else { None };
++    let saved_remote_name = remote_base.map(|index| (index, tracks.all_branches[index].name.clone()));
++    let mut tracks = tracks;
++    if let Some((index, name)) = &saved_remote_name { tracks.all_branches[*index].name = format!("__gbm_remote_base__/{name}"); }
++    let layout = gleisbau::layout::layout_track_range(&tracks, 0..tracks.commits.len(), &settings)
++        .map_err(|cause| GraphLoadError::Both { gleisbau: cause.clone(), fallback: cause })?;
++    if let Some((index, name)) = saved_remote_name { tracks.all_branches[index].name = name; }
++    let rendered = gleisbau::print::unicode::print_graph_terminal(&settings, &tracks, &layout, &vec![1; layout.commit_count()]);
++    let mut line_to_commit = HashMap::new();
++    for (relative, line) in rendered.commit2line.iter().copied().enumerate() {
++        line_to_commit.insert(line, layout.commit_index_start() + relative);
++    }
++    for (index, track_commit) in tracks.commits.iter().enumerate() {
++        records[index].lane = track_commit.branch_trace.and_then(|trace| layout.track_visual(trace)).and_then(|visual| visual.column);
++    }
++    Ok(GraphSnapshot {
++        source: GraphSource::Gleisbau,
++        commits: records,
++        lines: rendered.graph_lines.into_iter().enumerate().map(|(index, graph)| GraphLine { graph, commit_index: line_to_commit.get(&index).copied() }).collect(),
++        ref_counts: ref_data.ref_counts,
++        max_count: options.max_count,
++        includes_remotes: options.include_remotes,
++        generation: previous_generation,
++    })
++}
++
++fn topological_commit_order(records: Vec<GraphCommit>) -> Vec<GraphCommit> {
++    let mut by_oid = records.into_iter().map(|record| (record.oid.clone(), record)).collect::<HashMap<_, _>>();
++    let mut child_counts = by_oid.keys().map(|oid| (oid.clone(), 0usize)).collect::<HashMap<_, _>>();
++    for record in by_oid.values() {
++        for parent in &record.parents {
++            if let Some(count) = child_counts.get_mut(parent) { *count += 1; }
++        }
++    }
++    let mut ordered = Vec::with_capacity(by_oid.len());
++    while !by_oid.is_empty() {
++        let next = child_counts.iter().filter(|(_, count)| **count == 0)
++            .filter_map(|(oid, _)| by_oid.get(oid).map(|record| (oid.clone(), record.authored_at.map(|time| time.timestamp()).unwrap_or_default())))
++            .max_by(|(oid_a, time_a), (oid_b, time_b)| time_a.cmp(time_b).then_with(|| oid_b.cmp(oid_a)))
++            .map(|(oid, _)| oid);
++        let Some(oid) = next else { break };
++        let Some(record) = by_oid.remove(&oid) else { break };
++        for parent in &record.parents {
++            if let Some(count) = child_counts.get_mut(parent) { *count = count.saturating_sub(1); }
++        }
++        child_counts.remove(&oid);
++        ordered.push(record);
++    }
++    ordered.extend(by_oid.into_values());
++    ordered
++}
++
+ /// Synchronous, single-call helper for tests: loads the structural snapshot
+ /// and applies squash-merge enrichment on the calling thread, returning the
+ /// fully annotated snapshot. The app uses `spawn_possible_squash_enrichment`
+diff --git a/src/job_queue.rs b/src/job_queue.rs
+index ecdb1b2..d67fe19 100644
+--- a/src/job_queue.rs
++++ b/src/job_queue.rs
+@@ -240,6 +246,7 @@ impl ActionJobQueue {
+         let partial_delete_risk_clone = Arc::clone(&partial_delete_risk);
+ 
+         std::thread::spawn(move || {
++            let before = GraphRepositoryState::capture_with_head(&repo_path, &graph_head_path);
+             let needs_stash =
+                 !crate::git::status::detect_working_tree_status(&repo_path).is_clean();
+             let results = execute_action_with_remote(
+@@ -253,12 +260,19 @@ impl ActionJobQueue {
+                 &cancel_clone,
+                 &partial_delete_risk_clone,
+             );
++            let after = GraphRepositoryState::capture_with_head(&repo_path, &graph_head_path);
++            let graph_delta = match (before, after) {
++                (Ok(before), Ok(after)) => Ok(GraphRepositoryDelta::between(before, after)),
++                (Err(error), _) | (_, Err(error)) => Err(error),
++            };
++            let _ = graph_delta_tx.send(graph_delta);
+             let _ = op_tx.send(results);
+         });
+ 
+         self.current = Some(RunningJob {
+             job,
+             op_rx,
++            graph_delta_rx,
+             progress_rx: prog_rx,
+             cancel_flag,
+             partial_delete_risk,
