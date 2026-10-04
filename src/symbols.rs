@@ -19,6 +19,8 @@ pub struct SymbolSet {
     pub graph_arrow_left: &'static str,
     /// Right-facing merge connector used by the graph renderer.
     pub graph_arrow_right: &'static str,
+    /// Marks a ref with a local branch (Graph ref pane, Remotes local column).
+    pub graph_local_ref: &'static str,
     pub graph_remote_ref: &'static str,
     pub graph_tag_ref: &'static str,
     pub status_merged: &'static str,
@@ -35,9 +37,6 @@ pub struct SymbolSet {
     /// Compact stand-in for the PR number when the PR column is too narrow to
     /// show digits; colored via `theme.pr_draft/open/merged/closed`.
     pub pr_indicator: &'static str,
-    /// Shown when a tracking counterpart exists: Branches' upstream-exists
-    /// indicator and Remotes' local-branch-exists indicator.
-    pub tracking_link: &'static str,
 }
 
 impl SymbolSet {
@@ -56,6 +55,7 @@ impl SymbolSet {
             graph_merge: "+",
             graph_arrow_left: "<",
             graph_arrow_right: ">",
+            graph_local_ref: "L",
             graph_remote_ref: "@",
             graph_tag_ref: "#",
             status_merged: "+",
@@ -67,7 +67,6 @@ impl SymbolSet {
             status_remote_suffix: "v",
             disjoint: "!=",
             pr_indicator: "P",
-            tracking_link: "<>",
         }
     }
 
@@ -86,6 +85,7 @@ impl SymbolSet {
             graph_merge: "\u{25cb}",          // white circle
             graph_arrow_left: "\u{25c0}",     // black left-pointing triangle
             graph_arrow_right: "\u{25b6}",    // black right-pointing triangle
+            graph_local_ref: "\u{2302}",      // ⌂ house
             graph_remote_ref: "\u{2601}",     // cloud
             graph_tag_ref: "\u{2311}",        // tag marker
             status_merged: "\u{2714}",        // heavy check mark
@@ -97,7 +97,6 @@ impl SymbolSet {
             status_remote_suffix: "\u{2193}", // ↓ downwards arrow
             disjoint: "\u{2260}",             // not equal to (no shared history)
             pr_indicator: "\u{21c4}",         // ⇄ rightwards arrow over leftwards arrow
-            tracking_link: "\u{1f517}",       // 🔗 link
         }
     }
 
@@ -116,6 +115,7 @@ impl SymbolSet {
             graph_merge: "\u{f407}",          // nerd font git-merge
             graph_arrow_left: "\u{25c0}",     // black left-pointing triangle
             graph_arrow_right: "\u{25b6}",    // black right-pointing triangle
+            graph_local_ref: "\u{f015}",      // nerd font home
             graph_remote_ref: "\u{f0c2}",     // nerd font cloud
             graph_tag_ref: "\u{f02b}",        // nerd font tag
             status_merged: "\u{f126}",        // nerd font code-fork (merged)
@@ -127,7 +127,6 @@ impl SymbolSet {
             status_remote_suffix: "\u{2193}", // ↓ downwards arrow
             disjoint: "\u{2260}",             // not equal to (no shared history)
             pr_indicator: "\u{f407}",         // nerd font oct-git-pull-request
-            tracking_link: "\u{f0c1}",        // nerd font link
         }
     }
 
@@ -250,16 +249,18 @@ mod tests {
             SymbolSet::powerline(),
         ];
         assert_eq!(
-            (sets[0].graph_remote_ref, sets[0].graph_tag_ref),
-            ("@", "#")
+            (sets[0].graph_local_ref, sets[0].graph_remote_ref, sets[0].graph_tag_ref),
+            ("L", "@", "#")
         );
         assert_eq!(
-            (sets[1].graph_remote_ref, sets[1].graph_tag_ref),
-            ("☁", "⌑")
+            (sets[1].graph_local_ref, sets[1].graph_remote_ref, sets[1].graph_tag_ref),
+            ("⌂", "☁", "⌑")
         );
+        assert_eq!(sets[2].graph_local_ref, "\u{f015}");
         assert_eq!(sets[2].graph_remote_ref, "\u{f0c2}");
         assert_eq!(sets[2].graph_tag_ref, "\u{f02b}");
         for set in sets {
+            assert_eq!(ratatui::text::Span::raw(set.graph_local_ref).width(), 1);
             assert_eq!(ratatui::text::Span::raw(set.graph_remote_ref).width(), 1);
             assert_eq!(ratatui::text::Span::raw(set.graph_tag_ref).width(), 1);
         }

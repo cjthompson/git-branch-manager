@@ -7489,11 +7489,10 @@ fn dump_remotes_basic() {
     assert!(s.contains("Name"), "header missing: {s:?}");
     assert!(!s.contains("Local"), "Local header should be hidden: {s:?}");
     assert!(
-        s.find("<>").is_some_and(|indicator| {
-            s.find("origin/main")
-                .is_some_and(|remote| indicator < remote)
-        }),
-        "tracking marker should precede remote name: {s:?}"
+        s.lines()
+            .find(|line| line.contains("origin/main"))
+            .is_some_and(|line| line.trim_start().starts_with('L')),
+        "local-branch marker should precede remote name: {s:?}"
     );
     assert!(s.contains("origin/main"), "remote row missing: {s:?}");
 }

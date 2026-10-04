@@ -525,11 +525,11 @@ fn ref_pane_parts(
     let mut spans = vec![
         Span::styled(
             if refs.iter().any(|r| r.kind == GraphRefKind::LocalBranch) {
-                symbols.current_branch
+                symbols.graph_local_ref
             } else {
                 " "
             },
-            selected_style(theme.primary_text, selected, theme),
+            selected_style(theme.merged, selected, theme),
         ),
         Span::styled(
             if refs.iter().any(|r| r.kind == GraphRefKind::RemoteBranch) {
@@ -1429,7 +1429,7 @@ mod tests {
                 .iter()
                 .map(|span| span.content.as_ref())
                 .collect();
-        assert!(text.starts_with("*@#"));
+        assert!(text.starts_with("L@#"));
         assert!(text.contains("+9 WT"));
         assert!(!text.contains("origin/main"));
         assert!(!text.contains("Merged"));
@@ -1905,6 +1905,33 @@ mod tests {
         assert_eq!(graph_symbol('>', false, &symbols), "\u{25b6}");
         assert_eq!(graph_symbol('│', false, &SymbolSet::ascii()), "|");
         assert_eq!(graph_symbol('│', false, &symbols), "│");
+    }
+
+    #[test]
+    fn ref_pane_markers_match_list_view_indicator_colors() {
+        let theme = Theme::dracula();
+        let symbols = SymbolSet::unicode();
+        let reference = |name: &str, kind| GraphRef {
+            name: name.into(),
+            kind,
+            has_linked_worktree: false,
+            is_current: false,
+            tracking: None,
+        };
+        let commit = GraphCommit {
+            refs: vec![
+                reference("feature", GraphRefKind::LocalBranch),
+                reference("origin/feature", GraphRefKind::RemoteBranch),
+            ],
+            ..GraphCommit::default()
+        };
+
+        let (fixed, _) = ref_pane_parts(&commit, 8, false, false, &theme, &symbols);
+
+        assert_eq!(fixed[0].content, symbols.graph_local_ref);
+        assert_eq!(fixed[0].style, theme.merged);
+        assert_eq!(fixed[1].content, symbols.graph_remote_ref);
+        assert_eq!(fixed[1].style, theme.remote_title);
     }
 
     #[test]

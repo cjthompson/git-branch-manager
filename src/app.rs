@@ -5525,7 +5525,7 @@ pub(crate) fn render_branch_row(
             0 => {
                 let (text, style) = match &item.tracking {
                     TrackingStatus::Tracked { gone: false, .. } => {
-                        (symbols.tracking_link.to_string(), theme.secondary_text)
+                        (symbols.graph_remote_ref.to_string(), theme.remote_title)
                     }
                     TrackingStatus::Tracked { gone: true, .. } => {
                         ("gone".to_string(), theme.secondary_text)
@@ -5612,9 +5612,8 @@ pub(crate) fn render_remote_row(
     for &col_idx in visible_cols {
         match col_idx {
             0 => {
-                // Local indicator: tracking link when a local branch exists.
                 let text = if item.has_local {
-                    symbols.tracking_link.to_string()
+                    symbols.graph_local_ref.to_string()
                 } else {
                     "-".to_string()
                 };
@@ -6270,7 +6269,8 @@ mod tests {
 
         let rows = render_branch_row(&item, 0, false, false, &[0, 1], &ctx);
 
-        assert_eq!(cell_text(&rows[0]), "<>");
+        assert_eq!(cell_text(&rows[0]), symbols.graph_remote_ref);
+        assert_eq!(rows[0].spans[0].style, theme.remote_title);
         assert_eq!(cell_text(&rows[1]), "feature/test (main - ac13ef04)");
     }
 
@@ -10166,7 +10166,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_local_cell_renders_tracking_link_or_dash() {
+    fn remote_local_cell_renders_local_branch_marker_or_dash() {
         let theme = Theme::dark();
         let symbols = SymbolSet::ascii();
         let ctx = CellContext {
@@ -10185,7 +10185,8 @@ mod tests {
         let mut with_local = remote_branch();
         with_local.has_local = true;
         let with_local = render_remote_row(&with_local, 0, false, false, &[0, 1], &ctx);
-        assert_eq!(cell_text(&with_local[0]), "<>");
+        assert_eq!(cell_text(&with_local[0]), symbols.graph_local_ref);
+        assert_eq!(with_local[0].spans[0].style, theme.merged);
         assert_eq!(cell_text(&with_local[1]), "origin/feature/remote-age");
     }
 
