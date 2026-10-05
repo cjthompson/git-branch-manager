@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-04
+
+### Graph Relationship Lineage Implementation Plan (task #053) (P004)
+- Cancel superseded Graph enrichment workers (#graph, #enrichment, #concurrency)
+
 ## 2026-10-02
 
 ### Follow up on partially implemented tasks #002–#037 (P002)
