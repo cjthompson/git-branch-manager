@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
@@ -49,6 +50,38 @@ pub struct GraphEnrichmentMsg {
     pub generation: u64,
     pub updates: Vec<GraphEnrichmentUpdate>,
 }
+
+/// Cooperative cancellation owned by the App's graph generation. Already
+/// running Git subprocesses finish; superseded workers stop at work boundaries.
+#[derive(Clone, Debug)]
+pub struct EnrichmentCancel {
+    generation: u64,
+    latest: Arc<AtomicU64>,
+}
+
+impl EnrichmentCancel {
+    pub fn new(latest: Arc<AtomicU64>, generation: u64) -> Self {
+        Self { generation, latest }
+    }
+
+    pub fn never() -> Self {
+        Self::new(Arc::new(AtomicU64::new(0)), 0)
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.latest.load(Ordering::Acquire) != self.generation
+    }
+}
+
+// Local observer lets worker tests rendezvous at the same boundaries that
+// production polls. The public worker uses a no-op observer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EnrichmentStage {
+    PatchDispatch,
+    CherryLine,
+}
+
+type EnrichmentObserver = Arc<dyn Fn(EnrichmentStage) + Send + Sync>;
 
 #[derive(Debug)]
 pub struct GraphUpdateMsg {
@@ -548,8 +581,16 @@ pub fn load_graph_with_squash_annotations(
         options.base_branch.as_deref(),
         &options.cache_root,
     );
-    let cherry_updates =
-        compute_cherry_pick_updates(repo_path, &snapshot, options.base_branch.as_deref());
+    let observer: EnrichmentObserver = Arc::new(|_| {});
+    let cherry_updates = compute_cherry_pick_updates(
+        repo_path,
+        &snapshot,
+        options.base_branch.as_deref(),
+        &EnrichmentCancel::never(),
+        &observer,
+    )
+    .unwrap_or_default();
+
     merge_enrichment_updates(&mut updates, cherry_updates);
     apply_squash_enrichment(&mut snapshot, &updates);
     Ok(snapshot)
@@ -566,18 +607,63 @@ pub fn spawn_possible_squash_enrichment(
     requested_base: Option<String>,
     generation: u64,
     cache_root: CacheRoot,
+    latest_generation: Arc<AtomicU64>,
+) -> Receiver<GraphEnrichmentMsg> {
+    spawn_enrichment_with_observer(
+        snapshot,
+        repo_path,
+        requested_base,
+        generation,
+        cache_root,
+        EnrichmentCancel::new(latest_generation, generation),
+        |_| {},
+    )
+}
+
+fn spawn_enrichment_with_observer(
+    snapshot: GraphSnapshot,
+    repo_path: PathBuf,
+    requested_base: Option<String>,
+    generation: u64,
+    cache_root: CacheRoot,
+    cancel: EnrichmentCancel,
+    observer: impl Fn(EnrichmentStage) + Send + Sync + 'static,
 ) -> Receiver<GraphEnrichmentMsg> {
     let (tx, rx) = mpsc::channel();
+    let observer: EnrichmentObserver = Arc::new(observer);
     std::thread::spawn(move || {
-        let mut updates = compute_possible_squash_updates(
+        if cancel.is_cancelled() {
+            return;
+        }
+        let Some(mut updates) = compute_possible_squash_updates_with_cancel(
             &repo_path,
             &snapshot,
             requested_base.as_deref(),
             &cache_root,
-        );
-        let cherry_updates =
-            compute_cherry_pick_updates(&repo_path, &snapshot, requested_base.as_deref());
+            &cancel,
+            &observer,
+        ) else {
+            return;
+        };
+        if cancel.is_cancelled() {
+            return;
+        }
+        let Some(cherry_updates) = compute_cherry_pick_updates(
+            &repo_path,
+            &snapshot,
+            requested_base.as_deref(),
+            &cancel,
+            &observer,
+        ) else {
+            return;
+        };
+        if cancel.is_cancelled() {
+            return;
+        }
         merge_enrichment_updates(&mut updates, cherry_updates);
+        if cancel.is_cancelled() {
+            return;
+        }
         let _ = tx.send(GraphEnrichmentMsg {
             generation,
             updates,
@@ -849,12 +935,35 @@ pub fn compute_possible_squash_updates(
     requested_base: Option<&str>,
     cache_root: &CacheRoot,
 ) -> Vec<GraphEnrichmentUpdate> {
+    let observer: EnrichmentObserver = Arc::new(|_| {});
+    compute_possible_squash_updates_with_cancel(
+        repo_path,
+        snapshot,
+        requested_base,
+        cache_root,
+        &EnrichmentCancel::never(),
+        &observer,
+    )
+    .unwrap_or_default()
+}
+
+fn compute_possible_squash_updates_with_cancel(
+    repo_path: &Path,
+    snapshot: &GraphSnapshot,
+    requested_base: Option<&str>,
+    cache_root: &CacheRoot,
+    cancel: &EnrichmentCancel,
+    observer: &EnrichmentObserver,
+) -> Option<Vec<GraphEnrichmentUpdate>> {
+    if cancel.is_cancelled() {
+        return None;
+    }
     let base_branch = requested_base.map(str::to_string).or_else(|| {
         let repository = git2::Repository::open(repo_path).ok()?;
         crate::git::branch::detect_base_branch(&repository, None).ok()
     });
     let Some(base_branch) = base_branch else {
-        return Vec::new();
+        return Some(Vec::new());
     };
     let Some(base_tip) = snapshot.commits.iter().find_map(|commit| {
         commit
@@ -865,9 +974,12 @@ pub fn compute_possible_squash_updates(
             })
             .then(|| commit.oid.clone())
     }) else {
-        return Vec::new();
+        return Some(Vec::new());
     };
 
+    if cancel.is_cancelled() {
+        return None;
+    }
     let mut cache = BranchCache::load_for_base(repo_path, &base_branch, cache_root);
 
     let mut jobs = snapshot
@@ -888,6 +1000,9 @@ pub fn compute_possible_squash_updates(
 
     let mut displayed_branch_names_by_tip = HashMap::<String, Vec<String>>::new();
     for commit in &snapshot.commits {
+        if cancel.is_cancelled() {
+            return None;
+        }
         let names = commit
             .refs
             .iter()
@@ -907,6 +1022,9 @@ pub fn compute_possible_squash_updates(
     });
 
     for (tip, source_names) in displayed_branch_names_by_tip {
+        if cancel.is_cancelled() {
+            return None;
+        }
         let merge_base = match displayed_branch_relation(&snapshot.commits, &base_tip, &tip) {
             DisplayedBranchRelation::Diverged { merge_base } => merge_base,
             DisplayedBranchRelation::RegularlyMerged | DisplayedBranchRelation::Ineligible => {
@@ -927,7 +1045,13 @@ pub fn compute_possible_squash_updates(
     // second `git diff` subprocess per job.
     let mut base_diffs = Vec::<(String, Vec<u8>)>::new();
     let mut branch_diffs = Vec::<Vec<u8>>::new();
-    for result in load_patch_ids(repo_path, jobs, &mut cache) {
+    if cancel.is_cancelled() {
+        return None;
+    }
+    for result in load_patch_ids(repo_path, jobs, &mut cache, cancel, observer)? {
+        if cancel.is_cancelled() {
+            return None;
+        }
         match result.target {
             PatchTarget::BaseCommit(oid) => {
                 if let Some(patch_id) = result.patch_id {
@@ -956,10 +1080,16 @@ pub fn compute_possible_squash_updates(
 
     let mut source_names_by_base_oid = HashMap::<String, Vec<String>>::new();
     for (patch_id, source_names) in source_names_by_patch {
+        if cancel.is_cancelled() {
+            return None;
+        }
         let Some(base_oids) = base_oids_by_patch.get(&patch_id) else {
             continue;
         };
         for oid in base_oids {
+            if cancel.is_cancelled() {
+                return None;
+            }
             let names = source_names_by_base_oid.entry(oid.clone()).or_default();
             names.extend(source_names.iter().cloned());
             names.sort();
@@ -976,14 +1106,23 @@ pub fn compute_possible_squash_updates(
     // the best fuzzy classification, if any clears the threshold.
     let mut fuzzy_by_oid: HashMap<String, FuzzySquashMatch> = HashMap::new();
     for (oid, base_diff) in &base_diffs {
+        if cancel.is_cancelled() {
+            return None;
+        }
         if matching_base_oids.contains(oid) {
             continue;
         }
-        let best_percent = branch_diffs
-            .iter()
-            .filter_map(|branch_diff| crate::git::fuzzy_match::score(branch_diff, base_diff))
-            .filter_map(|fuzzy_score| crate::git::fuzzy_match::classify(&fuzzy_score))
-            .max();
+        let mut best_percent = None;
+        for branch_diff in &branch_diffs {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            if let Some(percent) = crate::git::fuzzy_match::score(branch_diff, base_diff)
+                .and_then(|score| crate::git::fuzzy_match::classify(&score))
+            {
+                best_percent = Some(best_percent.map_or(percent, |best: u8| best.max(percent)));
+            }
+        }
         let Some(percent) = best_percent else {
             continue;
         };
@@ -995,6 +1134,9 @@ pub fn compute_possible_squash_updates(
         );
     }
 
+    if cancel.is_cancelled() {
+        return None;
+    }
     let updates: Vec<GraphEnrichmentUpdate> = snapshot
         .commits
         .iter()
@@ -1014,8 +1156,11 @@ pub fn compute_possible_squash_updates(
             is_cherry_picked_commit: false,
         })
         .collect();
+    if cancel.is_cancelled() {
+        return None;
+    }
     cache.save();
-    updates
+    Some(updates)
 }
 
 /// Apply a batch of squash-merge enrichment updates to a snapshot. Unknown
@@ -1048,13 +1193,18 @@ fn compute_cherry_pick_updates(
     repo_path: &Path,
     snapshot: &GraphSnapshot,
     requested_base: Option<&str>,
-) -> Vec<GraphEnrichmentUpdate> {
+    cancel: &EnrichmentCancel,
+    observer: &EnrichmentObserver,
+) -> Option<Vec<GraphEnrichmentUpdate>> {
+    if cancel.is_cancelled() {
+        return None;
+    }
     let base_branch = requested_base.map(str::to_string).or_else(|| {
         let repository = git2::Repository::open(repo_path).ok()?;
         crate::git::branch::detect_base_branch(&repository, None).ok()
     });
     let Some(base_branch) = base_branch else {
-        return Vec::new();
+        return Some(Vec::new());
     };
     let Some(base_tip) = snapshot.commits.iter().find_map(|commit| {
         commit
@@ -1065,7 +1215,7 @@ fn compute_cherry_pick_updates(
             })
             .then(|| commit.oid.clone())
     }) else {
-        return Vec::new();
+        return Some(Vec::new());
     };
 
     let mut cherry_picked: HashSet<String> = HashSet::new();
@@ -1077,6 +1227,9 @@ fn compute_cherry_pick_updates(
     });
 
     for tip in displayed_branch_tips {
+        if cancel.is_cancelled() {
+            return None;
+        }
         let merge_base = match displayed_branch_relation(&snapshot.commits, &base_tip, &tip.oid) {
             DisplayedBranchRelation::Diverged { merge_base } => merge_base,
             DisplayedBranchRelation::RegularlyMerged | DisplayedBranchRelation::Ineligible => {
@@ -1097,11 +1250,21 @@ fn compute_cherry_pick_updates(
                 None
             }
         };
+        if cancel.is_cancelled() {
+            return None;
+        }
         let result = match git_cherry(&["cherry", &base_branch, tip_str, &merge_base]) {
             Some(s) if !s.is_empty() => s,
             _ => continue,
         };
         for line in result.lines() {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            observer(EnrichmentStage::CherryLine);
+            if cancel.is_cancelled() {
+                return None;
+            }
             let line = line.trim();
             if line.is_empty() {
                 continue;
@@ -1116,13 +1279,22 @@ fn compute_cherry_pick_updates(
         }
     }
 
-    snapshot.commits.iter().map(|commit| GraphEnrichmentUpdate {
-        oid: commit.oid.clone(),
-        is_possible_squash_merge: false,
-        possible_squash_merge_sources: Vec::new(),
-        fuzzy_squash_match: None,
-        is_cherry_picked_commit: cherry_picked.contains(&commit.oid),
-    }).collect()
+    if cancel.is_cancelled() {
+        return None;
+    }
+    Some(
+        snapshot
+            .commits
+            .iter()
+            .map(|commit| GraphEnrichmentUpdate {
+                oid: commit.oid.clone(),
+                is_possible_squash_merge: false,
+                possible_squash_merge_sources: Vec::new(),
+                fuzzy_squash_match: None,
+                is_cherry_picked_commit: cherry_picked.contains(&commit.oid),
+            })
+            .collect(),
+    )
 }
 
 fn merge_enrichment_updates(base: &mut Vec<GraphEnrichmentUpdate>, extra: Vec<GraphEnrichmentUpdate>) {
@@ -1259,9 +1431,14 @@ fn load_patch_ids(
     repo_path: &Path,
     jobs: Vec<PatchJob>,
     cache: &mut BranchCache,
-) -> Vec<PatchResult> {
+    cancel: &EnrichmentCancel,
+    observer: &EnrichmentObserver,
+) -> Option<Vec<PatchResult>> {
+    if cancel.is_cancelled() {
+        return None;
+    }
     if jobs.is_empty() {
-        return Vec::new();
+        return Some(Vec::new());
     }
 
     // Cache-hit fast path: resolve every job whose (old_oid, new_oid)
@@ -1271,6 +1448,9 @@ fn load_patch_ids(
     let mut results = Vec::with_capacity(jobs.len());
     let mut misses = Vec::new();
     for job in jobs {
+        if cancel.is_cancelled() {
+            return None;
+        }
         match cache.lookup_graph_patch(&job.old_oid, &job.new_oid, GRAPH_DIFF_VERSION) {
             Some((patch_id, diff_text)) => results.push(PatchResult {
                 target: job.target,
@@ -1281,7 +1461,7 @@ fn load_patch_ids(
         }
     }
     if misses.is_empty() {
-        return results;
+        return Some(results);
     }
 
     let worker_count = misses.len().min(GRAPH_PATCH_WORKER_COUNT);
@@ -1293,11 +1473,18 @@ fn load_patch_ids(
     for _ in 0..worker_count {
         let queue = Arc::clone(&queue);
         let tx = tx.clone();
+        let cancel = cancel.clone();
+        let observer = Arc::clone(observer);
         let repo_path = repo_path.to_path_buf();
         handles.push(std::thread::spawn(move || {
-            while let Some(job) = next_patch_job(&queue) {
-                let (patch_id, diff_text) =
-                    compute_patch(&repo_path, &job.old_oid, &job.new_oid);
+            while let Some(job) = next_patch_job(&queue, &cancel, &observer) {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                let (patch_id, diff_text) = compute_patch(&repo_path, &job.old_oid, &job.new_oid);
+                if cancel.is_cancelled() {
+                    break;
+                }
                 let sent = tx.send((
                     job.old_oid,
                     job.new_oid,
@@ -1318,6 +1505,9 @@ fn load_patch_ids(
     // Cache owner: only this (calling) thread ever touches `cache`,
     // mirroring squash_loader's single-writer rule.
     for (old_oid, new_oid, result) in rx {
+        if cancel.is_cancelled() {
+            break;
+        }
         cache.insert_graph_patch(
             &old_oid,
             &new_oid,
@@ -1331,11 +1521,34 @@ fn load_patch_ids(
         let _ = handle.join();
     }
 
-    results
+    if cancel.is_cancelled() {
+        None
+    } else {
+        Some(results)
+    }
 }
 
-fn next_patch_job(queue: &Mutex<std::collections::VecDeque<PatchJob>>) -> Option<PatchJob> {
-    queue.lock().ok()?.pop_front()
+fn next_patch_job(
+    queue: &Mutex<std::collections::VecDeque<PatchJob>>,
+    cancel: &EnrichmentCancel,
+    observer: &EnrichmentObserver,
+) -> Option<PatchJob> {
+    if cancel.is_cancelled() {
+        return None;
+    }
+    let mut queue = queue.lock().ok()?;
+    if cancel.is_cancelled() || queue.is_empty() {
+        return None;
+    }
+    observer(EnrichmentStage::PatchDispatch);
+    if cancel.is_cancelled() {
+        return None;
+    }
+    let job = queue.pop_front()?;
+    if cancel.is_cancelled() {
+        return None;
+    }
+    Some(job)
 }
 
 /// Run a single `git diff` between `old_oid` and `new_oid`, then feed its
@@ -1750,6 +1963,117 @@ fn insert_ref(refs_by_oid: &mut HashMap<String, Vec<GraphRef>>, oid: &str, refer
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enrichment_cancel_tracks_latest_generation() {
+        let latest = Arc::new(AtomicU64::new(3));
+        let cancel = EnrichmentCancel::new(Arc::clone(&latest), 3);
+        assert!(!cancel.is_cancelled());
+        latest.store(4, Ordering::Release);
+        assert!(cancel.is_cancelled());
+        assert!(!EnrichmentCancel::never().is_cancelled());
+    }
+
+    fn enrichment_git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    fn enrichment_fixture() -> (tempfile::TempDir, GraphSnapshot, CacheRoot) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        enrichment_git(path, &["init", "-b", "main"]);
+        enrichment_git(path, &["config", "user.name", "Test"]);
+        enrichment_git(path, &["config", "user.email", "test@example.com"]);
+        enrichment_git(path, &["commit", "--allow-empty", "-m", "root"]);
+        enrichment_git(path, &["checkout", "-b", "feature"]);
+        for index in 0..3 {
+            let name = format!("feature-{index}.txt");
+            std::fs::write(path.join(&name), format!("content {index}\n")).unwrap();
+            enrichment_git(path, &["add", &name]);
+            enrichment_git(path, &["commit", "-m", &name]);
+        }
+        enrichment_git(path, &["checkout", "main"]);
+        enrichment_git(path, &["merge", "--squash", "feature"]);
+        enrichment_git(path, &["commit", "-m", "squash landing"]);
+        let cache_root = CacheRoot::at(path.join("cache"));
+        let snapshot = load_graph(
+            path,
+            GraphLoadOptions {
+                base_branch: Some("main".into()),
+                cache_root: cache_root.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            enrichment_git(path, &["cherry", "main", "feature"])
+                .lines()
+                .count(),
+            3
+        );
+        (dir, snapshot, cache_root)
+    }
+
+    fn assert_started_enrichment_cancelled(stage: EnrichmentStage) {
+        let (dir, snapshot, cache_root) = enrichment_fixture();
+        let latest = Arc::new(AtomicU64::new(1));
+        let cancel = EnrichmentCancel::new(Arc::clone(&latest), 1);
+        let (started_tx, started_rx) = mpsc::sync_channel(0);
+        let (resume_tx, resume_rx) = mpsc::sync_channel(0);
+        let resume_rx = Mutex::new(resume_rx);
+        let observed = Arc::new(AtomicU64::new(0));
+        let observed_worker = Arc::clone(&observed);
+        let rx = spawn_enrichment_with_observer(
+            snapshot,
+            dir.path().to_path_buf(),
+            Some("main".into()),
+            1,
+            cache_root,
+            cancel,
+            move |current| {
+                if current == stage {
+                    observed_worker.fetch_add(1, Ordering::Relaxed);
+                    started_tx.send(()).unwrap();
+                    resume_rx.lock().unwrap().recv().unwrap();
+                }
+            },
+        );
+        let timeout = std::time::Duration::from_secs(60);
+        started_rx
+            .recv_timeout(timeout)
+            .expect("worker reached cancellation boundary");
+        latest.store(2, Ordering::Release);
+        resume_tx.send(()).unwrap();
+        assert_eq!(
+            rx.recv_timeout(timeout),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
+        assert_eq!(
+            observed.load(Ordering::Relaxed),
+            1,
+            "no further work at this boundary"
+        );
+    }
+
+    #[test]
+    fn started_enrichment_superseded_during_patch_dispatch_publishes_nothing() {
+        assert_started_enrichment_cancelled(EnrichmentStage::PatchDispatch);
+    }
+
+    #[test]
+    fn started_enrichment_superseded_during_cherry_output_publishes_nothing() {
+        assert_started_enrichment_cancelled(EnrichmentStage::CherryLine);
+    }
 
     #[test]
     fn repository_state_uses_canonical_typed_refs_and_observes_head_changes() {

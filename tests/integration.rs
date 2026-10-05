@@ -7195,6 +7195,28 @@ fn test_squash_scenario_21_structural_graph_render_not_blocked_by_squash_enrichm
 }
 
 #[test]
+fn cancelled_enrichment_publishes_nothing() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let mut options = tmpdir.graph_options();
+    options.base_branch = Some("main".into());
+    let snapshot = graph::load_graph(tmpdir.path(), options.clone()).unwrap();
+    let latest = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(9));
+    let rx = graph::spawn_possible_squash_enrichment(
+        snapshot,
+        tmpdir.path().to_path_buf(),
+        Some("main".into()),
+        1,
+        options.cache_root,
+        latest,
+    );
+    assert_eq!(
+        rx.recv_timeout(std::time::Duration::from_secs(60)),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected),
+        "a cancelled worker drops its sender without publishing",
+    );
+}
+
+#[test]
 fn test_squash_scenario_21b_completed_enrichment_updates_squash_marker() {
     // Companion to scenario 21: once enrichment runs (the asynchronous
     // step), the squash marker must be set on the matching base commit.

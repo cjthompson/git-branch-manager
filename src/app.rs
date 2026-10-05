@@ -164,10 +164,11 @@ pub struct App {
         )>,
     >,
     pub commit_file_diff_target: Option<(String, String)>,
-    /// Bumped once per `spawn_graph_load` call. Both the structural snapshot
-    /// we just received and any in-flight enrichment are tagged with it, so
-    /// a stale enrichment result cannot overwrite a newer snapshot.
+    /// Bumped for graph loads and enrichment-invalidating updates. Both
+    /// snapshots and enrichment use this generation, so stale results
+    /// cannot overwrite a newer snapshot.
     pub graph_generation: u64,
+    graph_generation_signal: Arc<AtomicU64>,
     graph_revision: u64,
     graph_repository_state: Option<graph::GraphRepositoryState>,
     pending_graph_deltas: Vec<Result<graph::GraphRepositoryDelta, String>>,
@@ -427,6 +428,7 @@ impl App {
             commit_file_diff_rx: None,
             commit_file_diff_target: None,
             graph_generation: 0,
+            graph_generation_signal: Arc::new(AtomicU64::new(0)),
             graph_revision: 0,
             graph_repository_state: None,
             pending_graph_deltas: Vec::new(),
@@ -602,6 +604,7 @@ impl App {
                     Some(self.base_branch.clone()),
                     self.graph_generation,
                     self.cache_root.clone(),
+                    Arc::clone(&self.graph_generation_signal),
                 ));
             }
         }
@@ -665,7 +668,7 @@ impl App {
                         if self.graph_enrich_rx.is_none() && !self.reconciling_initial_graph {
                             if let Some(snapshot) = self.graph.snapshot().cloned() {
                                 self.graph_enrich_rx = Some(graph::spawn_possible_squash_enrichment(
-                                    snapshot, self.repo_path.clone(), Some(self.base_branch.clone()), self.graph_generation, self.cache_root.clone(),
+                                    snapshot, self.repo_path.clone(), Some(self.base_branch.clone()), self.graph_generation, self.cache_root.clone(), Arc::clone(&self.graph_generation_signal),
                                 ));
                             }
                         }
@@ -695,10 +698,9 @@ impl App {
         }
 
         for msg in drain_channel(&mut self.graph_enrich_rx, 1, &mut dirty) {
-            // Drop enrichment that belongs to a previous reload — the
-            // user already moved past that snapshot. A failed/cancelled
-            // enrichment just never sends; if the receiver is dropped
-            // mid-compute, the worker thread exits on its next `tx.send`.
+            // Cooperative cancellation stops superseded workers at work
+            // boundaries. Keep the generation gate for a result that raced
+            // with invalidation immediately before publication.
             if msg.generation == self.graph_generation {
                 self.graph.apply_squash_enrichment(&msg.updates);
             }
@@ -4632,16 +4634,20 @@ impl App {
         }
     }
 
-    pub fn spawn_graph_load(&mut self, max_count: usize, include_remotes: bool) {
+    fn bump_graph_generation(&mut self) {
         self.graph_generation = self.graph_generation.saturating_add(1);
+        self.graph_generation_signal
+            .store(self.graph_generation, Ordering::Release);
+    }
+
+    pub fn spawn_graph_load(&mut self, max_count: usize, include_remotes: bool) {
+        self.bump_graph_generation();
         self.graph_revision = self.graph_revision.saturating_add(1);
         self.graph_update_invalidates_enrichment = false;
         self.staged_graph_snapshot = None;
         self.reconciling_initial_graph = false;
-        // Drop any in-flight enrichment from a previous load. The
-        // background thread will see the dropped receiver and exit on its
-        // next `tx.send`; no stale update can be applied to the new
-        // snapshot via the generation check.
+        // Signal cooperative cancellation and drop the previous receiver;
+        // the drain generation gate also rejects racing publications.
         self.graph_enrich_rx = None;
         self.graph.begin_load(max_count, include_remotes);
         self.graph_rx = Some(graph::spawn_graph_loader(
@@ -4952,10 +4958,22 @@ impl App {
                 || (self.graph.includes_remotes() && delta.additional_roots_changed)
             }
         };
+        let update_in_flight = ((self.graph.is_loading() || self.graph_rx.is_some())
+            && !self.reconciling_initial_graph)
+            || self.graph_update_rx.is_some();
+        let was_invalidating = self.graph_update_invalidates_enrichment;
         self.graph_update_invalidates_enrichment |= invalidates_enrichment;
-        if ((self.graph.is_loading() || self.graph_rx.is_some()) && !self.reconciling_initial_graph)
-            || self.graph_update_rx.is_some()
+        // An immediate failed delta reloads below and signals cancellation
+        // there. Queued failures must cancel before that reload can start.
+        if invalidates_enrichment
+            && (delta.is_ok() || update_in_flight)
+            && !was_invalidating
+            && (self.graph.snapshot().is_some() || self.staged_graph_snapshot.is_some())
         {
+            self.bump_graph_generation();
+            self.graph_enrich_rx = None;
+        }
+        if update_in_flight {
             self.pending_graph_deltas.push(delta);
             return;
         }
@@ -4976,10 +4994,6 @@ impl App {
                 return;
             }
         };
-        if invalidates_enrichment {
-            self.graph_generation = self.graph_generation.saturating_add(1);
-            self.graph_enrich_rx = None;
-        }
         let options = graph::GraphLoadOptions {
                 max_count: self.graph.max_count(),
                 include_remotes: self.graph.includes_remotes(),
@@ -8484,6 +8498,10 @@ mod tests {
 
         assert!(app.graph.is_loading());
         assert_eq!(app.graph_generation, generation + 1);
+        assert_eq!(
+            app.graph_generation_signal.load(Ordering::Acquire),
+            app.graph_generation
+        );
         assert_eq!(app.active_view, ViewId::Branches);
     }
 
@@ -10569,6 +10587,190 @@ mod tests {
         assert!(
             !current.commits[0].is_possible_squash_merge,
             "stale enrichment must not overwrite the newer snapshot's marker"
+        );
+    }
+
+    #[test]
+    fn bump_graph_generation_keeps_signal_in_step() {
+        let dir = tempfile::tempdir().unwrap();
+        run_git(dir.path(), &["init", "-b", "main"]);
+        run_git(dir.path(), &["config", "user.name", "Test"]);
+        run_git(dir.path(), &["config", "user.email", "test@example.com"]);
+        run_git(dir.path(), &["commit", "--allow-empty", "-m", "root"]);
+        let mut app = App::new(dir.path().to_path_buf(), "main".into(), Config::default());
+        assert_eq!(app.graph_generation_signal.load(Ordering::Acquire), 0);
+        app.request_graph_update(Err("no snapshot".into()));
+        assert_eq!(app.graph_generation, 0);
+        assert_eq!(app.graph_generation_signal.load(Ordering::Acquire), 0);
+        app.bump_graph_generation();
+        assert_eq!(app.graph_generation, 1);
+        assert_eq!(app.graph_generation_signal.load(Ordering::Acquire), 1);
+        app.spawn_graph_load(500, false);
+        assert_eq!(
+            app.graph_generation_signal.load(Ordering::Acquire),
+            app.graph_generation
+        );
+        wait_until(|| {
+            app.drain_channels();
+            !app.graph.is_loading() && app.graph_rx.is_none()
+        });
+        assert!(app.graph.snapshot().is_some());
+        let before = graph::GraphRepositoryState::capture(dir.path()).unwrap();
+        let generation = app.graph_generation;
+        let (_tx, rx) = mpsc::channel();
+        app.graph_update_rx = Some(rx);
+        app.request_graph_update(Ok(graph::GraphRepositoryDelta::between(
+            before.clone(),
+            before.clone(),
+        )));
+        assert_eq!(
+            app.graph_generation, generation,
+            "metadata-only update keeps generation"
+        );
+        assert_eq!(
+            app.graph_generation_signal.load(Ordering::Acquire),
+            generation
+        );
+        run_git(dir.path(), &["branch", "feature"]);
+        let after = graph::GraphRepositoryState::capture(dir.path()).unwrap();
+        app.request_graph_update(Ok(graph::GraphRepositoryDelta::between(before, after)));
+        assert_eq!(
+            app.graph_generation,
+            generation + 1,
+            "queued invalidation cancels promptly"
+        );
+        assert_eq!(
+            app.graph_generation_signal.load(Ordering::Acquire),
+            app.graph_generation
+        );
+        assert!(app.graph_enrich_rx.is_none());
+        app.graph_update_rx = None;
+        let _ = app.pending_graph_deltas.remove(0);
+        let invalidating = app.pending_graph_deltas.remove(0);
+        app.request_graph_update(invalidating);
+        assert_eq!(
+            app.graph_generation,
+            generation + 1,
+            "replay does not bump twice"
+        );
+        assert_eq!(
+            app.graph_generation_signal.load(Ordering::Acquire),
+            app.graph_generation
+        );
+    }
+
+    #[test]
+    fn queued_failed_graph_update_cancels_enrichment_until_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = action_refresh_app(dir.path());
+        let snapshot = graph::load_graph(
+            dir.path(),
+            graph::GraphLoadOptions {
+                base_branch: Some("main".into()),
+                cache_root: app.cache_root.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        app.graph.apply_result(Ok(snapshot));
+        let cancel = graph::EnrichmentCancel::new(Arc::clone(&app.graph_generation_signal), 0);
+        let (_update_tx, update_rx) = mpsc::channel();
+        app.graph_update_rx = Some(update_rx);
+        let (_enrich_tx, enrich_rx) = mpsc::channel();
+        app.graph_enrich_rx = Some(enrich_rx);
+        app.request_graph_update(Err("queued capture failure".into()));
+        assert!(
+            cancel.is_cancelled(),
+            "queued failure cancels before updater finishes"
+        );
+        assert_eq!(app.graph_generation, 1);
+        assert_eq!(app.graph_generation_signal.load(Ordering::Acquire), 1);
+        assert!(app.graph_enrich_rx.is_none());
+        app.request_graph_update(Err("another queued failure".into()));
+        assert_eq!(
+            app.graph_generation, 1,
+            "pending invalidation does not bump twice"
+        );
+        app.graph_update_rx = None;
+        let queued = app.pending_graph_deltas.remove(0);
+        app.request_graph_update(queued);
+        assert!(app.graph.is_loading());
+        assert_eq!(
+            app.graph_generation, 2,
+            "replay fallback starts a new structural load"
+        );
+        assert_eq!(
+            app.graph_generation_signal.load(Ordering::Acquire),
+            app.graph_generation
+        );
+    }
+
+    #[test]
+    fn enrichment_after_invalidating_update_still_publishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        run_git(path, &["init", "-b", "main"]);
+        run_git(path, &["config", "user.name", "Test"]);
+        run_git(path, &["config", "user.email", "test@example.com"]);
+        run_git(path, &["commit", "--allow-empty", "-m", "root"]);
+        run_git(path, &["checkout", "-b", "feature"]);
+        std::fs::write(path.join("feature.txt"), "content\n").unwrap();
+        run_git(path, &["add", "feature.txt"]);
+        run_git(path, &["commit", "-m", "feature"]);
+        run_git(path, &["checkout", "main"]);
+        run_git(path, &["merge", "--squash", "feature"]);
+        run_git(path, &["commit", "-m", "squash landing"]);
+        let expected = git2::Repository::open(path)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target()
+            .unwrap()
+            .to_string();
+        let mut app = App::new(path.to_path_buf(), "main".into(), Config::default());
+        let options = graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            cache_root: app.cache_root.clone(),
+            ..Default::default()
+        };
+        app.graph
+            .apply_result(Ok(graph::load_graph(path, options).unwrap()));
+        let before = graph::GraphRepositoryState::capture(path).unwrap();
+        run_git(path, &["branch", "feature-copy", "feature"]);
+        let after = graph::GraphRepositoryState::capture(path).unwrap();
+        app.request_graph_update(Ok(graph::GraphRepositoryDelta::between(before, after)));
+        assert_eq!(app.graph_generation, 1);
+        assert_eq!(
+            app.graph_generation_signal.load(Ordering::Acquire),
+            app.graph_generation
+        );
+        wait_until(|| {
+            app.drain_channels();
+            app.graph
+                .snapshot()
+                .unwrap()
+                .commits
+                .iter()
+                .any(|c| c.oid == expected && c.is_possible_squash_merge)
+        });
+        let marker = app
+            .graph
+            .snapshot()
+            .unwrap()
+            .commits
+            .iter()
+            .find(|c| c.oid == expected)
+            .unwrap();
+        assert!(
+            marker.is_possible_squash_merge,
+            "new generation worker publishes real squash marker"
+        );
+        assert!(marker
+            .possible_squash_merge_sources
+            .contains(&"feature-copy".into()));
+        assert_eq!(
+            app.graph_generation_signal.load(Ordering::Acquire),
+            app.graph_generation
         );
     }
 
