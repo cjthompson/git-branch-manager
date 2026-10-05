@@ -7,9 +7,9 @@
 **Architecture:** Six independently reviewable tickets.
 - **X** adds a cancellation token so superseded enrichment workers stop.
 - **A** replaces the Graph's squash flags with paired `GraphRelationship` records and shows fuzzy squash sources.
-- **B** computes squash patches in-process with git2, but only when it matches the CLI's patch IDs and is at least as fast.
+- **B** computes squash patches in-process with git2 when text, rename and mode patch IDs match the CLI and it is at least as fast; binary parity remains a low-priority diagnostic.
 - **P** replaces `git cherry` with a bounded git2 patch-ID scan that pairs each picked commit with its destination, and makes applying enrichment a merge that never erases anything.
-- **L** is the lineage ticket (supersedes cancelled #053). It adds a durable SQLite store keyed by the Git common directory, kept under the application *data* directory and separate from the disposable `BranchCache`. The enrichment worker writes accepted relationships to it, and the `spawn_graph_loader` worker hydrates from it read-only before publishing.
+- **L** is the lineage ticket (supersedes cancelled #053). It adds a durable SQLite store keyed by the Git common directory, kept under the application *data* directory and separate from the disposable `BranchCache`. The enrichment worker writes accepted relationships to it; loader and existing updater workers hydrate from it read-only before publishing, including newly displayed endpoints.
 - **D** caches fuzzy-pair scores in the transient cache.
 
 **Tech Stack:** Rust 2021, `git2` 0.21 (`Diff::patchid`, `Revwalk`, `Oid::hash_object`), `rusqlite` 0.32 (bundled), `dirs` 6, `chrono`, ratatui, `tempfile` for tests.
@@ -29,8 +29,8 @@ Each ticket's anchor is its slice heading below. The requirement lists are the o
 - **Requirements:**
   1. Add an `EnrichmentCancel` token backed by an App-owned `Arc<AtomicU64>`. Store the signal at every `graph_generation` increment, through a single `App::bump_graph_generation()` helper that `request_graph_update` also uses.
   2. `spawn_possible_squash_enrichment` takes the signal. A superseded worker returns without sending.
-  3. Check cancellation before each squash patch job is dispatched and before each cherry tip is processed.
-  4. Test that a cancelled worker drops its sender without publishing.
+  3. Check cancellation before each squash patch job is dispatched, before each cherry tip is processed, and while processing cherry output commits. P adds checks on every git2 revwalk yield, including merges.
+  4. Test both a pre-cancelled worker and a worker superseded after it starts; each drops its sender without publishing. Use deterministic synchronization rather than sleeps.
   5. Test that enrichment spawned after an enrichment-invalidating incremental update still publishes.
 
 ### A — Pair squash sources in Graph relationships and show fuzzy sources
@@ -39,8 +39,8 @@ Each ticket's anchor is its slice heading below. The requirement lists are the o
 - **Depends on:** none
 - **Requirements:**
   1. Replace `GraphCommit`'s `is_possible_squash_merge`, `possible_squash_merge_sources` and `fuzzy_squash_match` fields with `relationships: Vec<GraphRelationship>`. Keep the old values available as accessors.
-  2. Exact squash detection records each destination together with the source tip OID and all of the tip's branch names.
-  3. Fuzzy detection keeps every accepted (destination, source tip) pair with its percent, not only the maximum.
+  2. Exact squash detection records each destination together with its sorted, deduplicated destination ref snapshots, the source tip OID, and all of the tip's branch names.
+  3. Fuzzy detection keeps every accepted (destination, source tip) pair with its percent, including other fuzzy sources for a destination that also has an exact source. Skip only a pair already recorded as exact; accessors select the strongest confidence for presentation.
   4. `fuzzy_match::classify` floors the percent, so fuzzy is always ≤ 99. The existing Branches-view likely-squash assertions still pass.
   5. The ref pane shows the best fuzzy source with a `~N%` suffix, and the info modal shows `Possible Squash Merge From`. Exact matches keep the glyph and show no percent.
   6. Both carry-forward paths, in `app.rs` and in `update_graph_incrementally`, copy `relationships`. The existing exact, fuzzy and graph-patch cache tests keep their meaning.
@@ -51,7 +51,7 @@ Each ticket's anchor is its slice heading below. The requirement lists are the o
 - **Depends on:** none
 - **Requirements:**
   1. Add `git2_diff_patch`, which computes the patch ID and diff text in-process.
-  2. Test parity against `git diff --binary --full-index | git patch-id --stable` for rename, binary, mode and text cases. Stop the slice on any mismatch.
+  2. Check patch-ID equality against `git diff --binary --full-index | git patch-id --stable` for rename, binary, mode and text cases; require fuzzy similarity ≥ 0.99 only for textual hunks and expect `None` for binary-only, mode-only and rename-only diffs. Gate the switch on text, rename and mode parity. Binary mismatches are low-priority, nonblocking diagnostics; prefer the generic `show_binary(true)` option without a bespoke special-case path.
   3. Switch `compute_patch` and bump `GRAPH_DIFF_VERSION` to 2 only if a cold-cache run is at least as fast. Record the timings using a span this ticket adds.
 
 ### P — Pair cherry-picks with destinations via a bounded git2 patch-ID scan
@@ -59,12 +59,12 @@ Each ticket's anchor is its slice heading below. The requirement lists are the o
 - **Anchor:** `## Slice P — ct/graph-cherry-pick-pairing`
 - **Depends on:** A, X
 - **Requirements:**
-  1. Replace the `git cherry` subprocess with git2 revwalks and patch IDs. Pair each cherry-picked source commit with its base destination commit or commits, exact matches only.
-  2. Bound the scans at 500 source commits per tip and 2,000 destination commits per tip, and check cancellation on every commit. Exceeding a bound logs `scan_incomplete` on the default log target, and unmatched sources produce nothing.
+  1. Replace the `git cherry` subprocess with git2 revwalks and patch IDs. Pair each cherry-picked source commit with every matching base destination within the scan, exact matches only; retain all source patch buckets and scan to history end or the bound, even after every source has one match. Capture sorted, deduplicated destination ref snapshots.
+  2. Bound the scans at 500 source commits per tip and 2,000 destination commits per tip, counting all yielded commits including merges, and check cancellation on every yield before skipping merges. Exceeding a bound logs `scan_incomplete` on the default log target, and unmatched sources produce nothing.
   3. Cache commit patch IDs, including `None`, in an on-demand `commit_patch_id` table. A cache file from before the table existed is treated as all misses.
   4. The enrichment message carries `Vec<GraphRelationship>`. Applying it merges each relationship into every displayed endpoint, adding or strengthening and never removing.
   5. A destination commit shows `Cherry-picked From <short oid> (<refs>)`, and the source commit stays marked as cherry-picked.
-  6. On rename, binary and mode-change fixtures, the set of commits marked cherry-picked equals `git cherry`'s set. Each fixture adds an unrelated base commit before picking. If parity fails, stop and report.
+  6. On text, rename and mode-change fixtures, the set of commits marked cherry-picked equals `git cherry`'s set. Each fixture adds an unrelated base commit before picking. Stop on those parity failures; binary equality and unrelated-binary checks remain low-priority, nonblocking diagnostics, using generic diff options rather than a bespoke fallback. Test pick/revert/repick retains both destinations.
 
 ### L — Persist squash-merge and cherry-pick lineage (supersedes cancelled #053)
 - **Type / priority / tags:** task / high / `graph`, `lineage`, `sqlite`, `persistence`
@@ -73,12 +73,12 @@ Each ticket's anchor is its slice heading below. The requirement lists are the o
 - **Requirements** (R1–R2 are the original #053 text; R3–R7 are reworded; R8 is new):
   1. Document the existing problem: current graph loading persists diff-derived patch data, but it recomputes cherry-pick detection and does not persist final squash/cherry relationships. Relationship annotations arrive only after background enrichment completes, leaving the graph without markers for roughly 30 seconds on this repository.
   2. Add durable repository-scoped lineage records with fields: type (sm for squash merge or c-p for cherry-pick), destination_hash (full destination commit OID), destination_ref (destination ref name captured at detection), source_hash (full original source commit OID), and source_ref (original branch/ref name captured at detection). Store OIDs as text so records remain useful after source refs are deleted and Git prunes source objects.
-  3. Use a stable uniqueness key of type plus full destination and source OIDs, index destination_hash and source_hash, and store lineage in a separate per-repository database under the application data directory, keyed by the Git common directory, that neither 60-day cache pruning nor the R-key cache clear can match or delete.
+  3. Use a stable uniqueness key of type plus full destination and source OIDs, index destination_hash and source_hash, retain the five scalar columns as primary captured snapshots, and transactionally union all source and destination ref names in separate child tables. Reconstruct both unions without a join cross-product. Store lineage in a separate per-repository database under the application data directory, keyed by the Git common directory, that neither 60-day cache pruning nor the R-key cache clear can match or delete.
   4. When enrichment completes, persist accepted exact and fuzzy squash relationships and exact cherry-pick relationships from the worker, even when the result is no longer published; preserve the fuzzy similarity score and never write a partial or invented tuple.
-  5. In the Graph loader worker, hydrate stored lineage for the current base into the GraphSnapshot before it is sent, using read-only access; fresh detection upserts without duplicating relationships, unions ref snapshots, never erases hydrated relationships, and no lineage SQLite access runs on the UI thread.
+  5. In Graph loader and existing updater workers, hydrate stored lineage for the resolved current base before publishing the snapshot, including newly displayed or refilled endpoints. Resolve an absent base option with `branch::detect_base_branch`, never as all bases. Fresh detection and App metadata carry-forward merge relationships and both ref unions without erasing hydrated data; no lineage SQLite access runs on the UI thread. The updater hydration adapter is removable with the updater and creates no dependency on P003.
   6. Use cached lineage to annotate the destination commit and, when it is present in the loaded graph, the source commit, including source-end "Squash-merged Into" / "Possibly Squash-merged Into" details; a missing source ref or pruned source object must not erase provenance.
-  7. Add tests covering cache reload, repeat upserts, deleted source refs and pruned source objects, per-repository isolation (linked worktrees share, clones isolated), retention through transient-cache pruning and the R-key clear, existing transient cache files loading unchanged with no migration, warm hydration while fresh enrichment is cancelled, and a locked or unwritable lineage root.
-  8. Keep exact and fuzzy presentation distinct and never let lineage change MergeStatus, Branches merge columns, or delete eligibility; record cold and warm marker timings and state that only stored relationships appear immediately.
+  7. Add tests covering reloads under both `main` and `develop` after the same pair is observed under both bases, default-base filtering with mixed histories, stale/concurrent upserts preserving both ref unions, deleted source refs and pruned source objects, worker-side hydration on ref removal/window refill, per-repository isolation (linked worktrees share, clones isolated), retention through transient-cache pruning and the R-key clear, old transient cache files with no migration, warm hydration while fresh enrichment is cancelled, and a locked or unwritable lineage root.
+  8. Keep exact and fuzzy presentation distinct and never let lineage change MergeStatus, Branches merge columns, or delete eligibility; record cold and warm marker timings with isolated explicit data/cache roots without deleting real durable history, and state that only stored relationships appear immediately.
 
 ### D — Cache fuzzy squash pair scores in the transient cache
 - **Type / priority / tags:** task / medium / `graph`, `fuzzy`, `cache`, `perf`
@@ -87,8 +87,8 @@ Each ticket's anchor is its slice heading below. The requirement lists are the o
 - **Requirements:**
   1. Add `FUZZY_SCORING_VERSION`, and key each pair as `{destination}:{merge_base}:{tip}:v{version}`.
   2. Store scored pairs in an on-demand `fuzzy_pair` table, including pairs that did not match. Do one lookup and one store per run.
-  3. A cache hit skips `score`, and a second load yields the same fuzzy match and sources.
-  4. A cache file without the table is treated as all misses.
+  3. A cache hit skips `score`, including cached `None`; a local test scoring seam observes zero calls on the second load while it yields the same fuzzy match and sources.
+  4. A cache file without the table is treated as all misses. Define this fixture independently of P so the slice depends only on A.
 
 ---
 
@@ -119,16 +119,16 @@ Lineage does not change Graph topology refresh. It supplies annotations only; ta
   - `GraphEnrichmentMsg`
   - `graph::apply_squash_enrichment` / `GraphState::apply_squash_enrichment`
 
-  Do **not** depend on `update_graph_incrementally`, `spawn_graph_updater`, `GraphUpdateMsg`, `GraphRepositoryState`, or `pending_graph_deltas`; the rollback plan proposes removing them. Ticket A must still keep them compiling and carrying `relationships` forward (A1). `GraphLoadOptions` passed to the updater (`app.rs:4983`) gets `lineage_root: None`. Keep the names `GraphEnrichmentMsg.updates` and `GraphState::apply_squash_enrichment`, so the drain call site at `src/app.rs:703` stays textually unchanged.
-- **Workers only.** Hydration, every SQLite access (lineage store and transient cache), detection, and every Git operation run in worker threads. Nothing new runs in `App::drain_channels`, `App::with_cache_root`, or the R-key handler (`App::clear_cache_and_refresh`). The App stores only a `LineageRoot` (a path) and an `Arc<AtomicU64>`.
-- **Read-only hydration.** The loader opens lineage with `LineageStore::open_read_only`:
+  The rollback plan proposes removing `update_graph_incrementally`, `spawn_graph_updater`, `GraphUpdateMsg`, `GraphRepositoryState`, and `pending_graph_deltas`. Until then, keep them compiling and carrying `relationships` forward (A1), and add only a small optional hydration adapter at the updater's worker publication boundary (L3). Pass `lineage_root: Some(self.lineage_root.clone())` in updater options (`app.rs:4983`); hydrate the worker result before sending, and merge latest App metadata into that result without overwriting hydrated data. Keep the store and detectors independent of updater topology internals; removing the updater later removes only the adapter. No dependency on P003. Keep the names `GraphEnrichmentMsg.updates` and `GraphState::apply_squash_enrichment`, so the enrichment drain call site at `src/app.rs:703` stays textually unchanged.
+- **Workers only.** Hydration, every SQLite access (lineage store and transient cache), detection, and every Git operation run in worker threads. No new Git, disk, or SQLite work runs in `App::drain_channels`, `App::with_cache_root`, or the R-key handler (`App::clear_cache_and_refresh`). In-memory annotation merges in channel draining are allowed. The App stores only a `LineageRoot` (a path) and an `Arc<AtomicU64>`.
+- **Read-only hydration.** Loader and updater workers open lineage with `LineageStore::open_read_only`:
   - It runs no DDL and no meta write.
   - It sets `busy_timeout` to 200 ms.
   - Any error yields "no relationships", not a failed load.
 
   Only the enrichment worker writes.
 - **No migration.** The lineage store is a new database file. The transient cache keeps its existing filename and schema. New transient tables use `CREATE TABLE IF NOT EXISTS` and are queried by key, never loaded by `read_all`. This replaces the "migration" wording of original #053 requirement 7, per the user's instruction: "we don't need to do a migration because it's a temporary cache file. just create a new database with the right schema."
-- **Record shape.** Fields: `type` (`sm` | `c-p`), `destination_hash`, `destination_ref`, `source_hash`, `source_ref`, and a nullable `similarity_percent` (`NULL` = exact). OIDs are full 40-hex `TEXT`. The primary key is `(type, destination_hash, source_hash)`, with indexes on `destination_hash` and on `source_hash`.
+- **Record shape.** Scalar fields: `type` (`sm` | `c-p`), `destination_hash`, `destination_ref`, `source_hash`, `source_ref`, and a nullable `similarity_percent` (`NULL` = exact). The scalar refs retain primary captured snapshots; `lineage_source_ref` and `lineage_destination_ref` transactionally retain every observed name. The in-memory model uses sorted, deduplicated `source_refs` and `destination_refs`. OIDs are full 40-hex `TEXT`. The primary key is `(type, destination_hash, source_hash)`, with indexes on `destination_hash` and on `source_hash`; ref observations never change identity or overwrite prior base membership.
 - **Never invent or persist partial tuples.** A record is written only when both OIDs came from the same detection pairing. A source with no discovered destination is not written.
 - **Durable storage location.**
   - `LineageRoot::from_env()` resolves to `$GBM_DATA_DIR`, else `dirs::data_dir()/git-branch-manager`, else `std::env::temp_dir()/git-branch-manager`.
@@ -139,14 +139,14 @@ Lineage does not change Graph topology refresh. It supplies annotations only; ta
   - Exact means `similarity_percent == 100` and shows the squash glyph.
   - Fuzzy means `<= 99`. It shows the `[fuzzy squash N%]` suffix and the ref-pane `~N%` suffix, never the exact glyph.
   - Graph lineage never feeds `MergeStatus`, Branches merge columns, or delete eligibility.
-- **Out of scope.** Paired source/destination colors (#054) and connectors (#055). This plan only puts the data on both endpoints and shows text in the details panes.
+- **Out of scope.** Paired source/destination colors (#054, depends on #065) and connectors (#055, depends on #065 and #054; dependency already fixed). These visual follow-ups need no requirement changes here. This plan only puts the data on both endpoints and shows text in the details panes. Binary insertion special cases are low priority and outside the critical path; B and P record diagnostics without adding a new binary task or bespoke dispatch/fallback.
 - **Logging.** Spans and logs use the default module target (`git_branch_manager::git::…`). The subscriber's default filter `git_branch_manager=debug` (`src/main.rs:381-382`) captures them. Do not set a custom `target:`.
 - **Test commands.** Multiple filters go after `--`: `cargo test -- name_a name_b`.
 - **Project rules.**
   - Run `cargo build` after every task.
   - Per `CLAUDE.md`, the main agent alone sets `Cargo.toml` to `X.Y.Z-devN` locally and increments it on each code change. **Never stage or commit the version line.** Check `git diff --cached Cargo.toml` before every commit.
   - Subagents never touch the version.
-- **Scan bounds.** `MAX_CHERRY_SOURCE_COMMITS = 500` branch-side commits per tip, and `MAX_CHERRY_DESTINATION_SCAN = 2_000` base-side commits per tip. Exceeding a bound records nothing for the unmatched sources and logs `scan_incomplete`.
+- **Scan bounds.** `MAX_CHERRY_SOURCE_COMMITS = 500` branch-side yields per tip, and `MAX_CHERRY_DESTINATION_SCAN = 2_000` base-side yields per tip. Count merges toward each bound, check cancellation before skipping them, and scan destinations until exhaustion or the bound even after all sources have a first match. Exceeding a bound records nothing for unmatched sources and logs `scan_incomplete`.
 
 ## Branching and slices
 
@@ -208,10 +208,13 @@ This is a `~/dev` repo with no CI, so no PRs are opened.
 These are the input classes and failure modes most likely to bite a user that the spec implies but no requirement names. Each has a test in its owning task.
 
 1. **The same commit is both a squash destination and a cherry-pick destination.** A single-commit branch squashed onto base has the same patch ID as its only commit. Both records must coexist, with different `type` values, without double-rendering or dropping either. Test: `same_commit_records_squash_and_cherry_pick` (P2).
-2. **A hydrated relationship whose `destination_ref` differs from the current `--base`.** Hydration applies only relationships whose `destination_ref` equals the current base branch. Test: `hydration_skips_relationships_for_other_base` (L3).
+2. **The same pair detected under more than one base.** Hydration filters membership in `destination_refs`, resolving an absent `--base` through `branch::detect_base_branch`; it never loads all bases. Tests: `hydration_skips_relationships_for_other_base`, `same_pair_hydrates_under_both_bases`, `default_base_filters_mixed_lineage` (L3).
 3. **Two branches at the same tip.** There is one record per `(type, destination, source)`, but both names are kept in `lineage_source_ref` and both are shown. Test: `shared_tip_keeps_all_source_names` (L1).
 4. **A long-lived branch whose base side has thousands of commits.** The destination scan stops at the bound and writes no partial tuple. Test: `cherry_scan_bound_writes_no_partial_record` (P1).
 5. **The lineage database is locked by another process, or its root is unwritable.** The loader still publishes the structural snapshot promptly (hydration gives up after 200 ms), and enrichment still publishes in-session markers. Tests: `locked_lineage_does_not_delay_graph`, `unwritable_lineage_root_does_not_block_graph` (L3).
+6. **Ref removal refills the displayed window with historical destinations.** Hydrate those endpoints in the updater worker before sending, even after the original source ref and object are gone; App carry-forward merges rather than overwriting that worker result. Test: `updater_refill_hydrates_before_publication` (L3).
+7. **A source is picked, reverted, and picked again.** Retain both destination pairs; finding the first match must not consume a source patch bucket. Test: `cherry_pick_repicks_keep_all_destinations` (P2).
+8. **An exact squash source shares a destination with a distinct fuzzy source.** Preserve both facts while the confidence accessor selects exact. Test: `exact_destination_keeps_distinct_fuzzy_source` (A1).
 
 ---
 
@@ -318,6 +321,8 @@ fn cancelled_enrichment_publishes_nothing() {
 }
 ```
 
+Also add `started_enrichment_superseded_publishes_nothing` in the `graph.rs` test module. Factor a private worker runner used by the spawn function and a test-only/local callback at the first dispatch or processed cherry output commit. Start generation 1, block the callback on channels, wait for its `started` notification, advance the signal to generation 2, then release the worker. Assert no further jobs are dispatched and `recv_timeout` returns `Disconnected` rather than a stale message. Exercise supersession during squash dispatch and while processing cherry output; P extends the test to git2 traversal including a merge-only stretch. Use channels/barriers and bounded receive deadlines, never sleeps or a process-global mutable hook. This checks the real runner after work has started, beyond the pre-cancelled test above.
+
 In `src/app.rs` tests, next to the generation tests near `:10463`:
 
 ```rust
@@ -347,7 +352,7 @@ When writing `enrichment_after_invalidating_update_still_publishes`, copy the se
 
 - [ ] **Step 2: Run the tests to confirm they fail.**
 
-Run: `cargo test -- enrichment_cancel cancelled_enrichment bump_graph_generation enrichment_after_invalidating`
+Run: `cargo test -- enrichment_cancel cancelled_enrichment started_enrichment_superseded bump_graph_generation enrichment_after_invalidating`
 Expected: compile errors (`EnrichmentCancel`, `bump_graph_generation` missing).
 
 - [ ] **Step 3: Implement.**
@@ -362,7 +367,7 @@ impl EnrichmentCancel {
 
 1. **Worker.** `spawn_possible_squash_enrichment` builds `let cancel = EnrichmentCancel::new(latest_generation, generation);` and passes `&cancel` to both detectors. It then does `if cancel.is_cancelled() { return; }` before `tx.send`.
 2. **Squash detector.** `compute_possible_squash_updates` gains a `cancel: &EnrichmentCancel` parameter and returns early (`Vec::new()`) when cancelled before `load_patch_ids`. `load_patch_ids` gains `cancel` and has `next_patch_job` callers stop when `cancel.is_cancelled()`.
-3. **Cherry detector.** `compute_cherry_pick_updates` gains `cancel` and `continue`s past remaining tips once cancelled.
+3. **Cherry detector.** `compute_cherry_pick_updates` gains `cancel`, returns completed results when cancelled before a tip, and checks cancellation while processing each commit in `git cherry` output before doing more work. P replaces that subprocess and adds per-yield checks to its source and destination git2 walks, even merges before skipping them. X alone does not introduce revwalks.
 4. **Synchronous helper.** `load_graph_with_squash_annotations` passes `&EnrichmentCancel::never()`.
 5. **App.** Add `graph_generation_signal: Arc<AtomicU64>` (initialized to `Arc::new(AtomicU64::new(0))` in `with_cache_root`), plus:
 
@@ -427,7 +432,7 @@ pub struct GraphRelationship {
     pub kind: RelationshipKind,
     pub matching: RelationshipMatch,
     pub destination_oid: String,
-    pub destination_ref: String,
+    pub destination_refs: Vec<String>,   // sorted, deduplicated captured names
     pub source_oid: String,
     pub source_refs: Vec<String>,   // sorted, deduplicated
 }
@@ -455,7 +460,7 @@ fn squash(dest: &str, source: &str, names: &[&str], matching: RelationshipMatch)
         kind: RelationshipKind::SquashMerge,
         matching,
         destination_oid: dest.into(),
-        destination_ref: "main".into(),
+        destination_refs: vec!["main".into()],
         source_oid: source.into(),
         source_refs: names.iter().map(|n| n.to_string()).collect(),
     }
@@ -612,17 +617,17 @@ struct SourceTip {
 }
 
 let mut relationships = Vec::<GraphRelationship>::new();
-let mut exact_destinations = HashSet::<String>::new();
+let mut exact_pairs = HashSet::<(String, String)>::new();
 for (patch_id, sources) in &sources_by_patch {
     let Some(base_oids) = base_oids_by_patch.get(patch_id) else { continue };
     for destination in base_oids {
-        exact_destinations.insert(destination.clone());
         for source in sources {
+            exact_pairs.insert((destination.clone(), source.tip_oid.clone()));
             relationships.push(GraphRelationship {
                 kind: RelationshipKind::SquashMerge,
                 matching: RelationshipMatch::Exact,
                 destination_oid: destination.clone(),
-                destination_ref: base_branch.clone(),
+                destination_refs: vec![base_branch.clone()],
                 source_oid: source.tip_oid.clone(),
                 source_refs: source.source_names.clone(),
             });
@@ -630,10 +635,10 @@ for (patch_id, sources) in &sources_by_patch {
     }
 }
 for (destination, base_diff) in &base_diffs {
-    if exact_destinations.contains(destination) {
-        continue;
-    }
     for (source, branch_diff) in &branch_diffs {
+        if exact_pairs.contains(&(destination.clone(), source.tip_oid.clone())) {
+            continue; // Only this pair is already exact; other fuzzy sources remain facts.
+        }
         let Some(percent) = crate::git::fuzzy_match::score(branch_diff, base_diff)
             .and_then(|score| crate::git::fuzzy_match::classify(&score))
         else {
@@ -643,7 +648,7 @@ for (destination, base_diff) in &base_diffs {
             kind: RelationshipKind::SquashMerge,
             matching: RelationshipMatch::Fuzzy { similarity_percent: percent },
             destination_oid: destination.clone(),
-            destination_ref: base_branch.clone(),
+            destination_refs: vec![base_branch.clone()],
             source_oid: source.tip_oid.clone(),
             source_refs: source.source_names.clone(),
         });
@@ -656,6 +661,8 @@ for (destination, base_diff) in &base_diffs {
    - `is_cherry_picked_commit`: `false`.
 
    In slice A, `apply_squash_enrichment` assigns `commit.relationships = update.relationships.clone()` and `commit.is_cherry_picked_commit = update.is_cherry_picked_commit`. That is acceptable for now because nothing persists yet; P2 changes it to a merge. `merge_enrichment_updates` keeps its shape. Cherry updates carry `relationships: Vec::new()`, and `and_modify` only sets the cherry flag.
+
+   Add `exact_destination_keeps_distinct_fuzzy_source` using one destination, one exact source patch, and a distinct diverged tip with a classified fuzzy diff. Assert both `(destination, source)` records remain in detector output, the exact pair is emitted only once, and the destination's confidence accessor reports 100 with only the exact source names. The retained fuzzy record must keep its own tip OID, refs and percent. This tests detector output rather than only constructing accessor fixtures.
 
 - [ ] **Step 5: Floor the fuzzy percent.** In `src/git/fuzzy_match.rs::classify`, change `.round()` to `.floor()`. Update the `FuzzySquashMatch` doc comment to "floored from the raw f32 score; fuzzy is always <= 99".
   - **This also affects the Branches view:** `merge_detection::likely_squash_merged` (`src/git/merge_detection.rs:794`) calls `classify`.
@@ -735,10 +742,10 @@ vec![Span::styled(
 - Produces: `pub fn git2_diff_patch(repo: &git2::Repository, old: git2::Oid, new: git2::Oid) -> (Option<String>, Option<Vec<u8>>)`. It is `pub` so the integration test can call it; mark it `#[doc(hidden)]`.
 
 - [ ] **Step 1: Write the parity test** `graph_git2_patch_matches_git_cli_patch_id`.
-  - Build commits that rename, add a binary file, change mode, and edit text.
-  - For each `(parent, commit)`, assert that `graph::git2_diff_patch(...).0` equals the first field of `git diff --binary --full-index <parent> <commit> | git patch-id --stable`. Run that pipeline as two `Command`s, writing the diff stdout into `patch-id`'s stdin.
-  - Assert that `fuzzy_match::score(git2_text, cli_text)` is `Some` with `similarity >= 0.99`.
-  - **Stop condition:** if exact parity fails for any case, do not switch. Record the mismatching case in the task notes and end the slice; the user decides.
+  - Build commits that rename, change mode, and edit text in the gating test; build binary insertions in a separate nonblocking diagnostic test (`#[ignore = "nonblocking binary diagnostic"]`), run explicitly and record its result.
+  - For every `(parent, commit)` including the binary diagnostic, check that `graph::git2_diff_patch(...).0` equals the first field of `git diff --binary --full-index <parent> <commit> | git patch-id --stable`. Run that pipeline as two `Command`s, writing the diff stdout into `patch-id`'s stdin. Binary equality assertions remain in the diagnostic and cannot stop the gating suite.
+  - For a case with textual hunks, assert `fuzzy_match::score(git2_text, cli_text)` is `Some` with `similarity >= 0.99`. For binary-only, mode-only and rename-only cases, assert `None`: the scorer intentionally has no textual tokens for them.
+  - **Stop condition:** if text, rename or mode patch-ID equality fails, do not switch; record the mismatch in task notes. Keep binary equality checks in a separate diagnostic case that reports positive and unrelated binary insertions without blocking this slice. A binary collision or mismatch is low priority per the user's guidance; use the existing generic `show_binary(true)` diff option and do not implement a binary-specific fallback or dispatch path. If the switch ships with an unresolved binary difference, state that limit in task notes and the commit body.
 
 - [ ] **Step 2: Run the test to confirm it fails.** Run `cargo test -- graph_git2_patch_matches`. Expected: compile error.
 
@@ -837,7 +844,7 @@ In P1, the relationships are converted back into the existing per-OID update. Th
 ```rust
 #[test]
 fn cherry_pick_sources_match_git_cherry() {
-    // Rename, binary, and mode-change commits: the git2 pairing must mark the same
+    // Text, rename, and mode-change commits: the git2 pairing must mark the same
     // source set as `git cherry`, which it replaces.
     let (tmpdir, _repo) = setup_test_repo();
     let dir = tmpdir.path();
@@ -848,9 +855,9 @@ fn cherry_pick_sources_match_git_cherry() {
     run_git(dir, &["checkout", "-q", "-b", "feature/mixed"]);
     run_git(dir, &["mv", "rename-me.txt", "renamed.txt"]);
     run_git(dir, &["commit", "-q", "-m", "rename"]);
-    std::fs::write(dir.join("blob.bin"), [0u8, 159, 146, 150, 0, 1, 2]).unwrap();
+    std::fs::write(dir.join("text.txt"), "picked text\n").unwrap();
     run_git(dir, &["add", "."]);
-    run_git(dir, &["commit", "-q", "-m", "binary"]);
+    run_git(dir, &["commit", "-q", "-m", "text"]);
     run_git(dir, &["update-index", "--chmod=+x", "script.sh"]);
     run_git(dir, &["commit", "-q", "-m", "mode"]);
     let picks = git_output(dir, &["rev-list", "--reverse", "main..feature/mixed"]);
@@ -874,7 +881,7 @@ fn cherry_pick_sources_match_git_cherry() {
 }
 ```
 
-   **Parity stop condition:** if `cherry_pick_sources_match_git_cherry` cannot pass because libgit2's patch IDs differ from `git patch-id --stable` on one of these change types, do not ship P. Record the failing case in the task notes and stop the slice; the user decides between keeping `git cherry` for source discovery and accepting the difference.
+   **Parity stop condition:** if `cherry_pick_sources_match_git_cherry` cannot pass for text, rename or mode changes because patch IDs differ, do not ship P; record the failing case in task notes. Add a separate nonblocking binary diagnostic (`#[ignore = "nonblocking binary diagnostic"]`, run explicitly): pick one binary insertion, add an unrelated binary base insertion, and compare source sets with `git cherry` plus the direct binary patch-ID equality check. Record collisions/mismatches and any resulting binary limitation without making a special-case implementation or blocking P. The user has explicitly made binary insertions low priority.
 
    In `src/git/cache.rs` tests:
 
@@ -958,6 +965,8 @@ fn cherry_scan_bound_writes_no_partial_record() {
 
    Keep `test_graph_cherry_pick_enrichment_marks_branch_commits`. Insert `advance_main(dir, "graph-cherry");` after its `checkout main` and before its picks; it passes `--keep-redundant-commits`, so its picks can collide with the original commits too.
 
+   Extend bound coverage with merge-heavy source and destination histories: every yielded merge consumes one budget slot, neither side patches merges, and source overflow skips the whole tip. Extend X's deterministic worker synchronization test to cancellation during both revwalks, including a merge-only stretch, and assert sender disconnection without stale publication.
+
 - [ ] **Step 2: Run the tests to confirm they fail.** Run `cargo test -- cherry_pick_sources_match commit_patch_ids cherry_scan_bound`. Expected: compile errors.
 
 - [ ] **Step 3: Implement the git2 helper.**
@@ -971,7 +980,9 @@ pub(crate) fn git2_patch_id(repo: &git2::Repository, oid: git2::Oid) -> Option<S
     }
     let parent_tree = commit.parent(0).ok()?.tree().ok()?;
     let tree = commit.tree().ok()?;
-    let diff = repo.diff_tree_to_tree(Some(&parent_tree), Some(&tree), None).ok()?;
+    let mut options = git2::DiffOptions::new();
+    options.show_binary(true); // Generic option, no binary-specific fallback or dispatch.
+    let diff = repo.diff_tree_to_tree(Some(&parent_tree), Some(&tree), Some(&mut options)).ok()?;
     if diff.deltas().len() == 0 {
         return None;
     }
@@ -1029,10 +1040,10 @@ pub fn store_commit_patch_ids(&self, entries: &[(String, Option<String>)]) {
 
 - [ ] **Step 5: Implement `compute_cherry_pick_relationships_with_bounds`.** `compute_cherry_pick_relationships` calls it with the two constants.
   1. **Setup.** Open `git2::Repository` in the worker. Candidate tips are displayed commits carrying local non-base refs, in snapshot order, deduplicated by OID. Keep an in-memory `HashMap<Oid, Option<String>>` patch-ID memo for the run, so base ranges that overlap across tips are computed once.
-  2. **Sources.** For each tip, run a `Revwalk` with `push(tip)` and `hide(base_tip)`, skipping merges: these are the branch commits not in base. If the walk yields more than `source_limit` commits, `tracing::debug!(tip = %tip, "scan_incomplete: source bound")` and skip the tip. A tip already contained in base yields nothing. Map each `source_oid` to its tip names.
+  2. **Sources.** For each tip, run a `Revwalk` with `push(tip)` and `hide(base_tip)`: these are the branch commits not in base. Check cancellation and increment the yield count before skipping merges (which consume the budget but have no patch ID). If the walk yields more than `source_limit` commits, `tracing::debug!(tip = %tip, "scan_incomplete: source bound")` and skip the tip entirely. A tip already contained in base yields nothing. Map each single-parent `source_oid` to its tip names and retain all entries in each patch-ID bucket; equal patches from multiple sources must not collapse to one source.
   3. **Patch IDs.** Look up keys `format!("{oid}:v{CHERRY_PATCH_ID_VERSION}")` in the memo, then `cache.lookup_commit_patch_ids`, and compute misses with `git2_patch_id`. Call `store_commit_patch_ids` with the misses once per tip. Check `cancel.is_cancelled()` before each computation; on cancel, return the relationships completed so far (each one is complete).
-  4. **Destinations.** For each tip, run a `Revwalk` with `push(base_tip)` and `hide(tip)`, skipping merges: these are the base commits not on the branch. For each commit, check `cancel`, get its patch ID, and match it against this tip's unresolved source patch IDs. Stop when every source has at least one destination, or after `destination_limit` commits (`tracing::debug!(tip = %tip, "scan_incomplete: destination bound")`).
-  5. **Emit.** For every (source, destination) patch-ID match, emit `GraphRelationship { kind: CherryPick, matching: Exact, destination_oid, destination_ref: base_branch, source_oid, source_refs: sorted dedup tip names }`. Sources with no destination emit nothing.
+  4. **Destinations.** For each tip, run a `Revwalk` with `push(base_tip)` and `hide(tip)`: these are the base commits not on the branch. For each yield, check `cancel` and count it before skipping merges; get single-parent patch IDs and match against every entry in this tip's retained source patch-ID buckets. Never remove a bucket after a match or stop when each source has one destination. Scan until history exhaustion or `destination_limit` yields. If a further yield exceeds the bound, log `scan_incomplete: destination bound`; no patch computation runs outside the budget. Complete matches inside the bound remain valid.
+  5. **Emit.** For every (source, destination) patch-ID match, emit `GraphRelationship { kind: CherryPick, matching: Exact, destination_oid, destination_refs: vec![base_branch.to_string()], source_oid, source_refs: sorted dedup tip names }`. Deduplicate by relationship key and union both ref sets. Sources with no destination emit nothing.
   6. **Callers.** The enrichment worker and `load_graph_with_squash_annotations` load a `BranchCache` once and pass it in. Convert the result to per-OID updates: for each relationship's `source_oid`, `is_cherry_picked_commit = true`. Remove the `git cherry` `Command`, and remove the `Command`/`Stdio` imports if nothing else uses them.
 
 - [ ] **Step 6: Run the tests to confirm they pass.** Run `cargo test`, then `cargo build`. Expected: the new tests pass, and `test_graph_cherry_pick_enrichment_marks_branch_commits` still passes.
@@ -1094,10 +1105,15 @@ fn enrichment_never_erases_existing_relationships() {
     apply_squash_enrichment(&mut snap, &[fresh]);
     assert_eq!(snap.commits[0].relationships.len(), 2);
 
-    let renamed = GraphRelationship { source_refs: vec!["feature/renamed".into()], ..existing };
+    let renamed = GraphRelationship {
+        destination_refs: vec!["develop".into()],
+        source_refs: vec!["feature/renamed".into()],
+        ..existing
+    };
     apply_squash_enrichment(&mut snap, &[renamed]);
     let merged = snap.commits[0].relationships.iter().find(|r| r.source_oid == "gone").unwrap();
     assert_eq!(merged.source_refs, ["deleted/branch", "feature/renamed"]);
+    assert_eq!(merged.destination_refs, ["develop", "main"]);
 }
 
 #[test]
@@ -1138,7 +1154,7 @@ fn cherry_pick_relationships_pair_source_with_destination() {
     assert!(source_commit.is_cherry_picked_commit());
     let pair = source_commit.cherry_pick_destinations()[0];
     assert_eq!(pair.destination_oid, destination);
-    assert_eq!(pair.destination_ref, "main");
+    assert_eq!(pair.destination_refs, ["main"]);
     assert_eq!(pair.source_refs, ["feature/pick"]);
     assert_eq!(destination_commit.cherry_pick_sources()[0].source_oid, source);
 }
@@ -1163,7 +1179,9 @@ fn same_commit_records_squash_and_cherry_pick() {
 }
 ```
 
-- [ ] **Step 2: Run the tests to confirm they fail.** Run `cargo test -- enrichment_never_erases apply_attaches cherry_pick_relationships_pair same_commit_records`. Expected: compile errors.
+   Add `cherry_pick_repicks_keep_all_destinations`: create a textual source on `feature/pick`, advance main independently, pick it and save destination 1, revert that destination, then pick the original source again and save destination 2. Run detection with a bound large enough for both, filter the `CherryPick` records for the original source, and assert both destination OIDs appear exactly once with `destination_refs == ["main"]`. The source endpoint exposes both destinations; each destination exposes the original source. Also test two source commits with the same patch ID so retaining a bucket preserves all source/destination pairs.
+
+- [ ] **Step 2: Run the tests to confirm they fail.** Run `cargo test -- enrichment_never_erases apply_attaches cherry_pick_relationships_pair cherry_pick_repicks same_commit_records`. Expected: compile errors.
 
 - [ ] **Step 3: Implement the merge and the message.**
 
@@ -1189,13 +1207,20 @@ pub fn apply_squash_enrichment(snapshot: &mut GraphSnapshot, updates: &[GraphRel
 
 fn merge_relationship(existing: &mut Vec<GraphRelationship>, incoming: &GraphRelationship) {
     if let Some(current) = existing.iter_mut().find(|r| r.key() == incoming.key()) {
-        current.destination_ref = incoming.destination_ref.clone();
+        current.destination_refs.extend(incoming.destination_refs.iter().cloned());
+        current.destination_refs.sort();
+        current.destination_refs.dedup();
         current.matching = current.matching.stronger(incoming.matching);
         current.source_refs.extend(incoming.source_refs.iter().cloned());
         current.source_refs.sort();
         current.source_refs.dedup();
     } else {
-        existing.push(incoming.clone());
+        let mut relationship = incoming.clone();
+        relationship.destination_refs.sort();
+        relationship.destination_refs.dedup();
+        relationship.source_refs.sort();
+        relationship.source_refs.dedup();
+        existing.push(relationship);
     }
 }
 
@@ -1214,9 +1239,17 @@ pub fn compute_relationships(
     }
     relationships
 }
+
+fn resolve_base_name(repo_path: &Path, requested_base: Option<&str>) -> Option<String> {
+    if let Some(base) = requested_base {
+        return Some(base.to_string());
+    }
+    let repo = git2::Repository::open(repo_path).ok()?;
+    crate::git::branch::detect_base_branch(&repo, None).ok()
+}
 ```
 
-   - Factor `resolve_base` out of the base/base-tip resolution that both detectors duplicate (requested base or `detect_base_branch`, then the displayed local-branch tip). Its behavior must not change.
+   - Factor `resolve_base` out of the base/base-tip resolution that both detectors duplicate. Share a `resolve_base_name(repo_path, requested_base) -> Option<String>` helper that returns the explicit option or opens the repository and calls `branch::detect_base_branch(&repo, None)`; detection then separately finds the displayed local-branch tip. L hydration uses the same name helper without requiring a displayed tip. A missing resolved name yields no results, never all bases.
    - `compute_squash_relationships` returns the A1 relationships directly.
    - Delete `GraphEnrichmentUpdate` and `merge_enrichment_updates`. Set `GraphEnrichmentMsg.updates: Vec<GraphRelationship>`.
    - `spawn_possible_squash_enrichment` sends `compute_relationships(...)`.
@@ -1346,7 +1379,7 @@ mod tests {
             kind,
             matching,
             destination_oid: dest.to_string().repeat(40),
-            destination_ref: "main".into(),
+            destination_refs: vec!["main".into()],
             source_oid: source.to_string().repeat(40),
             source_refs: refs.iter().map(|r| r.to_string()).collect(),
         }
@@ -1401,6 +1434,33 @@ mod tests {
         let found = store.lookup(&oids(&['b'])).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].source_refs, ["feature/one", "feature/two"]);
+    }
+
+    #[test]
+    fn stale_and_concurrent_upserts_union_both_ref_sets() {
+        let repo = repo();
+        let root = tempfile::tempdir().unwrap();
+        let store = LineageStore::open(repo.path(), &LineageRoot::at(root.path())).unwrap();
+        let original = rel(RelationshipKind::SquashMerge, 'a', 'b', &["feature/one"], RelationshipMatch::Exact);
+        store.upsert(&[original.clone()]).unwrap();
+        let newer = GraphRelationship {
+            destination_refs: vec!["develop".into()],
+            source_refs: vec!["feature/two".into()],
+            ..original.clone()
+        };
+        std::thread::scope(|scope| {
+            let store = &store;
+            let original = &original;
+            let newer = &newer;
+            scope.spawn(move || store.upsert(&[newer.clone()]).unwrap());
+            scope.spawn(move || store.upsert(&[original.clone()]).unwrap());
+        });
+        store.upsert(&[original]).unwrap(); // late stale writer must not erase newer refs
+        let found = store.lookup(&oids(&['a'])).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].destination_refs, ["develop", "main"]);
+        assert_eq!(found[0].source_refs, ["feature/one", "feature/two"]);
+        assert_eq!(found[0].matching, RelationshipMatch::Exact);
     }
 
     #[test]
@@ -1504,6 +1564,13 @@ const SCHEMA: &str = "
         ref_name         TEXT NOT NULL,
         PRIMARY KEY (type, destination_hash, source_hash, ref_name)
     );
+    CREATE TABLE IF NOT EXISTS lineage_destination_ref (
+        type             TEXT NOT NULL,
+        destination_hash TEXT NOT NULL,
+        source_hash      TEXT NOT NULL,
+        ref_name         TEXT NOT NULL,
+        PRIMARY KEY (type, destination_hash, source_hash, ref_name)
+    );
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1579,15 +1646,17 @@ impl LineageStore {
                 RelationshipMatch::Exact => None,
                 RelationshipMatch::Fuzzy { similarity_percent } => Some(similarity_percent),
             };
-            let primary_ref = relationship.source_refs.first().cloned().unwrap_or_default();
+            let primary_ref = relationship.source_refs.iter().min().cloned().unwrap_or_default();
+            let primary_destination = relationship.destination_refs.iter().min().cloned().unwrap_or_default();
             tx.execute(
                 "INSERT INTO lineage (type, destination_hash, destination_ref, source_hash, source_ref,
                                       similarity_percent, detected_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
                  ON CONFLICT (type, destination_hash, source_hash) DO UPDATE SET
-                     destination_ref = excluded.destination_ref,
-                     source_ref = CASE WHEN excluded.source_ref = '' THEN lineage.source_ref
-                                       ELSE excluded.source_ref END,
+                     destination_ref = CASE WHEN lineage.destination_ref = '' THEN excluded.destination_ref
+                                            ELSE lineage.destination_ref END,
+                     source_ref = CASE WHEN lineage.source_ref = '' THEN excluded.source_ref
+                                       ELSE lineage.source_ref END,
                      similarity_percent = CASE
                          WHEN lineage.similarity_percent IS NULL OR excluded.similarity_percent IS NULL THEN NULL
                          ELSE MAX(lineage.similarity_percent, excluded.similarity_percent) END,
@@ -1595,7 +1664,7 @@ impl LineageStore {
                 params![
                     relationship.kind.code(),
                     relationship.destination_oid,
-                    relationship.destination_ref,
+                    primary_destination,
                     relationship.source_oid,
                     primary_ref,
                     similarity,
@@ -1605,6 +1674,13 @@ impl LineageStore {
             for name in &relationship.source_refs {
                 tx.execute(
                     "INSERT OR IGNORE INTO lineage_source_ref (type, destination_hash, source_hash, ref_name)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![relationship.kind.code(), relationship.destination_oid, relationship.source_oid, name],
+                )?;
+            }
+            for name in &relationship.destination_refs {
+                tx.execute(
+                    "INSERT OR IGNORE INTO lineage_destination_ref (type, destination_hash, source_hash, ref_name)
                      VALUES (?1, ?2, ?3, ?4)",
                     params![relationship.kind.code(), relationship.destination_oid, relationship.source_oid, name],
                 )?;
@@ -1625,12 +1701,13 @@ impl LineageStore {
             let placeholders = vec!["?"; chunk.len()].join(",");
             let sql = format!(
                 "SELECT l.type, l.destination_hash, l.destination_ref, l.source_hash, l.source_ref,
-                        l.similarity_percent, group_concat(r.ref_name, char(10))
+                        l.similarity_percent,
+                        (SELECT group_concat(s.ref_name, char(10)) FROM lineage_source_ref s
+                         WHERE s.type = l.type AND s.destination_hash = l.destination_hash AND s.source_hash = l.source_hash),
+                        (SELECT group_concat(d.ref_name, char(10)) FROM lineage_destination_ref d
+                         WHERE d.type = l.type AND d.destination_hash = l.destination_hash AND d.source_hash = l.source_hash)
                  FROM lineage l
-                 LEFT JOIN lineage_source_ref r
-                   ON r.type = l.type AND r.destination_hash = l.destination_hash AND r.source_hash = l.source_hash
-                 WHERE l.destination_hash IN ({placeholders}) OR l.source_hash IN ({placeholders})
-                 GROUP BY l.type, l.destination_hash, l.source_hash"
+                 WHERE l.destination_hash IN ({placeholders}) OR l.source_hash IN ({placeholders})"
             );
             // A database without the table yet (another writer mid-create) is "no relationships".
             let Ok(mut statement) = conn.prepare(&sql) else { return Ok(Vec::new()) };
@@ -1644,12 +1721,13 @@ impl LineageStore {
                     row.get::<_, String>(4)?,
                     row.get::<_, Option<u8>>(5)?,
                     row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
                 ))
             })?;
             for row in rows {
-                let (code, destination, destination_ref, source, source_ref, similarity, names) = row?;
+                let (code, destination, destination_ref, source, source_ref, similarity, source_names, destination_names) = row?;
                 let Some(kind) = RelationshipKind::from_code(&code) else { continue };
-                let mut source_refs = names
+                let mut source_refs = source_names
                     .map(|joined| joined.split('\n').map(str::to_string).collect::<Vec<_>>())
                     .unwrap_or_default();
                 if !source_ref.is_empty() {
@@ -1657,12 +1735,20 @@ impl LineageStore {
                 }
                 source_refs.sort();
                 source_refs.dedup();
+                let mut destination_refs = destination_names
+                    .map(|joined| joined.split('\n').map(str::to_string).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                if !destination_ref.is_empty() {
+                    destination_refs.push(destination_ref);
+                }
+                destination_refs.sort();
+                destination_refs.dedup();
                 let matching = similarity
                     .map(|similarity_percent| RelationshipMatch::Fuzzy { similarity_percent })
                     .unwrap_or(RelationshipMatch::Exact);
                 found.insert(
                     (code, destination.clone(), source.clone()),
-                    GraphRelationship { kind, matching, destination_oid: destination, destination_ref, source_oid: source, source_refs },
+                    GraphRelationship { kind, matching, destination_oid: destination, destination_refs, source_oid: source, source_refs },
                 );
             }
         }
@@ -1673,7 +1759,9 @@ impl LineageStore {
 
    Register `pub mod lineage;` in `src/git/mod.rs`. Make `prune_stale_caches_at` in `cache.rs` `pub(crate)`. `cache_database_name` (`cache.rs:142`) accepts only the `git-bm-repo-cache-` and `git-bm-cache-` prefixes, and the shared-directory test pins that.
 
-- [ ] **Step 4: Run the tests to confirm they pass.** Run `cargo test --lib -- lineage::`, then `cargo build`. Expected: 7 tests pass.
+   The two correlated aggregate subqueries deliberately avoid joining both ref child tables, which would multiply names. The main row keeps its primary captured ref snapshots; stale or concurrent writers can only add observations to child tables, never replace base membership. The upsert transaction covers the row and both unions. Keep the existing deleted/pruned-source and transient-clear tests, and extend them to relationships with both `main` and `develop` destination snapshots.
+
+- [ ] **Step 4: Run the tests to confirm they pass.** Run `cargo test --lib -- lineage::`, then `cargo build`. Expected: all lineage tests pass.
 
 - [ ] **Step 5: Commit** on the slice branch: `git commit -m "feat: add durable repository-scoped relationship lineage store"`. Check `git diff --cached Cargo.toml` first.
 
@@ -1681,7 +1769,7 @@ impl LineageStore {
 
 **Files:**
 - Modify: `src/git/graph.rs`: `GraphLoadOptions` and its `Default`; `spawn_possible_squash_enrichment`; a new `pub(crate) fn finish_enrichment`; `load_graph_with_squash_annotations`
-- Modify: `src/app.rs`: `lineage_root` field; the `with_cache_root` signature; `spawn_graph_load`; both spawn call sites; `:4983` options (`lineage_root: None`)
+- Modify: `src/app.rs`: `lineage_root` field; the `with_cache_root` signature; `spawn_graph_load`; both spawn call sites; `:4983` updater options (`lineage_root: Some(self.lineage_root.clone())`)
 - Modify: `src/main.rs` (pass `LineageRoot::from_env()`)
 - Modify: `tests/integration.rs` (`TestDir` lineage root, `preserve_tempdirs` returning a 3-tuple, `GBM_DATA_DIR`, and the `lineage` import)
 - Test: `src/git/graph.rs` tests, `tests/integration.rs`
@@ -1717,8 +1805,8 @@ fn stale_enrichment_persists_but_does_not_publish() {
         kind: RelationshipKind::SquashMerge,
         matching: RelationshipMatch::Exact,
         destination_oid: "d".repeat(40),
-        destination_ref: "main".into(),
-        source_oid: "s".repeat(40),
+        destination_refs: vec!["main".into()],
+        source_oid: "a".repeat(40),
         source_refs: vec!["feature/x".into()],
     };
     let latest = Arc::new(AtomicU64::new(1));
@@ -1832,7 +1920,7 @@ fn persist_relationships(repo_path: &Path, root: &LineageRoot, relationships: &[
    2. **`load_graph_with_squash_annotations`:** after `compute_relationships`, call `persist_relationships` when `options.lineage_root` is `Some`, then apply.
    3. **App, field:** add `lineage_root: lineage::LineageRoot`.
    4. **App, constructor:** `with_cache_root` gains a trailing `lineage_root: lineage::LineageRoot` parameter. `main.rs` passes `lineage::LineageRoot::from_env()`, and `App::new` (test) passes `LineageRoot::at(test_cache_root.path().join("lineage"))`.
-   5. **App, call sites:** both spawn call sites pass `Some(self.lineage_root.clone())` before the signal. `spawn_graph_load` sets `lineage_root: Some(self.lineage_root.clone())` in its options. The updater options at `:4983` set `lineage_root: None`.
+   5. **App, call sites:** both spawn call sites pass `Some(self.lineage_root.clone())` before the signal. `spawn_graph_load` and the updater options at `:4983` both set `lineage_root: Some(self.lineage_root.clone())`. L3 hydrates the updater's result before its worker sends it.
    6. **Remaining `GraphLoadOptions { … }` literals:** count them with `rg -n "GraphLoadOptions \{" src tests | rg -v "\.\.(graph::)?GraphLoadOptions::default\(\)"`. Then either add `lineage_root: None,` to each, or convert a literal to `..graph::GraphLoadOptions::default()` when it already sets `cache_root` explicitly. Choose per site to minimize edits, but **never** let a literal that relies on `Default` pick up a real lineage root: `Default` is `None`, so this is safe by construction.
 
 - [ ] **Step 4: Run the tests to confirm they pass.** Run `cargo test`, then `cargo clippy --all-targets`, then `cargo build`.
@@ -1842,7 +1930,8 @@ fn persist_relationships(repo_path: &Path, root: &LineageRoot, relationships: &[
 ### Task L3: Hydrate before publishing the structural snapshot
 
 **Files:**
-- Modify: `src/git/graph.rs` (`spawn_graph_loader`, `load_graph_with_squash_annotations`, new `hydrate_lineage`)
+- Modify: `src/git/graph.rs` (`spawn_graph_loader`, `spawn_graph_updater:61`, `load_graph_with_squash_annotations`, new `hydrate_lineage`)
+- Modify: `src/app.rs:636-648` (merge latest in-memory metadata into worker-hydrated relationships)
 - Test: `tests/integration.rs`, `src/app.rs` tests
 
 **Interfaces:**
@@ -1908,14 +1997,14 @@ fn hydration_skips_relationships_for_other_base() {
         kind: graph::RelationshipKind::SquashMerge,
         matching: graph::RelationshipMatch::Exact,
         destination_oid: destination.clone(),
-        destination_ref: "develop".into(),
+        destination_refs: vec!["develop".into()],
         source_oid: "1".repeat(40),
         source_refs: vec!["feature/elsewhere".into()],
     }]).unwrap();
     let snapshot = graph::spawn_graph_loader(tmpdir.path().to_path_buf(), tmpdir.graph_options_for("main"))
         .recv().unwrap().unwrap();
     let commit = snapshot.commits.iter().find(|c| c.oid == destination).unwrap();
-    assert!(commit.relationships.iter().all(|r| r.destination_ref == "main"));
+    assert!(commit.relationships.iter().all(|r| r.destination_refs.iter().any(|name| name == "main")));
 }
 
 #[test]
@@ -1947,6 +2036,12 @@ fn locked_lineage_does_not_delay_graph() {
 ```
 
    `locked_lineage_does_not_delay_graph` uses `BEGIN EXCLUSIVE` in rollback-journal mode, which blocks readers. In WAL mode, readers never block on an `IMMEDIATE` writer, so the journal-mode switch is what makes the lock bite. The 3-second ceiling allows for the structural load itself; the assertion's point is that the loader's lineage wait is far below `WRITE_BUSY_TIMEOUT`. If `PRAGMA journal_mode=DELETE` cannot switch because the writer left the database in WAL mode, first run `PRAGMA wal_checkpoint(TRUNCATE)` on `holder`, then switch.
+
+   **Additional base-provenance tests:**
+   - `same_pair_hydrates_under_both_bases`: create the squash fixture, point `develop` at the destination, and run real enrichment first with base `main`, then `develop`. Confirm one stored pair has `destination_refs == ["develop", "main"]`; structural warm loads with either explicit base must hydrate it. Delete the source ref, expire reflogs and prune its object, then repeat both warm loads and assert the OIDs and both ref snapshots remain.
+   - `default_base_filters_mixed_lineage`: leave `GraphLoadOptions.base_branch = None`, derive the expected name through `branch::detect_base_branch(&repo, None)`, and store one relationship for that name and another relationship for a different base, both with displayed endpoints. Assert only the detected-base pair is hydrated. This must fail if `None` means all bases; do not rely on a fixed implicit base name.
+
+   **Updater regression: `updater_refill_hydrates_before_publication`.** Use the existing incremental updater fixture and a small graph window. Persist a destination/source pair, remove the original source ref and prune its object, and keep a newer unrelated displayed ref so the historical destination is initially outside the window. Capture the initial state/snapshot, then remove that newer ref and create its `GraphRepositoryDelta`; the refill must bring the historical destination into the new window. Call `spawn_graph_updater` with the explicit temporary `lineage_root`, receive `GraphUpdateMsg` directly before any App drain or fresh detector, and assert the new destination already carries the historical OIDs/refs. Test App metadata carry-forward separately: a worker result contains hydrated relationship A while the current App snapshot contains relationship B for the same displayed OID; draining retains both. Repeat with the same relationship key but different source/destination names and assert both unions remain. All Git/SQLite setup stays in test fixtures or workers; the App merge only handles owned records.
 
    **App-level test in `src/app.rs`: warm hydration while fresh detection is blocked.**
 
@@ -1993,15 +2088,16 @@ fn hydrated_markers_publish_while_enrichment_is_cancelled() {
 }
 ```
 
-- [ ] **Step 2: Run the tests to confirm they fail.** Run `cargo test -- warm_load_hydrates hydrated_lineage_survives hydration_skips unwritable_lineage locked_lineage hydrated_markers_publish`. Expected: FAIL (no hydration).
+- [ ] **Step 2: Run the tests to confirm they fail.** Run `cargo test -- warm_load_hydrates hydrated_lineage_survives hydration_skips same_pair_hydrates default_base_filters updater_refill_hydrates unwritable_lineage locked_lineage hydrated_markers_publish`. Expected: FAIL (no hydration).
 
 - [ ] **Step 3: Implement.**
 
 ```rust
 /// Hydrate stored relationships into a freshly loaded snapshot. Runs in the
-/// loader worker, read-only; any failure leaves the snapshot unannotated.
+/// loader/updater worker, read-only; any failure leaves existing annotations intact.
 pub fn hydrate_lineage(repo_path: &Path, snapshot: &mut GraphSnapshot, options: &GraphLoadOptions) {
     let Some(root) = options.lineage_root.as_ref() else { return };
+    let Some(base_branch) = resolve_base_name(repo_path, options.base_branch.as_deref()) else { return };
     let Some(store) = LineageStore::open_read_only(repo_path, root) else { return };
     let oids = snapshot.commits.iter().map(|commit| commit.oid.clone()).collect::<HashSet<_>>();
     let _span = tracing::info_span!("lineage_hydrate", oids = oids.len()).entered();
@@ -2014,7 +2110,7 @@ pub fn hydrate_lineage(repo_path: &Path, snapshot: &mut GraphSnapshot, options: 
     };
     let relationships = relationships
         .into_iter()
-        .filter(|r| options.base_branch.as_deref().map_or(true, |base| r.destination_ref == base))
+        .filter(|r| r.destination_refs.iter().any(|name| name == &base_branch))
         .collect::<Vec<_>>();
     apply_squash_enrichment(snapshot, &relationships);
 }
@@ -2033,6 +2129,30 @@ pub fn spawn_graph_loader(repo_path: PathBuf, options: GraphLoadOptions) -> Rece
 ```
 
    In `load_graph_with_squash_annotations`, call `hydrate_lineage` right after `load_graph`.
+
+   Add the same optional adapter in the existing `spawn_graph_updater` worker (`graph.rs:61`), without changing its channel or coupling lineage storage to topology internals:
+
+```rust
+let result = update_graph_incrementally(&repo_path, snapshot, &delta, options.clone())
+    .map(|mut snapshot| {
+        hydrate_lineage(&repo_path, &mut snapshot, &options);
+        snapshot
+    });
+let _ = tx.send(GraphUpdateMsg { revision, options, delta, result });
+```
+
+   At the App carry-forward site (`app.rs:636-648`), replace A's assignment with `apply_squash_enrichment(&mut snapshot, &latest_relationships)`, where `latest_relationships` is collected from the current App snapshot under the existing `!self.graph_update_invalidates_enrichment` guard. P's merge handles duplicate endpoint records, both ref unions and stronger confidence. This is only in-memory work; never rehydrate in the App. Leave the backend carry-forward in `update_graph_incrementally` intact: it runs before worker hydration and validly preserves already loaded records. The adapter can be removed alongside the updater later, with no P003 dependency or lineage redesign.
+
+```rust
+if !self.graph_update_invalidates_enrichment {
+    let latest_relationships = self.graph.snapshot().map(|current| {
+        current.commits.iter()
+            .flat_map(|commit| commit.relationships.iter().cloned())
+            .collect::<Vec<_>>()
+    }).unwrap_or_default();
+    graph::apply_squash_enrichment(&mut snapshot, &latest_relationships);
+}
+```
 
 - [ ] **Step 4: Run the tests to confirm they pass.** Run `cargo test`, then `cargo build`.
 
@@ -2062,17 +2182,17 @@ for relationship in commit.relationships.iter()
     .filter(|r| r.kind == RelationshipKind::SquashMerge && r.source_oid == commit.oid)
 {
     let (label, detail) = match relationship.matching {
-        RelationshipMatch::Exact => ("Squash-merged Into", relationship.destination_ref.clone()),
+        RelationshipMatch::Exact => ("Squash-merged Into", relationship.destination_refs.join(", ")),
         RelationshipMatch::Fuzzy { similarity_percent } => (
             "Possibly Squash-merged Into",
-            format!("{}, {similarity_percent}% similarity", relationship.destination_ref),
+            format!("{}, {similarity_percent}% similarity", relationship.destination_refs.join(", ")),
         ),
     };
     fields.push(InfoField { label, value: format!("{} ({detail})", short_oid(&relationship.destination_oid)) });
 }
 ```
 
-   Graph row glyphs stay as they are. Source and destination colors are task #054.
+   Graph row glyphs stay as they are. Add a source-details fixture with `destination_refs == ["develop", "main"]` and assert both names render once in sorted order. Source and destination colors are task #054 (depends on #065); connectors are #055 (depends on #065 and #054, already fixed).
 
 - [ ] **Step 4: Run the tests to confirm they pass.** Run `cargo test`, then `cargo build`.
 
@@ -2092,12 +2212,12 @@ for relationship in commit.relationships.iter()
 
 - [ ] **Step 2: Document.**
   - In the `CLAUDE.md` Git backend list, add `lineage`.
-  - In Data Flow step 1, add: "The Graph loader hydrates stored squash and cherry-pick relationships from the durable lineage store (`git::lineage`, under the data directory, never pruned or cleared by `R`) before publishing; enrichment upserts new relationships and only ever adds to them."
+  - In Data Flow step 1, add: "Graph loader and updater workers hydrate stored squash and cherry-pick relationships for the resolved base from the durable lineage store (`git::lineage`, under the data directory, never pruned or cleared by `R`) before publishing; enrichment upserts new relationships and only ever adds to them."
 
 - [ ] **Step 3: Measure on this repository.** Record the results in the commit body.
-  1. Run `cargo build`. List `~/Library/Application Support/git-branch-manager/` and delete only this repo's `git-bm-lineage-*.sqlite3`, plus its `-wal`/`-shm` files.
-  2. Run `cargo run`, open Graph, and note the time until markers appear. This is the cold case.
-  3. Quit and run `cargo run` again. Markers should appear with the structural snapshot. This is the warm case.
+  1. Run `cargo build`. Create one new temporary benchmark directory with separate `data` and `cache` subdirectories. Set explicit `GBM_DATA_DIR=<temporary>/data` and `GBM_CACHE_DIR=<temporary>/cache` for both runs, plus `GBM_DEBUG=<temporary>/cold.log` or `<temporary>/warm.log` to capture separate logs outside those stores. Do not delete or modify the user's real durable lineage files.
+  2. Run `cargo run` with those isolated roots, open Graph, and note the time until markers appear. The initially empty roots make this the cold case.
+  3. Quit and run `cargo run` again with the same isolated roots. Markers should appear with the structural snapshot. This is the warm case.
   4. Record `time.busy` for the four spans in both runs from the debug log.
   5. State honestly that warm markers are immediate only for *stored* relationships.
 
@@ -2119,7 +2239,7 @@ Cut this from `main` after slice A merges.
 - Modify: `src/git/cache.rs` (the `fuzzy_pair` table and on-demand methods)
 - Modify: `src/git/graph.rs` (fuzzy loop)
 - Modify: `src/git/fuzzy_match.rs`: add `pub const FUZZY_SCORING_VERSION: u32 = 1;` with the doc line "bump whenever `score`, `classify`, or the thresholds change"
-- Test: `src/git/cache.rs`, `tests/integration.rs`
+- Test: `src/git/cache.rs`, `src/git/graph.rs`, `tests/integration.rs`
 
 **Interfaces:**
 - Consumes: A1 `SourceTip`.
@@ -2127,19 +2247,20 @@ Cut this from `main` after slice A merges.
 
 - [ ] **Step 1: Write the failing tests.**
   - **`cache.rs`, round trip:** store and look up a set that includes `None` (scored, no match).
-  - **`cache.rs`, missing table:** looking up keys against a database without the table returns an empty map, using the same fixture as P1's `commit_patch_ids_tolerate_cache_written_before_table`.
-  - **Integration, `fuzzy_pair_cache_skips_rescoring_and_preserves_result`:**
-    1. Run `load_graph_with_squash_annotations` twice on the scenario-20 fuzzy fixture.
+  - **`cache.rs`, missing table:** define a fixture here independently of P: create a temporary SQLite file with only `CREATE TABLE branch_cache (base_branch TEXT, branch_name TEXT, merge_status TEXT, commit_hash TEXT);`, close the connection, and use `BranchCache::load_from_path` on it. Looking up fuzzy keys returns an empty map and creates no table. P need not exist or have merged.
+  - **Graph regression, `fuzzy_pair_cache_skips_rescoring_and_preserves_result`:**
+    1. Use the scenario-20 fuzzy fixture plus an unrelated textual source/base pair that classifies to `None`. Load the graph and run the squash detector twice with the same temporary cache root through a local test helper accepting an injected scoring closure.
     2. After the first run, open the cache file with `rusqlite::Connection::open` (find it with `std::fs::read_dir(tmpdir.cache_root())`).
-    3. Assert `fuzzy_pair` has one row per (base commit, diverged tip) pair.
-    4. Assert the second run yields the same `fuzzy_squash_match()` and sources.
+    3. Assert the first scoring closure was called on misses, and `fuzzy_pair` has one row per eligible (base commit, diverged tip) pair, including a `NULL` percent. Exact pairs are excluded, consistently with A.
+    4. Reset the local count for the second run and assert **zero score calls**, including for the cached `None` pair; also assert identical relationship records, `fuzzy_squash_match()` and sources. Result equality and row counts alone are insufficient proof that scoring was skipped.
 
 - [ ] **Step 2: Run the tests to confirm they fail.** Run `cargo test -- fuzzy_pair`. Expected: compile errors.
 
 - [ ] **Step 3: Implement.**
   - Add `CREATE TABLE IF NOT EXISTS fuzzy_pair (key TEXT PRIMARY KEY, percent INTEGER)` to `ensure_schema`.
   - Write the two methods with the same structure as P1's `lookup_commit_patch_ids` and `store_commit_patch_ids`: open their own connection, chunk by 400, and treat a missing table as misses. If P has not merged yet, write them out in full; this slice does not depend on P.
-  - In the fuzzy loop, build all pair keys, call `lookup_fuzzy_pairs` once, use stored values for hits, score misses, and call `store_fuzzy_pairs` once at the end.
+  - In the fuzzy loop, build all eligible pair keys after A's exact-pair suppression, call `lookup_fuzzy_pairs` once, use stored values for hits (`Some(&None)` means scored/no match), score only absent keys, and call `store_fuzzy_pairs` once at the end.
+  - Factor a private `compute_possible_squash_updates_with_scorer` helper taking `&mut impl FnMut(&[u8], &[u8]) -> Option<u8>` for the score/classify result while retaining A's existing detector arguments and `Vec<GraphEnrichmentUpdate>` result. The production wrapper passes the existing scorer; the local `graph.rs` test helper runs `load_graph`, this detector and A's `apply_squash_enrichment` with a counting closure and temporary cache. The counter lives in that test invocation and never in global mutable state. If P has already merged, follow its detector rename and relationship-vector result, but D must compile against A alone without P's helper names, cherry detector or cache methods. Keep the integration result assertion as an additional end-to-end check.
 
 - [ ] **Step 4: Run the tests to confirm they pass.** Run `cargo test`, then `cargo build`.
 
@@ -2154,22 +2275,22 @@ The original #053 requirements (R1–R7) and the added R8 are now owned by the l
 | Item | Covered by |
 | --- | --- |
 | R1 document the problem | "Problem statement"; L5 measurement |
-| R2 durable records with five fields, OIDs as text | L1 schema; A1 and P1 producers |
+| R2 durable records with five scalar fields, OIDs as text, both ref unions | L1 schema and two ref child tables; A1 and P1 producers |
 | R3 uniqueness key, indexes, outside the 60-day cleanup | L1 schema; `transient_cache_prune_and_clear_leave_lineage` |
 | R4 persist exact and fuzzy squash and exact cherry-pick, keep the score | A1 pairs; P1 pairs; L2 write-back; L1 `repeated_upsert…` |
-| R5 hydrate early; upsert without duplicates; refresh ref snapshots | L3 hydration; L1 upsert and `shared_tip…`; P2 `merge_relationship` |
+| R5 hydrate before loader/updater publication; upsert without duplicates; preserve ref snapshots and resolved-base membership | L3 worker adapters, `same_pair_hydrates_under_both_bases`, `default_base_filters_mixed_lineage`, `updater_refill_hydrates_before_publication`; L1 transactional ref unions and `stale_and_concurrent_upserts…`; P2 `merge_relationship` |
 | R6 annotate destination and displayed source; survive deleted refs and pruned objects | P2 `apply_attaches…`; L3 `hydrated_lineage_survives…`; P3 and L4 details |
 | R7 tests (migration replaced per user) | L1–L3 tests; P1 `commit_patch_ids_tolerate…`; `locked_lineage…` |
 | R8 presentation boundary and timings | A2; L4 `hydrated_fuzzy_lineage_does_not_change_branch_status`; L5 |
-| K1 GraphSnapshot and existing channels only, workers only | Global Constraints; L2 and L3 touch only the loader, enrichment, apply, and options; `:4983` gets `None` |
+| K1 GraphSnapshot and existing channels only, workers only | Global Constraints; L2 root pass-through; L3 loader and removable updater publication adapters; App carry-forward performs only in-memory merging; `:4983` gets `Some(lineage_root)` |
 | K2 complete records, keyed by type and OIDs | L1 |
-| K3 identity gaps; bounded, cancellable discovery; no invented or partial tuples | A1 Step 4; X1; P1 Steps 3–5 and `cherry_scan_bound…` |
-| K4 hydrate before publishing; both endpoints; missing refs and objects | L3 |
+| K3 identity gaps; bounded, cancellable discovery; no invented or partial tuples | A1 exact-pair suppression and detector test; X1 mid-worker supersession; P1 per-yield bounds/cancellation (including merges), retained buckets; P2 `cherry_pick_repicks_keep_all_destinations` |
+| K4 hydrate before publishing; both endpoints; missing refs and objects, including newly refilled endpoints | L3 loader/updater tests; P2 endpoint merge; L4 multi-destination-ref details |
 | K5 enrichment never erases; stale publication rejected separately from upsert | P2 `enrichment_never_erases…`; L2 `stale_enrichment_persists_but_does_not_publish` |
 | K6 separate store; prune- and R-safe; common-dir identity; explicit test root | L1; L2 `TestDir::lineage_root`, `GBM_DATA_DIR` |
 | K7 exact vs fuzzy presentation; no deletion authority | A2; L4 |
-| K8 listed tests, including warm hydration while detection is blocked | X1–L4; `hydrated_markers_publish_while_enrichment_is_cancelled` |
-| K9 honest performance boundary | "Performance boundary"; L5 Step 3 |
+| K8 listed tests, including warm hydration while detection is blocked | X1–L4; `hydrated_markers_publish_while_enrichment_is_cancelled`; D1 local scoring-call counts and independent missing-table fixture |
+| K9 honest performance boundary | "Performance boundary"; L5 isolated-root measurements; B text-hunk scorer parity and nonblocking binary diagnostics |
 
 ## Open decisions (confirm before cutting branches)
 
