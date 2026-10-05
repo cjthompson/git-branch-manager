@@ -5,6 +5,7 @@
 ### Graph Relationship Lineage Implementation Plan (task #053) (P004)
 - Cancel superseded Graph enrichment workers (#graph, #enrichment, #concurrency)
 - Record Graph git2 patch parity diagnostics; retain CLI after rename mismatch (#graph, #git2, #perf)
+- Pair squash sources in Graph relationships and show fuzzy sources (#graph, #squash, #fuzzy, #ui)
 
 ## 2026-10-02
 
