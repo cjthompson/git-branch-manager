@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-05
+
+### Graph Relationship Lineage Implementation Plan (task #053) (P004)
+- Pair cherry-picks with destinations via a bounded git2 patch-ID scan (#graph, #cherry-pick, #git2, #cache)
+
 ## 2026-10-04
 
 ### Graph Relationship Lineage Implementation Plan (task #053) (P004)
