@@ -1464,6 +1464,15 @@ fn load_patch_ids(
         return Some(results);
     }
 
+    // This span measures only uncached patch work: from dispatch through all
+    // workers finishing. Cache-only calls return above without emitting it.
+    let span = tracing::info_span!(
+        "graph_squash_patches",
+        jobs = results.len() + misses.len(),
+        misses = misses.len()
+    );
+    let _entered = span.enter();
+
     let worker_count = misses.len().min(GRAPH_PATCH_WORKER_COUNT);
     let queue = Arc::new(Mutex::new(
         misses.into_iter().collect::<std::collections::VecDeque<_>>(),
@@ -1601,6 +1610,50 @@ fn compute_patch(repo_path: &Path, old_oid: &str, new_oid: &str) -> (Option<Stri
     })();
 
     (patch_id, diff_text)
+}
+
+/// Compute a stable patch ID and the corresponding diff bytes with libgit2.
+///
+/// This helper is public only so integration tests can compare its output
+/// with Git's CLI implementation.
+#[doc(hidden)]
+pub fn git2_diff_patch(
+    repo: &git2::Repository,
+    old: git2::Oid,
+    new: git2::Oid,
+) -> (Option<String>, Option<Vec<u8>>) {
+    let (Ok(old_tree), Ok(new_tree)) = (
+        repo.find_commit(old).and_then(|commit| commit.tree()),
+        repo.find_commit(new).and_then(|commit| commit.tree()),
+    ) else {
+        return (None, None);
+    };
+
+    let mut options = git2::DiffOptions::new();
+    options.show_binary(true).id_abbrev(40);
+    let Ok(mut diff) = repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), Some(&mut options))
+    else {
+        return (None, None);
+    };
+    let mut find_options = git2::DiffFindOptions::new();
+    find_options.renames(true);
+    if diff.find_similar(Some(&mut find_options)).is_err() || diff.deltas().len() == 0 {
+        return (None, None);
+    }
+
+    let mut text = Vec::new();
+    let printed = diff.print(git2::DiffFormat::Patch, |_, _, line| {
+        if matches!(line.origin(), '+' | '-' | ' ') {
+            text.push(line.origin() as u8);
+        }
+        text.extend_from_slice(line.content());
+        true
+    });
+    if printed.is_err() || text.is_empty() {
+        return (None, None);
+    }
+
+    (diff.patchid(None).ok().map(|id| id.to_string()), Some(text))
 }
 
 fn gleisbau_settings(
