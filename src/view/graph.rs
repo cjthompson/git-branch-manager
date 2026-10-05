@@ -1,4 +1,4 @@
-use crate::git::graph::{GraphEnrichmentUpdate, GraphLoadError, GraphRefKind, GraphSnapshot};
+use crate::git::graph::{GraphLoadError, GraphRefKind, GraphRelationship, GraphSnapshot};
 
 /// The default number of commits shown by the Graph tab. Larger histories are
 /// opt-in so opening the tab remains responsive on large repositories.
@@ -199,7 +199,7 @@ impl GraphState {
     /// caller is expected to have already verified the enrichment belongs
     /// to the current reload generation; this method does not compare
     /// `snapshot.generation` against any App-side epoch.
-    pub fn apply_squash_enrichment(&mut self, updates: &[GraphEnrichmentUpdate]) -> bool {
+    pub fn apply_squash_enrichment(&mut self, updates: &[GraphRelationship]) -> bool {
         let Some(snapshot) = self.snapshot.as_mut() else {
             return false;
         };

@@ -202,7 +202,7 @@ fn render_graph_rows(
                 );
             }
         }
-        if !is_merge && commit.is_some_and(|commit| commit.is_cherry_picked_commit) {
+        if !is_merge && commit.is_some_and(|commit| commit.is_cherry_picked_commit()) {
             if let Some(marker_index) = graph_line
                 .graph
                 .chars()
@@ -221,7 +221,7 @@ fn render_graph_rows(
                 short_oid(&commit.oid),
                 selected_style(theme.squash_merged, selected, theme),
             ));
-            if !commit.is_possible_squash_merge() && !commit.is_cherry_picked_commit {
+            if !commit.is_possible_squash_merge() && !commit.is_cherry_picked_commit() {
                 if let Some(fuzzy) = commit.fuzzy_squash_match().as_ref() {
                     detail.push(Span::styled(
                         format!(" [fuzzy squash {}%]", fuzzy.similarity_percent),
@@ -1133,7 +1133,18 @@ mod tests {
                         source_refs: vec!["feature/exact".into()],
                     });
             }
-            commit.is_cherry_picked_commit = is_cherry_picked_commit;
+            if is_cherry_picked_commit {
+                commit
+                    .relationships
+                    .push(crate::git::graph::GraphRelationship {
+                        kind: crate::git::graph::RelationshipKind::CherryPick,
+                        matching: crate::git::graph::RelationshipMatch::Exact,
+                        source_oid: commit.oid.clone(),
+                        source_refs: vec!["feature/picked".into()],
+                        destination_oid: "4444444444444444444444444444444444444444".into(),
+                        destination_refs: vec!["main".into()],
+                    });
+            }
             let lines = render_commit_lines(commit, 100, 0);
             let row = lines
                 .iter()

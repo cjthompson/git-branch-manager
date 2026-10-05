@@ -323,7 +323,7 @@ fn graph_commit_fields(commit: &GraphCommit) -> Vec<InfoField> {
                 value: commit.possible_squash_merge_sources().join(", "),
             });
         }
-    } else if !commit.is_cherry_picked_commit {
+    } else if !commit.is_cherry_picked_commit() {
         if let Some(confidence) = commit.squash_match_confidence() {
             fields.push(InfoField {
                 label: "Possible Squash Merge (fuzzy)",
@@ -336,6 +336,17 @@ fn graph_commit_fields(commit: &GraphCommit) -> Vec<InfoField> {
                 });
             }
         }
+    }
+
+    for relationship in commit.cherry_pick_sources() {
+        fields.push(InfoField {
+            label: "Cherry-picked From",
+            value: format!(
+                "{} ({})",
+                short_oid(&relationship.source_oid),
+                relationship.source_refs.join(", ")
+            ),
+        });
     }
 
     fields
@@ -1008,7 +1019,7 @@ mod tests {
             branch: None,
             refs: vec![],
             relationships: vec![],
-            is_cherry_picked_commit: false,
+
             author_name: "Jane Doe".into(),
             author_email: "jane@example.com".into(),
             authored_at: Some(Utc::now() - Duration::hours(3)),
@@ -1050,7 +1061,7 @@ mod tests {
                 source_oid: "1111111111111111111111111111111111111111".into(),
                 source_refs: vec!["feature/auth".into(), "feature/login".into()],
             }],
-            is_cherry_picked_commit: false,
+
             author_name: String::new(),
             author_email: String::new(),
             authored_at: None,
@@ -1128,9 +1139,18 @@ mod tests {
                     if !is_possible_squash_merge {
                         pairs.retain(|r| r.matching != crate::git::graph::RelationshipMatch::Exact);
                     }
+                    if is_cherry_picked_commit {
+                        pairs.push(crate::git::graph::GraphRelationship {
+                            kind: crate::git::graph::RelationshipKind::CherryPick,
+                            matching: crate::git::graph::RelationshipMatch::Exact,
+                            source_oid: String::new(),
+                            source_refs: vec!["feature/picked".into()],
+                            destination_oid: "4444444444444444444444444444444444444444".into(),
+                            destination_refs: vec!["main".into()],
+                        });
+                    }
                     pairs
                 },
-                is_cherry_picked_commit,
                 ..GraphCommit::default()
             };
             let fields = graph_commit_fields(&commit);
@@ -1155,7 +1175,7 @@ mod tests {
             branch: None,
             refs: vec![],
             relationships: vec![],
-            is_cherry_picked_commit: false,
+
             author_name: "".into(),
             author_email: "".into(),
             authored_at: Some(Utc::now()),
@@ -1177,7 +1197,7 @@ mod tests {
             branch: None,
             refs: vec![],
             relationships: vec![],
-            is_cherry_picked_commit: false,
+
             author_name: "X".into(),
             author_email: "x@y".into(),
             authored_at: Some(Utc.timestamp_opt(0, 0).unwrap()),
@@ -1199,7 +1219,7 @@ mod tests {
             branch: None,
             refs: vec![],
             relationships: vec![],
-            is_cherry_picked_commit: false,
+
             author_name: "X".into(),
             author_email: "x@y".into(),
             authored_at: None,
@@ -1279,5 +1299,25 @@ mod tests {
             .find(|f| f.label == "Confidence")
             .expect("Confidence field should be present");
         assert_eq!(confidence_field.value, "Merge-tree confirmed");
+    }
+    #[test]
+    fn cherry_pick_provenance_uses_captured_missing_source() {
+        let commit = GraphCommit {
+            oid: "ddddddd0000000000000000000000000000000000".into(),
+            relationships: vec![crate::git::graph::GraphRelationship {
+                kind: crate::git::graph::RelationshipKind::CherryPick,
+                matching: crate::git::graph::RelationshipMatch::Exact,
+                destination_oid: "ddddddd0000000000000000000000000000000000".into(),
+                destination_refs: vec!["main".into()],
+                source_oid: "abcdef1234567890000000000000000000000000".into(),
+                source_refs: vec!["feature/gone".into()],
+            }],
+            ..Default::default()
+        };
+        let fields = graph_commit_fields(&commit);
+        assert!(fields
+            .iter()
+            .any(|f| f.label == "Cherry-picked From" && f.value == "abcdef1 (feature/gone)"));
+        assert!(!commit.is_cherry_picked_commit());
     }
 }

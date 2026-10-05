@@ -197,13 +197,13 @@ pub struct MergeBaseData {
 
 /// Cached result of the `git diff` + `git patch-id --stable` pipeline for a
 /// single (old_oid, new_oid) pair, used by Graph's squash-merge patch
-/// matching (`git::graph::compute_possible_squash_updates`). Keyed by OID
+/// matching (`git::graph::compute_relationships`). Keyed by OID
 /// pair plus a diff-option/algorithm version rather than by branch/base
 /// tip: a diff between two fixed, immutable Git objects never changes, so
 /// the OID pair alone is a sufficient and permanently-valid cache key.
 /// Base tip, branch tip, merge base, and the Graph display-bounds window
 /// only affect *which* OID pairs get queried (via job construction in
-/// `compute_possible_squash_updates`) — never what a given pair's diff
+/// `compute_relationships`) — never what a given pair's diff
 /// value is — so those inputs don't need to appear in this key. Bumping
 /// `graph::GRAPH_DIFF_VERSION` invalidates every entry at once if the
 /// `git diff`/`patch-id` invocation changes.
@@ -294,6 +294,64 @@ impl BranchCache {
             hits: Cell::new(0),
             misses: Cell::new(0),
         }
+    }
+
+    /// Query commit identities on demand. SQL NULL is a cached empty patch.
+    pub fn lookup_commit_patch_ids(&self, keys: &[String]) -> HashMap<String, Option<String>> {
+        let mut found = HashMap::new();
+        if keys.is_empty() || !self.path.exists() {
+            return found;
+        }
+        let Ok(conn) = open_conn(&self.path) else {
+            return found;
+        };
+        for chunk in keys.chunks(400) {
+            let sql = format!(
+                "SELECT key, patch_id FROM commit_patch_id WHERE key IN ({})",
+                vec!["?"; chunk.len()].join(",")
+            );
+            // An older transient cache has no table and therefore only misses.
+            let Ok(mut statement) = conn.prepare(&sql) else {
+                return found;
+            };
+            let Ok(rows) = statement.query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            }) else {
+                return found;
+            };
+            found.extend(rows.flatten());
+        }
+        found
+    }
+
+    /// Store newly computed identities without loading the table into memory.
+    pub fn store_commit_patch_ids(&self, entries: &[(String, Option<String>)]) {
+        if entries.is_empty() {
+            return;
+        }
+        if let Some(parent) = self.path.parent() {
+            if fs::create_dir_all(parent).is_err() {
+                return;
+            }
+        }
+        let Ok(mut conn) = open_conn(&self.path) else {
+            return;
+        };
+        if ensure_schema(&conn).is_err() {
+            return;
+        }
+        let Ok(tx) = conn.transaction() else {
+            return;
+        };
+        {
+            let Ok(mut statement) = tx.prepare("INSERT INTO commit_patch_id (key, patch_id) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET patch_id = excluded.patch_id") else { return; };
+            for (key, patch_id) in entries {
+                if statement.execute(params![key, patch_id]).is_err() {
+                    return;
+                }
+            }
+        }
+        let _ = tx.commit();
     }
 
     #[instrument(skip(self), fields(entry_count = self.entries.len()))]
@@ -768,6 +826,10 @@ fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             key        TEXT PRIMARY KEY,
             patch_id   TEXT,
             diff_text  BLOB
+        );
+        CREATE TABLE IF NOT EXISTS commit_patch_id (
+            key TEXT PRIMARY KEY,
+            patch_id TEXT
         );
         CREATE TABLE IF NOT EXISTS meta (
             key   TEXT PRIMARY KEY,
@@ -1544,5 +1606,57 @@ mod tests {
                 "thread {thread_index} entry missing after concurrent writes"
             );
         }
+    }
+
+    #[test]
+    fn commit_patch_ids_round_trip_including_none() {
+        let (_dir, cache) = temp_cache();
+        cache.store_commit_patch_ids(&[("a:v1".into(), Some("p".into())), ("b:v1".into(), None)]);
+        let found = cache.lookup_commit_patch_ids(&["a:v1".into(), "b:v1".into(), "c:v1".into()]);
+        assert_eq!(found.get("a:v1"), Some(&Some("p".to_owned())));
+        assert_eq!(found.get("b:v1"), Some(&None));
+        assert!(!found.contains_key("c:v1"));
+    }
+
+    #[test]
+    fn commit_patch_ids_old_table_absent_root_and_chunking() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/cache.sqlite3");
+        let cache = BranchCache::load_from_path(path.clone());
+        assert!(cache.lookup_commit_patch_ids(&[]).is_empty());
+        assert!(cache
+            .lookup_commit_patch_ids(&["missing".into()])
+            .is_empty());
+        assert!(!path.exists());
+        let entries = (0..805)
+            .map(|i| (format!("{i}:v1"), (i % 2 == 0).then(|| format!("patch{i}"))))
+            .collect::<Vec<_>>();
+        cache.store_commit_patch_ids(&entries);
+        let keys = entries
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cache.lookup_commit_patch_ids(&keys),
+            entries.into_iter().collect()
+        );
+        let old = dir.path().join("old.sqlite3");
+        let conn = Connection::open(&old).unwrap();
+        conn.execute_batch("CREATE TABLE branch_cache (base_branch TEXT, branch_name TEXT, merge_status TEXT, commit_hash TEXT);").unwrap();
+        drop(conn);
+        let old_cache = BranchCache::load_from_path(old.clone());
+        assert!(old_cache
+            .lookup_commit_patch_ids(&["a:v1".into()])
+            .is_empty());
+        let conn = Connection::open(old).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name='commit_patch_id'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
     }
 }

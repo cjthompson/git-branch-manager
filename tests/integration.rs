@@ -64,6 +64,14 @@ impl TestDir {
         options
     }
 
+    fn graph_options_for(&self, base: &str) -> graph::GraphLoadOptions {
+        graph::GraphLoadOptions {
+            base_branch: Some(base.to_owned()),
+            max_count: 50,
+            ..self.graph_options()
+        }
+    }
+
     fn preserve_tempdirs(&mut self) -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
         let repo = self.inner.take().map(|dir| dir.keep());
         let cache = self.cache_root.take().map(|dir| dir.keep());
@@ -1171,7 +1179,11 @@ fn exact_destination_keeps_distinct_fuzzy_source() {
         .find(|c| c.oid == destination)
         .unwrap();
     assert_eq!(
-        landing.relationships.len(),
+        landing
+            .relationships
+            .iter()
+            .filter(|r| r.kind == graph::RelationshipKind::SquashMerge)
+            .count(),
         3,
         "every distinct paired source must survive"
     );
@@ -1199,7 +1211,7 @@ fn exact_destination_keeps_distinct_fuzzy_source() {
         let pairs: Vec<_> = landing
             .relationships
             .iter()
-            .filter(|r| r.source_oid == *source)
+            .filter(|r| r.kind == graph::RelationshipKind::SquashMerge && r.source_oid == *source)
             .collect();
         assert_eq!(pairs.len(), 1, "one record per exact or fuzzy pair");
         let relationship = pairs[0];
@@ -1240,7 +1252,14 @@ fn fuzzy_destination_keeps_all_sources_and_selects_strongest_for_display() {
         .iter()
         .find(|c| c.oid == destination)
         .unwrap();
-    assert_eq!(landing.relationships.len(), 2);
+    assert_eq!(
+        landing
+            .relationships
+            .iter()
+            .filter(|r| r.kind == graph::RelationshipKind::SquashMerge)
+            .count(),
+        2
+    );
     for (source, percent, name) in [(&high, 90, "feature/high"), (&low, 81, "feature/low")] {
         let relation = landing
             .relationships
@@ -1310,7 +1329,14 @@ fn test_graph_marks_only_base_commit_with_exact_squash_patch() {
         .find(|commit| commit.oid == exact_base_oid)
         .expect("exact base commit should be displayed");
     assert!(exact_base.is_possible_squash_merge());
-    assert_eq!(exact_base.relationships.len(), 1);
+    assert_eq!(
+        exact_base
+            .relationships
+            .iter()
+            .filter(|r| r.kind == graph::RelationshipKind::SquashMerge)
+            .count(),
+        1
+    );
     let relationship = &exact_base.relationships[0];
     assert_eq!(relationship.destination_oid, exact_base_oid);
     assert_eq!(relationship.destination_refs, ["main"]);
@@ -1382,7 +1408,14 @@ fn test_graph_preserves_every_base_oid_for_duplicate_patch_ids() {
             commit.is_possible_squash_merge(),
             "every base OID sharing the exact patch ID must be annotated"
         );
-        assert_eq!(commit.relationships.len(), 1);
+        assert_eq!(
+            commit
+                .relationships
+                .iter()
+                .filter(|r| r.kind == graph::RelationshipKind::SquashMerge)
+                .count(),
+            1
+        );
         assert_eq!(commit.relationships[0].destination_oid, *oid);
         assert_eq!(commit.relationships[0].source_oid, source_oid);
         assert_eq!(commit.relationships[0].destination_refs, ["main"]);
@@ -5214,7 +5247,14 @@ fn test_squash_landing_lists_all_matching_local_branch_names() {
         .find(|commit| commit.oid == squash_oid)
         .expect("squash landing should be displayed");
 
-    assert_eq!(landing.relationships.len(), 1);
+    assert_eq!(
+        landing
+            .relationships
+            .iter()
+            .filter(|r| r.kind == graph::RelationshipKind::SquashMerge)
+            .count(),
+        1
+    );
     assert_eq!(landing.relationships[0].destination_oid, squash_oid);
     assert_eq!(landing.relationships[0].source_oid, source_oid);
     assert_eq!(
@@ -7470,11 +7510,12 @@ fn test_squash_scenario_21b_completed_enrichment_updates_squash_marker() {
 
     // Run enrichment synchronously, as `spawn_possible_squash_enrichment`
     // would do on its background thread.
-    let updates = graph::compute_possible_squash_updates(
+    let updates = graph::compute_relationships(
         dir,
         &snapshot,
         Some("main"),
         &cache::CacheRoot::at(tmpdir.cache_root().to_path_buf()),
+        &graph::EnrichmentCancel::never(),
     );
     graph::apply_squash_enrichment(&mut snapshot, &updates);
 
@@ -7515,26 +7556,14 @@ fn test_squash_scenario_21c_stale_enrichment_does_not_overwrite_newer_snapshot()
     snapshot.generation = Some(2);
     let stale = graph::GraphEnrichmentMsg {
         generation: 1, // stale: belongs to an earlier reload
-        updates: snapshot
-            .commits
-            .iter()
-            .map(|c| graph::GraphEnrichmentUpdate {
-                oid: c.oid.clone(),
-                relationships: if c.oid == destination {
-                    vec![graph::GraphRelationship {
-                        kind: graph::RelationshipKind::SquashMerge,
-                        matching: graph::RelationshipMatch::Exact,
-                        destination_oid: destination.clone(),
-                        destination_refs: vec!["main".into()],
-                        source_oid: exact_source.clone(),
-                        source_refs: vec!["feature/exact".into(), "feature/exact-alias".into()],
-                    }]
-                } else {
-                    Vec::new()
-                },
-                is_cherry_picked_commit: false,
-            })
-            .collect(),
+        updates: vec![graph::GraphRelationship {
+            kind: graph::RelationshipKind::SquashMerge,
+            matching: graph::RelationshipMatch::Exact,
+            destination_oid: destination.clone(),
+            destination_refs: vec!["main".into()],
+            source_oid: exact_source.clone(),
+            source_refs: vec!["feature/exact".into(), "feature/exact-alias".into()],
+        }],
     };
     // Re-load a clean snapshot for the "current" generation so we can
     // assert no markers leaked from the stale message.
@@ -8542,7 +8571,7 @@ fn test_remote_branch_inherits_squash_merge_status_from_local() {
 // ---------------------------------------------------------------------------
 // Graph patch cache tests
 //
-// These exercise `git::graph::compute_possible_squash_updates`'s internal
+// These exercise `git::graph::compute_relationships`'s internal
 // cache (the `graph_patch` SQLite table on `BranchCache`). They prove the
 // cache path is consulted by injecting fabricated cached values, that the
 // cache is populated after a normal load, that different (old_oid, new_oid)
@@ -9020,25 +9049,15 @@ fn test_graph_cherry_pick_enrichment_marks_branch_commits() {
     run_git(dir, &["commit", "-m", "g2"]);
     run_git(dir, &["checkout", "main"]);
 
-    // Cherry-pick each branch commit onto main individually. Use
-    // `--allow-empty` so the second commit (which adds a different file but
-    // patches the same tree when the previous file is already in main) does
-    // not error as an "empty" cherry-pick.
     let log = git_output(
         dir,
-        &["log", "--reverse", "--format=%H", "feature/graph-cherry"],
+        &["rev-list", "--reverse", "main..feature/graph-cherry"],
     );
     let commits: Vec<&str> = log.lines().collect();
+    assert_eq!(commits.len(), 2);
+    advance_main(dir, "old-cherry-fixture");
     for hash in &commits {
-        run_git(
-            dir,
-            &[
-                "cherry-pick",
-                "--allow-empty",
-                "--keep-redundant-commits",
-                hash,
-            ],
-        );
+        run_git(dir, &["cherry-pick", hash]);
     }
 
     let options = graph::GraphLoadOptions {
@@ -9051,23 +9070,17 @@ fn test_graph_cherry_pick_enrichment_marks_branch_commits() {
     let snapshot =
         graph::load_graph_with_squash_annotations(dir, options).expect("graph load failed");
 
-    // Exclude the initial commit (which is also reachable from main) — only
-    // assert that the branch's unique commits are marked cherry-picked.
-    let branch_commit_oids: std::collections::HashSet<String> = commits
+    let expected = commits
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual = snapshot
+        .commits
         .iter()
-        .skip(1)
-        .map(|h| h.trim().to_string())
-        .collect();
-
-    for commit in &snapshot.commits {
-        if branch_commit_oids.contains(&commit.oid) {
-            assert!(
-                commit.is_cherry_picked_commit,
-                "commit {} on feature/graph-cherry should be marked as cherry-picked",
-                commit.oid
-            );
-        }
-    }
+        .filter(|c| c.is_cherry_picked_commit())
+        .map(|c| c.oid.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual, expected);
 }
 
 /// `main` and `origin/main` pointing at the same commit must expose BOTH refs
@@ -9335,7 +9348,7 @@ fn test_graph_surgical_update_after_delete_local_action() {
 
 #[test]
 fn incremental_updates_preserve_captured_squash_relationships() {
-    let (tmpdir, destination, _exact, _high, _low) = paired_squash_fixture();
+    let (tmpdir, destination, exact, _high, _low) = paired_squash_fixture();
     let dir = tmpdir.path();
     let options = graph::GraphLoadOptions {
         base_branch: Some("main".into()),
@@ -9349,7 +9362,29 @@ fn incremental_updates_preserve_captured_squash_relationships() {
         .unwrap()
         .relationships
         .clone();
-    assert_eq!(expected.len(), 3);
+    assert_eq!(expected.len(), 4);
+    assert_eq!(
+        expected
+            .iter()
+            .filter(|relationship| relationship.kind == graph::RelationshipKind::SquashMerge)
+            .count(),
+        3
+    );
+    assert_eq!(
+        expected
+            .iter()
+            .filter(|relationship| relationship.kind == graph::RelationshipKind::CherryPick)
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![graph::GraphRelationship {
+            kind: graph::RelationshipKind::CherryPick,
+            matching: graph::RelationshipMatch::Exact,
+            destination_oid: destination.clone(),
+            destination_refs: vec!["main".into()],
+            source_oid: exact,
+            source_refs: vec!["feature/exact".into(), "feature/exact-alias".into()],
+        }]
+    );
     let before = graph::GraphRepositoryState::capture(dir).unwrap();
     run_git(dir, &["branch", "-m", "feature/high", "feature/renamed"]);
     let renamed = graph::GraphRepositoryState::capture(dir).unwrap();
@@ -9768,4 +9803,209 @@ fn graph_squash_patch_cold_benchmark() {
         },
     )
     .expect("benchmark graph load");
+}
+
+fn rev(dir: &std::path::Path, spec: &str) -> String {
+    git_output(dir, &["rev-parse", spec]).trim().to_owned()
+}
+
+fn advance_main(dir: &std::path::Path, label: &str) {
+    std::fs::write(dir.join(format!("{label}.base")), label).unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-q", "-m", &format!("base {label}")]);
+}
+
+#[test]
+fn cherry_pick_sources_match_git_cherry() {
+    for fixture in ["text", "rename", "rename-content", "mode"] {
+        let (tmpdir, _repo) = setup_test_repo();
+        let dir = tmpdir.path();
+        std::fs::write(dir.join("rename-me.txt"), "contents\n".repeat(20)).unwrap();
+        std::fs::write(dir.join("script.sh"), "echo hi\n").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-q", "-m", "seed"]);
+        run_git(dir, &["checkout", "-q", "-b", "feature/parity"]);
+        match fixture {
+            "text" => {
+                std::fs::write(dir.join("text.txt"), "picked text\n").unwrap();
+                run_git(dir, &["add", "."]);
+            }
+            "rename" | "rename-content" => {
+                run_git(dir, &["mv", "rename-me.txt", "renamed.txt"]);
+                if fixture == "rename-content" {
+                    std::fs::write(
+                        dir.join("renamed.txt"),
+                        format!("{}changed\n", "contents\n".repeat(20)),
+                    )
+                    .unwrap();
+                    run_git(dir, &["add", "."]);
+                }
+            }
+            "mode" => run_git(dir, &["update-index", "--chmod=+x", "script.sh"]),
+            _ => unreachable!(),
+        }
+        run_git(dir, &["commit", "-q", "-m", fixture]);
+        let source = rev(dir, "HEAD");
+        std::fs::write(dir.join("unpicked.txt"), "not landed\n").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-q", "-m", "unpicked"]);
+        let unpicked = rev(dir, "HEAD");
+        run_git(dir, &["checkout", "-q", "main"]);
+        advance_main(dir, fixture);
+        run_git(dir, &["cherry-pick", &source]);
+        assert_ne!(source, rev(dir, "HEAD"));
+        let expected = git_output(dir, &["cherry", "main", "feature/parity"])
+            .lines()
+            .filter_map(|line| line.strip_prefix("- "))
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            expected,
+            [source.clone()].into_iter().collect(),
+            "meaningful {fixture} oracle"
+        );
+        assert!(!expected.contains(&unpicked));
+        let snapshot =
+            graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options_for("main"))
+                .unwrap();
+        assert!(snapshot.commits.iter().any(|c| c.oid == source));
+        let actual = snapshot
+            .commits
+            .iter()
+            .filter(|c| c.is_cherry_picked_commit())
+            .map(|c| c.oid.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual, expected, "source-set parity: {fixture}");
+    }
+}
+
+#[test]
+fn cherry_pick_repicks_keep_all_destinations() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["checkout", "-q", "-b", "feature/pick"]);
+    std::fs::write(dir.join("picked.txt"), "picked\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-q", "-m", "source"]);
+    let source = rev(dir, "HEAD");
+    run_git(dir, &["branch", "feature/alias"]);
+    run_git(dir, &["checkout", "-q", "main"]);
+    advance_main(dir, "repick");
+    run_git(dir, &["cherry-pick", &source]);
+    let first = rev(dir, "HEAD");
+    run_git(dir, &["revert", "--no-edit", &first]);
+    run_git(dir, &["cherry-pick", &source]);
+    let second = rev(dir, "HEAD");
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options_for("main")).unwrap();
+    let commit = snapshot.commits.iter().find(|c| c.oid == source).unwrap();
+    assert!(commit.is_cherry_picked_commit());
+    let pairs = commit.cherry_pick_destinations();
+    assert_eq!(pairs.len(), 2);
+    assert_eq!(
+        pairs
+            .iter()
+            .map(|r| r.destination_oid.clone())
+            .collect::<std::collections::BTreeSet<_>>(),
+        [first.clone(), second.clone()].into_iter().collect()
+    );
+    for dest in [&first, &second] {
+        let landing = snapshot.commits.iter().find(|c| c.oid == *dest).unwrap();
+        let incoming = landing.cherry_pick_sources();
+        assert_eq!(incoming.len(), 1);
+        assert_eq!(incoming[0].source_oid, source);
+        assert_eq!(incoming[0].source_refs, ["feature/alias", "feature/pick"]);
+        assert_eq!(incoming[0].destination_refs, ["main"]);
+        assert!(landing.is_possible_squash_merge());
+        assert!(!landing.is_cherry_picked_commit());
+    }
+}
+
+#[test]
+#[ignore = "nonblocking binary diagnostic"]
+fn cherry_pick_binary_identity_and_unrelated_binary_diagnostic() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["checkout", "-q", "-b", "feature/binary"]);
+    std::fs::write(dir.join("picked.bin"), b"\0picked binary\xff").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-q", "-m", "binary source"]);
+    let source = rev(dir, "HEAD");
+    run_git(dir, &["checkout", "-q", "main"]);
+    advance_main(dir, "binary");
+    std::fs::write(dir.join("unrelated.bin"), b"\0unrelated binary\xfe").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-q", "-m", "unrelated binary"]);
+    let unrelated = rev(dir, "HEAD");
+    run_git(dir, &["cherry-pick", &source]);
+    let destination = rev(dir, "HEAD");
+    let patch = |oid: &str| {
+        let id = git2::Oid::from_str(oid).unwrap();
+        let parent = repo.find_commit(id).unwrap().parent_id(0).unwrap();
+        graph::git2_diff_patch(&repo, parent, id).0
+    };
+    let source_id = patch(&source);
+    let destination_id = patch(&destination);
+    let unrelated_id = patch(&unrelated);
+    let expected = git_output(dir, &["cherry", "main", "feature/binary"])
+        .lines()
+        .filter_map(|line| line.strip_prefix("- "))
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(expected, [source.clone()].into_iter().collect());
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options_for("main")).unwrap();
+    let actual = snapshot
+        .commits
+        .iter()
+        .filter(|c| c.is_cherry_picked_commit())
+        .map(|c| c.oid.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    eprintln!("binary diagnostic: source={source_id:?}, destination={destination_id:?}, unrelated={unrelated_id:?}, expected={expected:?}, actual={actual:?}");
+    assert_eq!(source_id, destination_id, "picked binary patch identity");
+    assert_ne!(source_id, unrelated_id, "unrelated binary must not collide");
+    assert_eq!(actual, expected, "binary source-set diagnostic");
+}
+
+#[test]
+fn same_commit_records_squash_and_cherry_pick() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["checkout", "-q", "-b", "feature/single"]);
+    std::fs::write(dir.join("single.txt"), "single\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-q", "-m", "single source"]);
+    let source = rev(dir, "HEAD");
+    run_git(dir, &["checkout", "-q", "main"]);
+    advance_main(dir, "single");
+    run_git(dir, &["merge", "-q", "--squash", "feature/single"]);
+    run_git(dir, &["commit", "-q", "-m", "single squash"]);
+    let destination = rev(dir, "HEAD");
+    assert_ne!(source, destination);
+    let snapshot =
+        graph::load_graph_with_squash_annotations(dir, tmpdir.graph_options_for("main")).unwrap();
+    let landing = snapshot
+        .commits
+        .iter()
+        .find(|c| c.oid == destination)
+        .unwrap();
+    let original = snapshot.commits.iter().find(|c| c.oid == source).unwrap();
+    assert!(landing.is_possible_squash_merge());
+    assert_eq!(
+        landing.relationships.len(),
+        2,
+        "one fact of each kind for the same OIDs"
+    );
+    let incoming = landing.cherry_pick_sources();
+    assert_eq!(incoming.len(), 1);
+    assert_eq!(incoming[0].source_oid, source);
+    assert_eq!(incoming[0].source_refs, ["feature/single"]);
+    assert_eq!(incoming[0].destination_refs, ["main"]);
+    assert_eq!(incoming[0].matching, graph::RelationshipMatch::Exact);
+    assert!(original.is_cherry_picked_commit());
+    assert_eq!(
+        original.cherry_pick_destinations()[0].destination_oid,
+        destination
+    );
+    assert!(!original.is_possible_squash_merge());
 }

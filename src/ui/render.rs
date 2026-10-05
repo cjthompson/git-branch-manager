@@ -804,12 +804,37 @@ mod tests {
                     if !is_possible_squash_merge {
                         pairs.retain(|r| r.matching != crate::git::graph::RelationshipMatch::Exact);
                     }
+                    if is_cherry_picked_commit {
+                        pairs.push(crate::git::graph::GraphRelationship {
+                            kind: crate::git::graph::RelationshipKind::CherryPick,
+                            matching: crate::git::graph::RelationshipMatch::Exact,
+                            source_oid: "abcdef1234567890".into(),
+                            source_refs: vec!["feature/picked".into()],
+                            destination_oid: "4444444444444444444444444444444444444444".into(),
+                            destination_refs: vec!["main".into()],
+                        });
+                    }
                     pairs
                 },
-                is_cherry_picked_commit,
                 ..graph::GraphCommit::default()
             });
             assert!(!rendered.contains("Possible squash merge (fuzzy)"));
         }
+    }
+    #[test]
+    fn commit_details_overlay_shows_captured_cherry_pick_provenance() {
+        let rendered = render_commit_details_overlay(graph::GraphCommit {
+            oid: "ddddddd0000000000000000000000000000000000".into(),
+            relationships: vec![graph::GraphRelationship {
+                kind: graph::RelationshipKind::CherryPick,
+                matching: graph::RelationshipMatch::Exact,
+                destination_oid: "ddddddd0000000000000000000000000000000000".into(),
+                destination_refs: vec!["main".into()],
+                source_oid: "abcdef1234567890000000000000000000000000".into(),
+                source_refs: vec!["feature/gone".into(), "feature/renamed".into()],
+            }],
+            ..Default::default()
+        });
+        assert!(rendered.contains("Cherry-picked From abcdef1 (feature/gone, feature/renamed)"));
     }
 }

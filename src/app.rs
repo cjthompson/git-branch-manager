@@ -633,43 +633,42 @@ impl App {
                         {
                             self.pending_graph_deltas.insert(0, Ok(message.delta));
                         } else {
-                        snapshot.generation = Some(self.graph_generation);
-                        // A metadata-only worker may have captured an
-                        // unenriched snapshot before the async enrichment
-                        // completed. Carry the latest values forward by OID.
-                        if !self.graph_update_invalidates_enrichment {
-                            if let Some(current) = self.graph.snapshot() {
-                                let enriched = current.commits.iter().map(|commit| (commit.oid.as_str(), commit)).collect::<std::collections::HashMap<_, _>>();
-                                for commit in &mut snapshot.commits {
-                                    if let Some(old) = enriched.get(commit.oid.as_str()) {
-                                        commit.relationships = old.relationships.clone();
-                                        commit.is_cherry_picked_commit = old.is_cherry_picked_commit;
+                            snapshot.generation = Some(self.graph_generation);
+                            // A metadata-only worker may have captured an
+                            // unenriched snapshot before the async enrichment
+                            // completed. Carry the latest values forward by OID.
+                            if !self.graph_update_invalidates_enrichment {
+                                if let Some(current) = self.graph.snapshot() {
+                                    let relationships = current
+                                        .commits
+                                        .iter()
+                                        .flat_map(|commit| commit.relationships.iter().cloned())
+                                        .collect::<Vec<_>>();
+                                    graph::apply_squash_enrichment(&mut snapshot, &relationships);
+                                }
+                            }
+                            if self.reconciling_initial_graph {
+                                self.staged_graph_snapshot = Some(snapshot);
+                                if self.pending_graph_deltas.is_empty() {
+                                    if let Some(snapshot) = self.staged_graph_snapshot.take() {
+                                        self.graph.apply_result(Ok(snapshot));
                                     }
+                                    self.reconciling_initial_graph = false;
+                                }
+                            } else {
+                                self.graph.apply_incremental_result(Ok(snapshot));
+                            }
+                            if self.graph_update_invalidates_enrichment {
+                                self.graph_update_invalidates_enrichment = false;
+                                self.graph_enrich_rx = None;
+                            }
+                            if self.graph_enrich_rx.is_none() && !self.reconciling_initial_graph {
+                                if let Some(snapshot) = self.graph.snapshot().cloned() {
+                                    self.graph_enrich_rx = Some(graph::spawn_possible_squash_enrichment(
+                                        snapshot, self.repo_path.clone(), Some(self.base_branch.clone()), self.graph_generation, self.cache_root.clone(), Arc::clone(&self.graph_generation_signal),
+                                    ));
                                 }
                             }
-                        }
-                        if self.reconciling_initial_graph {
-                            self.staged_graph_snapshot = Some(snapshot);
-                            if self.pending_graph_deltas.is_empty() {
-                                if let Some(snapshot) = self.staged_graph_snapshot.take() {
-                                    self.graph.apply_result(Ok(snapshot));
-                                }
-                                self.reconciling_initial_graph = false;
-                            }
-                        } else {
-                            self.graph.apply_incremental_result(Ok(snapshot));
-                        }
-                        if self.graph_update_invalidates_enrichment {
-                            self.graph_update_invalidates_enrichment = false;
-                            self.graph_enrich_rx = None;
-                        }
-                        if self.graph_enrich_rx.is_none() && !self.reconciling_initial_graph {
-                            if let Some(snapshot) = self.graph.snapshot().cloned() {
-                                self.graph_enrich_rx = Some(graph::spawn_possible_squash_enrichment(
-                                    snapshot, self.repo_path.clone(), Some(self.base_branch.clone()), self.graph_generation, self.cache_root.clone(), Arc::clone(&self.graph_generation_signal),
-                                ));
-                            }
-                        }
                         }
                     }
                     Err(error) => {
@@ -10561,17 +10560,13 @@ mod tests {
         let (etx, erx) = mpsc::channel();
         etx.send(graph::GraphEnrichmentMsg {
             generation: first_generation,
-            updates: vec![graph::GraphEnrichmentUpdate {
-                oid: "2222222222222222222222222222222222222222".into(),
-                relationships: vec![graph::GraphRelationship {
-                    kind: graph::RelationshipKind::SquashMerge,
-                    matching: graph::RelationshipMatch::Exact,
-                    destination_oid: "2222222222222222222222222222222222222222".into(),
-                    destination_refs: vec!["main".into()],
-                    source_oid: "1111111111111111111111111111111111111111".into(),
-                    source_refs: vec![],
-                }],
-                is_cherry_picked_commit: false,
+            updates: vec![graph::GraphRelationship {
+                kind: graph::RelationshipKind::SquashMerge,
+                matching: graph::RelationshipMatch::Exact,
+                destination_oid: "2222222222222222222222222222222222222222".into(),
+                destination_refs: vec!["main".into()],
+                source_oid: "1111111111111111111111111111111111111111".into(),
+                source_refs: vec![],
             }],
         })
         .expect("send stale enrichment");
@@ -10801,11 +10796,39 @@ mod tests {
                 source_refs: vec!["feature/near-source".into()],
             },
         ];
+        let source_oid = enriched.commits[0].oid.clone();
+        enriched.commits[0]
+            .relationships
+            .push(graph::GraphRelationship {
+                kind: graph::RelationshipKind::CherryPick,
+                matching: graph::RelationshipMatch::Exact,
+                source_oid,
+                source_refs: vec!["feature/picked".into()],
+                destination_oid: "4444444444444444444444444444444444444444".into(),
+                destination_refs: vec!["main".into()],
+            });
+        enriched.commits[0]
+            .relationships
+            .sort_by(|a, b| a.key().cmp(&b.key()));
         let expected_relationships = enriched.commits[0].relationships.clone();
-        enriched.commits[0].is_cherry_picked_commit = true;
         let mut stale_worker_snapshot = enriched.clone();
         stale_worker_snapshot.commits[0].relationships.clear();
-        stale_worker_snapshot.commits[0].is_cherry_picked_commit = false;
+        let worker_only = graph::GraphRelationship {
+            kind: graph::RelationshipKind::SquashMerge,
+            matching: graph::RelationshipMatch::Fuzzy {
+                similarity_percent: 75,
+            },
+            destination_oid: stale_worker_snapshot.commits[0].oid.clone(),
+            destination_refs: vec!["main".into()],
+            source_oid: "5555555555555555555555555555555555555555".into(),
+            source_refs: vec!["feature/worker-only".into()],
+        };
+        stale_worker_snapshot.commits[0]
+            .relationships
+            .push(worker_only.clone());
+        let mut expected_relationships = expected_relationships;
+        expected_relationships.push(worker_only);
+        expected_relationships.sort_by(|a, b| a.key().cmp(&b.key()));
         let state = graph::GraphRepositoryState::capture(dir).unwrap();
         let delta = graph::GraphRepositoryDelta::between(state.clone(), state);
         let mut app = App::new(dir.to_path_buf(), "main".into(), Config::default());
@@ -10832,7 +10855,7 @@ mod tests {
         assert_eq!(commit.possible_squash_merge_sources(), ["feature/source"]);
         assert_eq!(commit.relationships, expected_relationships);
         assert_eq!(commit.fuzzy_squash_match(), None);
-        assert!(commit.is_cherry_picked_commit);
+        assert!(commit.is_cherry_picked_commit());
     }
 
     #[test]
@@ -10880,17 +10903,13 @@ mod tests {
         let (etx, erx) = mpsc::channel();
         etx.send(graph::GraphEnrichmentMsg {
             generation,
-            updates: vec![graph::GraphEnrichmentUpdate {
-                oid: "3333333333333333333333333333333333333333".into(),
-                relationships: vec![graph::GraphRelationship {
-                    kind: graph::RelationshipKind::SquashMerge,
-                    matching: graph::RelationshipMatch::Exact,
-                    destination_oid: "3333333333333333333333333333333333333333".into(),
-                    destination_refs: vec!["main".into()],
-                    source_oid: "1111111111111111111111111111111111111111".into(),
-                    source_refs: vec![],
-                }],
-                is_cherry_picked_commit: false,
+            updates: vec![graph::GraphRelationship {
+                kind: graph::RelationshipKind::SquashMerge,
+                matching: graph::RelationshipMatch::Exact,
+                destination_oid: "3333333333333333333333333333333333333333".into(),
+                destination_refs: vec!["main".into()],
+                source_oid: "1111111111111111111111111111111111111111".into(),
+                source_refs: vec![],
             }],
         })
         .expect("send matching enrichment");

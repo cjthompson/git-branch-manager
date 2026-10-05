@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -30,21 +30,13 @@ pub struct GraphSnapshot {
     pub generation: Option<u64>,
 }
 
-/// One per-commit update produced by asynchronous squash-merge enrichment.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphEnrichmentUpdate {
-    pub oid: String,
-    pub relationships: Vec<GraphRelationship>,
-    pub is_cherry_picked_commit: bool,
-}
-
 /// Channel message carrying the full set of squash-merge enrichment updates
 /// for a given `GraphSnapshot` reload generation. Delivered as a single
 /// batch rather than per-commit so the App applies it atomically.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphEnrichmentMsg {
     pub generation: u64,
-    pub updates: Vec<GraphEnrichmentUpdate>,
+    pub updates: Vec<GraphRelationship>,
 }
 
 /// Cooperative cancellation owned by the App's graph generation. Already
@@ -74,7 +66,9 @@ impl EnrichmentCancel {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EnrichmentStage {
     PatchDispatch,
-    CherryLine,
+    CherrySourceYield,
+    CherryDestinationYield,
+    CherryPatchCompute,
 }
 
 type EnrichmentObserver = Arc<dyn Fn(EnrichmentStage) + Send + Sync>;
@@ -120,10 +114,6 @@ pub struct GraphCommit {
     pub refs: Vec<GraphRef>,
     /// Captured source/destination pairings, including every accepted confidence.
     pub relationships: Vec<GraphRelationship>,
-    /// True when this commit landed in base via an individual cherry-pick,
-    /// as detected by `git cherry`. Defaults to false (none of the
-    /// pre-cherry-detection snapshots set it).
-    pub is_cherry_picked_commit: bool,
     /// Author name from `git2::Signature::name()` / `%an`.
     pub author_name: String,
     /// Author email from `git2::Signature::email()` / `%ae`.
@@ -211,6 +201,27 @@ pub struct SquashMatchConfidence {
 }
 
 impl GraphCommit {
+    /// Whether this commit is a source of an exact cherry-pick pairing.
+    pub fn is_cherry_picked_commit(&self) -> bool {
+        !self.cherry_pick_destinations().is_empty()
+    }
+
+    /// Captured destinations reached by picking this source commit.
+    pub fn cherry_pick_destinations(&self) -> Vec<&GraphRelationship> {
+        self.relationships
+            .iter()
+            .filter(|r| r.kind == RelationshipKind::CherryPick && r.source_oid == self.oid)
+            .collect()
+    }
+
+    /// Captured sources picked into this destination commit.
+    pub fn cherry_pick_sources(&self) -> Vec<&GraphRelationship> {
+        self.relationships
+            .iter()
+            .filter(|r| r.kind == RelationshipKind::CherryPick && r.destination_oid == self.oid)
+            .collect()
+    }
+
     pub fn squash_match_confidence(&self) -> Option<SquashMatchConfidence> {
         let incoming = || {
             self.relationships.iter().filter(|relationship| {
@@ -577,7 +588,6 @@ pub fn update_graph_incrementally(
                 branch: None,
                 refs: Vec::new(),
                 relationships: vec![],
-                is_cherry_picked_commit: false,
                 author_name: commit.author().name().unwrap_or("").to_string(),
                 author_email: commit.author().email().unwrap_or("").to_string(),
                 authored_at: Utc.timestamp_opt(commit.author().when().seconds(), 0).single(),
@@ -589,8 +599,7 @@ pub fn update_graph_incrementally(
         record.refs = ref_data.refs_by_oid.get(&record.oid).cloned().unwrap_or_default();
         record.branch = None;
         if let Some(old) = old_by_oid.get(&record.oid) {
-            record.relationships = old.relationships.clone();
-            record.is_cherry_picked_commit = old.is_cherry_picked_commit;
+            merge_relationships(&mut record.relationships, &old.relationships);
         }
     }
     records = topological_commit_order(records);
@@ -690,23 +699,13 @@ pub fn load_graph_with_squash_annotations(
     options: GraphLoadOptions,
 ) -> Result<GraphSnapshot, GraphLoadError> {
     let mut snapshot = load_graph(repo_path, options.clone())?;
-    let mut updates = compute_possible_squash_updates(
+    let updates = compute_relationships(
         repo_path,
         &snapshot,
         options.base_branch.as_deref(),
         &options.cache_root,
-    );
-    let observer: EnrichmentObserver = Arc::new(|_| {});
-    let cherry_updates = compute_cherry_pick_updates(
-        repo_path,
-        &snapshot,
-        options.base_branch.as_deref(),
         &EnrichmentCancel::never(),
-        &observer,
-    )
-    .unwrap_or_default();
-
-    merge_enrichment_updates(&mut updates, cherry_updates);
+    );
     apply_squash_enrichment(&mut snapshot, &updates);
     Ok(snapshot)
 }
@@ -750,32 +749,14 @@ fn spawn_enrichment_with_observer(
         if cancel.is_cancelled() {
             return;
         }
-        let Some(mut updates) = compute_possible_squash_updates_with_cancel(
+        let updates = compute_relationships_with_observer(
             &repo_path,
             &snapshot,
             requested_base.as_deref(),
             &cache_root,
             &cancel,
-            &observer,
-        ) else {
-            return;
-        };
-        if cancel.is_cancelled() {
-            return;
-        }
-        let Some(cherry_updates) = compute_cherry_pick_updates(
-            &repo_path,
-            &snapshot,
-            requested_base.as_deref(),
-            &cancel,
-            &observer,
-        ) else {
-            return;
-        };
-        if cancel.is_cancelled() {
-            return;
-        }
-        merge_enrichment_updates(&mut updates, cherry_updates);
+            Some(&observer),
+        );
         if cancel.is_cancelled() {
             return;
         }
@@ -900,7 +881,6 @@ fn load_with_gleisbau(
                 branch: None,
                 refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
                 relationships: vec![],
-                is_cherry_picked_commit: false,
                 author_name: author.name().unwrap_or("").to_string(),
                 author_email: author.email().unwrap_or("").to_string(),
                 authored_at,
@@ -1005,7 +985,6 @@ fn load_with_git_cli(
             branch: None,
             refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
             relationships: vec![],
-            is_cherry_picked_commit: false,
             author_name: fields[2].to_string(),
             author_email: fields[3].to_string(),
             authored_at,
@@ -1031,68 +1010,129 @@ fn load_with_git_cli(
     })
 }
 
-/// Match only work represented by this bounded snapshot. Both base commits and
-/// local branch tips are selected from `snapshot.commits`, so increasing
-/// repository history or ref age cannot make Graph startup scan beyond the
-/// configured `max_count` window.
-///
-/// Returns a list of per-commit updates that the caller applies to the
-/// snapshot via `apply_squash_enrichment`. This split lets the App run the
-/// heavy work on a background thread and the result stays purely owned
-/// (no `&mut` over the App's snapshot) so it can be applied at any time.
-pub fn compute_possible_squash_updates(
-    repo_path: &Path,
-    snapshot: &GraphSnapshot,
-    requested_base: Option<&str>,
-    cache_root: &CacheRoot,
-) -> Vec<GraphEnrichmentUpdate> {
-    let observer: EnrichmentObserver = Arc::new(|_| {});
-    compute_possible_squash_updates_with_cancel(
-        repo_path,
-        snapshot,
-        requested_base,
-        cache_root,
-        &EnrichmentCancel::never(),
-        &observer,
-    )
-    .unwrap_or_default()
-}
-
-fn compute_possible_squash_updates_with_cancel(
+/// Detect bounded squash and cherry-pick relationships in a worker.
+pub fn compute_relationships(
     repo_path: &Path,
     snapshot: &GraphSnapshot,
     requested_base: Option<&str>,
     cache_root: &CacheRoot,
     cancel: &EnrichmentCancel,
-    observer: &EnrichmentObserver,
-) -> Option<Vec<GraphEnrichmentUpdate>> {
-    if cancel.is_cancelled() {
-        return None;
-    }
-    let base_branch = requested_base.map(str::to_string).or_else(|| {
-        let repository = git2::Repository::open(repo_path).ok()?;
-        crate::git::branch::detect_base_branch(&repository, None).ok()
-    });
-    let Some(base_branch) = base_branch else {
-        return Some(Vec::new());
-    };
-    let Some(base_tip) = snapshot.commits.iter().find_map(|commit| {
-        commit
-            .refs
-            .iter()
-            .any(|reference| {
-                reference.kind == GraphRefKind::LocalBranch && reference.name == base_branch
-            })
-            .then(|| commit.oid.clone())
-    }) else {
-        return Some(Vec::new());
-    };
+) -> Vec<GraphRelationship> {
+    compute_relationships_with_observer(
+        repo_path,
+        snapshot,
+        requested_base,
+        cache_root,
+        cancel,
+        None,
+    )
+}
 
+fn resolve_base_name(repo_path: &Path, requested_base: Option<&str>) -> Option<String> {
+    requested_base.map(str::to_owned).or_else(|| {
+        let repo = git2::Repository::open(repo_path).ok()?;
+        crate::git::branch::detect_base_branch(&repo, None).ok()
+    })
+}
+
+fn resolve_base(
+    repo_path: &Path,
+    snapshot: &GraphSnapshot,
+    requested_base: Option<&str>,
+) -> Option<(String, String)> {
+    let name = resolve_base_name(repo_path, requested_base)?;
+    let tip = snapshot
+        .commits
+        .iter()
+        .find(|commit| {
+            commit
+                .refs
+                .iter()
+                .any(|r| r.kind == GraphRefKind::LocalBranch && r.name == name)
+        })?
+        .oid
+        .clone();
+    Some((name, tip))
+}
+
+fn compute_relationships_with_observer(
+    repo_path: &Path,
+    snapshot: &GraphSnapshot,
+    requested_base: Option<&str>,
+    cache_root: &CacheRoot,
+    cancel: &EnrichmentCancel,
+    observer: Option<&EnrichmentObserver>,
+) -> Vec<GraphRelationship> {
     if cancel.is_cancelled() {
-        return None;
+        return Vec::new();
+    }
+    let Some((base_branch, base_tip)) = resolve_base(repo_path, snapshot, requested_base) else {
+        return Vec::new();
+    };
+    if cancel.is_cancelled() {
+        return Vec::new();
     }
     let mut cache = BranchCache::load_for_base(repo_path, &base_branch, cache_root);
+    let noop: EnrichmentObserver = Arc::new(|_| {});
+    let Some(squash_relationships) = compute_squash_relationships(
+        repo_path,
+        snapshot,
+        &base_branch,
+        &base_tip,
+        &mut cache,
+        cancel,
+        observer.unwrap_or(&noop),
+    ) else {
+        return Vec::new();
+    };
+    cache.save();
+    let mut relationships = RelationshipAccumulator::default();
+    for relationship in squash_relationships {
+        relationships.insert(&relationship);
+    }
+    if !cancel.is_cancelled() {
+        let cherry = if let Some(observer) = observer {
+            compute_cherry_pick_relationships_observed(
+                repo_path,
+                snapshot,
+                &base_branch,
+                &base_tip,
+                &cache,
+                cancel,
+                MAX_CHERRY_SOURCE_COMMITS,
+                MAX_CHERRY_DESTINATION_SCAN,
+                observer,
+            )
+        } else {
+            compute_cherry_pick_relationships(
+                repo_path,
+                snapshot,
+                &base_branch,
+                &base_tip,
+                &cache,
+                cancel,
+            )
+        };
+        for relationship in cherry {
+            relationships.insert(&relationship);
+        }
+    }
+    relationships.into_relationships()
+}
 
+#[allow(clippy::too_many_arguments)]
+fn compute_squash_relationships(
+    repo_path: &Path,
+    snapshot: &GraphSnapshot,
+    base_branch: &str,
+    base_tip: &str,
+    cache: &mut BranchCache,
+    cancel: &EnrichmentCancel,
+    observer: &EnrichmentObserver,
+) -> Option<Vec<GraphRelationship>> {
+    if cancel.is_cancelled() {
+        return None;
+    }
     let mut jobs = snapshot
         .commits
         .iter()
@@ -1136,7 +1176,7 @@ fn compute_possible_squash_updates_with_cancel(
         if cancel.is_cancelled() {
             return None;
         }
-        let merge_base = match displayed_branch_relation(&snapshot.commits, &base_tip, &tip) {
+        let merge_base = match displayed_branch_relation(&snapshot.commits, base_tip, &tip) {
             DisplayedBranchRelation::Diverged { merge_base } => merge_base,
             DisplayedBranchRelation::RegularlyMerged | DisplayedBranchRelation::Ineligible => {
                 continue;
@@ -1164,7 +1204,7 @@ fn compute_possible_squash_updates_with_cancel(
     if cancel.is_cancelled() {
         return None;
     }
-    for result in load_patch_ids(repo_path, jobs, &mut cache, cancel, observer)? {
+    for result in load_patch_ids(repo_path, jobs, cache, cancel, observer)? {
         if cancel.is_cancelled() {
             return None;
         }
@@ -1207,7 +1247,7 @@ fn compute_possible_squash_updates_with_cancel(
                     kind: RelationshipKind::SquashMerge,
                     matching: RelationshipMatch::Exact,
                     destination_oid: destination.clone(),
-                    destination_refs: vec![base_branch.clone()],
+                    destination_refs: vec![base_branch.to_owned()],
                     source_oid: source.tip_oid.clone(),
                     source_refs: source.source_names.clone(),
                 });
@@ -1234,7 +1274,7 @@ fn compute_possible_squash_updates_with_cancel(
                 kind: RelationshipKind::SquashMerge,
                 matching: RelationshipMatch::Fuzzy { similarity_percent: percent },
                 destination_oid: destination.clone(),
-                destination_refs: vec![base_branch.clone()],
+                destination_refs: vec![base_branch.to_owned()],
                 source_oid: source.tip_oid.clone(),
                 source_refs: source.source_names.clone(),
             });
@@ -1247,168 +1287,371 @@ fn compute_possible_squash_updates_with_cancel(
     if cancel.is_cancelled() {
         return None;
     }
-    let updates: Vec<GraphEnrichmentUpdate> = snapshot
-        .commits
-        .iter()
-        .filter(|commit| {
-            commit.branch.as_ref().is_some_and(|branch| {
-                branch.kind == GraphRefKind::LocalBranch && branch.name == base_branch
-            })
-        })
-        .map(|commit| GraphEnrichmentUpdate {
-            oid: commit.oid.clone(),
-            relationships: relationships
-                .iter()
-                .filter(|relationship| relationship.destination_oid == commit.oid)
-                .cloned()
-                .collect(),
-            is_cherry_picked_commit: false,
-        })
-        .collect();
     if cancel.is_cancelled() {
         return None;
     }
-    cache.save();
-    Some(updates)
+    Some(relationships)
 }
 
-/// Apply a batch of squash-merge enrichment updates to a snapshot. Unknown
-/// OIDs are ignored — they may belong to a newer snapshot (stale enrichment)
-/// or to commits the structural snapshot didn't include.
-pub fn apply_squash_enrichment(snapshot: &mut GraphSnapshot, updates: &[GraphEnrichmentUpdate]) {
-    for update in updates {
-        if let Some(commit) = snapshot
-            .commits
-            .iter_mut()
-            .find(|commit| commit.oid == update.oid)
-        {
-            commit.relationships = update.relationships.clone();
-            commit.is_cherry_picked_commit = update.is_cherry_picked_commit;
+type RelationshipKey = (RelationshipKind, String, String);
+
+#[derive(Default)]
+struct RelationshipAccumulator(BTreeMap<RelationshipKey, GraphRelationship>);
+
+impl RelationshipAccumulator {
+    fn insert(&mut self, incoming: &GraphRelationship) {
+        let key = (
+            incoming.kind,
+            incoming.destination_oid.clone(),
+            incoming.source_oid.clone(),
+        );
+        if let Some(current) = self.0.get_mut(&key) {
+            current.matching = current.matching.stronger(incoming.matching);
+            current
+                .source_refs
+                .extend(incoming.source_refs.iter().cloned());
+            current
+                .destination_refs
+                .extend(incoming.destination_refs.iter().cloned());
+            current.source_refs.sort();
+            current.source_refs.dedup();
+            current.destination_refs.sort();
+            current.destination_refs.dedup();
+        } else {
+            let mut relationship = incoming.clone();
+            relationship.source_refs.sort();
+            relationship.source_refs.dedup();
+            relationship.destination_refs.sort();
+            relationship.destination_refs.dedup();
+            self.0.insert(key, relationship);
         }
+    }
+
+    fn into_relationships(self) -> Vec<GraphRelationship> {
+        self.0.into_values().collect()
     }
 }
 
-/// For every displayed, diverged non-base branch tip, run `git cherry` once
-/// against its merge-base with `base_branch` and emit a
-/// `GraphEnrichmentUpdate` per OID whose line starts with `-` (already
-/// landed via cherry-pick).
-///
-/// One cheap `git cherry` subprocess per displayed branch tip, not a
-/// per-commit diff. Mirrors the base-branch/branch-tip relationship
-/// detection logic of `compute_possible_squash_updates`.
-fn compute_cherry_pick_updates(
+/// Merge immutable relationship facts without removing captured provenance.
+fn merge_relationships(existing: &mut Vec<GraphRelationship>, incoming: &[GraphRelationship]) {
+    let mut relationships = RelationshipAccumulator::default();
+    for relationship in existing.iter().chain(incoming) {
+        relationships.insert(relationship);
+    }
+    *existing = relationships.into_relationships();
+}
+
+/// Attach each fact to every displayed endpoint, retaining prior facts.
+pub fn apply_squash_enrichment(snapshot: &mut GraphSnapshot, updates: &[GraphRelationship]) {
+    let mut positions = HashMap::<&str, Vec<usize>>::new();
+    for (position, commit) in snapshot.commits.iter().enumerate() {
+        positions.entry(&commit.oid).or_default().push(position);
+    }
+    let mut changes = HashMap::<usize, RelationshipAccumulator>::new();
+    for relationship in updates {
+        let endpoints = [
+            relationship.destination_oid.as_str(),
+            relationship.source_oid.as_str(),
+        ];
+        for (index, oid) in endpoints.iter().enumerate() {
+            if index == 1 && endpoints[0] == *oid {
+                continue;
+            }
+            if let Some(indices) = positions.get(*oid) {
+                for &position in indices {
+                    let relationships = changes.entry(position).or_insert_with(|| {
+                        let mut accumulator = RelationshipAccumulator::default();
+                        for existing in &snapshot.commits[position].relationships {
+                            accumulator.insert(existing);
+                        }
+                        accumulator
+                    });
+                    relationships.insert(relationship);
+                }
+            }
+        }
+    }
+    for (position, relationships) in changes {
+        snapshot.commits[position].relationships = relationships.into_relationships();
+    }
+}
+
+/// Maximum branch-only revwalk yields accepted for one displayed tip.
+pub const MAX_CHERRY_SOURCE_COMMITS: usize = 500;
+/// Maximum base-only revwalk yields inspected for one displayed tip.
+pub const MAX_CHERRY_DESTINATION_SCAN: usize = 2_000;
+const CHERRY_PATCH_ID_VERSION: u32 = 1;
+
+/// Patch identity for a single-parent commit; roots, merges and empty diffs have none.
+pub(crate) fn git2_patch_id(repo: &git2::Repository, oid: git2::Oid) -> Option<String> {
+    let commit = repo.find_commit(oid).ok()?;
+    if commit.parent_count() != 1 {
+        return None;
+    }
+    git2_diff_patch(repo, commit.parent_id(0).ok()?, oid).0
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_cherry_pick_relationships(
     repo_path: &Path,
     snapshot: &GraphSnapshot,
-    requested_base: Option<&str>,
+    base_branch: &str,
+    base_tip: &str,
+    cache: &BranchCache,
     cancel: &EnrichmentCancel,
-    observer: &EnrichmentObserver,
-) -> Option<Vec<GraphEnrichmentUpdate>> {
-    if cancel.is_cancelled() {
-        return None;
-    }
-    let base_branch = requested_base.map(str::to_string).or_else(|| {
-        let repository = git2::Repository::open(repo_path).ok()?;
-        crate::git::branch::detect_base_branch(&repository, None).ok()
-    });
-    let Some(base_branch) = base_branch else {
-        return Some(Vec::new());
-    };
-    let Some(base_tip) = snapshot.commits.iter().find_map(|commit| {
-        commit
-            .refs
-            .iter()
-            .any(|reference| {
-                reference.kind == GraphRefKind::LocalBranch && reference.name == base_branch
-            })
-            .then(|| commit.oid.clone())
-    }) else {
-        return Some(Vec::new());
-    };
-
-    let mut cherry_picked: HashSet<String> = HashSet::new();
-
-    let displayed_branch_tips = snapshot.commits.iter().filter(|commit| {
-        commit.refs.iter().any(|reference| {
-            reference.kind == GraphRefKind::LocalBranch && reference.name != base_branch
-        })
-    });
-
-    for tip in displayed_branch_tips {
-        if cancel.is_cancelled() {
-            return None;
-        }
-        let merge_base = match displayed_branch_relation(&snapshot.commits, &base_tip, &tip.oid) {
-            DisplayedBranchRelation::Diverged { merge_base } => merge_base,
-            DisplayedBranchRelation::RegularlyMerged | DisplayedBranchRelation::Ineligible => {
-                continue;
-            }
-        };
-        let tip_str = tip.oid.as_str();
-        let git_cherry = |args: &[&str]| -> Option<String> {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(repo_path)
-                .stdin(Stdio::null())
-                .output()
-                .ok()?;
-            if out.status.success() {
-                Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-            } else {
-                None
-            }
-        };
-        if cancel.is_cancelled() {
-            return None;
-        }
-        let result = match git_cherry(&["cherry", &base_branch, tip_str, &merge_base]) {
-            Some(s) if !s.is_empty() => s,
-            _ => continue,
-        };
-        for line in result.lines() {
-            if cancel.is_cancelled() {
-                return None;
-            }
-            observer(EnrichmentStage::CherryLine);
-            if cancel.is_cancelled() {
-                return None;
-            }
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            // Format: "<status> <commit_hash> <subject>"
-            let mut parts = line.splitn(3, char::is_whitespace);
-            let status = parts.next().unwrap_or("");
-            let oid = parts.next().unwrap_or("");
-            if status.starts_with('-') && !oid.is_empty() {
-                cherry_picked.insert(oid.to_string());
-            }
-        }
-    }
-
-    if cancel.is_cancelled() {
-        return None;
-    }
-    Some(
-        snapshot.commits.iter().map(|commit| GraphEnrichmentUpdate {
-            oid: commit.oid.clone(),
-            relationships: vec![],
-            is_cherry_picked_commit: cherry_picked.contains(&commit.oid),
-        }).collect(),
+) -> Vec<GraphRelationship> {
+    compute_cherry_pick_relationships_with_bounds(
+        repo_path,
+        snapshot,
+        base_branch,
+        base_tip,
+        cache,
+        cancel,
+        MAX_CHERRY_SOURCE_COMMITS,
+        MAX_CHERRY_DESTINATION_SCAN,
     )
 }
 
-fn merge_enrichment_updates(base: &mut Vec<GraphEnrichmentUpdate>, extra: Vec<GraphEnrichmentUpdate>) {
-    use std::collections::HashMap;
-    let mut by_oid: HashMap<String, GraphEnrichmentUpdate> =
-        base.drain(..).map(|u| (u.oid.clone(), u)).collect();
-    for u in extra {
-        by_oid
-            .entry(u.oid.clone())
-            .and_modify(|existing| existing.is_cherry_picked_commit = u.is_cherry_picked_commit)
-            .or_insert(u);
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_cherry_pick_relationships_with_bounds(
+    repo_path: &Path,
+    snapshot: &GraphSnapshot,
+    base_branch: &str,
+    base_tip: &str,
+    cache: &BranchCache,
+    cancel: &EnrichmentCancel,
+    source_limit: usize,
+    destination_limit: usize,
+) -> Vec<GraphRelationship> {
+    let observer: EnrichmentObserver = Arc::new(|_| {});
+    compute_cherry_pick_relationships_observed(
+        repo_path,
+        snapshot,
+        base_branch,
+        base_tip,
+        cache,
+        cancel,
+        source_limit,
+        destination_limit,
+        &observer,
+    )
+}
+
+struct CherryPatchIds<'a> {
+    repo: &'a git2::Repository,
+    cache: &'a BranchCache,
+    cancel: &'a EnrichmentCancel,
+    observer: &'a EnrichmentObserver,
+    memo: HashMap<git2::Oid, Option<String>>,
+    pending: Vec<(String, Option<String>)>,
+}
+
+impl CherryPatchIds<'_> {
+    fn load(&mut self, oids: &[git2::Oid]) -> bool {
+        if self.cancel.is_cancelled() {
+            return false;
+        }
+        let missing = oids
+            .iter()
+            .copied()
+            .filter(|oid| !self.memo.contains_key(oid))
+            .collect::<HashSet<_>>();
+        let mut missing = missing.into_iter().collect::<Vec<_>>();
+        missing.sort();
+        let keys = missing
+            .iter()
+            .map(|oid| format!("{oid}:v{CHERRY_PATCH_ID_VERSION}"))
+            .collect::<Vec<_>>();
+        let cached = self.cache.lookup_commit_patch_ids(&keys);
+        for (oid, key) in missing.into_iter().zip(keys) {
+            if self.cancel.is_cancelled() {
+                return false;
+            }
+            let patch_id = if let Some(value) = cached.get(&key) {
+                value.clone()
+            } else {
+                (self.observer)(EnrichmentStage::CherryPatchCompute);
+                if self.cancel.is_cancelled() {
+                    return false;
+                }
+                let value = git2_patch_id(self.repo, oid);
+                self.pending.push((key, value.clone()));
+                value
+            };
+            self.memo.insert(oid, patch_id);
+        }
+        true
     }
-    *base = by_oid.into_values().collect();
+
+    fn flush(&mut self) {
+        if !self.cancel.is_cancelled() {
+            self.cache.store_commit_patch_ids(&self.pending);
+        }
+        self.pending.clear();
+    }
+}
+
+/// Collect only budgeted single-parent commits, polling even on merge yields.
+/// Source overflow rejects the entire tip; destination overflow retains its prefix.
+fn cherry_walk(
+    repo: &git2::Repository,
+    push: git2::Oid,
+    hide: git2::Oid,
+    limit: usize,
+    stage: EnrichmentStage,
+    cancel: &EnrichmentCancel,
+    observer: &EnrichmentObserver,
+) -> Option<(Vec<git2::Oid>, bool)> {
+    let mut walk = repo.revwalk().ok()?;
+    walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .ok()?;
+    walk.push(push).ok()?;
+    walk.hide(hide).ok()?;
+    let mut commits = Vec::new();
+    for (index, yielded) in walk.enumerate() {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        observer(stage);
+        if cancel.is_cancelled() {
+            return None;
+        }
+        if index >= limit {
+            return Some((commits, true));
+        }
+        let oid = yielded.ok()?;
+        let commit = repo.find_commit(oid).ok()?;
+        if commit.parent_count() == 1 {
+            commits.push(oid);
+        }
+    }
+    Some((commits, false))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_cherry_pick_relationships_observed(
+    repo_path: &Path,
+    snapshot: &GraphSnapshot,
+    base_branch: &str,
+    base_tip: &str,
+    cache: &BranchCache,
+    cancel: &EnrichmentCancel,
+    source_limit: usize,
+    destination_limit: usize,
+    observer: &EnrichmentObserver,
+) -> Vec<GraphRelationship> {
+    let mut relationships = RelationshipAccumulator::default();
+    if cancel.is_cancelled() {
+        return Vec::new();
+    }
+    let (Ok(repo), Ok(base)) = (
+        git2::Repository::open(repo_path),
+        git2::Oid::from_str(base_tip),
+    ) else {
+        return Vec::new();
+    };
+    let mut patches = CherryPatchIds {
+        repo: &repo,
+        cache,
+        cancel,
+        observer,
+        memo: HashMap::new(),
+        pending: Vec::new(),
+    };
+    let mut seen = HashSet::new();
+    for commit in &snapshot.commits {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let mut names = commit
+            .refs
+            .iter()
+            .filter(|r| r.kind == GraphRefKind::LocalBranch && r.name != base_branch)
+            .map(|r| r.name.clone())
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        if names.is_empty() {
+            continue;
+        }
+        let Ok(tip) = git2::Oid::from_str(&commit.oid) else {
+            continue;
+        };
+        if !seen.insert(tip) {
+            continue;
+        }
+        let Some((sources, source_overflow)) = cherry_walk(
+            &repo,
+            tip,
+            base,
+            source_limit,
+            EnrichmentStage::CherrySourceYield,
+            cancel,
+            observer,
+        ) else {
+            continue;
+        };
+        if source_overflow {
+            tracing::debug!(tip = %tip, "scan_incomplete: source bound");
+            continue;
+        }
+        if sources.is_empty() {
+            continue;
+        }
+        if !patches.load(&sources) {
+            break;
+        }
+        let mut buckets = HashMap::<String, Vec<git2::Oid>>::new();
+        for source in sources {
+            if let Some(Some(patch_id)) = patches.memo.get(&source) {
+                buckets.entry(patch_id.clone()).or_default().push(source);
+            }
+        }
+        let Some((destinations, destination_overflow)) = cherry_walk(
+            &repo,
+            base,
+            tip,
+            destination_limit,
+            EnrichmentStage::CherryDestinationYield,
+            cancel,
+            observer,
+        ) else {
+            patches.flush();
+            continue;
+        };
+        if destination_overflow {
+            tracing::debug!(tip = %tip, "scan_incomplete: destination bound");
+        }
+        if !patches.load(&destinations) {
+            break;
+        }
+        for destination in destinations {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let Some(Some(patch_id)) = patches.memo.get(&destination) else {
+                continue;
+            };
+            let Some(sources) = buckets.get(patch_id) else {
+                continue;
+            };
+            for source in sources {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                relationships.insert(&GraphRelationship {
+                    kind: RelationshipKind::CherryPick,
+                    matching: RelationshipMatch::Exact,
+                    destination_oid: destination.to_string(),
+                    destination_refs: vec![base_branch.to_owned()],
+                    source_oid: source.to_string(),
+                    source_refs: names.clone(),
+                });
+            }
+        }
+        patches.flush();
+    }
+    relationships.into_relationships()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2346,8 +2589,8 @@ mod tests {
     }
 
     #[test]
-    fn started_enrichment_superseded_during_cherry_output_publishes_nothing() {
-        assert_started_enrichment_cancelled(EnrichmentStage::CherryLine);
+    fn started_enrichment_superseded_during_cherry_source_revwalk_publishes_nothing() {
+        assert_started_enrichment_cancelled(EnrichmentStage::CherrySourceYield);
     }
 
     #[test]
@@ -2714,6 +2957,641 @@ mod tests {
         assert_eq!(
             displayed_branch_relation(&truncated, "base-tip", "branch-tip"),
             DisplayedBranchRelation::Ineligible
+        );
+    }
+
+    fn relationship_snapshot(commits: Vec<GraphCommit>) -> GraphSnapshot {
+        GraphSnapshot {
+            source: GraphSource::Gleisbau,
+            commits,
+            lines: vec![],
+            ref_counts: GraphRefCounts::default(),
+            max_count: 50,
+            includes_remotes: false,
+            generation: None,
+        }
+    }
+
+    #[test]
+    fn enrichment_never_erases_and_attaches_every_endpoint() {
+        let existing = squash(
+            "d",
+            "s",
+            &["feature/old"],
+            RelationshipMatch::Fuzzy {
+                similarity_percent: 80,
+            },
+        );
+        let mut snapshot = relationship_snapshot(vec![
+            GraphCommit {
+                oid: "d".into(),
+                relationships: vec![existing.clone()],
+                ..Default::default()
+            },
+            GraphCommit {
+                oid: "s".into(),
+                ..Default::default()
+            },
+        ]);
+        apply_squash_enrichment(&mut snapshot, &[]);
+        assert_eq!(snapshot.commits[0].relationships.as_slice(), std::slice::from_ref(&existing));
+        let fresh = GraphRelationship {
+            matching: RelationshipMatch::Exact,
+            destination_refs: vec!["develop".into(), "develop".into()],
+            source_refs: vec!["feature/new".into()],
+            ..existing.clone()
+        };
+        apply_squash_enrichment(&mut snapshot, std::slice::from_ref(&fresh));
+        let merged = &snapshot.commits[0].relationships[0];
+        assert_eq!(merged.matching, RelationshipMatch::Exact);
+        assert_eq!(merged.source_refs, ["feature/new", "feature/old"]);
+        assert_eq!(merged.destination_refs, ["develop", "main"]);
+        let mut normalized = fresh;
+        normalized.destination_refs.dedup();
+        assert_eq!(snapshot.commits[1].relationships, [normalized]);
+        apply_squash_enrichment(&mut snapshot, &[existing]);
+        assert_eq!(
+            snapshot.commits[0].relationships[0].matching,
+            RelationshipMatch::Exact
+        );
+        assert_eq!(
+            snapshot.commits[0].relationships,
+            snapshot.commits[1].relationships
+        );
+        let before = snapshot.clone();
+        apply_squash_enrichment(&mut snapshot, &[]);
+        assert_eq!(snapshot, before);
+        assert!(!snapshot.commits[1].is_possible_squash_merge());
+    }
+
+    fn native_commit(
+        repo: &git2::Repository,
+        parent: Option<git2::Oid>,
+        files: &[(&str, &str)],
+        label: &str,
+    ) -> git2::Oid {
+        let mut builder = repo.treebuilder(None).unwrap();
+        for (name, content) in files {
+            let blob = repo.blob(content.as_bytes()).unwrap();
+            builder.insert(name, blob, 0o100644).unwrap();
+        }
+        let tree_id = builder.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@example.com").unwrap();
+        let parents = parent
+            .map(|id| repo.find_commit(id).unwrap())
+            .into_iter()
+            .collect::<Vec<_>>();
+        let refs = parents.iter().collect::<Vec<_>>();
+        repo.commit(None, &sig, &sig, label, &tree, &refs).unwrap()
+    }
+
+    fn native_pair_fixture() -> (
+        tempfile::TempDir,
+        git2::Repository,
+        git2::Oid,
+        git2::Oid,
+        GraphSnapshot,
+        CacheRoot,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let root = native_commit(&repo, None, &[], "root");
+        let source = native_commit(&repo, Some(root), &[("picked", "picked\n")], "source");
+        let base = native_commit(
+            &repo,
+            Some(root),
+            &[("unrelated", "base\n")],
+            "advance base",
+        );
+        let destination = native_commit(
+            &repo,
+            Some(base),
+            &[("unrelated", "base\n"), ("picked", "picked\n")],
+            "destination",
+        );
+        repo.reference("refs/heads/main", destination, true, "fixture")
+            .unwrap();
+        repo.reference("refs/heads/feature", source, true, "fixture")
+            .unwrap();
+        let reference = |name: &str| GraphRef {
+            name: name.into(),
+            kind: GraphRefKind::LocalBranch,
+            has_linked_worktree: false,
+            is_current: false,
+            tracking: None,
+        };
+        // Deliberately omit the merge base and historical destination from the window.
+        let snapshot = relationship_snapshot(vec![
+            GraphCommit {
+                oid: destination.to_string(),
+                refs: vec![reference("main")],
+                ..Default::default()
+            },
+            GraphCommit {
+                oid: source.to_string(),
+                refs: vec![reference("feature")],
+                ..Default::default()
+            },
+        ]);
+        let cache_root = CacheRoot::at(dir.path().join("isolated/cache"));
+        (dir, repo, source, destination, snapshot, cache_root)
+    }
+
+    #[test]
+    fn cherry_scan_bounds_count_all_yields_and_keep_complete_pairs() {
+        let (dir, repo, source, destination, mut snapshot, root) = native_pair_fixture();
+        let cache = BranchCache::load_for_base(dir.path(), "main", &root);
+        let scan = |snapshot: &GraphSnapshot, source_limit, destination_limit| {
+            compute_cherry_pick_relationships_with_bounds(
+                dir.path(),
+                snapshot,
+                "main",
+                &snapshot.commits[0].oid,
+                &cache,
+                &EnrichmentCancel::never(),
+                source_limit,
+                destination_limit,
+            )
+        };
+        assert_eq!(
+            scan(&snapshot, 1, 1).len(),
+            1,
+            "exact bounds accept the complete pair outside displayed merge base"
+        );
+        assert!(
+            scan(&snapshot, 0, 10).is_empty(),
+            "source overflow skips entire tip"
+        );
+        assert!(scan(&snapshot, 1, 0).is_empty());
+        let mut base_tip = destination;
+        for index in 0..2_000 {
+            base_tip = native_commit(
+                &repo,
+                Some(base_tip),
+                &[("unrelated", "base\n"), ("picked", "picked\n")],
+                &format!("base filler {index}"),
+            );
+        }
+        snapshot.commits[0].oid = base_tip.to_string();
+        assert!(
+            scan(&snapshot, 500, MAX_CHERRY_DESTINATION_SCAN).is_empty(),
+            "destination 2001 is outside production bound"
+        );
+        let pairs = scan(&snapshot, 500, 2_001);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].destination_oid, destination.to_string());
+        let mut source_tip = source;
+        for index in 0..499 {
+            source_tip = native_commit(
+                &repo,
+                Some(source_tip),
+                &[("picked", "picked\n")],
+                &format!("source filler {index}"),
+            );
+        }
+        snapshot.commits[1].oid = source_tip.to_string();
+        assert_eq!(scan(&snapshot, MAX_CHERRY_SOURCE_COMMITS, 2_002).len(), 1);
+        source_tip = native_commit(
+            &repo,
+            Some(source_tip),
+            &[("picked", "picked\n")],
+            "source 501",
+        );
+        snapshot.commits[1].oid = source_tip.to_string();
+        assert!(scan(&snapshot, MAX_CHERRY_SOURCE_COMMITS, 2_002).is_empty());
+        let mut valid = snapshot.commits[1].clone();
+        valid.oid = source.to_string();
+        valid.refs[0].name = "feature/valid".into();
+        snapshot.commits.insert(1, valid);
+        let retained = scan(&snapshot, MAX_CHERRY_SOURCE_COMMITS, 2_002);
+        assert_eq!(
+            retained.len(),
+            1,
+            "over-bound later tip does not erase earlier complete pairs"
+        );
+        assert_eq!(retained[0].source_refs, ["feature/valid"]);
+        let fresh_root = CacheRoot::at(dir.path().join("fresh-bound-cache"));
+        let fresh_cache = BranchCache::load_for_base(dir.path(), "main", &fresh_root);
+        assert!(compute_cherry_pick_relationships_with_bounds(
+            dir.path(),
+            &snapshot,
+            "main",
+            &snapshot.commits[0].oid,
+            &fresh_cache,
+            &EnrichmentCancel::never(),
+            500,
+            2_000
+        )
+        .is_empty());
+        assert!(
+            !fresh_cache
+                .lookup_commit_patch_ids(&[format!("{destination}:v1")])
+                .contains_key(&format!("{destination}:v1")),
+            "no patch computation beyond destination budget"
+        );
+    }
+
+    #[test]
+    fn cherry_scan_preserves_equal_patch_source_buckets_and_ref_unions() {
+        let (dir, repo, first_source, first_dest, mut snapshot, root) = native_pair_fixture();
+        let remove_source = native_commit(&repo, Some(first_source), &[], "source revert");
+        let second_source = native_commit(
+            &repo,
+            Some(remove_source),
+            &[("picked", "picked\n")],
+            "source repick",
+        );
+        let remove_dest = native_commit(
+            &repo,
+            Some(first_dest),
+            &[("unrelated", "base\n")],
+            "destination revert",
+        );
+        let second_dest = native_commit(
+            &repo,
+            Some(remove_dest),
+            &[("unrelated", "base\n"), ("picked", "picked\n")],
+            "destination repick",
+        );
+        snapshot.commits[0].oid = second_dest.to_string();
+        snapshot.commits[1].oid = second_source.to_string();
+        let mut older = snapshot.commits[1].clone();
+        older.oid = first_source.to_string();
+        older.refs[0].name = "feature/older".into();
+        snapshot.commits.push(older);
+        let cache = BranchCache::load_for_base(dir.path(), "main", &root);
+        let pairs = compute_cherry_pick_relationships_with_bounds(
+            dir.path(),
+            &snapshot,
+            "main",
+            &second_dest.to_string(),
+            &cache,
+            &EnrichmentCancel::never(),
+            500,
+            2_000,
+        );
+        let insertions = pairs
+            .iter()
+            .filter(|r| {
+                r.source_oid == first_source.to_string()
+                    || r.source_oid == second_source.to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            insertions.len(),
+            4,
+            "two equal source patches times two destinations"
+        );
+        for source in [first_source, second_source] {
+            assert_eq!(
+                insertions
+                    .iter()
+                    .filter(|r| r.source_oid == source.to_string())
+                    .map(|r| r.destination_oid.clone())
+                    .collect::<std::collections::BTreeSet<_>>(),
+                [first_dest.to_string(), second_dest.to_string()]
+                    .into_iter()
+                    .collect()
+            );
+        }
+        for pair in insertions
+            .iter()
+            .filter(|r| r.source_oid == first_source.to_string())
+        {
+            assert_eq!(pair.source_refs, ["feature", "feature/older"]);
+        }
+        assert!(
+            pairs.windows(2).all(|w| w[0].key() < w[1].key()),
+            "deduplicated deterministic order"
+        );
+    }
+
+    fn native_merge(
+        repo: &git2::Repository,
+        first: git2::Oid,
+        other: git2::Oid,
+        label: &str,
+    ) -> git2::Oid {
+        let first = repo.find_commit(first).unwrap();
+        let other = repo.find_commit(other).unwrap();
+        let tree = first.tree().unwrap();
+        let sig = git2::Signature::now("test", "test@example.com").unwrap();
+        repo.commit(None, &sig, &sig, label, &tree, &[&first, &other])
+            .unwrap()
+    }
+
+    fn merge_pair_fixture() -> (tempfile::TempDir, GraphSnapshot, CacheRoot) {
+        let (dir, repo, source, destination, mut snapshot, root) = native_pair_fixture();
+        let ancestor = repo.find_commit(source).unwrap().parent_id(0).unwrap();
+        snapshot.commits[1].oid = native_merge(&repo, source, ancestor, "source merge").to_string();
+        snapshot.commits[0].oid =
+            native_merge(&repo, destination, ancestor, "destination merge").to_string();
+        (dir, snapshot, root)
+    }
+
+    #[test]
+    fn cherry_scan_merge_yields_consume_source_and_destination_budgets() {
+        let (dir, snapshot, root) = merge_pair_fixture();
+        let cache = BranchCache::load_for_base(dir.path(), "main", &root);
+        let scan = |sources, destinations| {
+            compute_cherry_pick_relationships_with_bounds(
+                dir.path(),
+                &snapshot,
+                "main",
+                &snapshot.commits[0].oid,
+                &cache,
+                &EnrichmentCancel::never(),
+                sources,
+                destinations,
+            )
+        };
+        assert!(
+            scan(1, 10).is_empty(),
+            "merge consumes first source yield so whole tip exceeds 1"
+        );
+        assert!(
+            scan(2, 1).is_empty(),
+            "merge consumes destination slot before the matching commit"
+        );
+        assert_eq!(
+            scan(2, 2).len(),
+            1,
+            "complete match in bounded prefix survives destination overflow"
+        );
+        assert_eq!(
+            scan(2, 3).len(),
+            1,
+            "exactly exhausted source/destination scans preserve pair"
+        );
+        let latest = Arc::new(AtomicU64::new(2));
+        assert!(compute_cherry_pick_relationships_with_bounds(
+            dir.path(),
+            &snapshot,
+            "main",
+            &snapshot.commits[0].oid,
+            &cache,
+            &EnrichmentCancel::new(latest, 1),
+            2,
+            3
+        )
+        .is_empty());
+    }
+
+    fn assert_merge_worker_cancelled(stage: EnrichmentStage) {
+        let (dir, snapshot, root) = merge_pair_fixture();
+        let latest = Arc::new(AtomicU64::new(1));
+        let (started_tx, started_rx) = mpsc::sync_channel(0);
+        let (resume_tx, resume_rx) = mpsc::sync_channel(0);
+        let resume_rx = Mutex::new(resume_rx);
+        let observed = Arc::new(AtomicU64::new(0));
+        let worker_observed = Arc::clone(&observed);
+        let rx = spawn_enrichment_with_observer(
+            snapshot,
+            dir.path().to_path_buf(),
+            Some("main".into()),
+            1,
+            root,
+            EnrichmentCancel::new(Arc::clone(&latest), 1),
+            move |current| {
+                if current == stage {
+                    worker_observed.fetch_add(1, Ordering::Relaxed);
+                    started_tx.send(()).unwrap();
+                    resume_rx.lock().unwrap().recv().unwrap();
+                }
+            },
+        );
+        let timeout = std::time::Duration::from_secs(60);
+        started_rx
+            .recv_timeout(timeout)
+            .expect("actual worker reached real merge revwalk yield");
+        latest.store(2, Ordering::Release);
+        resume_tx.send(()).unwrap();
+        assert_eq!(
+            rx.recv_timeout(timeout),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
+        assert_eq!(
+            observed.load(Ordering::Relaxed),
+            1,
+            "cancellation before merge skip stops subsequent work"
+        );
+    }
+
+    #[test]
+    fn started_enrichment_merge_source_revwalk_cancelled_publishes_nothing() {
+        assert_merge_worker_cancelled(EnrichmentStage::CherrySourceYield);
+    }
+
+    #[test]
+    fn started_enrichment_merge_destination_revwalk_cancelled_publishes_nothing() {
+        assert_merge_worker_cancelled(EnrichmentStage::CherryDestinationYield);
+    }
+
+    #[test]
+    fn started_enrichment_cherry_patch_computation_cancelled_publishes_nothing() {
+        assert_merge_worker_cancelled(EnrichmentStage::CherryPatchCompute);
+    }
+
+    #[test]
+    fn cherry_scan_reuses_commit_cache_including_none() {
+        let (dir, repo, source, destination, mut snapshot, root) = native_pair_fixture();
+        snapshot.commits[1].oid = native_commit(
+            &repo,
+            Some(source),
+            &[("picked", "picked\n")],
+            "empty source",
+        )
+        .to_string();
+        let cache = BranchCache::load_for_base(dir.path(), "main", &root);
+        let calls = Arc::new(AtomicU64::new(0));
+        let observer_calls = Arc::clone(&calls);
+        let observer: EnrichmentObserver = Arc::new(move |stage| {
+            if stage == EnrichmentStage::CherryPatchCompute {
+                observer_calls.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        let first = compute_cherry_pick_relationships_observed(
+            dir.path(),
+            &snapshot,
+            "main",
+            &destination.to_string(),
+            &cache,
+            &EnrichmentCancel::never(),
+            500,
+            2_000,
+            &observer,
+        );
+        assert_eq!(first.len(), 1);
+        assert!(calls.load(Ordering::Relaxed) > 0);
+        let key = format!("{}:v1", snapshot.commits[1].oid);
+        assert_eq!(
+            cache
+                .lookup_commit_patch_ids(std::slice::from_ref(&key))
+                .get(&key),
+            Some(&None)
+        );
+        calls.store(0, Ordering::Relaxed);
+        let second = compute_cherry_pick_relationships_observed(
+            dir.path(),
+            &snapshot,
+            "main",
+            &destination.to_string(),
+            &cache,
+            &EnrichmentCancel::never(),
+            500,
+            2_000,
+            &observer,
+        );
+        assert_eq!(second, first);
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            0,
+            "cached None must skip empty diff recomputation"
+        );
+    }
+
+    #[derive(Clone)]
+    struct ScanLog(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for ScanLog {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn cherry_scan_logs_only_actual_overflow_on_default_target() {
+        // Isolate tracing's global callsite-interest cache from parallel tests.
+        if std::env::var_os("GBM_P64_SCAN_LOG_CHILD").is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "git::graph::tests::cherry_scan_logs_only_actual_overflow_on_default_target",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("GBM_P64_SCAN_LOG_CHILD", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let (dir, snapshot, root) = merge_pair_fixture();
+        let cache = BranchCache::load_for_base(dir.path(), "main", &root);
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let writer = ScanLog(Arc::clone(&bytes));
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter("git_branch_manager=debug")
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let scan = |sources, destinations| {
+                compute_cherry_pick_relationships_with_bounds(
+                    dir.path(),
+                    &snapshot,
+                    "main",
+                    &snapshot.commits[0].oid,
+                    &cache,
+                    &EnrichmentCancel::never(),
+                    sources,
+                    destinations,
+                )
+            };
+            assert_eq!(scan(2, 3).len(), 1);
+            assert!(
+                !String::from_utf8(bytes.lock().unwrap().clone())
+                    .unwrap()
+                    .contains("scan_incomplete"),
+                "exact exhaustion is not overflow"
+            );
+            bytes.lock().unwrap().clear();
+            assert!(scan(1, 3).is_empty());
+            assert_eq!(scan(2, 2).len(), 1);
+        });
+        let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(text.contains("git_branch_manager::git::graph"));
+        assert!(text.contains("scan_incomplete: source bound"));
+        assert!(text.contains("scan_incomplete: destination bound"));
+    }
+
+    #[test]
+    fn enrichment_distinguishes_kinds_missing_endpoints_self_pairs_and_idempotence() {
+        let mut snapshot = relationship_snapshot(vec![
+            GraphCommit {
+                oid: "d".into(),
+                ..Default::default()
+            },
+            GraphCommit {
+                oid: "d".into(),
+                ..Default::default()
+            },
+        ]);
+        let squash = squash("d", "missing", &["feature/gone"], RelationshipMatch::Exact);
+        let cherry = GraphRelationship {
+            kind: RelationshipKind::CherryPick,
+            ..squash.clone()
+        };
+        let self_pair = GraphRelationship {
+            source_oid: "d".into(),
+            ..cherry.clone()
+        };
+        let updates = [squash, cherry, self_pair];
+        apply_squash_enrichment(&mut snapshot, &updates);
+        for commit in &snapshot.commits {
+            assert_eq!(commit.relationships.len(), 3);
+            assert_eq!(commit.cherry_pick_sources().len(), 2);
+            assert_eq!(commit.cherry_pick_destinations().len(), 1);
+        }
+        let before = snapshot.clone();
+        apply_squash_enrichment(&mut snapshot, &updates);
+        assert_eq!(snapshot, before);
+    }
+
+    #[test]
+    fn cherry_scan_contained_tip_emits_nothing() {
+        let (dir, _repo, _source, _dest, mut snapshot, root) = native_pair_fixture();
+        snapshot.commits.truncate(1);
+        let mut alias = snapshot.commits[0].refs[0].clone();
+        alias.name = "feature/contained".into();
+        snapshot.commits[0].refs.push(alias);
+        let cache = BranchCache::load_for_base(dir.path(), "main", &root);
+        assert!(compute_cherry_pick_relationships(
+            dir.path(),
+            &snapshot,
+            "main",
+            &snapshot.commits[0].oid,
+            &cache,
+            &EnrichmentCancel::never()
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn graph_state_reports_relationship_changes_without_erasure() {
+        let relationship = squash("d", "s", &["feature/source"], RelationshipMatch::Exact);
+        let mut state = crate::view::graph::GraphState::new();
+        assert!(!state.apply_squash_enrichment(std::slice::from_ref(&relationship)));
+        state.apply_result(Ok(relationship_snapshot(vec![GraphCommit {
+            oid: "d".into(),
+            ..Default::default()
+        }])));
+        assert!(state.apply_squash_enrichment(std::slice::from_ref(&relationship)));
+        assert!(!state.apply_squash_enrichment(std::slice::from_ref(&relationship)));
+        assert!(!state.apply_squash_enrichment(&[]));
+        assert_eq!(
+            state.snapshot().unwrap().commits[0].relationships,
+            [relationship]
         );
     }
 }

@@ -50,7 +50,7 @@ pub fn draw_commit_details(
         Span::styled("Commit ", theme.modal_secondary),
         Span::styled(details.oid.clone(), theme.modal_commit),
     ]));
-    if !commit.is_possible_squash_merge() && !commit.is_cherry_picked_commit {
+    if !commit.is_possible_squash_merge() && !commit.is_cherry_picked_commit() {
         if let Some(fuzzy) = commit.fuzzy_squash_match().as_ref() {
             lines.push(Line::from(vec![
                 Span::styled("Possible squash merge (fuzzy): ", theme.modal_secondary),
@@ -60,6 +60,16 @@ pub fn draw_commit_details(
                 ),
             ]));
         }
+    }
+    for relationship in commit.cherry_pick_sources() {
+        let source: String = relationship.source_oid.chars().take(7).collect();
+        lines.push(Line::from(vec![
+            Span::styled("Cherry-picked From ", theme.modal_secondary),
+            Span::styled(
+                format!("{source} ({})", relationship.source_refs.join(", ")),
+                theme.modal_commit,
+            ),
+        ]));
     }
     let author = match (
         details.author_name.is_empty(),
