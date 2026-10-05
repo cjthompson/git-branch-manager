@@ -190,7 +190,7 @@ fn render_graph_rows(
             theme,
             symbols,
         );
-        if !is_merge && commit.is_some_and(|commit| commit.is_possible_squash_merge) {
+        if !is_merge && commit.is_some_and(|commit| commit.is_possible_squash_merge()) {
             if let Some(marker_index) = graph_line
                 .graph
                 .chars()
@@ -221,8 +221,8 @@ fn render_graph_rows(
                 short_oid(&commit.oid),
                 selected_style(theme.squash_merged, selected, theme),
             ));
-            if !commit.is_possible_squash_merge && !commit.is_cherry_picked_commit {
-                if let Some(fuzzy) = commit.fuzzy_squash_match.as_ref() {
+            if !commit.is_possible_squash_merge() && !commit.is_cherry_picked_commit {
+                if let Some(fuzzy) = commit.fuzzy_squash_match().as_ref() {
                     detail.push(Span::styled(
                         format!(" [fuzzy squash {}%]", fuzzy.similarity_percent),
                         selected_style(theme.secondary_text, selected, theme),
@@ -633,10 +633,10 @@ fn possible_squash_source_spans(
     theme: &Theme,
     symbols: &SymbolSet,
 ) -> Vec<Span<'static>> {
-    if !commit.is_possible_squash_merge {
+    let Some(confidence) = commit.squash_match_confidence() else {
         return Vec::new();
-    }
-    let Some((first, rest)) = commit.possible_squash_merge_sources.split_first() else {
+    };
+    let Some((first, rest)) = confidence.sources.split_first() else {
         return Vec::new();
     };
     let suffix = if rest.is_empty() {
@@ -644,8 +644,13 @@ fn possible_squash_source_spans(
     } else {
         format!(" +{}", rest.len())
     };
+    let percent = if confidence.similarity_percent == 100 {
+        String::new()
+    } else {
+        format!(" ~{}%", confidence.similarity_percent)
+    };
     vec![Span::styled(
-        format!("{} {first}{suffix}", symbols.status_squash_merged),
+        format!("{} {first}{suffix}{percent}", symbols.status_squash_merged),
         selected_style(theme.squash_merged, selected, theme),
     )]
 }
@@ -961,8 +966,7 @@ mod tests {
                     is_current: false,
                     tracking: None,
                 }],
-                is_possible_squash_merge: false,
-                fuzzy_squash_match: None,
+                relationships: vec![],
                 ..GraphCommit::default()
             }],
             lines: vec![GraphLine {
@@ -1022,18 +1026,25 @@ mod tests {
 
     fn fuzzy_commit(score: u8) -> GraphCommit {
         GraphCommit {
+            relationships: vec![crate::git::graph::GraphRelationship {
+                kind: crate::git::graph::RelationshipKind::SquashMerge,
+                matching: crate::git::graph::RelationshipMatch::Fuzzy {
+                    similarity_percent: score,
+                },
+                destination_oid: "abcdef0123456789".into(),
+                destination_refs: vec!["main".into()],
+                source_oid: "3333333333333333333333333333333333333333".into(),
+                source_refs: Vec::new(),
+            }],
             oid: "abcdef0123456789".into(),
             summary: "fuzzy landing".into(),
-            fuzzy_squash_match: Some(crate::git::graph::FuzzySquashMatch {
-                similarity_percent: score,
-            }),
             ..GraphCommit::default()
         }
     }
 
     #[test]
     fn graph_commit_row_shows_fuzzy_score_after_short_oid() {
-        for score in [84, 97, 100] {
+        for score in [84, 97, 99] {
             let lines = render_commit_lines(fuzzy_commit(score), 100, 0);
             let row = lines
                 .iter()
@@ -1110,7 +1121,18 @@ mod tests {
             [(true, false), (false, true), (true, true)]
         {
             let mut commit = fuzzy_commit(97);
-            commit.is_possible_squash_merge = is_possible_squash_merge;
+            if is_possible_squash_merge {
+                commit
+                    .relationships
+                    .push(crate::git::graph::GraphRelationship {
+                        kind: crate::git::graph::RelationshipKind::SquashMerge,
+                        matching: crate::git::graph::RelationshipMatch::Exact,
+                        destination_oid: commit.oid.clone(),
+                        destination_refs: vec!["main".into()],
+                        source_oid: "1111111111111111111111111111111111111111".into(),
+                        source_refs: vec!["feature/exact".into()],
+                    });
+            }
             commit.is_cherry_picked_commit = is_cherry_picked_commit;
             let lines = render_commit_lines(commit, 100, 0);
             let row = lines
@@ -1186,8 +1208,7 @@ mod tests {
                     is_current: false,
                     tracking: None,
                 }],
-                is_possible_squash_merge: false,
-                fuzzy_squash_match: None,
+                relationships: vec![],
                 ..GraphCommit::default()
             }],
             lines: vec![GraphLine {
@@ -1257,8 +1278,7 @@ mod tests {
                         behind: 0,
                     }),
                 }],
-                is_possible_squash_merge: false,
-                fuzzy_squash_match: None,
+                relationships: vec![],
                 ..GraphCommit::default()
             }],
             lines: vec![GraphLine {
@@ -1332,8 +1352,7 @@ mod tests {
                         tracking: None,
                     },
                 ],
-                is_possible_squash_merge: false,
-                fuzzy_squash_match: None,
+                relationships: vec![],
                 ..GraphCommit::default()
             }],
             lines: vec![GraphLine {
@@ -1420,8 +1439,7 @@ mod tests {
                     tracking: None,
                 },
             ],
-            is_possible_squash_merge: false,
-            fuzzy_squash_match: None,
+            relationships: vec![],
             ..GraphCommit::default()
         };
         let text: String =
@@ -1448,9 +1466,14 @@ mod tests {
                 kind: GraphRefKind::LocalBranch,
             }),
             refs: vec![],
-            is_possible_squash_merge: true,
-            possible_squash_merge_sources: vec!["feature/auth".into(), "feature/login".into()],
-            fuzzy_squash_match: None,
+            relationships: vec![crate::git::graph::GraphRelationship {
+                kind: crate::git::graph::RelationshipKind::SquashMerge,
+                matching: crate::git::graph::RelationshipMatch::Exact,
+                destination_oid: "landing".into(),
+                destination_refs: vec!["main".into()],
+                source_oid: "1111111111111111111111111111111111111111".into(),
+                source_refs: vec!["feature/auth".into(), "feature/login".into()],
+            }],
             ..GraphCommit::default()
         };
 
@@ -1463,7 +1486,7 @@ mod tests {
     }
 
     #[test]
-    fn ref_pane_hides_possible_squash_sources_without_an_exact_match() {
+    fn ref_pane_shows_fuzzy_squash_source_with_percent() {
         let commit = GraphCommit {
             oid: "near-match".into(),
             summary: "near squash landing".into(),
@@ -1471,11 +1494,16 @@ mod tests {
             lane: Some(0),
             branch: None,
             refs: vec![],
-            is_possible_squash_merge: false,
-            possible_squash_merge_sources: vec!["feature/login".into()],
-            fuzzy_squash_match: Some(crate::git::graph::FuzzySquashMatch {
-                similarity_percent: 90,
-            }),
+            relationships: vec![crate::git::graph::GraphRelationship {
+                kind: crate::git::graph::RelationshipKind::SquashMerge,
+                matching: crate::git::graph::RelationshipMatch::Fuzzy {
+                    similarity_percent: 97,
+                },
+                destination_oid: "near-match".into(),
+                destination_refs: vec!["main".into()],
+                source_oid: "3333333333333333333333333333333333333333".into(),
+                source_refs: vec!["feature/login".into()],
+            }],
             ..GraphCommit::default()
         };
 
@@ -1485,7 +1513,7 @@ mod tests {
                 .map(|span| span.content.as_ref())
                 .collect();
 
-        assert!(!text.contains("feature/login"), "got: {text}");
+        assert!(text.contains("~ feature/login ~97%"), "got: {text}");
     }
 
     #[test]
@@ -1519,8 +1547,7 @@ mod tests {
                 kind: GraphRefKind::LocalBranch,
             }),
             refs: vec![],
-            is_possible_squash_merge: false,
-            fuzzy_squash_match: None,
+            relationships: vec![],
             ..GraphCommit::default()
         };
         let live = GraphCommit {
@@ -1536,8 +1563,7 @@ mod tests {
                 is_current: false,
                 tracking: None,
             }],
-            is_possible_squash_merge: false,
-            fuzzy_squash_match: None,
+            relationships: vec![],
             ..GraphCommit::default()
         };
         let theme = Theme::dark();
@@ -1577,8 +1603,7 @@ mod tests {
                     lane: Some(0),
                     branch: None,
                     refs: vec![],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..GraphCommit::default()
                 },
                 GraphCommit {
@@ -1588,8 +1613,7 @@ mod tests {
                     lane: Some(1),
                     branch: None,
                     refs: vec![],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..GraphCommit::default()
                 },
             ],
@@ -1641,8 +1665,7 @@ mod tests {
                     lane: Some(0),
                     branch: None,
                     refs: vec![],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..GraphCommit::default()
                 },
                 GraphCommit {
@@ -1652,8 +1675,7 @@ mod tests {
                     lane: Some(0),
                     branch: None,
                     refs: vec![],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..GraphCommit::default()
                 },
             ],
@@ -1704,8 +1726,7 @@ mod tests {
                     lane: Some(0),
                     branch: None,
                     refs: vec![],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..GraphCommit::default()
                 },
                 GraphCommit {
@@ -1715,8 +1736,14 @@ mod tests {
                     lane: Some(0),
                     branch: None,
                     refs: vec![],
-                    is_possible_squash_merge: true,
-                    fuzzy_squash_match: None,
+                    relationships: vec![crate::git::graph::GraphRelationship {
+                        kind: crate::git::graph::RelationshipKind::SquashMerge,
+                        matching: crate::git::graph::RelationshipMatch::Exact,
+                        destination_oid: "2222222222222222".into(),
+                        destination_refs: vec!["main".into()],
+                        source_oid: "1111111111111111111111111111111111111111".into(),
+                        source_refs: Vec::new(),
+                    }],
                     ..GraphCommit::default()
                 },
             ],
@@ -1945,8 +1972,7 @@ mod tests {
             lane: Some(0),
             branch: None,
             refs: vec![],
-            is_possible_squash_merge: false,
-            fuzzy_squash_match: None,
+            relationships: vec![],
             ..GraphCommit::default()
         };
         let lanes_by_oid = HashMap::from([("feature-parent", Some(3))]);
@@ -1985,8 +2011,7 @@ mod tests {
                         is_current: true,
                         tracking: None,
                     }],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..GraphCommit::default()
                 },
                 GraphCommit {
@@ -2002,8 +2027,7 @@ mod tests {
                         is_current: false,
                         tracking: None,
                     }],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..GraphCommit::default()
                 },
             ],
@@ -2064,8 +2088,7 @@ mod tests {
                         behind: 0,
                     }),
                 }],
-                is_possible_squash_merge: false,
-                fuzzy_squash_match: None,
+                relationships: vec![],
                 ..GraphCommit::default()
             }],
             lines: vec![GraphLine {
@@ -2131,8 +2154,7 @@ mod tests {
                         behind: 0,
                     }),
                 }],
-                is_possible_squash_merge: false,
-                fuzzy_squash_match: None,
+                relationships: vec![],
                 ..GraphCommit::default()
             }],
             lines: vec![GraphLine {
@@ -2196,8 +2218,7 @@ mod tests {
                         behind: 0,
                     }),
                 }],
-                is_possible_squash_merge: false,
-                fuzzy_squash_match: None,
+                relationships: vec![],
                 ..GraphCommit::default()
             }],
             lines: vec![GraphLine {
@@ -2258,8 +2279,7 @@ mod tests {
                             behind: 0,
                         }),
                     }],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..GraphCommit::default()
                 },
                 GraphCommit {
@@ -2278,8 +2298,7 @@ mod tests {
                             behind: 0,
                         }),
                     }],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..GraphCommit::default()
                 },
             ],
@@ -2368,8 +2387,7 @@ mod tests {
                     is_current: false,
                     tracking: None,
                 }],
-                is_possible_squash_merge: false,
-                fuzzy_squash_match: None,
+                relationships: vec![],
                 ..GraphCommit::default()
             }],
             lines: vec![GraphLine {
@@ -2419,8 +2437,7 @@ mod tests {
                         is_current: true,
                         tracking: None,
                     }],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..GraphCommit::default()
                 },
                 GraphCommit {
@@ -2436,8 +2453,7 @@ mod tests {
                         is_current: false,
                         tracking: None,
                     }],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..GraphCommit::default()
                 },
             ],

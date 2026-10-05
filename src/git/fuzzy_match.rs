@@ -2,8 +2,7 @@
 //! tier. See `docs/plans/2026-08-29-squash-merge-test-scenarios.md` ("New:
 //! Option 6 — Fuzzy/similarity-based possible-match tier").
 //!
-//! This module is deliberately Graph-only (see the implementation map that
-//! accompanied this module's introduction): it scores an already-fetched
+//! Shared by Graph and Branches, this module scores an already-fetched
 //! `(branch tip diff, candidate base commit diff)` pair — both raw `git diff
 //! --binary --full-index --no-ext-diff --no-textconv` byte outputs — and
 //! reports either a numeric similarity (for a "possible squash merge
@@ -179,7 +178,7 @@ pub fn score(diff_a: &[u8], diff_b: &[u8]) -> Option<FuzzyScore> {
     })
 }
 
-/// Classify a [`FuzzyScore`] into a rounded 0-100 similarity percent, or
+/// Classify a [`FuzzyScore`] into a floored 0-99 similarity percent, or
 /// `None` if it doesn't clear the fuzzy tier. `similarity >= 1.0` (a
 /// content-identical pair) always returns `None`: per the plan doc's
 /// algorithm sketch, Option 6 is additive and defers to the exact-match tier
@@ -194,12 +193,24 @@ pub fn classify(score: &FuzzyScore) -> Option<u8> {
     if score.similarity < FUZZY_SIMILARITY_THRESHOLD {
         return None;
     }
-    Some((score.similarity * 100.0).round().clamp(0.0, 100.0) as u8)
+    Some((score.similarity * 100.0).floor().clamp(0.0, 99.0) as u8)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_floors_so_fuzzy_never_reports_100() {
+        for (similarity, percent) in [(0.996, 99), (0.759, 75)] {
+            let score = FuzzyScore {
+                similarity,
+                file_overlap_ratio: 1.0,
+                union_size: 1_000,
+            };
+            assert_eq!(classify(&score), Some(percent));
+        }
+    }
 
     fn diff_for(paths_and_hunks: &[(&str, &str)]) -> Vec<u8> {
         let mut out = String::new();

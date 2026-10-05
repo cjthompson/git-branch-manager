@@ -740,13 +740,20 @@ mod tests {
 
     #[test]
     fn commit_details_overlay_renders_fuzzy_similarity_from_the_graph_commit() {
-        use crate::git::graph::{FuzzySquashMatch, GraphCommit};
+        use crate::git::graph::GraphCommit;
         let rendered = render_commit_details_overlay(GraphCommit {
+            relationships: vec![crate::git::graph::GraphRelationship {
+                kind: crate::git::graph::RelationshipKind::SquashMerge,
+                matching: crate::git::graph::RelationshipMatch::Fuzzy {
+                    similarity_percent: 84,
+                },
+                destination_oid: "abcdef1234567890".into(),
+                destination_refs: vec!["main".into()],
+                source_oid: "3333333333333333333333333333333333333333".into(),
+                source_refs: Vec::new(),
+            }],
             oid: "abcdef1234567890".into(),
             summary: "near squash landing".into(),
-            fuzzy_squash_match: Some(FuzzySquashMatch {
-                similarity_percent: 84,
-            }),
             ..GraphCommit::default()
         });
         assert!(
@@ -773,11 +780,33 @@ mod tests {
             let rendered = render_commit_details_overlay(graph::GraphCommit {
                 oid: "abcdef1234567890".into(),
                 summary: "classified commit".into(),
-                is_possible_squash_merge,
+                relationships: {
+                    let mut pairs = vec![
+                        crate::git::graph::GraphRelationship {
+                            kind: crate::git::graph::RelationshipKind::SquashMerge,
+                            matching: crate::git::graph::RelationshipMatch::Exact,
+                            destination_oid: "abcdef1234567890".into(),
+                            destination_refs: vec!["main".into()],
+                            source_oid: "1111111111111111111111111111111111111111".into(),
+                            source_refs: Vec::new(),
+                        },
+                        crate::git::graph::GraphRelationship {
+                            kind: crate::git::graph::RelationshipKind::SquashMerge,
+                            matching: crate::git::graph::RelationshipMatch::Fuzzy {
+                                similarity_percent: 97,
+                            },
+                            destination_oid: "abcdef1234567890".into(),
+                            destination_refs: vec!["main".into()],
+                            source_oid: "3333333333333333333333333333333333333333".into(),
+                            source_refs: Vec::new(),
+                        },
+                    ];
+                    if !is_possible_squash_merge {
+                        pairs.retain(|r| r.matching != crate::git::graph::RelationshipMatch::Exact);
+                    }
+                    pairs
+                },
                 is_cherry_picked_commit,
-                fuzzy_squash_match: Some(graph::FuzzySquashMatch {
-                    similarity_percent: 97,
-                }),
                 ..graph::GraphCommit::default()
             });
             assert!(!rendered.contains("Possible squash merge (fuzzy)"));

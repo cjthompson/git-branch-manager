@@ -642,9 +642,7 @@ impl App {
                                 let enriched = current.commits.iter().map(|commit| (commit.oid.as_str(), commit)).collect::<std::collections::HashMap<_, _>>();
                                 for commit in &mut snapshot.commits {
                                     if let Some(old) = enriched.get(commit.oid.as_str()) {
-                                        commit.is_possible_squash_merge = old.is_possible_squash_merge;
-                                        commit.possible_squash_merge_sources = old.possible_squash_merge_sources.clone();
-                                        commit.fuzzy_squash_match = old.fuzzy_squash_match.clone();
+                                        commit.relationships = old.relationships.clone();
                                         commit.is_cherry_picked_commit = old.is_cherry_picked_commit;
                                     }
                                 }
@@ -6094,8 +6092,7 @@ mod tests {
                 lane: Some(0),
                 branch: None,
                 refs,
-                is_possible_squash_merge: false,
-                fuzzy_squash_match: None,
+                relationships: vec![],
                 ..graph::GraphCommit::default()
             }],
             lines: vec![graph::GraphLine {
@@ -6716,8 +6713,7 @@ mod tests {
                     lane: Some(0),
                     branch: None,
                     refs: vec![],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..graph::GraphCommit::default()
                 },
                 graph::GraphCommit {
@@ -6727,8 +6723,7 @@ mod tests {
                     lane: Some(0),
                     branch: None,
                     refs: vec![],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..graph::GraphCommit::default()
                 },
             ],
@@ -10512,8 +10507,7 @@ mod tests {
                     is_current: false,
                     tracking: None,
                 }],
-                is_possible_squash_merge: false,
-                fuzzy_squash_match: None,
+                relationships: vec![],
                 ..graph::GraphCommit::default()
             }],
             lines: vec![graph::GraphLine {
@@ -10546,8 +10540,7 @@ mod tests {
                 lane: Some(0),
                 branch: None,
                 refs: vec![],
-                is_possible_squash_merge: false,
-                fuzzy_squash_match: None,
+                relationships: vec![],
                 ..graph::GraphCommit::default()
             }],
             lines: vec![graph::GraphLine {
@@ -10570,9 +10563,14 @@ mod tests {
             generation: first_generation,
             updates: vec![graph::GraphEnrichmentUpdate {
                 oid: "2222222222222222222222222222222222222222".into(),
-                is_possible_squash_merge: true,
-                possible_squash_merge_sources: vec![],
-                fuzzy_squash_match: None,
+                relationships: vec![graph::GraphRelationship {
+                    kind: graph::RelationshipKind::SquashMerge,
+                    matching: graph::RelationshipMatch::Exact,
+                    destination_oid: "2222222222222222222222222222222222222222".into(),
+                    destination_refs: vec!["main".into()],
+                    source_oid: "1111111111111111111111111111111111111111".into(),
+                    source_refs: vec![],
+                }],
                 is_cherry_picked_commit: false,
             }],
         })
@@ -10585,7 +10583,7 @@ mod tests {
             .snapshot()
             .expect("snapshot present after second load");
         assert!(
-            !current.commits[0].is_possible_squash_merge,
+            !current.commits[0].is_possible_squash_merge(),
             "stale enrichment must not overwrite the newer snapshot's marker"
         );
     }
@@ -10751,7 +10749,7 @@ mod tests {
                 .unwrap()
                 .commits
                 .iter()
-                .any(|c| c.oid == expected && c.is_possible_squash_merge)
+                .any(|c| c.oid == expected && c.is_possible_squash_merge())
         });
         let marker = app
             .graph
@@ -10762,11 +10760,11 @@ mod tests {
             .find(|c| c.oid == expected)
             .unwrap();
         assert!(
-            marker.is_possible_squash_merge,
+            marker.is_possible_squash_merge(),
             "new generation worker publishes real squash marker"
         );
         assert!(marker
-            .possible_squash_merge_sources
+            .possible_squash_merge_sources()
             .contains(&"feature-copy".into()));
         assert_eq!(
             app.graph_generation_signal.load(Ordering::Acquire),
@@ -10783,14 +10781,30 @@ mod tests {
         run_git(dir, &["config", "user.email", "test@example.com"]);
         run_git(dir, &["commit", "--allow-empty", "-m", "root"]);
         let mut enriched = graph_snapshot(vec![]);
-        enriched.commits[0].is_possible_squash_merge = true;
-        enriched.commits[0].possible_squash_merge_sources = vec!["feature/source".into()];
-        enriched.commits[0].fuzzy_squash_match = Some(graph::FuzzySquashMatch { similarity_percent: 87 });
+        enriched.commits[0].relationships = vec![
+            graph::GraphRelationship {
+                kind: graph::RelationshipKind::SquashMerge,
+                matching: graph::RelationshipMatch::Exact,
+                destination_oid: enriched.commits[0].oid.clone(),
+                destination_refs: vec!["main".into()],
+                source_oid: "1111111111111111111111111111111111111111".into(),
+                source_refs: vec!["feature/source".into()],
+            },
+            graph::GraphRelationship {
+                kind: graph::RelationshipKind::SquashMerge,
+                matching: graph::RelationshipMatch::Fuzzy {
+                    similarity_percent: 87,
+                },
+                destination_oid: enriched.commits[0].oid.clone(),
+                destination_refs: vec!["main".into()],
+                source_oid: "3333333333333333333333333333333333333333".into(),
+                source_refs: vec!["feature/near-source".into()],
+            },
+        ];
+        let expected_relationships = enriched.commits[0].relationships.clone();
         enriched.commits[0].is_cherry_picked_commit = true;
         let mut stale_worker_snapshot = enriched.clone();
-        stale_worker_snapshot.commits[0].is_possible_squash_merge = false;
-        stale_worker_snapshot.commits[0].possible_squash_merge_sources.clear();
-        stale_worker_snapshot.commits[0].fuzzy_squash_match = None;
+        stale_worker_snapshot.commits[0].relationships.clear();
         stale_worker_snapshot.commits[0].is_cherry_picked_commit = false;
         let state = graph::GraphRepositoryState::capture(dir).unwrap();
         let delta = graph::GraphRepositoryDelta::between(state.clone(), state);
@@ -10814,9 +10828,10 @@ mod tests {
         app.drain_channels();
 
         let commit = &app.graph.snapshot().unwrap().commits[0];
-        assert!(commit.is_possible_squash_merge);
-        assert_eq!(commit.possible_squash_merge_sources, ["feature/source"]);
-        assert_eq!(commit.fuzzy_squash_match.as_ref().unwrap().similarity_percent, 87);
+        assert!(commit.is_possible_squash_merge());
+        assert_eq!(commit.possible_squash_merge_sources(), ["feature/source"]);
+        assert_eq!(commit.relationships, expected_relationships);
+        assert_eq!(commit.fuzzy_squash_match(), None);
         assert!(commit.is_cherry_picked_commit);
     }
 
@@ -10845,8 +10860,7 @@ mod tests {
                 lane: Some(0),
                 branch: None,
                 refs: vec![],
-                is_possible_squash_merge: false,
-                fuzzy_squash_match: None,
+                relationships: vec![],
                 ..graph::GraphCommit::default()
             }],
             lines: vec![graph::GraphLine {
@@ -10868,9 +10882,14 @@ mod tests {
             generation,
             updates: vec![graph::GraphEnrichmentUpdate {
                 oid: "3333333333333333333333333333333333333333".into(),
-                is_possible_squash_merge: true,
-                possible_squash_merge_sources: vec![],
-                fuzzy_squash_match: None,
+                relationships: vec![graph::GraphRelationship {
+                    kind: graph::RelationshipKind::SquashMerge,
+                    matching: graph::RelationshipMatch::Exact,
+                    destination_oid: "3333333333333333333333333333333333333333".into(),
+                    destination_refs: vec!["main".into()],
+                    source_oid: "1111111111111111111111111111111111111111".into(),
+                    source_refs: vec![],
+                }],
                 is_cherry_picked_commit: false,
             }],
         })
@@ -10880,7 +10899,7 @@ mod tests {
 
         let current = app.graph.snapshot().expect("snapshot present");
         assert!(
-            current.commits[0].is_possible_squash_merge,
+            current.commits[0].is_possible_squash_merge(),
             "matching-generation enrichment must be applied by the drain"
         );
     }

@@ -34,11 +34,7 @@ pub struct GraphSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphEnrichmentUpdate {
     pub oid: String,
-    pub is_possible_squash_merge: bool,
-    /// Local branch names whose aggregate diff exactly matches this base
-    /// commit. Empty unless `is_possible_squash_merge` is true.
-    pub possible_squash_merge_sources: Vec<String>,
-    pub fuzzy_squash_match: Option<FuzzySquashMatch>,
+    pub relationships: Vec<GraphRelationship>,
     pub is_cherry_picked_commit: bool,
 }
 
@@ -122,19 +118,8 @@ pub struct GraphCommit {
     /// branch claims its chain first so retained merged refs cannot relabel it.
     pub branch: Option<GraphBranchLabel>,
     pub refs: Vec<GraphRef>,
-    /// True when this displayed base-branch commit has the same stable Git
-    /// patch ID as the aggregate patch of a displayed, non-merged local branch.
-    pub is_possible_squash_merge: bool,
-    /// Local branches whose aggregate diffs exactly match this base commit.
-    /// The list is sorted for a stable compact Graph label and details-modal
-    /// presentation. It is empty unless `is_possible_squash_merge` is true.
-    pub possible_squash_merge_sources: Vec<String>,
-    /// Set when this commit's diff is a *near*-match (not exact) for a
-    /// displayed branch tip's aggregate diff, per the Option 6 fuzzy/possible
-    /// tier (`git::fuzzy_match`). Never set on a commit that already has
-    /// `is_possible_squash_merge == true` — Option 6 is additive and defers
-    /// to the exact-match tier.
-    pub fuzzy_squash_match: Option<FuzzySquashMatch>,
+    /// Captured source/destination pairings, including every accepted confidence.
+    pub relationships: Vec<GraphRelationship>,
     /// True when this commit landed in base via an individual cherry-pick,
     /// as detected by `git cherry`. Defaults to false (none of the
     /// pre-cherry-detection snapshots set it).
@@ -149,13 +134,133 @@ pub struct GraphCommit {
     pub authored_at: Option<DateTime<Utc>>,
 }
 
+/// The operation that paired a source commit with its destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum RelationshipKind {
+    SquashMerge,
+    CherryPick,
+}
+
+impl RelationshipKind {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::SquashMerge => "sm",
+            Self::CherryPick => "c-p",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "sm" => Some(Self::SquashMerge),
+            "c-p" => Some(Self::CherryPick),
+            _ => None,
+        }
+    }
+}
+
+/// Exact patch identity or an accepted fuzzy similarity below 100 percent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationshipMatch {
+    Exact,
+    Fuzzy { similarity_percent: u8 },
+}
+
+impl RelationshipMatch {
+    pub fn similarity_percent(self) -> u8 {
+        match self {
+            Self::Exact => 100,
+            Self::Fuzzy { similarity_percent } => similarity_percent,
+        }
+    }
+
+    pub fn stronger(self, other: Self) -> Self {
+        if self.similarity_percent() >= other.similarity_percent() {
+            self
+        } else {
+            other
+        }
+    }
+}
+
+/// One detected pairing, with sorted, deduplicated ref snapshots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphRelationship {
+    pub kind: RelationshipKind,
+    pub matching: RelationshipMatch,
+    pub destination_oid: String,
+    pub destination_refs: Vec<String>,
+    pub source_oid: String,
+    pub source_refs: Vec<String>,
+}
+
+impl GraphRelationship {
+    pub fn key(&self) -> (RelationshipKind, &str, &str) {
+        (
+            self.kind,
+            self.destination_oid.as_str(),
+            self.source_oid.as_str(),
+        )
+    }
+}
+
+/// Strongest incoming squash confidence and all equally strong source names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SquashMatchConfidence {
+    pub sources: Vec<String>,
+    pub similarity_percent: u8,
+}
+
+impl GraphCommit {
+    pub fn squash_match_confidence(&self) -> Option<SquashMatchConfidence> {
+        let incoming = || {
+            self.relationships.iter().filter(|relationship| {
+                relationship.kind == RelationshipKind::SquashMerge
+                    && relationship.destination_oid == self.oid
+            })
+        };
+        let best = incoming()
+            .map(|relationship| relationship.matching.similarity_percent())
+            .max()?;
+        let mut sources = incoming()
+            .filter(|relationship| relationship.matching.similarity_percent() == best)
+            .flat_map(|relationship| relationship.source_refs.iter().cloned())
+            .collect::<Vec<_>>();
+        sources.sort();
+        sources.dedup();
+        Some(SquashMatchConfidence {
+            sources,
+            similarity_percent: best,
+        })
+    }
+
+    pub fn is_possible_squash_merge(&self) -> bool {
+        self.squash_match_confidence()
+            .is_some_and(|confidence| confidence.similarity_percent == 100)
+    }
+
+    pub fn possible_squash_merge_sources(&self) -> Vec<String> {
+        self.squash_match_confidence()
+            .filter(|confidence| confidence.similarity_percent == 100)
+            .map(|confidence| confidence.sources)
+            .unwrap_or_default()
+    }
+
+    pub fn fuzzy_squash_match(&self) -> Option<FuzzySquashMatch> {
+        self.squash_match_confidence()
+            .filter(|confidence| confidence.similarity_percent < 100)
+            .map(|confidence| FuzzySquashMatch {
+                similarity_percent: confidence.similarity_percent,
+            })
+    }
+}
+
 /// A fuzzy (non-exact) possible-squash-merge signal for a single base commit,
 /// scored against the best-matching displayed branch tip. See
 /// `docs/plans/2026-08-29-squash-merge-test-scenarios.md` "New: Option 6".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FuzzySquashMatch {
-    /// Jaccard similarity as an integer percent (0-100), rounded from the raw
-    /// f32 score. Stored as u8 rather than f32 so GraphCommit/FuzzySquashMatch
+    /// Jaccard similarity floored from the raw f32 score; fuzzy is always <= 99.
+    /// Stored as u8 rather than f32 so GraphCommit/FuzzySquashMatch
     /// can keep deriving Eq (f32 has no Eq impl).
     pub similarity_percent: u8,
 }
@@ -457,11 +562,23 @@ pub fn update_graph_incrementally(
         } else {
             let commit = repository.find_commit(oid).map_err(|error| GraphLoadError::Both { gleisbau: error.message().to_string(), fallback: error.message().to_string() })?;
             records.push(GraphCommit {
-                oid: oid_text, summary: commit.summary().ok().flatten().unwrap_or_default().to_string(),
-                parents: commit.parent_ids().map(|parent| parent.to_string()).collect(), lane: None,
-                branch: None, refs: Vec::new(), is_possible_squash_merge: false,
-                possible_squash_merge_sources: Vec::new(), fuzzy_squash_match: None,
-                is_cherry_picked_commit: false, author_name: commit.author().name().unwrap_or("").to_string(),
+                oid: oid_text,
+                summary: commit
+                    .summary()
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .to_string(),
+                parents: commit
+                    .parent_ids()
+                    .map(|parent| parent.to_string())
+                    .collect(),
+                lane: None,
+                branch: None,
+                refs: Vec::new(),
+                relationships: vec![],
+                is_cherry_picked_commit: false,
+                author_name: commit.author().name().unwrap_or("").to_string(),
                 author_email: commit.author().email().unwrap_or("").to_string(),
                 authored_at: Utc.timestamp_opt(commit.author().when().seconds(), 0).single(),
             });
@@ -472,9 +589,7 @@ pub fn update_graph_incrementally(
         record.refs = ref_data.refs_by_oid.get(&record.oid).cloned().unwrap_or_default();
         record.branch = None;
         if let Some(old) = old_by_oid.get(&record.oid) {
-            record.is_possible_squash_merge = old.is_possible_squash_merge;
-            record.possible_squash_merge_sources = old.possible_squash_merge_sources.clone();
-            record.fuzzy_squash_match = old.fuzzy_squash_match.clone();
+            record.relationships = old.relationships.clone();
             record.is_cherry_picked_commit = old.is_cherry_picked_commit;
         }
     }
@@ -784,9 +899,7 @@ fn load_with_gleisbau(
                 lane,
                 branch: None,
                 refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
-                is_possible_squash_merge: false,
-                possible_squash_merge_sources: Vec::new(),
-                fuzzy_squash_match: None,
+                relationships: vec![],
                 is_cherry_picked_commit: false,
                 author_name: author.name().unwrap_or("").to_string(),
                 author_email: author.email().unwrap_or("").to_string(),
@@ -891,9 +1004,7 @@ fn load_with_git_cli(
             lane,
             branch: None,
             refs: ref_data.refs_by_oid.get(&oid).cloned().unwrap_or_default(),
-            is_possible_squash_merge: false,
-            possible_squash_merge_sources: Vec::new(),
-            fuzzy_squash_match: None,
+            relationships: vec![],
             is_cherry_picked_commit: false,
             author_name: fields[2].to_string(),
             author_email: fields[3].to_string(),
@@ -1031,20 +1142,25 @@ fn compute_possible_squash_updates_with_cancel(
                 continue;
             }
         };
+        let source = SourceTip {
+            tip_oid: tip.clone(),
+            merge_base,
+            source_names,
+        };
         jobs.push(PatchJob {
-            target: PatchTarget::BranchTip { source_names },
-            old_oid: merge_base,
+            old_oid: source.merge_base.clone(),
             new_oid: tip,
+            target: PatchTarget::BranchTip(source),
         });
     }
 
     let mut base_oids_by_patch = HashMap::<String, Vec<String>>::new();
-    let mut source_names_by_patch = HashMap::<String, Vec<String>>::new();
+    let mut sources_by_patch = HashMap::<String, Vec<SourceTip>>::new();
     // Retained alongside patch IDs so pairs whose patch IDs don't exactly
     // match can still be scored by the Option 6 fuzzy tier below, without a
     // second `git diff` subprocess per job.
     let mut base_diffs = Vec::<(String, Vec<u8>)>::new();
-    let mut branch_diffs = Vec::<Vec<u8>>::new();
+    let mut branch_diffs = Vec::<(SourceTip, Vec<u8>)>::new();
     if cancel.is_cancelled() {
         return None;
     }
@@ -1055,84 +1171,78 @@ fn compute_possible_squash_updates_with_cancel(
         match result.target {
             PatchTarget::BaseCommit(oid) => {
                 if let Some(patch_id) = result.patch_id {
-                    base_oids_by_patch
-                        .entry(patch_id)
-                        .or_default()
-                        .push(oid.clone());
+                    base_oids_by_patch.entry(patch_id).or_default().push(oid.clone());
                 }
                 if let Some(diff_text) = result.diff_text {
                     base_diffs.push((oid, diff_text));
                 }
             }
-            PatchTarget::BranchTip { source_names } => {
+            PatchTarget::BranchTip(source) => {
                 if let Some(patch_id) = result.patch_id {
-                    let names = source_names_by_patch.entry(patch_id).or_default();
-                    names.extend(source_names);
-                    names.sort();
-                    names.dedup();
+                    sources_by_patch.entry(patch_id).or_default().push(source.clone());
                 }
                 if let Some(diff_text) = result.diff_text {
-                    branch_diffs.push(diff_text);
+                    branch_diffs.push((source, diff_text));
                 }
             }
         }
     }
 
-    let mut source_names_by_base_oid = HashMap::<String, Vec<String>>::new();
-    for (patch_id, source_names) in source_names_by_patch {
+    let mut relationships = Vec::<GraphRelationship>::new();
+    let mut exact_pairs = HashSet::<(String, String)>::new();
+    for (patch_id, sources) in &sources_by_patch {
         if cancel.is_cancelled() {
             return None;
         }
-        let Some(base_oids) = base_oids_by_patch.get(&patch_id) else {
+        let Some(base_oids) = base_oids_by_patch.get(patch_id) else {
             continue;
         };
-        for oid in base_oids {
-            if cancel.is_cancelled() {
-                return None;
+        for destination in base_oids {
+            for source in sources {
+                if cancel.is_cancelled() {
+                    return None;
+                }
+                exact_pairs.insert((destination.clone(), source.tip_oid.clone()));
+                relationships.push(GraphRelationship {
+                    kind: RelationshipKind::SquashMerge,
+                    matching: RelationshipMatch::Exact,
+                    destination_oid: destination.clone(),
+                    destination_refs: vec![base_branch.clone()],
+                    source_oid: source.tip_oid.clone(),
+                    source_refs: source.source_names.clone(),
+                });
             }
-            let names = source_names_by_base_oid.entry(oid.clone()).or_default();
-            names.extend(source_names.iter().cloned());
-            names.sort();
-            names.dedup();
         }
     }
-    let matching_base_oids = source_names_by_base_oid
-        .keys()
-        .cloned()
-        .collect::<HashSet<_>>();
-
-    // Option 6: for base commits that didn't get an exact patch-id match,
-    // score their diff against every displayed branch tip's diff and keep
-    // the best fuzzy classification, if any clears the threshold.
-    let mut fuzzy_by_oid: HashMap<String, FuzzySquashMatch> = HashMap::new();
-    for (oid, base_diff) in &base_diffs {
+    for (destination, base_diff) in &base_diffs {
         if cancel.is_cancelled() {
             return None;
         }
-        if matching_base_oids.contains(oid) {
-            continue;
-        }
-        let mut best_percent = None;
-        for branch_diff in &branch_diffs {
+        for (source, branch_diff) in &branch_diffs {
             if cancel.is_cancelled() {
                 return None;
             }
-            if let Some(percent) = crate::git::fuzzy_match::score(branch_diff, base_diff)
+            if exact_pairs.contains(&(destination.clone(), source.tip_oid.clone())) {
+                continue;
+            }
+            let Some(percent) = crate::git::fuzzy_match::score(branch_diff, base_diff)
                 .and_then(|score| crate::git::fuzzy_match::classify(&score))
-            {
-                best_percent = Some(best_percent.map_or(percent, |best: u8| best.max(percent)));
-            }
+            else {
+                continue;
+            };
+            relationships.push(GraphRelationship {
+                kind: RelationshipKind::SquashMerge,
+                matching: RelationshipMatch::Fuzzy { similarity_percent: percent },
+                destination_oid: destination.clone(),
+                destination_refs: vec![base_branch.clone()],
+                source_oid: source.tip_oid.clone(),
+                source_refs: source.source_names.clone(),
+            });
         }
-        let Some(percent) = best_percent else {
-            continue;
-        };
-        fuzzy_by_oid.insert(
-            oid.clone(),
-            FuzzySquashMatch {
-                similarity_percent: percent,
-            },
-        );
     }
+    // Patch workers and hash maps finish in arbitrary order; publish stable pairs.
+    relationships.sort_by(|left, right| left.key().cmp(&right.key()));
+    relationships.dedup_by(|left, right| left.key() == right.key());
 
     if cancel.is_cancelled() {
         return None;
@@ -1147,12 +1257,11 @@ fn compute_possible_squash_updates_with_cancel(
         })
         .map(|commit| GraphEnrichmentUpdate {
             oid: commit.oid.clone(),
-            is_possible_squash_merge: matching_base_oids.contains(&commit.oid),
-            possible_squash_merge_sources: source_names_by_base_oid
-                .get(&commit.oid)
+            relationships: relationships
+                .iter()
+                .filter(|relationship| relationship.destination_oid == commit.oid)
                 .cloned()
-                .unwrap_or_default(),
-            fuzzy_squash_match: fuzzy_by_oid.get(&commit.oid).cloned(),
+                .collect(),
             is_cherry_picked_commit: false,
         })
         .collect();
@@ -1173,9 +1282,7 @@ pub fn apply_squash_enrichment(snapshot: &mut GraphSnapshot, updates: &[GraphEnr
             .iter_mut()
             .find(|commit| commit.oid == update.oid)
         {
-            commit.is_possible_squash_merge = update.is_possible_squash_merge;
-            commit.possible_squash_merge_sources = update.possible_squash_merge_sources.clone();
-            commit.fuzzy_squash_match = update.fuzzy_squash_match.clone();
+            commit.relationships = update.relationships.clone();
             commit.is_cherry_picked_commit = update.is_cherry_picked_commit;
         }
     }
@@ -1283,17 +1390,11 @@ fn compute_cherry_pick_updates(
         return None;
     }
     Some(
-        snapshot
-            .commits
-            .iter()
-            .map(|commit| GraphEnrichmentUpdate {
-                oid: commit.oid.clone(),
-                is_possible_squash_merge: false,
-                possible_squash_merge_sources: Vec::new(),
-                fuzzy_squash_match: None,
-                is_cherry_picked_commit: cherry_picked.contains(&commit.oid),
-            })
-            .collect(),
+        snapshot.commits.iter().map(|commit| GraphEnrichmentUpdate {
+            oid: commit.oid.clone(),
+            relationships: vec![],
+            is_cherry_picked_commit: cherry_picked.contains(&commit.oid),
+        }).collect(),
     )
 }
 
@@ -1410,9 +1511,16 @@ struct PatchJob {
     new_oid: String,
 }
 
+#[derive(Clone, Debug)]
+struct SourceTip {
+    tip_oid: String,
+    merge_base: String,
+    source_names: Vec<String>,
+}
+
 enum PatchTarget {
     BaseCommit(String),
-    BranchTip { source_names: Vec<String> },
+    BranchTip(SourceTip),
 }
 
 struct PatchResult {
@@ -2016,6 +2124,120 @@ fn insert_ref(refs_by_oid: &mut HashMap<String, Vec<GraphRef>>, oid: &str, refer
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn squash(
+        dest: &str,
+        source: &str,
+        names: &[&str],
+        matching: RelationshipMatch,
+    ) -> GraphRelationship {
+        GraphRelationship {
+            kind: RelationshipKind::SquashMerge,
+            matching,
+            destination_oid: dest.into(),
+            destination_refs: vec!["main".into()],
+            source_oid: source.into(),
+            source_refs: names.iter().map(|n| n.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn squash_confidence_prefers_exact_and_unions_its_sources() {
+        let commit = GraphCommit {
+            oid: "d".into(),
+            relationships: vec![
+                squash("d", "t1", &["feature/b"], RelationshipMatch::Exact),
+                squash("d", "t2", &["feature/a"], RelationshipMatch::Exact),
+                squash(
+                    "d",
+                    "t3",
+                    &["feature/c"],
+                    RelationshipMatch::Fuzzy {
+                        similarity_percent: 97,
+                    },
+                ),
+            ],
+            ..GraphCommit::default()
+        };
+        let confidence = commit.squash_match_confidence().unwrap();
+        assert_eq!(confidence.similarity_percent, 100);
+        assert_eq!(confidence.sources, ["feature/a", "feature/b"]);
+        assert!(commit.is_possible_squash_merge());
+        assert_eq!(commit.fuzzy_squash_match(), None);
+    }
+
+    #[test]
+    fn squash_confidence_reports_best_fuzzy_source() {
+        let commit = GraphCommit {
+            oid: "d".into(),
+            relationships: vec![
+                squash(
+                    "d",
+                    "t1",
+                    &["feature/low"],
+                    RelationshipMatch::Fuzzy {
+                        similarity_percent: 80,
+                    },
+                ),
+                squash(
+                    "d",
+                    "t2",
+                    &["feature/high"],
+                    RelationshipMatch::Fuzzy {
+                        similarity_percent: 97,
+                    },
+                ),
+            ],
+            ..GraphCommit::default()
+        };
+        assert_eq!(
+            commit.squash_match_confidence(),
+            Some(SquashMatchConfidence {
+                sources: vec!["feature/high".into()],
+                similarity_percent: 97
+            })
+        );
+        assert!(!commit.is_possible_squash_merge());
+        assert_eq!(
+            commit.fuzzy_squash_match(),
+            Some(FuzzySquashMatch {
+                similarity_percent: 97
+            })
+        );
+    }
+
+    #[test]
+    fn squash_confidence_ignores_relationships_where_commit_is_the_source() {
+        let commit = GraphCommit {
+            oid: "t1".into(),
+            relationships: vec![squash("d", "t1", &["feature/x"], RelationshipMatch::Exact)],
+            ..GraphCommit::default()
+        };
+        assert_eq!(commit.squash_match_confidence(), None);
+    }
+
+    #[test]
+    fn stronger_match_prefers_exact_then_higher_percent() {
+        use RelationshipMatch::*;
+        assert_eq!(
+            Exact.stronger(Fuzzy {
+                similarity_percent: 99
+            }),
+            Exact
+        );
+        assert_eq!(
+            Fuzzy {
+                similarity_percent: 80
+            }
+            .stronger(Fuzzy {
+                similarity_percent: 90
+            }),
+            Fuzzy {
+                similarity_percent: 90
+            }
+        );
+    }
+
 
     #[test]
     fn enrichment_cancel_tracks_latest_generation() {

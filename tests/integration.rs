@@ -1119,6 +1119,153 @@ fn test_load_graph_uses_cli_fallback_for_shallow_repository() {
         .any(|line| line.commit_index.is_some()));
 }
 
+fn paired_squash_fixture() -> (TestDir, String, String, String, String) {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    let root = git_output(dir, &["rev-parse", "HEAD"]);
+    let content: Vec<String> = (0..20).map(|n| format!("paired line {n}\n")).collect();
+    let mut sources = Vec::new();
+    for (name, changed_lines) in [
+        ("feature/exact", 0),
+        ("feature/high", 1),
+        ("feature/low", 2),
+    ] {
+        run_git(dir, &["checkout", "-b", name, &root]);
+        let mut lines = content.clone();
+        for (n, line) in lines.iter_mut().take(changed_lines).enumerate() {
+            *line = format!("different line {n}\n");
+        }
+        std::fs::write(dir.join("paired.txt"), lines.concat()).unwrap();
+        run_git(dir, &["add", "paired.txt"]);
+        run_git(dir, &["commit", "-m", name]);
+        sources.push(git_output(dir, &["rev-parse", "HEAD"]));
+    }
+    run_git(dir, &["branch", "feature/exact-alias", &sources[0]]);
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/exact"]);
+    run_git(dir, &["commit", "-m", "paired landing"]);
+    let destination = git_output(dir, &["rev-parse", "HEAD"]);
+    (
+        tmpdir,
+        destination,
+        sources[0].clone(),
+        sources[1].clone(),
+        sources[2].clone(),
+    )
+}
+
+#[test]
+fn exact_destination_keeps_distinct_fuzzy_source() {
+    let (tmpdir, destination, exact, high, low) = paired_squash_fixture();
+    let snapshot = graph::load_graph_with_squash_annotations(
+        tmpdir.path(),
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..tmpdir.graph_options()
+        },
+    )
+    .unwrap();
+    let landing = snapshot
+        .commits
+        .iter()
+        .find(|c| c.oid == destination)
+        .unwrap();
+    assert_eq!(
+        landing.relationships.len(),
+        3,
+        "every distinct paired source must survive"
+    );
+    for (source, names, matching) in [
+        (
+            &exact,
+            vec!["feature/exact", "feature/exact-alias"],
+            graph::RelationshipMatch::Exact,
+        ),
+        (
+            &high,
+            vec!["feature/high"],
+            graph::RelationshipMatch::Fuzzy {
+                similarity_percent: 90,
+            },
+        ),
+        (
+            &low,
+            vec!["feature/low"],
+            graph::RelationshipMatch::Fuzzy {
+                similarity_percent: 81,
+            },
+        ),
+    ] {
+        let pairs: Vec<_> = landing
+            .relationships
+            .iter()
+            .filter(|r| r.source_oid == *source)
+            .collect();
+        assert_eq!(pairs.len(), 1, "one record per exact or fuzzy pair");
+        let relationship = pairs[0];
+        assert_eq!(relationship.kind, graph::RelationshipKind::SquashMerge);
+        assert_eq!(relationship.destination_oid, destination);
+        assert_eq!(relationship.destination_refs, ["main"]);
+        assert_eq!(relationship.source_refs, names);
+        assert_eq!(relationship.matching, matching);
+        assert_eq!(relationship.source_oid.len(), 40);
+    }
+    assert_eq!(
+        landing.squash_match_confidence(),
+        Some(graph::SquashMatchConfidence {
+            sources: vec!["feature/exact".into(), "feature/exact-alias".into()],
+            similarity_percent: 100,
+        })
+    );
+    assert_eq!(landing.fuzzy_squash_match(), None);
+}
+
+#[test]
+fn fuzzy_destination_keeps_all_sources_and_selects_strongest_for_display() {
+    let (tmpdir, destination, _exact, high, low) = paired_squash_fixture();
+    run_git(
+        tmpdir.path(),
+        &["branch", "-D", "feature/exact", "feature/exact-alias"],
+    );
+    let snapshot = graph::load_graph_with_squash_annotations(
+        tmpdir.path(),
+        graph::GraphLoadOptions {
+            base_branch: Some("main".into()),
+            ..tmpdir.graph_options()
+        },
+    )
+    .unwrap();
+    let landing = snapshot
+        .commits
+        .iter()
+        .find(|c| c.oid == destination)
+        .unwrap();
+    assert_eq!(landing.relationships.len(), 2);
+    for (source, percent, name) in [(&high, 90, "feature/high"), (&low, 81, "feature/low")] {
+        let relation = landing
+            .relationships
+            .iter()
+            .find(|r| r.source_oid == *source)
+            .unwrap();
+        assert_eq!(relation.destination_oid, destination);
+        assert_eq!(relation.source_refs, [name]);
+        assert_eq!(
+            relation.matching,
+            graph::RelationshipMatch::Fuzzy {
+                similarity_percent: percent
+            }
+        );
+    }
+    assert_eq!(
+        landing.squash_match_confidence(),
+        Some(graph::SquashMatchConfidence {
+            sources: vec!["feature/high".into()],
+            similarity_percent: 90,
+        })
+    );
+    assert!(!landing.is_possible_squash_merge());
+}
+
 #[test]
 fn test_graph_marks_only_base_commit_with_exact_squash_patch() {
     let (tmpdir, _repo) = setup_test_repo();
@@ -1162,7 +1309,14 @@ fn test_graph_marks_only_base_commit_with_exact_squash_patch() {
         .iter()
         .find(|commit| commit.oid == exact_base_oid)
         .expect("exact base commit should be displayed");
-    assert!(exact_base.is_possible_squash_merge);
+    assert!(exact_base.is_possible_squash_merge());
+    assert_eq!(exact_base.relationships.len(), 1);
+    let relationship = &exact_base.relationships[0];
+    assert_eq!(relationship.destination_oid, exact_base_oid);
+    assert_eq!(relationship.destination_refs, ["main"]);
+    assert_eq!(relationship.source_oid, source_oid);
+    assert_eq!(relationship.source_refs, ["feature/exact"]);
+    assert_eq!(relationship.matching, graph::RelationshipMatch::Exact);
 
     let source = snapshot
         .commits
@@ -1170,7 +1324,7 @@ fn test_graph_marks_only_base_commit_with_exact_squash_patch() {
         .find(|commit| commit.oid == source_oid)
         .expect("source branch commit should be displayed");
     assert!(
-        !source.is_possible_squash_merge,
+        !source.is_possible_squash_merge(),
         "only the matching base-branch commit receives the annotation"
     );
 
@@ -1180,7 +1334,7 @@ fn test_graph_marks_only_base_commit_with_exact_squash_patch() {
         .find(|commit| commit.oid == message_only_base_oid)
         .expect("same-subject base commit should be displayed");
     assert!(
-        !message_only_base.is_possible_squash_merge,
+        !message_only_base.is_possible_squash_merge(),
         "matching subjects with different patches must not annotate a commit"
     );
 }
@@ -1225,18 +1379,20 @@ fn test_graph_preserves_every_base_oid_for_duplicate_patch_ids() {
             .find(|commit| commit.oid == *oid)
             .expect("duplicate-patch base commit should be displayed");
         assert!(
-            commit.is_possible_squash_merge,
+            commit.is_possible_squash_merge(),
             "every base OID sharing the exact patch ID must be annotated"
         );
+        assert_eq!(commit.relationships.len(), 1);
+        assert_eq!(commit.relationships[0].destination_oid, *oid);
+        assert_eq!(commit.relationships[0].source_oid, source_oid);
+        assert_eq!(commit.relationships[0].destination_refs, ["main"]);
     }
-    assert!(
-        !snapshot
-            .commits
-            .iter()
-            .find(|commit| commit.oid == source_oid)
-            .expect("source branch commit should be displayed")
-            .is_possible_squash_merge
-    );
+    assert!(!snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.oid == source_oid)
+        .expect("source branch commit should be displayed")
+        .is_possible_squash_merge());
 }
 
 #[test]
@@ -1286,14 +1442,14 @@ fn test_graph_excludes_regular_merges_roots_and_empty_patches() {
             .iter()
             .find(|commit| commit.oid == equivalent_base_oid)
             .expect("equivalent regular-merge base commit should be displayed")
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "a regularly merged branch must not create a possible-squash indicator"
     );
     assert!(
         snapshot
             .commits
             .iter()
-            .all(|commit| !commit.is_possible_squash_merge),
+            .all(|commit| !commit.is_possible_squash_merge()),
         "merge commits, root commits, and empty patches cannot match"
     );
 }
@@ -1327,14 +1483,12 @@ fn test_graph_cli_fallback_receives_exact_squash_annotation() {
         snapshot.source,
         graph::GraphSource::GitCliFallback { .. }
     ));
-    assert!(
-        snapshot
-            .commits
-            .iter()
-            .find(|commit| commit.oid == squash_oid)
-            .expect("fallback squash commit should be displayed")
-            .is_possible_squash_merge
-    );
+    assert!(snapshot
+        .commits
+        .iter()
+        .find(|commit| commit.oid == squash_oid)
+        .expect("fallback squash commit should be displayed")
+        .is_possible_squash_merge());
 }
 
 #[test]
@@ -1368,7 +1522,7 @@ fn test_graph_squash_matching_stays_within_displayed_history_bound() {
     assert!(snapshot
         .commits
         .iter()
-        .all(|commit| !commit.is_possible_squash_merge));
+        .all(|commit| !commit.is_possible_squash_merge()));
 }
 
 #[test]
@@ -5005,16 +5159,16 @@ fn test_squash_scenario_01_baseline_single_commit_clean_squash() {
         .find(|c| c.oid == squash_oid)
         .expect("squash landing commit should be displayed");
     assert!(
-        landing.is_possible_squash_merge,
+        landing.is_possible_squash_merge(),
         "clean single-commit squash should be flagged (Algorithm A)"
     );
     assert_eq!(
-        landing.possible_squash_merge_sources,
+        landing.possible_squash_merge_sources(),
         vec!["feature/baseline"],
         "the Graph landing commit should retain the exact-match source branch"
     );
     assert!(
-        landing.fuzzy_squash_match.is_none(),
+        landing.fuzzy_squash_match().is_none(),
         "exact match must not also get a fuzzy annotation"
     );
 
@@ -5039,6 +5193,7 @@ fn test_squash_landing_lists_all_matching_local_branch_names() {
     run_git(dir, &["add", "login.txt"]);
     run_git(dir, &["commit", "-m", "add login"]);
     run_git(dir, &["branch", "feature/auth"]);
+    let source_oid = git_output(dir, &["rev-parse", "HEAD"]);
 
     run_git(dir, &["checkout", "main"]);
     run_git(dir, &["merge", "--squash", "feature/login"]);
@@ -5059,8 +5214,15 @@ fn test_squash_landing_lists_all_matching_local_branch_names() {
         .find(|commit| commit.oid == squash_oid)
         .expect("squash landing should be displayed");
 
+    assert_eq!(landing.relationships.len(), 1);
+    assert_eq!(landing.relationships[0].destination_oid, squash_oid);
+    assert_eq!(landing.relationships[0].source_oid, source_oid);
     assert_eq!(
-        landing.possible_squash_merge_sources,
+        landing.relationships[0].source_refs,
+        ["feature/auth", "feature/login"]
+    );
+    assert_eq!(
+        landing.possible_squash_merge_sources(),
         vec!["feature/auth", "feature/login"],
         "all local branches at a matching tip are useful candidates, in stable order"
     );
@@ -5103,7 +5265,7 @@ fn test_squash_scenario_02_multi_commit_branch_squashed_into_one_base_commit() {
             .iter()
             .find(|c| c.oid == squash_oid)
             .expect("squash landing commit should be displayed")
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "multi-commit branch squashed to one base commit should still match on aggregate diff"
     );
 
@@ -5151,7 +5313,7 @@ fn test_squash_scenario_03_regular_merge_is_not_flagged_as_squash() {
             .iter()
             .find(|c| c.oid == merge_oid)
             .expect("merge commit should be displayed")
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "a regular merge commit must never be flagged as a possible squash merge"
     );
 
@@ -5216,7 +5378,7 @@ fn test_squash_scenario_04_branch_with_internal_merge_commit_then_squash_merged(
             .iter()
             .find(|c| c.oid == squash_oid)
             .expect("squash landing commit should be displayed")
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "a merge commit inside the branch's own history must not prevent detection"
     );
 
@@ -5265,7 +5427,10 @@ fn test_squash_scenario_05_partial_landing_via_individual_cherry_picks() {
     )
     .expect("graph load should succeed");
     assert!(
-        snapshot.commits.iter().all(|c| !c.is_possible_squash_merge),
+        snapshot
+            .commits
+            .iter()
+            .all(|c| !c.is_possible_squash_merge()),
         "partial cherry-pick coverage must not produce any possible-squash annotation \
          (known limitation: no single base commit's diff equals the branch's full aggregate diff)"
     );
@@ -5312,7 +5477,7 @@ fn test_squash_scenario_06_reordered_commits_and_hunk_order_insensitivity() {
             .iter()
             .find(|c| c.oid == squash_oid)
             .expect("squash landing commit should be displayed")
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "commit order within the branch must not affect the aggregate-diff match"
     );
 
@@ -5423,7 +5588,7 @@ fn test_squash_scenario_07_rebased_branch_then_squash_merged() {
             .iter()
             .find(|c| c.oid == squash_oid)
             .expect("squash landing commit should be displayed")
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "a rebased-then-squashed branch must be flagged using the post-rebase merge-base"
     );
 
@@ -5496,7 +5661,7 @@ fn test_squash_scenario_08a_conflict_resolution_extra_lines_fuzzy_positive() {
         .find(|c| c.oid == squash_oid)
         .expect("squash landing commit should be displayed");
     assert!(
-        !landing.is_possible_squash_merge,
+        !landing.is_possible_squash_merge(),
         "extra resolution lines must break exact patch-id equality (known false negative, plan scenario 8a)"
     );
 
@@ -5511,9 +5676,22 @@ fn test_squash_scenario_08a_conflict_resolution_extra_lines_fuzzy_positive() {
 
     // Expect Option 6: flagged as a fuzzy possible-squash match with high
     // similarity.
+    let relationship = landing
+        .relationships
+        .iter()
+        .find(|relationship| relationship.source_oid == branch_tip)
+        .expect("fuzzy source pairing should be retained");
+    assert_eq!(relationship.destination_oid, squash_oid);
+    assert_eq!(relationship.destination_refs, ["main"]);
+    assert_eq!(relationship.source_refs, ["feature/8a"]);
+    assert!(matches!(
+        relationship.matching,
+        graph::RelationshipMatch::Fuzzy {
+            similarity_percent: 0..=99
+        }
+    ));
     let fuzzy = landing
-        .fuzzy_squash_match
-        .as_ref()
+        .fuzzy_squash_match()
         .expect("high line-level similarity should surface a fuzzy possible-squash match");
     assert!(
         fuzzy.similarity_percent >= 75,
@@ -5624,7 +5802,7 @@ fn test_squash_scenario_08b_true_conflicting_hunks_manually_resolved() {
         .find(|c| c.oid == squash_oid)
         .expect("squash landing commit should be displayed");
     assert!(
-        !landing.is_possible_squash_merge,
+        !landing.is_possible_squash_merge(),
         "a manually-resolved true conflict must not exact-match (plan scenario 8b)"
     );
     assert!(!merge_detection::is_squash_merged(
@@ -5644,7 +5822,7 @@ fn test_squash_scenario_08b_true_conflicting_hunks_manually_resolved() {
     // lower structural overlap than 8a, so we expect this concrete recipe to
     // land BELOW the fuzzy threshold.
     assert!(
-        landing.fuzzy_squash_match.is_none(),
+        landing.fuzzy_squash_match().is_none(),
         "observed: this true-conflict recipe's similarity is too low to clear the fuzzy \
          threshold (majority of the resolved content differs from the branch's own diff); \
          if this fails, update this comment to record the newly-observed classification \
@@ -6000,7 +6178,7 @@ fn test_squash_scenario_09_binary_file_changes() {
             .iter()
             .find(|c| c.oid == squash_oid)
             .expect("squash landing commit should be displayed")
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "observed: this codebase's `git diff --binary --full-index` + `git patch-id --stable` \
          pipeline produces a matching patch-id for an identical binary-file change"
     );
@@ -6048,7 +6226,7 @@ fn test_squash_scenario_10a_rename_only_no_content_change() {
             .iter()
             .find(|c| c.oid == squash_oid)
             .expect("squash landing commit should be displayed")
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "observed: a pure rename (default rename detection in `git diff`, on since Git 2.9) \
          still produces a matching stable patch-id"
     );
@@ -6104,7 +6282,7 @@ fn test_squash_scenario_10b_rename_and_content_change() {
             .iter()
             .find(|c| c.oid == squash_oid)
             .expect("squash landing commit should be displayed")
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "observed: rename-plus-content-change still produces a matching stable patch-id"
     );
     assert!(merge_detection::is_squash_merged(
@@ -6158,7 +6336,7 @@ fn test_squash_scenario_10c_executable_bit_only_change() {
             .iter()
             .find(|c| c.oid == squash_oid)
             .expect("squash landing commit should be displayed")
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "observed: a mode-only (executable bit) change still produces a matching stable patch-id"
     );
     assert!(merge_detection::is_squash_merged(
@@ -6206,7 +6384,7 @@ fn test_squash_scenario_11_whitespace_only_change() {
             .iter()
             .find(|c| c.oid == squash_oid)
             .expect("squash landing commit should be displayed")
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "git patch-id --stable ignores whitespace-only differences"
     );
     assert!(merge_detection::is_squash_merged(
@@ -6270,7 +6448,7 @@ fn test_squash_scenario_11_whitespace_negative_unrelated() {
             .iter()
             .find(|c| c.oid == unrelated_base_oid)
             .expect("unrelated base commit should be displayed")
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "an unrelated whitespace-only change to a different file must not be flagged"
     );
     assert!(!merge_detection::is_squash_merged(
@@ -6336,12 +6514,15 @@ fn test_squash_scenario_12_empty_net_zero_branch_and_base_commit() {
             .iter()
             .find(|c| c.oid == empty_base_oid)
             .expect("unrelated empty base commit should be displayed")
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "an unrelated empty/net-zero base commit must never be flagged, including against \
          another empty-diff branch — empty diffs are explicitly excluded (None), never matched"
     );
     assert!(
-        snapshot.commits.iter().all(|c| !c.is_possible_squash_merge),
+        snapshot
+            .commits
+            .iter()
+            .all(|c| !c.is_possible_squash_merge()),
         "no commit in this fixture should be flagged: both diffs involved are empty"
     );
 
@@ -6457,7 +6638,7 @@ fn test_squash_scenario_14_duplicate_independently_recreated_patch() {
         .find(|c| c.oid == independent_base_oid)
         .expect("independent base commit should be displayed");
     assert!(
-        independent.is_possible_squash_merge,
+        independent.is_possible_squash_merge(),
         "documented, accepted false positive: an independently recreated identical one-line \
          fix is indistinguishable from a real squash landing under patch-id equality \
          (content equivalence, not historical provenance) — see plan doc scenario 14"
@@ -6623,7 +6804,10 @@ fn test_squash_scenario_16_shallow_out_of_window_history_max_count_boundary() {
         "the squash landing commit should be outside the displayed window"
     );
     assert!(
-        snapshot.commits.iter().all(|c| !c.is_possible_squash_merge),
+        snapshot
+            .commits
+            .iter()
+            .all(|c| !c.is_possible_squash_merge()),
         "Algorithm A must fail closed (no false positive) outside its displayed window"
     );
 
@@ -6892,16 +7076,31 @@ fn test_squash_scenario_20a_squash_plus_trivial_follow_up_folded_in() {
         .find(|c| c.oid == squash_oid)
         .expect("squash landing commit should be displayed");
     assert!(
-        !landing.is_possible_squash_merge,
+        !landing.is_possible_squash_merge(),
         "the extra version-bump line must break exact patch-id equality"
     );
     assert!(
         !merge_detection::is_squash_merged(dir, "main", "feature/20a", None, None),
         "Algorithm B must also miss this under exact match"
     );
+    let relationship = landing
+        .relationships
+        .iter()
+        .find(|relationship| {
+            relationship.source_oid == git_output(dir, &["rev-parse", "feature/20a"])
+        })
+        .expect("fuzzy source pairing should be retained");
+    assert_eq!(relationship.destination_oid, squash_oid);
+    assert_eq!(relationship.destination_refs, ["main"]);
+    assert_eq!(relationship.source_refs, ["feature/20a"]);
+    assert!(matches!(
+        relationship.matching,
+        graph::RelationshipMatch::Fuzzy {
+            similarity_percent: 0..=99
+        }
+    ));
     let fuzzy = landing
-        .fuzzy_squash_match
-        .as_ref()
+        .fuzzy_squash_match()
         .expect("Option 6 should flag this as a fuzzy possible-squash match");
     assert!(
         fuzzy.similarity_percent >= 75,
@@ -6964,7 +7163,7 @@ fn test_squash_scenario_20b_squash_omits_a_trivial_branch_change() {
         .find(|c| c.oid == squash_oid)
         .expect("squash landing commit should be displayed");
     assert!(
-        !landing.is_possible_squash_merge,
+        !landing.is_possible_squash_merge(),
         "omitting a branch change also breaks exact patch-id equality"
     );
     assert!(!merge_detection::is_squash_merged(
@@ -6974,9 +7173,24 @@ fn test_squash_scenario_20b_squash_omits_a_trivial_branch_change() {
         None,
         None
     ));
+    let relationship = landing
+        .relationships
+        .iter()
+        .find(|relationship| {
+            relationship.source_oid == git_output(dir, &["rev-parse", "feature/20b"])
+        })
+        .expect("fuzzy source pairing should be retained");
+    assert_eq!(relationship.destination_oid, squash_oid);
+    assert_eq!(relationship.destination_refs, ["main"]);
+    assert_eq!(relationship.source_refs, ["feature/20b"]);
+    assert!(matches!(
+        relationship.matching,
+        graph::RelationshipMatch::Fuzzy {
+            similarity_percent: 0..=99
+        }
+    ));
     let fuzzy = landing
-        .fuzzy_squash_match
-        .as_ref()
+        .fuzzy_squash_match()
         .expect("Option 6 should flag this subset case as a fuzzy possible-squash match too");
     assert!(
         fuzzy.similarity_percent >= 75,
@@ -7038,7 +7252,7 @@ fn test_squash_scenario_20c_autoformatter_noise_during_squash() {
         .find(|c| c.oid == squash_oid)
         .expect("squash landing commit should be displayed");
     assert!(
-        !landing.is_possible_squash_merge,
+        !landing.is_possible_squash_merge(),
         "autoformatter noise must break exact patch-id equality"
     );
     assert!(!merge_detection::is_squash_merged(
@@ -7060,7 +7274,7 @@ fn test_squash_scenario_20c_autoformatter_noise_during_squash() {
     // git/fuzzy_match.rs's module doc comment and this test's own comment as
     // the recorded outcome of that open design question).
     assert!(
-        landing.fuzzy_squash_match.is_none(),
+        landing.fuzzy_squash_match().is_none(),
         "observed: without formatting-aware normalization, heavy autoformatter noise dilutes \
          line-level Jaccard similarity below the fuzzy threshold for this recipe; if this \
          assertion starts failing, update this comment to record the newly observed value \
@@ -7130,11 +7344,11 @@ fn test_squash_scenario_20d_coincidentally_similar_but_unrelated_negative_contro
         .find(|c| c.oid == unrelated_base_oid)
         .expect("unrelated base commit should be displayed");
     assert!(
-        !unrelated.is_possible_squash_merge,
+        !unrelated.is_possible_squash_merge(),
         "these are genuinely different diffs, so exact match must not fire"
     );
     assert!(
-        unrelated.fuzzy_squash_match.is_none(),
+        unrelated.fuzzy_squash_match().is_none(),
         "coincidental boilerplate similarity must not clear the fuzzy threshold — if this \
          fails, FUZZY_SIMILARITY_THRESHOLD in git/fuzzy_match.rs is too low and needs \
          revisiting before this tier ships (plan doc scenario 20d)"
@@ -7181,7 +7395,10 @@ fn test_squash_scenario_21_structural_graph_render_not_blocked_by_squash_enrichm
         "structural snapshot should be populated synchronously"
     );
     assert!(
-        !snapshot.commits.iter().any(|c| c.is_possible_squash_merge),
+        !snapshot
+            .commits
+            .iter()
+            .any(|c| c.is_possible_squash_merge()),
         "no squash markers should be set on the fresh structural snapshot — \
          enrichment runs asynchronously and is gated by the reload generation"
     );
@@ -7189,7 +7406,7 @@ fn test_squash_scenario_21_structural_graph_render_not_blocked_by_squash_enrichm
         snapshot
             .commits
             .iter()
-            .all(|c| c.fuzzy_squash_match.is_none()),
+            .all(|c| c.fuzzy_squash_match().is_none()),
         "no fuzzy squash matches should be set on the fresh structural snapshot"
     );
 }
@@ -7244,7 +7461,10 @@ fn test_squash_scenario_21b_completed_enrichment_updates_squash_marker() {
 
     // No markers yet.
     assert!(
-        !snapshot.commits.iter().any(|c| c.is_possible_squash_merge),
+        !snapshot
+            .commits
+            .iter()
+            .any(|c| c.is_possible_squash_merge()),
         "fresh structural snapshot must not carry squash markers"
     );
 
@@ -7259,7 +7479,10 @@ fn test_squash_scenario_21b_completed_enrichment_updates_squash_marker() {
     graph::apply_squash_enrichment(&mut snapshot, &updates);
 
     assert!(
-        snapshot.commits.iter().any(|c| c.is_possible_squash_merge),
+        snapshot
+            .commits
+            .iter()
+            .any(|c| c.is_possible_squash_merge()),
         "after enrichment, the squash landing commit on main must be flagged"
     );
 }
@@ -7271,7 +7494,7 @@ fn test_squash_scenario_21c_stale_enrichment_does_not_overwrite_newer_snapshot()
     // public surface is the per-message `generation` field; the App uses it
     // to gate updates. This test exercises the gate via the git module's
     // enrichment-update data type directly.
-    let (tmpdir, _repo) = setup_test_repo();
+    let (tmpdir, destination, exact_source, _high, _low) = paired_squash_fixture();
     let dir = tmpdir.path();
 
     // Build a fresh snapshot (no markers yet).
@@ -7283,14 +7506,12 @@ fn test_squash_scenario_21c_stale_enrichment_does_not_overwrite_newer_snapshot()
         },
     )
     .expect("structural graph load should succeed");
-    assert!(!snapshot.commits.iter().any(|c| c.is_possible_squash_merge));
+    assert!(!snapshot
+        .commits
+        .iter()
+        .any(|c| c.is_possible_squash_merge()));
 
-    // Simulate a stale enrichment result that claims a non-existent
-    // commit is a squash merge. Even if the App-level generation check
-    // were bypassed, the per-OID application in `apply_squash_enrichment`
-    // ignores unknown OIDs — so this would be a no-op regardless. The
-    // real test is below: the App's drain only applies updates whose
-    // generation matches the snapshot's generation tag.
+    // Simulate a stale result carrying a real source/destination pairing.
     snapshot.generation = Some(2);
     let stale = graph::GraphEnrichmentMsg {
         generation: 1, // stale: belongs to an earlier reload
@@ -7299,9 +7520,18 @@ fn test_squash_scenario_21c_stale_enrichment_does_not_overwrite_newer_snapshot()
             .iter()
             .map(|c| graph::GraphEnrichmentUpdate {
                 oid: c.oid.clone(),
-                is_possible_squash_merge: true,
-                possible_squash_merge_sources: vec![],
-                fuzzy_squash_match: None,
+                relationships: if c.oid == destination {
+                    vec![graph::GraphRelationship {
+                        kind: graph::RelationshipKind::SquashMerge,
+                        matching: graph::RelationshipMatch::Exact,
+                        destination_oid: destination.clone(),
+                        destination_refs: vec!["main".into()],
+                        source_oid: exact_source.clone(),
+                        source_refs: vec!["feature/exact".into(), "feature/exact-alias".into()],
+                    }]
+                } else {
+                    Vec::new()
+                },
                 is_cherry_picked_commit: false,
             })
             .collect(),
@@ -7325,7 +7555,7 @@ fn test_squash_scenario_21c_stale_enrichment_does_not_overwrite_newer_snapshot()
         graph::apply_squash_enrichment(&mut current, &stale.updates);
     }
     assert!(
-        !current.commits.iter().any(|c| c.is_possible_squash_merge),
+        !current.commits.iter().any(|c| c.is_possible_squash_merge()),
         "stale enrichment (generation 1) must not overwrite the newer snapshot's markers"
     );
 
@@ -7340,7 +7570,7 @@ fn test_squash_scenario_21c_stale_enrichment_does_not_overwrite_newer_snapshot()
         graph::apply_squash_enrichment(&mut current, &matching.updates);
     }
     assert!(
-        current.commits.iter().any(|c| c.is_possible_squash_merge),
+        current.commits.iter().any(|c| c.is_possible_squash_merge()),
         "matching-generation enrichment must apply, confirming the gate is the only filter"
     );
 }
@@ -7385,7 +7615,10 @@ fn test_squash_scenario_21d_failed_enrichment_leaves_snapshot_usable_and_unmarke
         "empty enrichment must not mutate the snapshot"
     );
     assert!(
-        !snapshot.commits.iter().any(|c| c.is_possible_squash_merge),
+        !snapshot
+            .commits
+            .iter()
+            .any(|c| c.is_possible_squash_merge()),
         "failed enrichment must not mark any commit"
     );
     assert!(
@@ -7398,7 +7631,10 @@ fn test_squash_scenario_21d_failed_enrichment_leaves_snapshot_usable_and_unmarke
     // observable behavior of `apply_squash_enrichment(&[], …)`.
     graph::apply_squash_enrichment(&mut snapshot, &[]);
     assert!(
-        !snapshot.commits.iter().any(|c| c.is_possible_squash_merge),
+        !snapshot
+            .commits
+            .iter()
+            .any(|c| c.is_possible_squash_merge()),
         "never-arriving enrichment (worker panic) must leave the snapshot unmarked"
     );
 }
@@ -8367,7 +8603,7 @@ fn test_graph_patch_cache_hit_avoids_recomputation() {
         .find(|c| c.oid == squash_oid)
         .expect("squash landing commit should be displayed");
     assert!(
-        !landing.is_possible_squash_merge,
+        !landing.is_possible_squash_merge(),
         "fabricated cached patch_id must suppress the real match (cache hit proved)"
     );
 }
@@ -8404,7 +8640,7 @@ fn test_graph_patch_cache_populated_after_load() {
         .find(|c| c.oid == squash_oid)
         .expect("squash landing commit should be displayed");
     assert!(
-        landing.is_possible_squash_merge,
+        landing.is_possible_squash_merge(),
         "real match should still be flagged before asserting cache state"
     );
 
@@ -8456,7 +8692,7 @@ fn test_graph_patch_cache_branch_change_invalidates() {
             .iter()
             .find(|c| c.oid == first_squash_oid)
             .unwrap()
-            .is_possible_squash_merge,
+            .is_possible_squash_merge(),
         "first squash landing should be flagged"
     );
 
@@ -8486,7 +8722,7 @@ fn test_graph_patch_cache_branch_change_invalidates() {
         .find(|c| c.oid == second_squash_oid)
         .expect("second landing commit should be displayed");
     assert!(
-        second_landing.is_possible_squash_merge,
+        second_landing.is_possible_squash_merge(),
         "second landing commit must be freshly flagged (its OID pair was never in the cache)"
     );
 
@@ -8497,7 +8733,7 @@ fn test_graph_patch_cache_branch_change_invalidates() {
         .find(|c| c.oid == first_squash_oid)
         .expect("first landing commit should still be displayed");
     assert!(
-        first_landing.is_possible_squash_merge,
+        first_landing.is_possible_squash_merge(),
         "first landing commit must remain flagged (cache hit preserved its match)"
     );
 
@@ -8586,7 +8822,7 @@ fn test_graph_and_branches_squash_loaders_concurrent_cache_access() {
         .find(|c| c.oid == concurrent_oid)
         .expect("squash landing commit should be displayed");
     assert!(
-        landing.is_possible_squash_merge,
+        landing.is_possible_squash_merge(),
         "concurrent graph load should still flag the squash landing"
     );
 
@@ -9094,6 +9330,64 @@ fn test_graph_surgical_update_after_delete_local_action() {
     assert!(
         !patched.commits.iter().any(|c| c.oid == feature_oid),
         "unreachable feature commit must leave the resulting Graph window"
+    );
+}
+
+#[test]
+fn incremental_updates_preserve_captured_squash_relationships() {
+    let (tmpdir, destination, _exact, _high, _low) = paired_squash_fixture();
+    let dir = tmpdir.path();
+    let options = graph::GraphLoadOptions {
+        base_branch: Some("main".into()),
+        ..tmpdir.graph_options()
+    };
+    let snapshot = graph::load_graph_with_squash_annotations(dir, options.clone()).unwrap();
+    let expected = snapshot
+        .commits
+        .iter()
+        .find(|c| c.oid == destination)
+        .unwrap()
+        .relationships
+        .clone();
+    assert_eq!(expected.len(), 3);
+    let before = graph::GraphRepositoryState::capture(dir).unwrap();
+    run_git(dir, &["branch", "-m", "feature/high", "feature/renamed"]);
+    let renamed = graph::GraphRepositoryState::capture(dir).unwrap();
+    let metadata = graph::update_graph_incrementally(
+        dir,
+        snapshot,
+        &graph::GraphRepositoryDelta::between(before, renamed.clone()),
+        options.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        metadata
+            .commits
+            .iter()
+            .find(|c| c.oid == destination)
+            .unwrap()
+            .relationships,
+        expected,
+        "metadata updates retain captured names and pairs"
+    );
+    run_git(dir, &["commit", "--allow-empty", "-m", "advance topology"]);
+    let advanced = graph::GraphRepositoryState::capture(dir).unwrap();
+    let topology = graph::update_graph_incrementally(
+        dir,
+        metadata,
+        &graph::GraphRepositoryDelta::between(renamed, advanced),
+        options,
+    )
+    .unwrap();
+    assert_eq!(
+        topology
+            .commits
+            .iter()
+            .find(|c| c.oid == destination)
+            .unwrap()
+            .relationships,
+        expected,
+        "topology rebuilds retain the complete relationship vector"
     );
 }
 

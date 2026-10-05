@@ -466,8 +466,7 @@ mod tests {
                         is_current: false,
                         tracking: None,
                     }],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..GraphCommit::default()
                 },
                 GraphCommit {
@@ -477,8 +476,7 @@ mod tests {
                     lane: Some(0),
                     branch: None,
                     refs: vec![],
-                    is_possible_squash_merge: false,
-                    fuzzy_squash_match: None,
+                    relationships: vec![],
                     ..GraphCommit::default()
                 },
             ],

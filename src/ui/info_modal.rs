@@ -312,23 +312,29 @@ fn graph_commit_fields(commit: &GraphCommit) -> Vec<InfoField> {
         }
     }
 
-    if commit.is_possible_squash_merge {
+    if commit.is_possible_squash_merge() {
         fields.push(InfoField {
             label: "Possible Squash Merge",
             value: "yes".into(),
         });
-        if !commit.possible_squash_merge_sources.is_empty() {
+        if !commit.possible_squash_merge_sources().is_empty() {
             fields.push(InfoField {
                 label: "Possible Squash Merge From",
-                value: commit.possible_squash_merge_sources.join(", "),
+                value: commit.possible_squash_merge_sources().join(", "),
             });
         }
     } else if !commit.is_cherry_picked_commit {
-        if let Some(fuzzy) = commit.fuzzy_squash_match.as_ref() {
+        if let Some(confidence) = commit.squash_match_confidence() {
             fields.push(InfoField {
                 label: "Possible Squash Merge (fuzzy)",
-                value: format!("{}% similarity", fuzzy.similarity_percent),
+                value: format!("{}% similarity", confidence.similarity_percent),
             });
+            if !confidence.sources.is_empty() {
+                fields.push(InfoField {
+                    label: "Possible Squash Merge From",
+                    value: confidence.sources.join(", "),
+                });
+            }
         }
     }
 
@@ -1001,9 +1007,7 @@ mod tests {
             lane: None,
             branch: None,
             refs: vec![],
-            is_possible_squash_merge: false,
-            possible_squash_merge_sources: vec![],
-            fuzzy_squash_match: None,
+            relationships: vec![],
             is_cherry_picked_commit: false,
             author_name: "Jane Doe".into(),
             author_email: "jane@example.com".into(),
@@ -1038,9 +1042,14 @@ mod tests {
             lane: None,
             branch: None,
             refs: vec![],
-            is_possible_squash_merge: true,
-            possible_squash_merge_sources: vec!["feature/auth".into(), "feature/login".into()],
-            fuzzy_squash_match: None,
+            relationships: vec![crate::git::graph::GraphRelationship {
+                kind: crate::git::graph::RelationshipKind::SquashMerge,
+                matching: crate::git::graph::RelationshipMatch::Exact,
+                destination_oid: "abcdef1234567".into(),
+                destination_refs: vec!["main".into()],
+                source_oid: "1111111111111111111111111111111111111111".into(),
+                source_refs: vec!["feature/auth".into(), "feature/login".into()],
+            }],
             is_cherry_picked_commit: false,
             author_name: String::new(),
             author_email: String::new(),
@@ -1056,13 +1065,20 @@ mod tests {
     }
 
     #[test]
-    fn graph_commit_fields_shows_fuzzy_similarity_without_inventing_a_source_branch() {
+    fn graph_commit_fields_shows_fuzzy_similarity_and_source_branch() {
         let commit = GraphCommit {
+            relationships: vec![crate::git::graph::GraphRelationship {
+                kind: crate::git::graph::RelationshipKind::SquashMerge,
+                matching: crate::git::graph::RelationshipMatch::Fuzzy {
+                    similarity_percent: 97,
+                },
+                destination_oid: "abcdef1234567".into(),
+                destination_refs: vec!["main".into()],
+                source_oid: "3333333333333333333333333333333333333333".into(),
+                source_refs: vec!["feature/login".into()],
+            }],
             oid: "abcdef1234567".into(),
             summary: "near squash landing".into(),
-            fuzzy_squash_match: Some(crate::git::graph::FuzzySquashMatch {
-                similarity_percent: 84,
-            }),
             ..GraphCommit::default()
         };
 
@@ -1071,10 +1087,15 @@ mod tests {
             .iter()
             .find(|field| field.label == "Possible Squash Merge (fuzzy)")
             .expect("fuzzy similarity should be visible in commit info");
-        assert_eq!(fuzzy.value, "84% similarity");
-        assert!(!fields
-            .iter()
-            .any(|field| field.label == "Possible Squash Merge From"));
+        assert_eq!(fuzzy.value, "97% similarity");
+        assert_eq!(
+            fields
+                .iter()
+                .find(|field| field.label == "Possible Squash Merge From")
+                .unwrap()
+                .value,
+            "feature/login"
+        );
     }
 
     #[test]
@@ -1083,11 +1104,33 @@ mod tests {
             [(true, false), (false, true), (true, true)]
         {
             let commit = GraphCommit {
-                is_possible_squash_merge,
+                relationships: {
+                    let mut pairs = vec![
+                        crate::git::graph::GraphRelationship {
+                            kind: crate::git::graph::RelationshipKind::SquashMerge,
+                            matching: crate::git::graph::RelationshipMatch::Exact,
+                            destination_oid: String::new(),
+                            destination_refs: vec!["main".into()],
+                            source_oid: "1111111111111111111111111111111111111111".into(),
+                            source_refs: Vec::new(),
+                        },
+                        crate::git::graph::GraphRelationship {
+                            kind: crate::git::graph::RelationshipKind::SquashMerge,
+                            matching: crate::git::graph::RelationshipMatch::Fuzzy {
+                                similarity_percent: 97,
+                            },
+                            destination_oid: String::new(),
+                            destination_refs: vec!["main".into()],
+                            source_oid: "3333333333333333333333333333333333333333".into(),
+                            source_refs: Vec::new(),
+                        },
+                    ];
+                    if !is_possible_squash_merge {
+                        pairs.retain(|r| r.matching != crate::git::graph::RelationshipMatch::Exact);
+                    }
+                    pairs
+                },
                 is_cherry_picked_commit,
-                fuzzy_squash_match: Some(crate::git::graph::FuzzySquashMatch {
-                    similarity_percent: 97,
-                }),
                 ..GraphCommit::default()
             };
             let fields = graph_commit_fields(&commit);
@@ -1111,9 +1154,7 @@ mod tests {
             lane: None,
             branch: None,
             refs: vec![],
-            is_possible_squash_merge: false,
-            possible_squash_merge_sources: vec![],
-            fuzzy_squash_match: None,
+            relationships: vec![],
             is_cherry_picked_commit: false,
             author_name: "".into(),
             author_email: "".into(),
@@ -1135,9 +1176,7 @@ mod tests {
             lane: None,
             branch: None,
             refs: vec![],
-            is_possible_squash_merge: false,
-            possible_squash_merge_sources: vec![],
-            fuzzy_squash_match: None,
+            relationships: vec![],
             is_cherry_picked_commit: false,
             author_name: "X".into(),
             author_email: "x@y".into(),
@@ -1159,9 +1198,7 @@ mod tests {
             lane: None,
             branch: None,
             refs: vec![],
-            is_possible_squash_merge: false,
-            possible_squash_merge_sources: vec![],
-            fuzzy_squash_match: None,
+            relationships: vec![],
             is_cherry_picked_commit: false,
             author_name: "X".into(),
             author_email: "x@y".into(),

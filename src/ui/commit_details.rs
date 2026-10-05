@@ -50,8 +50,8 @@ pub fn draw_commit_details(
         Span::styled("Commit ", theme.modal_secondary),
         Span::styled(details.oid.clone(), theme.modal_commit),
     ]));
-    if !commit.is_possible_squash_merge && !commit.is_cherry_picked_commit {
-        if let Some(fuzzy) = commit.fuzzy_squash_match.as_ref() {
+    if !commit.is_possible_squash_merge() && !commit.is_cherry_picked_commit {
+        if let Some(fuzzy) = commit.fuzzy_squash_match().as_ref() {
             lines.push(Line::from(vec![
                 Span::styled("Possible squash merge (fuzzy): ", theme.modal_secondary),
                 Span::styled(
