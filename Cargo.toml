@@ -1,17 +1,17 @@
 [package]
 name = "git-branch-manager"
-version = "1.15.3"
+version = "1.16.0"
 edition = "2021"
 description = "A TUI tool for managing git branches with squash-merge detection"
 
 [profile.release]
-opt-level = 3        # default for release; max optimization
-lto = true           # link-time optimization (biggest win)
-codegen-units = 1    # slower compile, better optimization
-strip = true         # strip symbols from binary (smaller binary)
+opt-level = 3     # default for release; max optimization
+lto = true        # link-time optimization (biggest win)
+codegen-units = 1 # slower compile, better optimization
+strip = true      # strip symbols from binary (smaller binary)
 
 [profile.dev]
-opt-level = 1        # faster than 0, still quick to compile
+opt-level = 1 # faster than 0, still quick to compile
 
 [dependencies]
 ratatui = "0.30"
