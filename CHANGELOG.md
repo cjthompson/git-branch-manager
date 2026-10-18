@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-17
+
+### Split Large Rust Files (P014)
+- Split every Rust file over 400 lines into directory modules with unchanged behavior; `drain_channels` and `handle_overlay_key` stay whole and remain the only files over 400 lines (#refactor, #modules)
+
 ## 2026-10-05
 
 ### Graph Relationship Lineage Implementation Plan (task #053) (P004)

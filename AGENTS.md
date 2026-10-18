@@ -70,12 +70,14 @@ A rendered, auto-generated layered dependency diagram lives at
 (regenerate with `./scripts/gen-arch-diagram.sh`). The layers, top → bottom,
 with arrows meaning "depends on":
 
-- **Entrypoint** (`main.rs`) — CLI parse, terminal setup, spawns the background
-  loaders, runs the event loop.
-- **App state machine** (`app.rs`) — the `App` struct holds all state; drives the
-  event loop, per-view key dispatch, and draining of the background channels.
-- **UI widgets** (`ui/`) — ratatui rendering: `render.rs` (frame dispatcher +
-  `Overlay` enum), `list_render.rs` (generic table for every view), overlays
+- **Entrypoint** (`main.rs`) — CLI parse, cache prune, dump dispatch, App wiring.
+  Helpers: `phase1.rs` (phase-1 loader thread), `terminal.rs` (terminal setup and
+  run), `logging.rs` (debug log), `ahead_behind.rs` (ahead/behind counts).
+- **App state machine** (`app/`) — `app/mod.rs` holds the `App` struct; `event_loop.rs`
+  drives the loop, `drain.rs` drains the background channels, `keys*.rs` and
+  `overlay_keys.rs` dispatch keys, and `menu*.rs` build the context menus.
+- **UI widgets** (`ui/`) — ratatui rendering: `render/` (frame dispatcher;
+  `Overlay` enum in `render/context.rs`), `list_render/` (generic table for every view), overlays
   (`confirm`, `executing`, `results`, `menu`, `help`, `settings`, `filter_ui`),
   bars (`status_bar`, `tab_bar`, `toast`), and `shared` helpers.
 - **View models** (`view/`) — per-view column/sort/filter definitions: `ViewId`
@@ -83,21 +85,21 @@ with arrows meaning "depends on":
   `FilterSet`, and one def module per view.
 - **Git backend** (`git/`) — `branch`, `merge_detection`, `squash_loader`,
   `operations`, `cache`, `pr_loader`, `github`, `worktree`, `tags`, `status`.
-- **Config & presentation** — `config.rs` (TOML load/save), `theme.rs`,
+- **Config & presentation** — `config.rs` (TOML load/save), `theme/`,
   `symbols.rs`, `cli.rs` (clap derive: `--base`, `--list`, `--symbols`).
-- **Domain types** (`types.rs`) — shared models (`BranchInfo`, `MergeStatus`,
+- **Domain types** (`types/`) — shared models (`BranchInfo`, `MergeStatus`,
   `BranchAction`, `OperationResult`, …); the dependency sink.
 
 **lib.rs** re-exports `cli, config, git, symbols, theme, types, ui, view` so
-integration tests can import them. `app` is the only binary-only module
-(declared `mod app;` in `main.rs`).
+integration tests can import them. The binary-only modules, declared in `main.rs`,
+are `app`, `ahead_behind`, `dump`, `logging`, `phase1` and `terminal`.
 
 ### Data Flow
 
 The TUI launches immediately; all heavy git work is backgrounded and streamed
 into `App` via `mpsc` channels drained each event-loop tick.
 
-1. `main.rs` spawns a phase-1 thread that sends staged `app::Phase1Msg`s in
+1. `phase1.rs` (`spawn_phase1_loader`, called from `main.rs`) starts a thread that sends staged `app::Phase1Msg`s in
    order: `Fast` (branch list + tracking, no merge detection) → `AheadBehind` →
    `MergeBaseCommits` → `MergeStatuses` (regular-merge detection). Squash-merge
    detection then streams in separately via `git::squash_loader` (`SquashResult`s).
@@ -118,7 +120,7 @@ into `App` via `mpsc` channels drained each event-loop tick.
 
 ### Squash-Merge Detection
 
-The core differentiating feature. Located in `git/merge_detection.rs::is_squash_merged`. For each unmerged branch:
+The core differentiating feature. Located in `git/merge_detection/squash.rs::is_squash_merged`. For each unmerged branch:
 
 ```
 ancestor     = git merge-base <base> <branch>
@@ -147,11 +149,11 @@ a centered rect on top using `ratatui::widgets::Clear` + `Block`.
 
 ### Adding a new branch operation (e.g., archive)
 
-1. Add a variant to `BranchAction` in `types.rs`, implement `label()`
-2. Add the git operation function in `git/operations.rs` (return `OperationResult`)
-3. In the relevant per-view key handler in `app.rs` (e.g. `handle_branches_key`),
+1. Add a variant to `BranchAction` in `types/action.rs`, implement `label()`
+2. Add the git operation function in `git/operations/` (return `OperationResult`)
+3. In the relevant per-view key handler in `app/keys_views.rs` (e.g. `handle_branches_key`),
    open `Overlay::Confirm { action: BranchAction::NewAction, targets }`
-4. Map the new `BranchAction` to your operation in `app.rs::execute_confirmed_action`
+4. Map the new `BranchAction` to your operation in `job_queue/execute.rs::execute_action_with_remote`
 5. Update `ui/help.rs` and the status-bar text in `ui/status_bar.rs`
 
 ### Adding a new view/tab
@@ -159,15 +161,15 @@ a centered rect on top using `ratatui::widgets::Clear` + `Block`.
 1. Add a variant to `ViewId` in `view/mod.rs` and wire it into `next()`/`prev()`
 2. Add a `view/<name>.rs` def (columns via `ColumnDef`, a `RowRenderer`) and a
    `ListState<T>` field on `App`
-3. Render it through `ui/list_render.rs`; add the tab label in `ui/tab_bar.rs`
-4. Add a `handle_<name>_key` method in `app.rs` and dispatch on `active_view`
+3. Render it through `ui/list_render/`; add the tab label in `ui/tab_bar.rs`
+4. Add a `handle_<name>_key` method in `app/keys_views.rs` and dispatch on `active_view`
 
 ### Adding a new metadata column
 
-1. Add the field to the row type in `types.rs` (e.g. `BranchInfo`) and populate
+1. Add the field to the row type in `types/info.rs` (e.g. `BranchInfo`) and populate
    it in the corresponding `git/` loader
 2. Add a `ColumnDef` (name, widths, compare fn) in that view's `view/*.rs`
-3. Emit its cell in the view's `RowRenderer` (rendered by `ui/list_render.rs`)
+3. Emit its cell in the view's `RowRenderer` (rendered by `ui/list_render/`)
 
 ### Adding CLI flags
 
@@ -176,9 +178,9 @@ a centered rect on top using `ratatui::widgets::Clear` + `Block`.
 
 ## Testing
 
-Integration tests in `tests/integration.rs` create temporary git repos with known branch states. Tests can run in parallel — all git CLI commands use explicit `current_dir()` rather than process-global `set_current_dir`.
+Integration tests in `tests/integration/` (crate root `main.rs`, shared helpers in `common.rs`) create temporary git repos with known branch states. Tests can run in parallel — all git CLI commands use explicit `current_dir()` rather than process-global `set_current_dir`.
 
-To test a new git feature: use the `setup_test_repo()` helper to get a `(TempDir, Repository)`, then create the branch scenario with `std::process::Command` git calls.
+To test a new git feature: use the `setup_test_repo()` helper (`tests/integration/common.rs`) to get a `(TempDir, Repository)`, then create the branch scenario with `std::process::Command` git calls.
 
 ## Not Yet Implemented
 

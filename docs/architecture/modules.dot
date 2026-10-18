@@ -34,26 +34,87 @@ digraph {
     "git_branch_manager::config" [label="pub mod|config", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::git" [label="pub mod|git", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::git::branch" [label="pub mod|git::branch", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::git::branch::merge_base" [label="pub(self) mod|git::branch::merge_base", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::branch::metadata" [label="pub(self) mod|git::branch::metadata", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::branch::remote" [label="pub(self) mod|git::branch::remote", fillcolor="#db5367"]; // "mod" node
     "git_branch_manager::git::cache" [label="pub mod|git::cache", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::git::cache::db" [label="pub(self) mod|git::cache::db", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::cache::entries" [label="pub(self) mod|git::cache::entries", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::cache::persist" [label="pub(self) mod|git::cache::persist", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::cache::prune" [label="pub(self) mod|git::cache::prune", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::capability" [label="pub mod|git::capability", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::git::cherry_loader" [label="pub mod|git::cherry_loader", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::git::commit_details" [label="pub mod|git::commit_details", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::git::diagnostics" [label="pub mod|git::diagnostics", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::git::diagnostics::verify" [label="pub(self) mod|git::diagnostics::verify", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::diagnostics::workers" [label="pub(self) mod|git::diagnostics::workers", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::fuzzy_match" [label="pub mod|git::fuzzy_match", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::git::github" [label="pub mod|git::github", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::git::graph" [label="pub mod|git::graph", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::git::graph::backends" [label="pub(self) mod|git::graph::backends", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::graph::cherry" [label="pub(self) mod|git::graph::cherry", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::graph::load" [label="pub(self) mod|git::graph::load", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::graph::model" [label="pub(self) mod|git::graph::model", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::graph::patch" [label="pub(self) mod|git::graph::patch", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::graph::refs" [label="pub(self) mod|git::graph::refs", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::graph::relationships" [label="pub(self) mod|git::graph::relationships", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::graph::squash" [label="pub(self) mod|git::graph::squash", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::graph::state" [label="pub(self) mod|git::graph::state", fillcolor="#db5367"]; // "mod" node
     "git_branch_manager::git::merge_detection" [label="pub mod|git::merge_detection", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::git::merge_detection::primary_code" [label="pub(self) mod|git::merge_detection::primary_code", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::merge_detection::reachable" [label="pub(self) mod|git::merge_detection::reachable", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::merge_detection::squash" [label="pub(self) mod|git::merge_detection::squash", fillcolor="#db5367"]; // "mod" node
     "git_branch_manager::git::operations" [label="pub mod|git::operations", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::git::operations::local" [label="pub(self) mod|git::operations::local", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::operations::remote" [label="pub(self) mod|git::operations::remote", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::operations::sync" [label="pub(self) mod|git::operations::sync", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::git::operations::worktree_ops" [label="pub(self) mod|git::operations::worktree_ops", fillcolor="#db5367"]; // "mod" node
     "git_branch_manager::git::pr_loader" [label="pub mod|git::pr_loader", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::git::squash_loader" [label="pub mod|git::squash_loader", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::git::status" [label="pub mod|git::status", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::git::tags" [label="pub mod|git::tags", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::git::worktree" [label="pub mod|git::worktree", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::git::worktree_delete" [label="pub mod|git::worktree_delete", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::job_queue" [label="pub mod|job_queue", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::job_queue::cascade" [label="pub(self) mod|job_queue::cascade", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::job_queue::execute" [label="pub(self) mod|job_queue::execute", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::job_queue::queue" [label="pub(self) mod|job_queue::queue", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::job_queue::test_hooks" [label="pub(self) mod|job_queue::test_hooks", fillcolor="#db5367"]; // "mod" node
     "git_branch_manager::symbols" [label="pub mod|symbols", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::theme" [label="pub mod|theme", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::theme::palettes" [label="pub(self) mod|theme::palettes", fillcolor="#db5367"]; // "mod" node
     "git_branch_manager::types" [label="pub mod|types", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::types::action" [label="pub(self) mod|types::action", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::types::diagnostics" [label="pub(self) mod|types::diagnostics", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::types::format" [label="pub(self) mod|types::format", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::types::info" [label="pub(self) mod|types::info", fillcolor="#db5367"]; // "mod" node
     "git_branch_manager::ui" [label="pub mod|ui", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::ui::cells" [label="pub mod|ui::cells", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::ui::commit_details" [label="pub mod|ui::commit_details", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::ui::commit_diff" [label="pub mod|ui::commit_diff", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::ui::confirm" [label="pub mod|ui::confirm", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::ui::confirm::lines" [label="pub(self) mod|ui::confirm::lines", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::ui::diagnostics" [label="pub mod|ui::diagnostics", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::ui::dump_render" [label="pub mod|ui::dump_render", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::ui::executing" [label="pub mod|ui::executing", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::ui::filter_ui" [label="pub mod|ui::filter_ui", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::ui::graph_render" [label="pub mod|ui::graph_render", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::ui::graph_render::lanes" [label="pub(self) mod|ui::graph_render::lanes", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::ui::graph_render::ref_pane" [label="pub(self) mod|ui::graph_render::ref_pane", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::ui::graph_render::row" [label="pub(self) mod|ui::graph_render::row", fillcolor="#db5367"]; // "mod" node
     "git_branch_manager::ui::help" [label="pub mod|ui::help", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::ui::info_modal" [label="pub mod|ui::info_modal", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::ui::info_modal::fields" [label="pub(self) mod|ui::info_modal::fields", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::ui::info_modal::ref_fields" [label="pub(self) mod|ui::info_modal::ref_fields", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::ui::job_status" [label="pub mod|ui::job_status", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::ui::list_render" [label="pub mod|ui::list_render", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::ui::list_render::ladder" [label="pub(self) mod|ui::list_render::ladder", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::ui::list_render::params" [label="pub(self) mod|ui::list_render::params", fillcolor="#db5367"]; // "mod" node
     "git_branch_manager::ui::menu" [label="pub mod|ui::menu", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::ui::modal" [label="pub mod|ui::modal", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::ui::render" [label="pub mod|ui::render", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::ui::render::context" [label="pub(self) mod|ui::render::context", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::ui::render::status_text" [label="pub(self) mod|ui::render::status_text", fillcolor="#db5367"]; // "mod" node
     "git_branch_manager::ui::results" [label="pub mod|ui::results", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::ui::settings" [label="pub mod|ui::settings", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::ui::shared" [label="pub mod|ui::shared", fillcolor="#81c169"]; // "mod" node
@@ -64,14 +125,20 @@ digraph {
     "git_branch_manager::view::branches" [label="pub mod|view::branches", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::view::column" [label="pub mod|view::column", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::view::filter" [label="pub mod|view::filter", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::view::graph" [label="pub mod|view::graph", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::view::graph::nav" [label="pub(self) mod|view::graph::nav", fillcolor="#db5367"]; // "mod" node
     "git_branch_manager::view::list_state" [label="pub mod|view::list_state", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::view::list_state::nav" [label="pub(self) mod|view::list_state::nav", fillcolor="#db5367"]; // "mod" node
+    "git_branch_manager::view::list_state::sort" [label="pub(self) mod|view::list_state::sort", fillcolor="#db5367"]; // "mod" node
     "git_branch_manager::view::remotes" [label="pub mod|view::remotes", fillcolor="#81c169"]; // "mod" node
+    "git_branch_manager::view::sort_keys" [label="pub mod|view::sort_keys", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::view::tags" [label="pub mod|view::tags", fillcolor="#81c169"]; // "mod" node
     "git_branch_manager::view::worktrees" [label="pub mod|view::worktrees", fillcolor="#81c169"]; // "mod" node
 
     "git_branch_manager" -> "git_branch_manager::cli" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager" -> "git_branch_manager::config" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager" -> "git_branch_manager::git" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager" -> "git_branch_manager::job_queue" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager" -> "git_branch_manager::symbols" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager" -> "git_branch_manager::theme" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager" -> "git_branch_manager::types" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
@@ -79,7 +146,13 @@ digraph {
     "git_branch_manager" -> "git_branch_manager::view" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::git" -> "git_branch_manager::git::branch" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::git" -> "git_branch_manager::git::cache" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git" -> "git_branch_manager::git::capability" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git" -> "git_branch_manager::git::cherry_loader" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git" -> "git_branch_manager::git::commit_details" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git" -> "git_branch_manager::git::diagnostics" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git" -> "git_branch_manager::git::fuzzy_match" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::git" -> "git_branch_manager::git::github" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git" -> "git_branch_manager::git::graph" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::git" -> "git_branch_manager::git::merge_detection" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::git" -> "git_branch_manager::git::operations" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::git" -> "git_branch_manager::git::pr_loader" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
@@ -87,24 +160,212 @@ digraph {
     "git_branch_manager::git" -> "git_branch_manager::git::status" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::git" -> "git_branch_manager::git::tags" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::git" -> "git_branch_manager::git::worktree" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git" -> "git_branch_manager::git::worktree_delete" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::branch" -> "git_branch_manager::git::branch::merge_base" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::branch" -> "git_branch_manager::git::branch::merge_base" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch" -> "git_branch_manager::git::branch::metadata" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::branch" -> "git_branch_manager::git::branch::metadata" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch" -> "git_branch_manager::git::branch::remote" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::branch" -> "git_branch_manager::git::branch::remote" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::git::branch" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch" -> "git_branch_manager::types::diagnostics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch" -> "git_branch_manager::types::format" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::merge_base" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::merge_base" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::merge_base" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::merge_base" -> "git_branch_manager::types::diagnostics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::merge_base" -> "git_branch_manager::types::format" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::merge_base" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::metadata" -> "git_branch_manager::git::branch" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::metadata" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::metadata" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::metadata" -> "git_branch_manager::types::diagnostics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::metadata" -> "git_branch_manager::types::format" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::metadata" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::remote" -> "git_branch_manager::git::branch" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::remote" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::remote" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::remote" -> "git_branch_manager::types::diagnostics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::remote" -> "git_branch_manager::types::format" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::branch::remote" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::cache" -> "git_branch_manager::git::cache::db" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::cache" -> "git_branch_manager::git::cache::entries" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::cache" -> "git_branch_manager::git::cache::persist" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::cache" -> "git_branch_manager::git::cache::prune" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::cache" -> "git_branch_manager::git::cache::prune" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::git::cache" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::cache::db" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::cache::entries" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::cache::entries" -> "git_branch_manager::git::cache::db" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::cache::entries" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::cache::persist" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::cache::persist" -> "git_branch_manager::git::cache::db" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::cache::persist" -> "git_branch_manager::git::cache::prune" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::cache::prune" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::capability" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::capability" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::cherry_loader" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::cherry_loader" -> "git_branch_manager::git::merge_detection::squash" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::cherry_loader" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::cherry_loader" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::commit_details" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::diagnostics" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::diagnostics" -> "git_branch_manager::git::diagnostics::verify" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::diagnostics" -> "git_branch_manager::git::diagnostics::verify" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::diagnostics" -> "git_branch_manager::git::diagnostics::workers" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::diagnostics" -> "git_branch_manager::git::diagnostics::workers" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::diagnostics" -> "git_branch_manager::git::merge_detection::reachable" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::diagnostics" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::diagnostics" -> "git_branch_manager::types::diagnostics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::diagnostics::verify" -> "git_branch_manager::git::branch" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::diagnostics::verify" -> "git_branch_manager::git::diagnostics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::diagnostics::verify" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::diagnostics::verify" -> "git_branch_manager::types::diagnostics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::diagnostics::workers" -> "git_branch_manager::git::merge_detection::squash" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::diagnostics::workers" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::git::github" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::git::merge_detection" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::git::operations" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::backends" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::cherry" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::load" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::load" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::model" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::patch" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::patch" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::refs" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::relationships" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::relationships" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::squash" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::state" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::graph" -> "git_branch_manager::git::graph::state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::backends" -> "git_branch_manager::git::graph" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::backends" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::backends" -> "git_branch_manager::git::graph::refs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::backends" -> "git_branch_manager::git::graph::state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::cherry" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::cherry" -> "git_branch_manager::git::graph" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::cherry" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::cherry" -> "git_branch_manager::git::graph::patch" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::cherry" -> "git_branch_manager::git::graph::relationships" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::load" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::load" -> "git_branch_manager::git::graph" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::load" -> "git_branch_manager::git::graph::backends" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::load" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::load" -> "git_branch_manager::git::graph::refs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::load" -> "git_branch_manager::git::graph::relationships" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::load" -> "git_branch_manager::git::graph::state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::patch" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::patch" -> "git_branch_manager::git::graph" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::refs" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::relationships" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::relationships" -> "git_branch_manager::git::graph" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::relationships" -> "git_branch_manager::git::graph::cherry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::relationships" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::relationships" -> "git_branch_manager::git::graph::squash" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::squash" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::squash" -> "git_branch_manager::git::graph" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::squash" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::squash" -> "git_branch_manager::git::graph::patch" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::state" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::graph::state" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::merge_detection" -> "git_branch_manager::git::merge_detection::primary_code" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::merge_detection" -> "git_branch_manager::git::merge_detection::primary_code" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::merge_detection" -> "git_branch_manager::git::merge_detection::reachable" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::merge_detection" -> "git_branch_manager::git::merge_detection::reachable" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::merge_detection" -> "git_branch_manager::git::merge_detection::squash" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::merge_detection" -> "git_branch_manager::git::merge_detection::squash" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::merge_detection::primary_code" -> "git_branch_manager::git::merge_detection" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::merge_detection::primary_code" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::merge_detection::reachable" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::merge_detection::reachable" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::merge_detection::squash" -> "git_branch_manager::git::fuzzy_match" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::merge_detection::squash" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations" -> "git_branch_manager::git::operations::local" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::operations" -> "git_branch_manager::git::operations::local" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations" -> "git_branch_manager::git::operations::remote" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::operations" -> "git_branch_manager::git::operations::remote" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations" -> "git_branch_manager::git::operations::sync" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::operations" -> "git_branch_manager::git::operations::sync" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations" -> "git_branch_manager::git::operations::worktree_ops" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::git::operations" -> "git_branch_manager::git::operations::worktree_ops" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations::local" -> "git_branch_manager::git::operations" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations::local" -> "git_branch_manager::git::worktree" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations::local" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations::remote" -> "git_branch_manager::git::operations" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations::remote" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations::sync" -> "git_branch_manager::git::operations" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations::sync" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations::worktree_ops" -> "git_branch_manager::git::operations" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations::worktree_ops" -> "git_branch_manager::git::status" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations::worktree_ops" -> "git_branch_manager::git::worktree_delete" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::operations::worktree_ops" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::git::pr_loader" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::git::squash_loader" -> "git_branch_manager::git::cache" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::git::squash_loader" -> "git_branch_manager::git::merge_detection" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::squash_loader" -> "git_branch_manager::git::merge_detection::squash" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::git::squash_loader" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::git::status" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::git::tags" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::squash_loader" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::status" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::tags" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::tags" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::git::worktree" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::worktree" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::git::worktree" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue" -> "git_branch_manager::git::graph::state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue" -> "git_branch_manager::job_queue::cascade" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::job_queue" -> "git_branch_manager::job_queue::execute" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::job_queue" -> "git_branch_manager::job_queue::queue" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::job_queue" -> "git_branch_manager::job_queue::test_hooks" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::job_queue" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::cascade" -> "git_branch_manager::git::operations" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::cascade" -> "git_branch_manager::git::worktree" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::cascade" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::execute" -> "git_branch_manager::git::operations" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::execute" -> "git_branch_manager::git::tags" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::execute" -> "git_branch_manager::job_queue::cascade" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::execute" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::queue" -> "git_branch_manager::git::graph::state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::queue" -> "git_branch_manager::job_queue" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::queue" -> "git_branch_manager::job_queue::execute" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::queue" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::queue" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::test_hooks" -> "git_branch_manager::git::graph::state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::test_hooks" -> "git_branch_manager::job_queue" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::job_queue::test_hooks" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::theme" -> "git_branch_manager::theme::palettes" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::theme::palettes" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::types" -> "git_branch_manager::types::action" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::types" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::types" -> "git_branch_manager::types::diagnostics" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::types" -> "git_branch_manager::types::diagnostics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::types" -> "git_branch_manager::types::format" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::types" -> "git_branch_manager::types::format" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::types" -> "git_branch_manager::types::info" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::types" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::types::action" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::types::action" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::types::diagnostics" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::types::info" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::types::info" -> "git_branch_manager::types::format" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui" -> "git_branch_manager::ui::cells" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui" -> "git_branch_manager::ui::commit_details" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui" -> "git_branch_manager::ui::commit_diff" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::ui" -> "git_branch_manager::ui::confirm" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui" -> "git_branch_manager::ui::diagnostics" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui" -> "git_branch_manager::ui::dump_render" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::ui" -> "git_branch_manager::ui::executing" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::ui" -> "git_branch_manager::ui::filter_ui" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui" -> "git_branch_manager::ui::graph_render" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::ui" -> "git_branch_manager::ui::help" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui" -> "git_branch_manager::ui::info_modal" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui" -> "git_branch_manager::ui::job_status" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::ui" -> "git_branch_manager::ui::list_render" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::ui" -> "git_branch_manager::ui::menu" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui" -> "git_branch_manager::ui::modal" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::ui" -> "git_branch_manager::ui::render" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::ui" -> "git_branch_manager::ui::results" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::ui" -> "git_branch_manager::ui::settings" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
@@ -112,80 +373,233 @@ digraph {
     "git_branch_manager::ui" -> "git_branch_manager::ui::status_bar" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::ui" -> "git_branch_manager::ui::tab_bar" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::ui" -> "git_branch_manager::ui::toast" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui::cells" -> "git_branch_manager::symbols" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::cells" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::cells" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::cells" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::cells" -> "git_branch_manager::ui::list_render::params" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::cells" -> "git_branch_manager::ui::shared" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::commit_details" -> "git_branch_manager::git::commit_details" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::commit_details" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::commit_details" -> "git_branch_manager::symbols" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::commit_details" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::commit_details" -> "git_branch_manager::ui::menu" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::commit_details" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::commit_diff" -> "git_branch_manager::git::commit_details" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::commit_diff" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::commit_diff" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::confirm" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::confirm" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::confirm" -> "git_branch_manager::ui::shared" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::confirm" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::confirm" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::confirm" -> "git_branch_manager::ui::confirm::lines" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui::confirm" -> "git_branch_manager::ui::confirm::lines" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::confirm" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::confirm::lines" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::confirm::lines" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::confirm::lines" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::confirm::lines" -> "git_branch_manager::ui::confirm" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::confirm::lines" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::confirm::lines" -> "git_branch_manager::ui::shared" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::diagnostics" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::diagnostics" -> "git_branch_manager::types::diagnostics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::diagnostics" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::dump_render" -> "git_branch_manager::cli" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::dump_render" -> "git_branch_manager::ui::list_render::params" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::dump_render" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::dump_render" -> "git_branch_manager::view::column" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::executing" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::executing" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::executing" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::executing" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::executing" -> "git_branch_manager::ui::shared" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::filter_ui" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::filter_ui" -> "git_branch_manager::ui::shared" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::filter_ui" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::filter_ui" -> "git_branch_manager::view::filter" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render" -> "git_branch_manager::symbols" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render" -> "git_branch_manager::ui::graph_render::lanes" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui::graph_render" -> "git_branch_manager::ui::graph_render::lanes" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render" -> "git_branch_manager::ui::graph_render::ref_pane" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui::graph_render" -> "git_branch_manager::ui::graph_render::ref_pane" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render" -> "git_branch_manager::ui::graph_render::row" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui::graph_render" -> "git_branch_manager::ui::graph_render::row" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render" -> "git_branch_manager::ui::tab_bar" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render" -> "git_branch_manager::view::graph" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render::lanes" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render::lanes" -> "git_branch_manager::symbols" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render::lanes" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render::ref_pane" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render::ref_pane" -> "git_branch_manager::symbols" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render::ref_pane" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render::ref_pane" -> "git_branch_manager::ui::graph_render::lanes" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render::ref_pane" -> "git_branch_manager::ui::graph_render::row" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render::row" -> "git_branch_manager::symbols" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render::row" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::graph_render::row" -> "git_branch_manager::ui::graph_render::ref_pane" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::help" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::help" -> "git_branch_manager::ui::shared" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::help" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::help" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::list_render" -> "git_branch_manager::symbols" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::list_render" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal" -> "git_branch_manager::symbols" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal" -> "git_branch_manager::types::diagnostics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal" -> "git_branch_manager::types::format" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal" -> "git_branch_manager::ui::info_modal::fields" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui::info_modal" -> "git_branch_manager::ui::info_modal::fields" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal" -> "git_branch_manager::ui::info_modal::ref_fields" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui::info_modal" -> "git_branch_manager::ui::menu" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal::fields" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal::fields" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal::fields" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal::fields" -> "git_branch_manager::ui::info_modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal::fields" -> "git_branch_manager::ui::info_modal::ref_fields" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal::ref_fields" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal::ref_fields" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal::ref_fields" -> "git_branch_manager::ui::info_modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::info_modal::ref_fields" -> "git_branch_manager::ui::info_modal::fields" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::job_status" -> "git_branch_manager::job_queue" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::job_status" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::job_status" -> "git_branch_manager::ui::shared" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::list_render" -> "git_branch_manager::ui::list_render::ladder" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui::list_render" -> "git_branch_manager::ui::list_render::ladder" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::list_render" -> "git_branch_manager::ui::list_render::params" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui::list_render" -> "git_branch_manager::ui::list_render::params" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::list_render" -> "git_branch_manager::ui::tab_bar" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::list_render" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::list_render" -> "git_branch_manager::view::column" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::list_render" -> "git_branch_manager::view::list_state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::list_render::ladder" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::list_render::ladder" -> "git_branch_manager::view::column" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::list_render::params" -> "git_branch_manager::symbols" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::list_render::params" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::list_render::params" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::list_render::params" -> "git_branch_manager::view::column" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::list_render::params" -> "git_branch_manager::view::list_state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::menu" -> "git_branch_manager::symbols" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::menu" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::menu" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::render" -> "git_branch_manager::config" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::render" -> "git_branch_manager::symbols" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::render" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::render" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::menu" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::menu" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::modal" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::modal" -> "git_branch_manager::ui::shared" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render" -> "git_branch_manager::ui::commit_details" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render" -> "git_branch_manager::ui::commit_diff" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::render" -> "git_branch_manager::ui::confirm" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render" -> "git_branch_manager::ui::diagnostics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::render" -> "git_branch_manager::ui::executing" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::render" -> "git_branch_manager::ui::filter_ui" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render" -> "git_branch_manager::ui::graph_render" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::render" -> "git_branch_manager::ui::help" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::render" -> "git_branch_manager::ui::list_render" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render" -> "git_branch_manager::ui::info_modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render" -> "git_branch_manager::ui::job_status" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render" -> "git_branch_manager::ui::list_render::params" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::render" -> "git_branch_manager::ui::menu" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render" -> "git_branch_manager::ui::render::context" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui::render" -> "git_branch_manager::ui::render::context" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render" -> "git_branch_manager::ui::render::status_text" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::ui::render" -> "git_branch_manager::ui::render::status_text" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::render" -> "git_branch_manager::ui::results" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::render" -> "git_branch_manager::ui::settings" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::render" -> "git_branch_manager::ui::status_bar" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::render" -> "git_branch_manager::ui::toast" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::render" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::render" -> "git_branch_manager::view::column" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::render" -> "git_branch_manager::view::filter" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::render" -> "git_branch_manager::view::list_state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::config" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::git" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::git::commit_details" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::git::graph" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::job_queue" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::symbols" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::types::diagnostics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::types::format" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::ui::commit_details" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::ui::confirm" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::ui::info_modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::ui::list_render::params" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::ui::menu" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::ui::results" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::ui::toast" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::view::column" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::view::filter" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::view::graph" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::context" -> "git_branch_manager::view::list_state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::status_text" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::status_text" -> "git_branch_manager::ui::render::context" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::status_text" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::render::status_text" -> "git_branch_manager::view::list_state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::results" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::results" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::results" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::results" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::settings" -> "git_branch_manager::config" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::settings" -> "git_branch_manager::symbols" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::settings" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::ui::settings" -> "git_branch_manager::ui::shared" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::ui::settings" -> "git_branch_manager::ui::modal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::shared" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::status_bar" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::tab_bar" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::tab_bar" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::ui::toast" -> "git_branch_manager::theme" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view" -> "git_branch_manager::types::action" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view" -> "git_branch_manager::types::diagnostics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view" -> "git_branch_manager::types::format" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view" -> "git_branch_manager::view::branches" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::view" -> "git_branch_manager::view::column" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::view" -> "git_branch_manager::view::filter" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::view" -> "git_branch_manager::view::graph" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::view" -> "git_branch_manager::view::list_state" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::view" -> "git_branch_manager::view::remotes" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::view" -> "git_branch_manager::view::sort_keys" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::view" -> "git_branch_manager::view::tags" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
     "git_branch_manager::view" -> "git_branch_manager::view::worktrees" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
-    "git_branch_manager::view::branches" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::branches" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view::branches" -> "git_branch_manager::view::column" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view::branches" -> "git_branch_manager::view::filter" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::column" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::column" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view::column" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view::filter" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::view::list_state" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::graph" -> "git_branch_manager::git::graph" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::graph" -> "git_branch_manager::git::graph::model" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::graph" -> "git_branch_manager::git::graph::state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::graph" -> "git_branch_manager::view::graph::nav" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::view::graph" -> "git_branch_manager::view::graph::nav" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::graph::nav" -> "git_branch_manager::git::graph" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::graph::nav" -> "git_branch_manager::view::graph" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view::list_state" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::view::list_state" -> "git_branch_manager::view::column" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view::list_state" -> "git_branch_manager::view::filter" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::view::remotes" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::list_state" -> "git_branch_manager::view::list_state::nav" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::view::list_state" -> "git_branch_manager::view::list_state::nav" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::list_state" -> "git_branch_manager::view::list_state::sort" [label="owns", color="#000000", style="solid"] [constraint=true]; // "owns" edge
+    "git_branch_manager::view::list_state" -> "git_branch_manager::view::list_state::sort" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::list_state::nav" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::list_state::nav" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::list_state::nav" -> "git_branch_manager::view::list_state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::list_state::sort" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::list_state::sort" -> "git_branch_manager::view::column" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::list_state::sort" -> "git_branch_manager::view::list_state" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::remotes" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view::remotes" -> "git_branch_manager::view::column" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view::remotes" -> "git_branch_manager::view::filter" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::view::tags" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::sort_keys" -> "git_branch_manager::config" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::sort_keys" -> "git_branch_manager::view" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::sort_keys" -> "git_branch_manager::view::column" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::tags" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view::tags" -> "git_branch_manager::view::column" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view::tags" -> "git_branch_manager::view::filter" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
-    "git_branch_manager::view::worktrees" -> "git_branch_manager::types" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "git_branch_manager::view::worktrees" -> "git_branch_manager::types::info" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view::worktrees" -> "git_branch_manager::view::column" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
     "git_branch_manager::view::worktrees" -> "git_branch_manager::view::filter" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
 
