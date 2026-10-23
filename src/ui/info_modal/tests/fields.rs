@@ -312,5 +312,5 @@ fn cherry_pick_provenance_uses_captured_missing_source() {
     assert!(fields
         .iter()
         .any(|f| f.label == "Cherry-picked From" && f.value == "abcdef1 (feature/gone)"));
-    assert!(!commit.is_cherry_picked_commit());
+    assert!(commit.is_cherry_picked_commit());
 }

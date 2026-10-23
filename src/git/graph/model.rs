@@ -105,9 +105,12 @@ pub struct SquashMatchConfidence {
 }
 
 impl GraphCommit {
-    /// Whether this commit is a source of an exact cherry-pick pairing.
+    /// Whether this commit is either endpoint of an exact cherry-pick pairing.
     pub fn is_cherry_picked_commit(&self) -> bool {
-        !self.cherry_pick_destinations().is_empty()
+        self.relationships.iter().any(|r| {
+            r.kind == RelationshipKind::CherryPick
+                && (r.source_oid == self.oid || r.destination_oid == self.oid)
+        })
     }
 
     /// Captured destinations reached by picking this source commit.

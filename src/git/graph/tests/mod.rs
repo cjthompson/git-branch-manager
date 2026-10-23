@@ -1,4 +1,5 @@
 mod cherry_scan;
+mod cross_branch_cherry;
 mod confidence;
 mod enrichment_cancel;
 mod fixtures;
