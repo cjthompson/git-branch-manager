@@ -4,7 +4,7 @@ use git_branch_manager::git::{
     operations, worktree,
 };
 use git_branch_manager::types::{
-    ChangedFileKind, FailureCause,
+    BranchAction, ChangedFileKind, FailureCause,
 };
 
 use crate::common::*;
@@ -389,4 +389,53 @@ fn test_checkout_branch_with_stash() {
     // The stash should have been popped, so the working tree change should be present
     let contents = std::fs::read_to_string(&dirty_file).expect("failed to read file");
     assert_eq!(contents, "# Modified\n", "stash pop should restore changes");
+}
+
+#[test]
+fn cherry_pick_local_applies_branch_tip_onto_clean_head() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/pick"]);
+    std::fs::write(dir.join("picked.txt"), "picked\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "picked commit"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let results = operations::cherry_pick_local(dir, "feature/pick");
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].success, "{}", results[0].message);
+    assert_eq!(results[0].action, BranchAction::CherryPickLocal);
+    assert_eq!(std::fs::read_to_string(dir.join("picked.txt")).unwrap(), "picked\n");
+    assert_eq!(git_output(dir, &["log", "-1", "--format=%s"]), "picked commit");
+}
+
+#[test]
+fn cherry_pick_local_conflict_aborts_and_reports_failure() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    std::fs::write(dir.join("conflict.txt"), "base\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "add conflict file"]);
+
+    run_git(dir, &["checkout", "-b", "feature/conflict"]);
+    std::fs::write(dir.join("conflict.txt"), "feature\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "feature edit"]);
+
+    run_git(dir, &["checkout", "main"]);
+    std::fs::write(dir.join("conflict.txt"), "main change\n").unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "main edit"]);
+
+    let results = operations::cherry_pick_local(dir, "feature/conflict");
+
+    assert_eq!(results.len(), 1);
+    assert!(!results[0].success);
+    assert_eq!(results[0].action, BranchAction::CherryPickLocal);
+    assert_eq!(results[0].message, "Cherry-pick conflict \u{2014} aborted");
+    assert_eq!(git_output(dir, &["status", "--porcelain"]), "");
+    assert_eq!(std::fs::read_to_string(dir.join("conflict.txt")).unwrap(), "main change\n");
 }

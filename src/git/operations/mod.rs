@@ -4,8 +4,8 @@ mod sync;
 mod worktree_ops;
 
 pub use local::{
-    checkout_branch, delete_local, delete_local_force, delete_locals_with_progress, fetch,
-    fetch_prune, fetch_sync,
+    checkout_branch, cherry_pick_local, delete_local, delete_local_force,
+    delete_locals_with_progress, fetch, fetch_prune, fetch_sync,
 };
 pub use remote::{
     checkout_remote_branch, cherry_pick_remote, delete_remotes_batch,

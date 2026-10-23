@@ -271,3 +271,26 @@ pub fn delete_locals_with_progress(
         delete_local(repo, name)
     })
 }
+
+/// Apply the tip of local branch `name` onto the HEAD checked out at `repo_path`.
+pub fn cherry_pick_local(repo_path: &Path, name: &str) -> Vec<OperationResult> {
+    let full_ref = format!("refs/heads/{name}");
+    let out = git_cmd(repo_path).args(["cherry-pick", &full_ref]).output();
+    vec![match out {
+        Ok(o) if o.status.success() => OperationResult::success(
+            name,
+            BranchAction::CherryPickLocal,
+            format!("Cherry-picked {full_ref}"),
+        ),
+        _ => {
+            let _ = git_cmd(repo_path).args(["cherry-pick", "--abort"]).output();
+            OperationResult {
+                branch_name: name.to_string(),
+                action: BranchAction::CherryPickLocal,
+                success: false,
+                message: "Cherry-pick conflict \u{2014} aborted".to_string(),
+                failure: None,
+            }
+        }
+    }]
+}

@@ -134,6 +134,16 @@ pub fn can_delete_local_and_remote(
     }
 }
 
+pub fn can_cherry_pick_local(branch: &BranchInfo) -> Capability {
+    if branch.is_base {
+        Capability::no("base")
+    } else if branch.is_current {
+        Capability::no("current")
+    } else {
+        Capability::yes()
+    }
+}
+
 pub fn can_push(branch: &BranchInfo, has_configured_remote: bool, _is_clean: bool) -> Capability {
     if !has_configured_remote {
         return Capability::no("no remote");

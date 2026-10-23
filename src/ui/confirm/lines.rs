@@ -160,6 +160,17 @@ fn push_risk_lines(
                 )));
             }
         }
+        DeleteRisk::CherryPickTarget { branch, head, base } => {
+            let head = head.as_deref().unwrap_or("detached HEAD");
+            lines.push(Line::from(Span::styled(
+                format!("  Applies onto current HEAD {head} (not base {base})"),
+                theme.modal_warning,
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("    Picks the latest commit of {branch}"),
+                theme.modal_secondary,
+            )));
+        }
     }
 }
 

@@ -4,6 +4,7 @@ use ratatui::backend::TestBackend;
 use std::process::Command;
 
 mod cancel_job;
+mod cherry_pick_local_prompt;
 mod commit_details_actions;
 mod commit_details_nav;
 mod delete_preflight;

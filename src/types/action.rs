@@ -27,6 +27,8 @@ pub enum BranchAction {
     Push,
     ForcePush,
     Pull,
+    /// Apply the branch tip (`refs/heads/<name>`) onto the current HEAD.
+    CherryPickLocal,
     // Tag actions
     DeleteTag,
     DeleteTagAndRemote,
@@ -77,6 +79,7 @@ impl BranchAction {
             Self::Push => "Push",
             Self::ForcePush => "Force push",
             Self::Pull => "Pull",
+            Self::CherryPickLocal => "Cherry-pick onto current",
             Self::DeleteTag => "Delete tag",
             Self::DeleteTagAndRemote => "Delete tag (local + remote)",
             Self::PushTag => "Push tag",

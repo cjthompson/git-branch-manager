@@ -268,6 +268,11 @@ pub(super) fn execute_action_with_remote(
                 results.extend(operations::cherry_pick_remote(repo_path, &full_ref, name));
             }
         }
+        BranchAction::CherryPickLocal => {
+            if let Some(name) = item_names.first() {
+                results.extend(operations::cherry_pick_local(repo_path, name));
+            }
+        }
         BranchAction::WorktreeRemove | BranchAction::WorktreeForceRemove => {
             cascade::execute_worktree_remove(
                 action,

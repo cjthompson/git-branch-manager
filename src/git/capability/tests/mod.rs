@@ -1,4 +1,5 @@
 mod checkout_delete;
+mod cherry_pick_local;
 mod integrate;
 mod remote_sync;
 
