@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23
+
+### Tasks
+- Stash and restore dirty files on squash merge instead of disabling it on a dirty branch worktree (#graph, #menu, #squash)
+
 ## 2026-10-17
 
 ### Split Large Rust Files (P014)
