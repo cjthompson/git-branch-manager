@@ -8,7 +8,7 @@ use super::cherry::{
     compute_cherry_pick_relationships, compute_cherry_pick_relationships_observed,
     MAX_CHERRY_DESTINATION_SCAN, MAX_CHERRY_SOURCE_COMMITS,
 };
-use super::model::{GraphRefKind, GraphRelationship, RelationshipKind};
+use super::model::{GraphRef, GraphRefKind, GraphRelationship, RelationshipKind};
 use super::squash::compute_squash_relationships;
 use super::{EnrichmentCancel, EnrichmentObserver, GraphSnapshot};
 
@@ -35,6 +35,16 @@ fn resolve_base_name(repo_path: &Path, requested_base: Option<&str>) -> Option<S
         let repo = git2::Repository::open(repo_path).ok()?;
         crate::git::branch::detect_base_branch(&repo, None).ok()
     })
+}
+
+/// Branch tips eligible as squash/cherry sources: local branches, plus remote-tracking
+/// branches only when the snapshot was loaded with remotes.
+pub(super) fn is_source_ref(reference: &GraphRef, base_branch: &str, include_remotes: bool) -> bool {
+    match reference.kind {
+        GraphRefKind::LocalBranch => reference.name != base_branch,
+        GraphRefKind::RemoteBranch => include_remotes,
+        GraphRefKind::Tag => false,
+    }
 }
 
 fn resolve_base(
