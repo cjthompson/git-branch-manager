@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23
+
+### Fixes
+- Shrink list columns to fit the viewport before horizontal scrolling extends the table (#list, #layout)
+
 ## 2026-10-17
 
 ### Split Large Rust Files (P014)
