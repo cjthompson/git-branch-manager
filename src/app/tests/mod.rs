@@ -150,6 +150,7 @@ fn graph_ref(name: &str, kind: graph::GraphRefKind) -> graph::GraphRef {
         has_linked_worktree: false,
         is_current: false,
         tracking: None,
+        ahead_of_base: None,
     }
 }
 

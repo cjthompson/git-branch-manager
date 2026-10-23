@@ -9,6 +9,7 @@
 
 ### Fixes
 - graph view merge checking should apply to both remote and local branches (#graph)
+- Show the ahead-of-base count for the selected graph branch in the status line (#graph, #status)
 
 ## 2026-10-17
 

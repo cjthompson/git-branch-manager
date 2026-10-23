@@ -90,7 +90,23 @@ pub(super) fn collect_ref_data(
         }
     }
 
+    let base_oid = base_branch.as_deref().and_then(|base| {
+        repository
+            .find_branch(base, git2::BranchType::Local)
+            .ok()?
+            .get()
+            .target()
+    });
     for (name, target_oid) in &local_refs {
+        let ahead_of_base = match base_oid {
+            Some(base_oid) if base_branch.as_deref() != Some(name.as_str()) => {
+                git2::Oid::from_str(target_oid)
+                    .ok()
+                    .and_then(|tip| repository.graph_ahead_behind(tip, base_oid).ok())
+                    .map(|(ahead, _)| u32::try_from(ahead).unwrap_or(u32::MAX))
+            }
+            _ => None,
+        };
         let tracking = repository.find_branch(name, git2::BranchType::Local).ok()
             .and_then(|branch| branch.upstream().ok())
             .and_then(|upstream| {
@@ -107,6 +123,7 @@ pub(super) fn collect_ref_data(
                 has_linked_worktree: linked_worktrees.contains(name),
                 is_current: head_shorthand.as_deref() == Some(name.as_str()),
                 tracking,
+                ahead_of_base,
             },
         );
     }
@@ -122,6 +139,7 @@ pub(super) fn collect_ref_data(
                     has_linked_worktree: false,
                     is_current: false,
                     tracking: None,
+                    ahead_of_base: None,
                 },
             );
         }
@@ -150,6 +168,7 @@ pub(super) fn collect_ref_data(
                     has_linked_worktree: false,
                     is_current: false,
                     tracking: None,
+                    ahead_of_base: None,
                 },
             );
         }
@@ -176,6 +195,7 @@ pub(super) fn collect_ref_data(
                 has_linked_worktree: false,
                 is_current: false,
                 tracking: None,
+                ahead_of_base: None,
             },
         );
     }

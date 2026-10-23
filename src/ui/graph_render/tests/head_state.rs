@@ -22,6 +22,7 @@ fn graph_current_branch_state_column_starts_with_HEAD_label() {
                     ahead: 3,
                     behind: 0,
                 }),
+                ahead_of_base: None,
             }],
             relationships: vec![],
             ..GraphCommit::default()
@@ -88,6 +89,7 @@ fn graph_non_current_branch_state_column_does_not_render_HEAD_label() {
                     ahead: 3,
                     behind: 0,
                 }),
+                ahead_of_base: None,
             }],
             relationships: vec![],
             ..GraphCommit::default()
@@ -145,6 +147,7 @@ fn graph_detached_head_produces_no_tinted_rows() {
                 has_linked_worktree: false,
                 is_current: false,
                 tracking: None,
+                ahead_of_base: None,
             }],
             relationships: vec![],
             ..GraphCommit::default()
@@ -195,6 +198,7 @@ fn graph_head_only_branch_row_is_tinted() {
                     has_linked_worktree: false,
                     is_current: true,
                     tracking: None,
+                    ahead_of_base: None,
                 }],
                 relationships: vec![],
                 ..GraphCommit::default()
@@ -211,6 +215,7 @@ fn graph_head_only_branch_row_is_tinted() {
                     has_linked_worktree: false,
                     is_current: false,
                     tracking: None,
+                    ahead_of_base: None,
                 }],
                 relationships: vec![],
                 ..GraphCommit::default()

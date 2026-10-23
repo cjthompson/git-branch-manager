@@ -22,15 +22,10 @@ fn empty_renderer<T>(
 
 fn render_commit_details_overlay(commit: graph::GraphCommit) -> String {
     use crate::git::commit_details::{CommitDetailMode, CommitDetails};
-    use crate::job_queue::JobStatusView;
-    use crate::symbols::SymbolSet;
-    use crate::theme::Theme;
-    use crate::ui::info_modal::InfoHitRegion;
-    use ratatui::{backend::TestBackend, Terminal};
 
     let oid = commit.oid.clone();
     let summary = commit.summary.clone();
-    let mut overlay = Some(Overlay::CommitDetails {
+    let overlay = Overlay::CommitDetails {
         commit,
         details: CommitDetails {
             oid: oid.clone(),
@@ -48,7 +43,17 @@ fn render_commit_details_overlay(commit: graph::GraphCommit) -> String {
         file_cursor: 0,
         focus: CommitDetailsFocus::Files,
         scroll: ModalScroll::default(),
-    });
+    };
+    render_frame(Some(overlay), &mut GraphState::new())
+}
+
+fn render_frame(mut overlay: Option<Overlay>, graph: &mut GraphState) -> String {
+    use crate::job_queue::JobStatusView;
+    use crate::symbols::SymbolSet;
+    use crate::theme::Theme;
+    use crate::ui::info_modal::InfoHitRegion;
+    use ratatui::{backend::TestBackend, Terminal};
+
     let theme = Theme::dark();
     let symbols = SymbolSet::ascii();
     let config = Config::default();
@@ -58,7 +63,6 @@ fn render_commit_details_overlay(commit: graph::GraphCommit) -> String {
     let mut remotes = ListState::<RemoteBranchInfo>::empty();
     let mut tags = ListState::<TagInfo>::empty();
     let mut worktrees = ListState::<WorktreeInfo>::empty();
-    let mut graph = GraphState::new();
     let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
 
     terminal
@@ -86,7 +90,8 @@ fn render_commit_details_overlay(commit: graph::GraphCommit) -> String {
                 remotes: &mut remotes,
                 tags: &mut tags,
                 worktrees: &mut worktrees,
-                graph: &mut graph,
+                graph,
+                base_branch: "main",
                 branch_columns: &[],
                 remote_columns: &[],
                 tag_columns: &[],
@@ -261,4 +266,41 @@ fn commit_details_overlay_shows_captured_cherry_pick_provenance() {
         ..Default::default()
     });
     assert!(rendered.contains("Cherry-picked From abcdef1 (feature/gone, feature/renamed)"));
+}
+
+#[test]
+fn graph_status_line_shows_ahead_of_base_count() {
+    use crate::git::graph::{
+        GraphCommit, GraphLine, GraphRef, GraphRefCounts, GraphRefKind, GraphSnapshot, GraphSource,
+    };
+    let mut graph = GraphState::new();
+    graph.apply_result(Ok(GraphSnapshot {
+        source: GraphSource::Gleisbau,
+        commits: vec![GraphCommit {
+            oid: "1111111111111111111111111111111111111111".into(),
+            summary: "feature work".into(),
+            refs: vec![GraphRef {
+                name: "feature".into(),
+                kind: GraphRefKind::LocalBranch,
+                has_linked_worktree: false,
+                is_current: false,
+                tracking: None,
+                ahead_of_base: Some(1),
+            }],
+            ..GraphCommit::default()
+        }],
+        lines: vec![GraphLine {
+            graph: "*".into(),
+            commit_index: Some(0),
+        }],
+        ref_counts: GraphRefCounts { local: 1, remote: 0 },
+        max_count: 500,
+        includes_remotes: false,
+        generation: None,
+    }));
+    let rendered = render_frame(None, &mut graph);
+    assert!(
+        rendered.contains("1 ahead of main"),
+        "graph status line should include the ahead-of-base count; got: {rendered}"
+    );
 }

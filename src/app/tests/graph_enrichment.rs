@@ -33,6 +33,7 @@ fn graph_enrichment_with_stale_generation_is_dropped_by_drain() {
                 has_linked_worktree: false,
                 is_current: false,
                 tracking: None,
+                ahead_of_base: None,
             }],
             relationships: vec![],
             ..graph::GraphCommit::default()

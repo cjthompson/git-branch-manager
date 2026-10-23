@@ -56,6 +56,7 @@ pub(super) fn native_pair_fixture() -> (
         has_linked_worktree: false,
         is_current: false,
         tracking: None,
+        ahead_of_base: None,
     };
     // Deliberately omit the merge base and historical destination from the window.
     let snapshot = relationship_snapshot(vec![

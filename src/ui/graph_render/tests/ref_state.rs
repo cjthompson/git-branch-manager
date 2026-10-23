@@ -18,6 +18,7 @@ fn graph_ref_markers_are_width_safe() {
                     ahead: 9,
                     behind: 0,
                 }),
+                ahead_of_base: None,
             },
             GraphRef {
                 name: "origin/main".into(),
@@ -25,6 +26,7 @@ fn graph_ref_markers_are_width_safe() {
                 has_linked_worktree: false,
                 is_current: false,
                 tracking: None,
+                ahead_of_base: None,
             },
             GraphRef {
                 name: "v1".into(),
@@ -32,6 +34,7 @@ fn graph_ref_markers_are_width_safe() {
                 has_linked_worktree: false,
                 is_current: false,
                 tracking: None,
+                ahead_of_base: None,
             },
         ],
         relationships: vec![],
@@ -76,6 +79,7 @@ fn inferred_branch_name_starts_at_the_same_refs_column_as_a_live_ref() {
             has_linked_worktree: false,
             is_current: false,
             tracking: None,
+            ahead_of_base: None,
         }],
         relationships: vec![],
         ..GraphCommit::default()
@@ -112,6 +116,7 @@ fn ref_pane_markers_match_list_view_indicator_colors() {
         has_linked_worktree: false,
         is_current: false,
         tracking: None,
+        ahead_of_base: None,
     };
     let commit = GraphCommit {
         refs: vec![

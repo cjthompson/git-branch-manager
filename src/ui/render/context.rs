@@ -143,6 +143,7 @@ pub struct RenderContext<'a> {
     pub tags: &'a mut ListState<TagInfo>,
     pub worktrees: &'a mut ListState<WorktreeInfo>,
     pub graph: &'a mut GraphState,
+    pub base_branch: &'a str,
     // Column definitions
     pub branch_columns: &'a [ColumnDef<BranchInfo>],
     pub remote_columns: &'a [ColumnDef<RemoteBranchInfo>],
