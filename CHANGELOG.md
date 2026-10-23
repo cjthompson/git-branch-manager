@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23
+
+### Fixes
+- Force-delete squash-merged and cherry-picked branches from the delete action without a review prompt (#branches)
+
 ## 2026-10-22
 
 ### Fixes

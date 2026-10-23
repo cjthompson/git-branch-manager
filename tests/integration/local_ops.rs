@@ -84,6 +84,33 @@ fn test_delete_local_requires_merge_but_force_delete_bypasses_it() {
 }
 
 #[test]
+fn test_delete_local_squash_merged_branch_requires_force() {
+    let (tmpdir, repo) = setup_test_repo();
+    let dir = tmpdir.path();
+
+    run_git(dir, &["checkout", "-b", "feature/squashed-delete"]);
+    std::fs::write(dir.join("squashed.txt"), "squashed\n").unwrap();
+    run_git(dir, &["add", "squashed.txt"]);
+    run_git(dir, &["commit", "-m", "squashed work"]);
+    run_git(dir, &["checkout", "main"]);
+    run_git(dir, &["merge", "--squash", "feature/squashed-delete"]);
+    run_git(dir, &["commit", "-m", "squash feature"]);
+
+    let safe = operations::delete_local(&repo, "feature/squashed-delete");
+    assert!(
+        !safe.success,
+        "safe deletion must reject a squash-merged branch"
+    );
+    assert!(matches!(safe.failure, Some(FailureCause::NotMerged)));
+
+    let forced = operations::delete_local_force(&repo, "feature/squashed-delete");
+    assert!(
+        forced.success,
+        "force deletion should remove the squash-merged branch: {forced:?}"
+    );
+}
+
+#[test]
 fn test_delete_local_classifies_primary_and_linked_worktree_failures() {
     let (tmpdir, repo) = setup_test_repo();
     let dir = tmpdir.path();
