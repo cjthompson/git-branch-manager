@@ -6,6 +6,7 @@ mod incremental;
 mod loaders;
 mod merge_scan;
 mod relationships;
+mod remote_sources;
 
 use super::*;
 use super::backends::gleisbau_settings;

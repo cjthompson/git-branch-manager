@@ -5,6 +5,7 @@ use crate::git::cache::BranchCache;
 
 use super::model::{GraphCommit, GraphRefKind, GraphRelationship, RelationshipKind, RelationshipMatch};
 use super::patch::{load_patch_ids, PatchJob, PatchTarget, SourceTip};
+use super::relationships::is_source_ref;
 use super::{EnrichmentCancel, EnrichmentObserver, GraphSnapshot};
 
 #[allow(clippy::too_many_arguments)]
@@ -45,7 +46,7 @@ pub(super) fn compute_squash_relationships(
             .refs
             .iter()
             .filter(|reference| {
-                reference.kind == GraphRefKind::LocalBranch && reference.name != base_branch
+                is_source_ref(reference, base_branch, snapshot.includes_remotes)
             })
             .map(|reference| reference.name.clone());
         displayed_branch_names_by_tip

@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use crate::git::cache::BranchCache;
 
-use super::model::{GraphRefKind, GraphRelationship, RelationshipKind, RelationshipMatch};
+use super::model::{GraphRelationship, RelationshipKind, RelationshipMatch};
 use super::patch::git2_diff_patch;
-use super::relationships::RelationshipAccumulator;
+use super::relationships::{is_source_ref, RelationshipAccumulator};
 use super::{EnrichmentCancel, EnrichmentObserver, EnrichmentStage, GraphSnapshot};
 
 /// Maximum branch-only revwalk yields accepted for one displayed tip.
@@ -199,7 +199,7 @@ pub(super) fn compute_cherry_pick_relationships_observed(
         let mut names = commit
             .refs
             .iter()
-            .filter(|r| r.kind == GraphRefKind::LocalBranch && r.name != base_branch)
+            .filter(|r| is_source_ref(r, base_branch, snapshot.includes_remotes))
             .map(|r| r.name.clone())
             .collect::<Vec<_>>();
         names.sort();
