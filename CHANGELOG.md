@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-22
+
+### Fixes
+- graph view merge checking should apply to both remote and local branches (#graph)
+
 ## 2026-10-17
 
 ### Split Large Rust Files (P014)
