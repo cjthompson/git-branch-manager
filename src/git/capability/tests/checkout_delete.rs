@@ -17,11 +17,27 @@ fn checkout_blocks_current_branch() {
 }
 
 #[test]
-fn checkout_blocks_base_branch() {
+fn checkout_allows_base_branch() {
     let branch = test_branch("main", false, true, TrackingStatus::Local, None, None);
     let cap = can_checkout_local(&branch, None);
+    assert!(cap.available);
+    assert_eq!(cap.reason, None);
+}
+
+#[test]
+fn checkout_blocks_current_base_branch() {
+    let branch = test_branch("main", true, true, TrackingStatus::Local, None, None);
+    let cap = can_checkout_local(&branch, None);
     assert!(!cap.available);
-    assert_eq!(cap.reason, Some("base"));
+    assert_eq!(cap.reason, Some("current"));
+}
+
+#[test]
+fn checkout_blocks_base_branch_in_linked_worktree() {
+    let branch = test_branch("main", false, true, TrackingStatus::Local, None, None);
+    let cap = can_checkout_local(&branch, Some(linked_worktree(true)));
+    assert!(!cap.available);
+    assert_eq!(cap.reason, Some("checked out in worktree"));
 }
 
 #[test]

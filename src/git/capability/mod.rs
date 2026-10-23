@@ -48,9 +48,7 @@ impl Capability {
 }
 
 pub fn can_checkout_local(branch: &BranchInfo, worktree: Option<WorktreePresence>) -> Capability {
-    if branch.is_base {
-        Capability::no("base")
-    } else if branch.is_current {
+    if branch.is_current {
         Capability::no("current")
     } else if worktree.is_some() {
         Capability::no("checked out in worktree")
