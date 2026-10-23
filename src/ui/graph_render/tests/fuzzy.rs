@@ -111,3 +111,20 @@ fn graph_commit_row_gives_exact_squash_and_cherry_labels_precedence_over_fuzzy()
         assert!(!row.contains("[fuzzy squash"), "got: {row}");
     }
 }
+
+#[test]
+fn graph_commit_row_marks_cherry_pick_destination() {
+    let mut commit = fuzzy_commit(97);
+    commit.relationships.push(crate::git::graph::GraphRelationship {
+        kind: crate::git::graph::RelationshipKind::CherryPick,
+        matching: crate::git::graph::RelationshipMatch::Exact,
+        source_oid: "1111111111111111111111111111111111111111".into(),
+        source_refs: vec!["feature/source".into()],
+        destination_oid: commit.oid.clone(),
+        destination_refs: vec!["integration".into()],
+    });
+    let lines = render_commit_lines(commit, 100, 0);
+    let row = lines.iter().find(|line| line.contains("abcdef0")).unwrap();
+    assert!(row.contains("c abcdef0"), "got: {row}");
+    assert!(!row.contains("[fuzzy squash"), "got: {row}");
+}

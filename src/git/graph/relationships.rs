@@ -6,7 +6,8 @@ use crate::git::cache::{BranchCache, CacheRoot};
 
 use super::cherry::{
     compute_cherry_pick_relationships, compute_cherry_pick_relationships_observed,
-    MAX_CHERRY_DESTINATION_SCAN, MAX_CHERRY_SOURCE_COMMITS,
+    compute_cross_branch_cherry_relationships, MAX_CHERRY_DESTINATION_SCAN,
+    MAX_CHERRY_SOURCE_COMMITS,
 };
 use super::model::{GraphRef, GraphRefKind, GraphRelationship, RelationshipKind};
 use super::squash::compute_squash_relationships;
@@ -39,7 +40,11 @@ fn resolve_base_name(repo_path: &Path, requested_base: Option<&str>) -> Option<S
 
 /// Branch tips eligible as squash/cherry sources: local branches, plus remote-tracking
 /// branches only when the snapshot was loaded with remotes.
-pub(super) fn is_source_ref(reference: &GraphRef, base_branch: &str, include_remotes: bool) -> bool {
+pub(super) fn is_source_ref(
+    reference: &GraphRef,
+    base_branch: &str,
+    include_remotes: bool,
+) -> bool {
     match reference.kind {
         GraphRefKind::LocalBranch => reference.name != base_branch,
         GraphRefKind::RemoteBranch => include_remotes,
@@ -128,6 +133,16 @@ pub(super) fn compute_relationships_with_observer(
         for relationship in cherry {
             relationships.insert(&relationship);
         }
+        for relationship in compute_cross_branch_cherry_relationships(
+            repo_path,
+            snapshot,
+            &base_tip,
+            &cache,
+            cancel,
+            observer.unwrap_or(&noop),
+        ) {
+            relationships.insert(&relationship);
+        }
     }
     relationships.into_relationships()
 }
@@ -172,7 +187,10 @@ impl RelationshipAccumulator {
 }
 
 /// Merge immutable relationship facts without removing captured provenance.
-pub(super) fn merge_relationships(existing: &mut Vec<GraphRelationship>, incoming: &[GraphRelationship]) {
+pub(super) fn merge_relationships(
+    existing: &mut Vec<GraphRelationship>,
+    incoming: &[GraphRelationship],
+) {
     let mut relationships = RelationshipAccumulator::default();
     for relationship in existing.iter().chain(incoming) {
         relationships.insert(relationship);

@@ -61,7 +61,7 @@ fn cherry_pick_sources_match_git_cherry() {
         let actual = snapshot
             .commits
             .iter()
-            .filter(|c| c.is_cherry_picked_commit())
+            .filter(|c| !c.cherry_pick_destinations().is_empty())
             .map(|c| c.oid.clone())
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(actual, expected, "source-set parity: {fixture}");
@@ -106,7 +106,7 @@ fn cherry_pick_repicks_keep_all_destinations() {
         assert_eq!(incoming[0].source_refs, ["feature/alias", "feature/pick"]);
         assert_eq!(incoming[0].destination_refs, ["main"]);
         assert!(landing.is_possible_squash_merge());
-        assert!(!landing.is_cherry_picked_commit());
+        assert!(landing.is_cherry_picked_commit());
     }
 }
 
@@ -147,7 +147,7 @@ fn cherry_pick_binary_identity_and_unrelated_binary_diagnostic() {
     let actual = snapshot
         .commits
         .iter()
-        .filter(|c| c.is_cherry_picked_commit())
+        .filter(|c| !c.cherry_pick_destinations().is_empty())
         .map(|c| c.oid.clone())
         .collect::<std::collections::BTreeSet<_>>();
     eprintln!("binary diagnostic: source={source_id:?}, destination={destination_id:?}, unrelated={unrelated_id:?}, expected={expected:?}, actual={actual:?}");

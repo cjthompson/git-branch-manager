@@ -188,8 +188,10 @@ fn test_graph_cherry_pick_enrichment_marks_branch_commits() {
     let commits: Vec<&str> = log.lines().collect();
     assert_eq!(commits.len(), 2);
     advance_main(dir, "old-cherry-fixture");
+    let mut destinations = Vec::new();
     for hash in &commits {
         run_git(dir, &["cherry-pick", hash]);
+        destinations.push(rev(dir, "HEAD"));
     }
 
     let options = graph::GraphLoadOptions {
@@ -205,6 +207,7 @@ fn test_graph_cherry_pick_enrichment_marks_branch_commits() {
     let expected = commits
         .into_iter()
         .map(str::to_owned)
+        .chain(destinations)
         .collect::<std::collections::BTreeSet<_>>();
     let actual = snapshot
         .commits

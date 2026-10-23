@@ -11,7 +11,7 @@ pub struct SymbolSet {
     pub graph_commit: &'static str,
     /// Marker for a base commit that may be a squash-merge landing commit.
     pub graph_squash_commit: &'static str,
-    /// Marker for a branch-tip commit that landed via individual cherry-picks.
+    /// Marker for a source or destination commit in a detected cherry-pick pair.
     pub graph_cherry_commit: &'static str,
     /// Marker for a merge commit in the Graph tab.
     pub graph_merge: &'static str,

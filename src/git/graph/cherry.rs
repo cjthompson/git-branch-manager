@@ -1,3 +1,6 @@
+mod cross_branch;
+pub(super) use cross_branch::compute_cross_branch_cherry_relationships;
+
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
