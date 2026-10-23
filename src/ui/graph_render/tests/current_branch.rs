@@ -20,6 +20,7 @@ fn graph_current_branch_commit_row_is_tinted_with_checked_row_background() {
                     has_linked_worktree: false,
                     is_current: true,
                     tracking: None,
+                    ahead_of_base: None,
                 }],
                 relationships: vec![],
                 ..GraphCommit::default()
@@ -36,6 +37,7 @@ fn graph_current_branch_commit_row_is_tinted_with_checked_row_background() {
                     has_linked_worktree: false,
                     is_current: false,
                     tracking: None,
+                    ahead_of_base: None,
                 }],
                 relationships: vec![],
                 ..GraphCommit::default()
@@ -97,6 +99,7 @@ fn graph_current_branch_state_column_abbreviates_WT_and_drops_count() {
                     ahead: 3,
                     behind: 0,
                 }),
+                ahead_of_base: None,
             }],
             relationships: vec![],
             ..GraphCommit::default()
@@ -162,6 +165,7 @@ fn graph_current_branch_state_column_padding_matches_non_current_rows() {
                         ahead: 3,
                         behind: 0,
                     }),
+                    ahead_of_base: None,
                 }],
                 relationships: vec![],
                 ..GraphCommit::default()
@@ -181,6 +185,7 @@ fn graph_current_branch_state_column_padding_matches_non_current_rows() {
                         ahead: 3,
                         behind: 0,
                     }),
+                    ahead_of_base: None,
                 }],
                 relationships: vec![],
                 ..GraphCommit::default()

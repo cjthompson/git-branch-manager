@@ -19,6 +19,7 @@ fn graph_places_refs_in_the_same_scrolling_row_as_the_commit() {
                 has_linked_worktree: false,
                 is_current: false,
                 tracking: None,
+                ahead_of_base: None,
             }],
             relationships: vec![],
             ..GraphCommit::default()
@@ -89,6 +90,7 @@ fn graph_horizontal_scroll_pins_dag_lrt_and_state_and_shifts_text_together() {
                     ahead: 1,
                     behind: 0,
                 }),
+                ahead_of_base: None,
             }],
             relationships: vec![],
             ..GraphCommit::default()
@@ -155,6 +157,7 @@ fn graph_horizontal_scroll_only_moves_truncated_refs() {
                     has_linked_worktree: false,
                     is_current: false,
                     tracking: None,
+                    ahead_of_base: None,
                 },
                 GraphRef {
                     name: "worktree-agent-68eec8ed8aa".into(),
@@ -162,6 +165,7 @@ fn graph_horizontal_scroll_only_moves_truncated_refs() {
                     has_linked_worktree: false,
                     is_current: false,
                     tracking: None,
+                    ahead_of_base: None,
                 },
             ],
             relationships: vec![],

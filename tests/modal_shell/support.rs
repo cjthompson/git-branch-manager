@@ -81,6 +81,7 @@ pub(crate) fn render_overlay_buffer(overlay: &mut Overlay, width: u16, height: u
                 tags: &mut tags,
                 worktrees: &mut worktrees,
                 graph: &mut graph,
+                base_branch: "main",
                 branch_columns: &branch_columns,
                 remote_columns: &remote_columns,
                 tag_columns: &tag_columns,

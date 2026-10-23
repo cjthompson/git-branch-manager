@@ -17,6 +17,7 @@ fn snapshot() -> GraphSnapshot {
                     has_linked_worktree: false,
                     is_current: false,
                     tracking: None,
+                    ahead_of_base: None,
                 }],
                 relationships: vec![],
                 ..GraphCommit::default()
@@ -158,6 +159,7 @@ fn graph_focus_target_waits_for_a_later_snapshot_when_loading() {
         has_linked_worktree: false,
         is_current: false,
         tracking: None,
+        ahead_of_base: None,
     });
     state.apply_result(Ok(loaded));
 
@@ -175,6 +177,7 @@ fn graph_apply_ref_delta_removes_single_ref_cleanly() {
         has_linked_worktree: false,
         is_current: false,
         tracking: None,
+        ahead_of_base: None,
     });
     snap.ref_counts.local = 2;
     snap.generation = Some(1);
@@ -203,6 +206,7 @@ fn graph_apply_ref_delta_leaves_generation_ownership_to_app() {
         has_linked_worktree: false,
         is_current: false,
         tracking: None,
+        ahead_of_base: None,
     });
     snap.generation = Some(1);
     state.apply_result(Ok(snap));

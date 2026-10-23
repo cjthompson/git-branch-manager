@@ -312,6 +312,7 @@ impl GraphState {
                     has_linked_worktree: delta.after.worktrees.values().any(|branch| branch.as_deref() == Some(id.full_name.strip_prefix("refs/heads/").unwrap_or(""))),
                     is_current: delta.after.head_ref.as_deref() == Some(id.full_name.as_str()),
                     tracking: None,
+                    ahead_of_base: None,
                 });
                 changed = true;
             }
