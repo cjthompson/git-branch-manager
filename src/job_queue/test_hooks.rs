@@ -64,6 +64,13 @@ impl ActionJobQueue {
         self.queued.len()
     }
 
+    pub fn queued_jobs_for_test(&self) -> Vec<(BranchAction, Vec<String>)> {
+        self.queued
+            .iter()
+            .map(|job| (job.action, job.targets.clone()))
+            .collect()
+    }
+
     pub fn current_action(&self) -> Option<BranchAction> {
         self.current.as_ref().map(|r| r.job.action)
     }
