@@ -205,7 +205,7 @@ fn horizontal_scrolling_reveals_all_columns_and_preserves_row_styles() {
         scroll_test_branch("selected"),
     ]);
     state.selected_mut()[1] = true;
-    let mut terminal = Terminal::new(TestBackend::new(48, 8)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(36, 8)).unwrap();
 
     terminal
         .draw(|frame| {
@@ -315,4 +315,128 @@ fn age_is_hidden_only_after_the_final_compact_width_rung() {
 
     assert_eq!(visible_column_indices(&columns, 60), vec![0, 1, 2, 3, 4, 5]);
     assert_eq!(visible_column_indices(&columns, 59), vec![0, 1, 2, 3, 5]);
+}
+
+fn render_branches(width: u16, horizontal_scrolling: bool) -> ListState<BranchInfo> {
+    let theme = Theme::dark();
+    let symbols = SymbolSet::ascii();
+    let columns = BranchesViewDef.columns();
+    let mut state = ListState::new(vec![
+        scroll_test_branch("feature/one"),
+        scroll_test_branch("feature/two"),
+    ]);
+    let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+
+    terminal
+        .draw(|frame| {
+            let mut params = ListRenderParams {
+                state: &mut state,
+                columns: &columns,
+                active_view: ViewId::Branches,
+                render_row: scroll_test_row,
+                theme: &theme,
+                symbols: &symbols,
+                horizontal_scrolling,
+            };
+            let area = frame.area();
+            render_list_view(frame, area, &mut params);
+        })
+        .unwrap();
+    state
+}
+
+#[test]
+fn horizontal_scrolling_branches_at_80_shrinks_like_fixed_layout() {
+    let scrolling = render_branches(80, true);
+    let fixed = render_branches(80, false);
+
+    assert_eq!(scrolling.max_horizontal_offset(), 0);
+    assert_eq!(scrolling.header_columns, fixed.header_columns);
+}
+
+#[test]
+fn horizontal_scrolling_branches_at_120_keeps_wide_layout() {
+    let scrolling = render_branches(120, true);
+    let fixed = render_branches(120, false);
+
+    assert_eq!(scrolling.max_horizontal_offset(), 0);
+    assert_eq!(scrolling.header_columns, fixed.header_columns);
+}
+
+#[test]
+fn horizontal_scrolling_branches_scrolls_only_when_compacted_layout_overflows() {
+    let theme = Theme::dark();
+    let symbols = SymbolSet::ascii();
+    let columns = BranchesViewDef.columns();
+    let mut state = ListState::new(vec![scroll_test_branch("feature/one")]);
+    let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+
+    terminal
+        .draw(|frame| {
+            let mut params = ListRenderParams {
+                state: &mut state,
+                columns: &columns,
+                active_view: ViewId::Branches,
+                render_row: scroll_test_row,
+                theme: &theme,
+                symbols: &symbols,
+                horizontal_scrolling: true,
+            };
+            let area = frame.area();
+            render_list_view(frame, area, &mut params);
+        })
+        .unwrap();
+    assert!(state.max_horizontal_offset() > 0);
+
+    let max_offset = state.max_horizontal_offset();
+    state.set_horizontal_scroll_bounds(max_offset);
+    for _ in 0..max_offset {
+        state.scroll_right();
+    }
+    terminal
+        .draw(|frame| {
+            let mut params = ListRenderParams {
+                state: &mut state,
+                columns: &columns,
+                active_view: ViewId::Branches,
+                render_row: scroll_test_row,
+                theme: &theme,
+                symbols: &symbols,
+                horizontal_scrolling: true,
+            };
+            let area = frame.area();
+            render_list_view(frame, area, &mut params);
+        })
+        .unwrap();
+    let output = scroll_test_output(&terminal);
+    assert!(
+        output.contains("Merge"),
+        "right header was not revealed: {output}"
+    );
+
+    let wide = render_branches(120, false);
+    assert_eq!(
+        header_width(&state, &columns, "Merge"),
+        header_width(&wide, &columns, "Merge"),
+        "Merge header should render at its wide width once the layout overflows"
+    );
+    // Logical width (120 less borders) less the 38-column visible area.
+    assert_eq!(state.max_horizontal_offset(), 80);
+
+    assert_eq!(render_branches(80, true).max_horizontal_offset(), 0);
+}
+
+fn header_width(
+    state: &ListState<BranchInfo>,
+    columns: &[ColumnDef<BranchInfo>],
+    name: &str,
+) -> u16 {
+    let index = columns.iter().position(|col| col.name == name).unwrap();
+    let (start, end, _) = state
+        .header_columns
+        .iter()
+        .copied()
+        .find(|(_, _, sort_idx)| *sort_idx == index)
+        .unwrap();
+    end - start
 }
