@@ -2,6 +2,9 @@
 
 ## 2026-10-23
 
+### Tasks
+- Add a local-branch cherry-pick action that applies onto the current HEAD (#graph, #menu, #branches)
+
 ### Fixes
 - Force-delete squash-merged and cherry-picked branches from the delete action without a review prompt (#branches)
 - Show the ahead-of-base count for the selected graph branch in the status line (#graph, #status)

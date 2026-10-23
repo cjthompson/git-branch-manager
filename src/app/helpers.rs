@@ -143,7 +143,8 @@ pub(super) fn graph_affected_views(action: BranchAction) -> &'static [ViewId] {
         }
         BranchAction::PullRemote
         | BranchAction::MergeRemoteIntoCurrent
-        | BranchAction::CherryPickRemote => {
+        | BranchAction::CherryPickRemote
+        | BranchAction::CherryPickLocal => {
             &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees, ViewId::Graph]
         }
         BranchAction::WorktreeRemove | BranchAction::WorktreeForceRemove => {

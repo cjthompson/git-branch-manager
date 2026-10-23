@@ -132,6 +132,43 @@ impl App {
             return;
         }
 
+        if action == BranchAction::CherryPickLocal {
+            let head = self.branches.items().iter().find(|branch| branch.is_current);
+            let head_is_base =
+                head.is_some_and(|branch| branch.is_base || branch.name == self.base_branch);
+            if !head_is_base {
+                let head = head.map(|branch| branch.name.clone());
+                let description = format!(
+                    "Apply the latest commit of {} onto {}.",
+                    item.target,
+                    head.as_deref().unwrap_or("detached HEAD")
+                );
+                let preflight = DeletePreflight {
+                    risks: vec![DeleteRisk::CherryPickTarget {
+                        branch: item.target.clone(),
+                        head,
+                        base: self.base_branch.clone(),
+                    }],
+                };
+                let choices = vec![ConfirmChoice {
+                    accelerator: 'y',
+                    action,
+                    targets: vec![item.target.clone()],
+                    remote: None,
+                    command: format!("git cherry-pick refs/heads/{}", item.target),
+                    description,
+                    destructive_target: None,
+                }];
+                self.open_confirm_with_choices(
+                    self.return_view,
+                    preflight,
+                    choices,
+                    ConfirmStage::Initial,
+                );
+                return;
+            }
+        }
+
         let targets = vec![item.target];
         if action == BranchAction::DeleteLocal {
             let preflight = self.build_delete_preflight(&targets);

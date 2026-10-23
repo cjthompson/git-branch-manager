@@ -177,6 +177,14 @@ impl App {
                 )),
             ),
             self.row_from(
+                "Cherry-pick onto current",
+                Some('C'),
+                BranchAction::CherryPickLocal,
+                branch.name.clone(),
+                None,
+                capability::can_cherry_pick_local(branch),
+            ),
+            self.row_from(
                 "Create worktree",
                 Some('w'),
                 BranchAction::Worktree,
