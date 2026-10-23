@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23
+
+### Tasks
+- Add a local-branch cherry-pick action that applies onto the current HEAD (#graph, #menu, #branches)
+
 ## 2026-10-17
 
 ### Split Large Rust Files (P014)
