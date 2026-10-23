@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-23
+
+### Fixes
+- Show the ahead-of-base count for the selected graph branch in the status line (#graph, #status)
+
 ## 2026-10-17
 
 ### Split Large Rust Files (P014)
