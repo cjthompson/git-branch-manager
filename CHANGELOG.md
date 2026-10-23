@@ -4,6 +4,7 @@
 
 ### Fixes
 - Force-delete squash-merged and cherry-picked branches from the delete action without a review prompt (#branches)
+- Show the ahead-of-base count for the selected graph branch in the status line (#graph, #status)
 
 ## 2026-10-22
 

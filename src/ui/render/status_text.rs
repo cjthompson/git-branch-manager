@@ -1,3 +1,4 @@
+use crate::git::graph::GraphRefKind;
 use crate::types::MergeStatus;
 use crate::view::list_state::ListState;
 use crate::view::ViewId;
@@ -15,8 +16,20 @@ pub(super) fn default_status_text(ctx: &RenderContext) -> String {
                 .snapshot()
                 .map(|snapshot| (snapshot.ref_counts.local, snapshot.ref_counts.remote))
                 .unwrap_or_default();
+            let ahead = ctx
+                .graph
+                .selected_commit()
+                .and_then(|commit| {
+                    commit
+                        .refs
+                        .iter()
+                        .filter(|reference| reference.kind == GraphRefKind::LocalBranch)
+                        .find_map(|reference| reference.ahead_of_base)
+                })
+                .map(|ahead| format!(" | {ahead} ahead of {}", ctx.base_branch))
+                .unwrap_or_default();
             format!(
-                " {commits} commits | {local} local refs | {remote} remote refs — [j/k]move [g/G]home/end [Enter]details/actions [o]ptions [L]older [r]eload [?]help [q]uit"
+                " {commits} commits | {local} local refs | {remote} remote refs{ahead} — [j/k]move [g/G]home/end [Enter]details/actions [o]ptions [L]older [r]eload [?]help [q]uit"
             )
         }
         ViewId::Branches => format_branch_like(

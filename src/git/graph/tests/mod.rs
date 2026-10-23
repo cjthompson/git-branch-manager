@@ -124,3 +124,25 @@ fn cherry_scan_logs_only_actual_overflow_on_default_target() {
     assert!(text.contains("scan_incomplete: source bound"));
     assert!(text.contains("scan_incomplete: destination bound"));
 }
+
+#[test]
+fn collect_ref_data_reports_ahead_of_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(dir.path()).unwrap();
+    let root = native_commit(&repo, None, &[], "root");
+    let main = native_commit(&repo, Some(root), &[("main", "main\n")], "main");
+    let feature = native_commit(&repo, Some(main), &[("feature", "feature\n")], "feature");
+    repo.reference("refs/heads/main", main, true, "fixture").unwrap();
+    repo.reference("refs/heads/feature", feature, true, "fixture").unwrap();
+
+    let data = collect_ref_data(dir.path(), false, Some("main")).unwrap();
+    let ahead_of_base = |oid: git2::Oid, name: &str| {
+        data.refs_by_oid[&oid.to_string()]
+            .iter()
+            .find(|reference| reference.name == name)
+            .unwrap()
+            .ahead_of_base
+    };
+    assert_eq!(ahead_of_base(feature, "feature"), Some(1));
+    assert_eq!(ahead_of_base(main, "main"), None);
+}

@@ -39,6 +39,7 @@ fn fallback_state() -> GraphState {
                 has_linked_worktree: false,
                 is_current: false,
                 tracking: None,
+                ahead_of_base: None,
             }],
             relationships: vec![],
             ..GraphCommit::default()

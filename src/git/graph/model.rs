@@ -200,6 +200,7 @@ pub struct GraphRef {
     pub has_linked_worktree: bool,
     pub is_current: bool,
     pub tracking: Option<GraphRefTracking>,
+    pub ahead_of_base: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

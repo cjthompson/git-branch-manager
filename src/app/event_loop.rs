@@ -83,6 +83,7 @@ impl App {
             info_hit_regions: &mut self.info_hit_regions,
             info_modal_scroll_offset: &mut self.info_modal_scroll_offset,
             graph: &mut self.graph,
+            base_branch: &self.base_branch,
             job_status: self.job_queue.render_data(),
             branches: &mut self.branches,
             remotes: &mut self.remotes,

@@ -123,6 +123,7 @@ fn branch_tip_details_uses_merge_base_for_aggregate_files() {
             has_linked_worktree: false,
             is_current: true,
             tracking: None,
+            ahead_of_base: None,
         }],
         ..GraphCommit::default()
     };
