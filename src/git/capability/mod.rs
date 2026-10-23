@@ -243,14 +243,11 @@ pub fn can_merge_into_base(
     }
 }
 
-pub fn can_squash_into_base(
-    _branch: &BranchInfo,
-    base_worktree: Option<WorktreePresence>,
-) -> Capability {
-    match base_worktree {
-        None => Capability::yes(),
-        Some(wt) if wt.is_clean => Capability::yes(),
-        Some(_) => Capability::no("base dirty"),
+pub fn can_squash_into_base(branch: &BranchInfo) -> Capability {
+    if branch.is_base {
+        Capability::no("base")
+    } else {
+        Capability::yes()
     }
 }
 

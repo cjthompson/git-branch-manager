@@ -4,6 +4,7 @@
 
 ### Tasks
 - Add a local-branch cherry-pick action that applies onto the current HEAD (#graph, #menu, #branches)
+- Stash and restore dirty files on squash merge instead of disabling it on a dirty branch worktree (#graph, #menu, #squash)
 
 ### Fixes
 - Force-delete squash-merged and cherry-picked branches from the delete action without a review prompt (#branches)

@@ -171,6 +171,35 @@ fn push_risk_lines(
                 theme.modal_secondary,
             )));
         }
+        DeleteRisk::StashRequired {
+            tracked,
+            untracked,
+            files,
+            omitted,
+            ..
+        } => {
+            let summary = match (*tracked > 0, *untracked > 0) {
+                (true, true) => format!("{tracked} tracked, {untracked} untracked"),
+                (true, false) => format!("{tracked} tracked"),
+                _ => format!("{untracked} untracked"),
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  DIRTY: {summary} (will be stashed)"),
+                theme.modal_warning,
+            )));
+            for file in files {
+                lines.push(Line::from(Span::styled(
+                    format!("    {}: {}", file.kind.label(), file.path),
+                    theme.modal_warning,
+                )));
+            }
+            if *omitted > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("    +{omitted} more"),
+                    theme.modal_warning,
+                )));
+            }
+        }
     }
 }
 
