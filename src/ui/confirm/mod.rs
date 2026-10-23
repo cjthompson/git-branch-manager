@@ -37,6 +37,13 @@ pub enum DeleteRisk {
         files: Vec<ChangedFile>,
         omitted: usize,
     },
+    /// Cherry-picking `branch` onto a HEAD that is not the base branch.
+    /// `head` is `None` when HEAD is detached.
+    CherryPickTarget {
+        branch: String,
+        head: Option<String>,
+        base: String,
+    },
 }
 
 /// One selectable operation in the initial confirmation stage.

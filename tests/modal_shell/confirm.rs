@@ -372,3 +372,40 @@ fn compact_final_confirmation_keeps_paged_body_and_scroll_hint() {
         "compact final footer must expose confirm, cancel, and paging: {rendered}"
     );
 }
+
+#[test]
+fn cherry_pick_target_risk_renders_applies_onto_current_head_line() {
+    let mut overlay = Overlay::Confirm {
+        preflight: DeletePreflight {
+            risks: vec![DeleteRisk::CherryPickTarget {
+                branch: "topic-b".to_string(),
+                head: Some("topic-a".to_string()),
+                base: "main".to_string(),
+            }],
+        },
+        choices: vec![ConfirmChoice {
+            accelerator: 'y',
+            action: BranchAction::CherryPickLocal,
+            targets: vec!["topic-b".to_string()],
+            remote: None,
+            command: "git cherry-pick refs/heads/topic-b".to_string(),
+            description: "Apply the latest commit of topic-b onto topic-a.".to_string(),
+            destructive_target: None,
+        }],
+        selected: 0,
+        body_scroll: ModalScroll::default(),
+        stage: ConfirmStage::Initial,
+    };
+
+    let rendered = render_overlay(&mut overlay, 100, 30);
+
+    for expected in [
+        "Applies onto current HEAD topic-a (not base main)",
+        "Picks the latest commit of topic-b",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "missing {expected}: {rendered}"
+        );
+    }
+}
