@@ -23,6 +23,7 @@ mod operation_results;
 mod primary_code;
 mod recovery;
 mod render_rows;
+mod squash_stash_prompt;
 mod startup_settings;
 
 fn render_app(app: &mut App, width: u16, height: u16) -> String {

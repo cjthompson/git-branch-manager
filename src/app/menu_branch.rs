@@ -159,10 +159,7 @@ impl App {
                 BranchAction::SquashMerge,
                 branch.name.clone(),
                 None,
-                gate(capability::can_squash_into_base(
-                    branch,
-                    self.worktree_presence_for_branch_or_base(&branch.name, &self.base_branch),
-                )),
+                gate(capability::can_squash_into_base(branch)),
             ),
             self.row_from(
                 "Rebase onto base",

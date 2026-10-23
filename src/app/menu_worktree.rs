@@ -179,8 +179,73 @@ impl App {
                 choices,
                 ConfirmStage::Initial,
             );
+        } else if action == BranchAction::SquashMerge
+            && self.open_squash_stash_confirm(&targets[0])
+        {
+            // Dirty dispatch worktree: stash-aware confirm already opened.
         } else {
             self.open_confirm_with_remote(action, self.return_view, targets, item.remote);
         }
+    }
+
+    /// Opens a stash-aware Confirm when the squash dispatch worktree is dirty.
+    /// Returns false (nothing opened) when it is clean.
+    fn open_squash_stash_confirm(&mut self, branch: &str) -> bool {
+        let targets = vec![branch.to_string()];
+        let path = self
+            .dispatch_path_for(BranchAction::SquashMerge, &targets)
+            .unwrap_or_else(|| self.repo_path.clone());
+        let status = git_branch_manager::git::status::detect_working_tree_status(&path);
+        if status.is_clean() {
+            return false;
+        }
+
+        let mut seen = HashSet::new();
+        let mut tracked = 0;
+        let mut untracked = 0;
+        let mut files = Vec::new();
+        for file in &status.changed_files {
+            if !seen.insert(file.path.as_str()) {
+                continue;
+            }
+            if file.kind == ChangedFileKind::Untracked {
+                untracked += 1;
+            } else {
+                tracked += 1;
+            }
+            files.push(file.clone());
+        }
+        let omitted = files.len().saturating_sub(5);
+        files.truncate(5);
+
+        let preflight = DeletePreflight {
+            risks: vec![DeleteRisk::StashRequired {
+                worktree: path,
+                tracked,
+                untracked,
+                files,
+                omitted,
+            }],
+        };
+        let choice = ConfirmChoice {
+            accelerator: 'y',
+            action: BranchAction::SquashMerge,
+            targets,
+            remote: None,
+            command: format!(
+                "git stash push --include-untracked + git merge --squash {branch} + git stash pop"
+            ),
+            description: format!(
+                "Stash {tracked} tracked / {untracked} untracked file(s), squash-merge, then restore them."
+            ),
+            destructive_target: None,
+        };
+        self.open_confirm_with_choices(
+            self.return_view,
+            preflight,
+            vec![choice],
+            ConfirmStage::Initial,
+        );
+        true
     }
 }

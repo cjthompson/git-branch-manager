@@ -87,13 +87,22 @@ fn merge_into_base_blocks_when_base_worktree_dirty() {
 #[test]
 fn squash_into_base_allows_when_base_not_in_worktree() {
     let branch = test_branch("feature/x", false, false, TrackingStatus::Local, None, None);
-    assert!(can_squash_into_base(&branch, None).available);
+    assert!(can_squash_into_base(&branch).available);
 }
 
 #[test]
-fn squash_into_base_blocks_when_base_worktree_dirty() {
+fn squash_into_base_allows_dirty_base() {
+    // Dirtiness no longer gates the row; the confirm step offers to stash.
     let branch = test_branch("feature/x", false, false, TrackingStatus::Local, None, None);
-    let cap = can_squash_into_base(&branch, Some(linked_worktree(false)));
+    let cap = can_squash_into_base(&branch);
+    assert!(cap.available);
+    assert_eq!(cap.reason, None);
+}
+
+#[test]
+fn squash_into_base_blocks_base_branch() {
+    let branch = test_branch("main", false, true, TrackingStatus::Local, None, None);
+    let cap = can_squash_into_base(&branch);
     assert!(!cap.available);
-    assert_eq!(cap.reason, Some("base dirty"));
+    assert_eq!(cap.reason, Some("base"));
 }

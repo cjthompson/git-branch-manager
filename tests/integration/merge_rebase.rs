@@ -127,6 +127,174 @@ fn test_merge_branch_conflict_aborts() {
 }
 
 // ---------------------------------------------------------------------------
+// Squash merge with auto-stash
+// ---------------------------------------------------------------------------
+
+fn commit_file_on_new_branch(dir: &std::path::Path, branch: &str, file: &str, content: &str) {
+    run_git(dir, &["checkout", "-b", branch]);
+    std::fs::write(dir.join(file), content).unwrap();
+    run_git(dir, &["add", file]);
+    run_git(dir, &["commit", "-m", &format!("Add {file}")]);
+    run_git(dir, &["checkout", "main"]);
+}
+
+#[test]
+fn squash_merge_stashes_and_restores_tracked_and_untracked_files() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    commit_file_on_new_branch(dir, "feature-squash", "squash.txt", "squash content\n");
+
+    std::fs::write(dir.join("README.md"), "# Test Repo\nlocal edit\n").unwrap();
+    std::fs::write(dir.join("local.txt"), "untracked\n").unwrap();
+
+    let results = operations::merge_branch(dir, "feature-squash", "main", true, true);
+    assert!(results[0].success, "{}", results[0].message);
+    assert!(dir.join("squash.txt").exists(), "squash content on main");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("README.md")).unwrap(),
+        "# Test Repo\nlocal edit\n",
+        "tracked edit restored"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("local.txt")).unwrap(),
+        "untracked\n",
+        "untracked file restored"
+    );
+    assert_eq!(git_output(dir, &["stash", "list"]).trim(), "", "stash popped");
+    assert!(
+        !results[0].message.contains("stash restore conflicted"),
+        "{}",
+        results[0].message
+    );
+}
+
+#[test]
+fn squash_merge_conflict_restores_stash() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    commit_file_on_new_branch(dir, "conflict-squash", "conflict.txt", "feature version\n");
+    std::fs::write(dir.join("conflict.txt"), "main version\n").unwrap();
+    run_git(dir, &["add", "conflict.txt"]);
+    run_git(dir, &["commit", "-m", "Main adds conflict.txt"]);
+
+    std::fs::write(dir.join("README.md"), "# Test Repo\nlocal edit\n").unwrap();
+    std::fs::write(dir.join("local.txt"), "untracked\n").unwrap();
+
+    let results = operations::merge_branch(dir, "conflict-squash", "main", true, true);
+    assert!(!results[0].success, "conflicting squash should fail");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("conflict.txt")).unwrap(),
+        "main version\n",
+        "conflicted merge reset"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("README.md")).unwrap(),
+        "# Test Repo\nlocal edit\n",
+        "tracked edit restored"
+    );
+    assert!(dir.join("local.txt").exists(), "untracked file restored");
+    assert_eq!(git_output(dir, &["stash", "list"]).trim(), "", "stash popped");
+    let status = git_output(dir, &["status", "--porcelain"]);
+    assert!(
+        !status.lines().any(|l| l.starts_with("UU") || l.starts_with("AA")),
+        "no unmerged entries left: {status}"
+    );
+}
+
+#[test]
+fn squash_stash_pop_conflict_is_reported_and_stash_kept() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    commit_file_on_new_branch(dir, "readme-squash", "README.md", "# Feature title\n");
+    std::fs::write(dir.join("README.md"), "# Local title\n").unwrap();
+
+    let results = operations::merge_branch(dir, "readme-squash", "main", true, true);
+    assert!(
+        results[0].success,
+        "merge outcome stays success: {}",
+        results[0].message
+    );
+    assert!(
+        results[0]
+            .message
+            .contains("stash restore conflicted; your changes remain in stash@{0} (gbm-auto-stash)"),
+        "{}",
+        results[0].message
+    );
+    let stashes = git_output(dir, &["stash", "list"]);
+    assert_eq!(stashes.lines().count(), 1, "stash kept: {stashes}");
+    assert!(stashes.contains("gbm-auto-stash"), "{stashes}");
+}
+
+#[test]
+fn squash_does_not_pop_preexisting_stash_when_nothing_was_stashed() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    commit_file_on_new_branch(dir, "feature-squash", "squash.txt", "squash content\n");
+
+    std::fs::write(dir.join("README.md"), "# Test Repo\npreexisting\n").unwrap();
+    run_git(dir, &["stash", "push", "-m", "user-stash"]);
+
+    // Clean tree: the push stashes nothing, so the user's stash must survive.
+    let results = operations::merge_branch(dir, "feature-squash", "main", true, true);
+    assert!(results[0].success, "{}", results[0].message);
+    let stashes = git_output(dir, &["stash", "list"]);
+    assert_eq!(stashes.lines().count(), 1, "{stashes}");
+    assert!(stashes.contains("user-stash"), "{stashes}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("README.md")).unwrap(),
+        "# Test Repo\n",
+        "preexisting stash was not applied"
+    );
+}
+
+#[test]
+fn squash_merge_failed_stash_push_does_not_reset_staged_changes() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    commit_file_on_new_branch(dir, "conflict-squash", "conflict.txt", "feature version\n");
+    std::fs::write(dir.join("conflict.txt"), "main version\n").unwrap();
+    run_git(dir, &["add", "conflict.txt"]);
+    run_git(dir, &["commit", "-m", "Main adds conflict.txt"]);
+
+    std::fs::write(dir.join("README.md"), "# Test Repo\nstaged edit\n").unwrap();
+    run_git(dir, &["add", "README.md"]);
+
+    // A held ref lock makes `stash push` fail before it touches the tree.
+    std::fs::write(dir.join(".git/refs/stash.lock"), "").unwrap();
+
+    let results = operations::merge_branch(dir, "conflict-squash", "main", true, true);
+    assert!(!results[0].success, "conflicting squash should fail");
+    assert_eq!(git_output(dir, &["stash", "list"]).trim(), "", "no stash created");
+    assert_eq!(
+        git_output(dir, &["diff", "--cached", "--name-only"]).trim(),
+        "README.md",
+        "staged edit must survive the failed merge"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("README.md")).unwrap(),
+        "# Test Repo\nstaged edit\n"
+    );
+}
+
+#[test]
+fn plain_merge_with_stash_flag_and_nothing_stashed_has_no_stash_message() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    commit_file_on_new_branch(dir, "feature-plain", "plain.txt", "plain content\n");
+    std::fs::write(dir.join("local.txt"), "untracked\n").unwrap();
+
+    // Plain stash push ignores untracked files, so nothing is stashed.
+    let results = operations::merge_branch(dir, "feature-plain", "main", false, true);
+    assert!(results[0].success, "{}", results[0].message);
+    assert!(
+        !results[0].message.contains("stash restore conflicted"),
+        "{}",
+        results[0].message
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Rebase operation tests
 // ---------------------------------------------------------------------------
 

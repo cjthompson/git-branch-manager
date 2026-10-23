@@ -146,16 +146,26 @@ pub fn merge_branch(
         BranchAction::Merge
     };
 
+    let old_stash = if squash && stash {
+        stash_ref(repo_path)
+    } else {
+        None
+    };
     if stash {
-        let _ = git_cmd(repo_path)
-            .args(["stash", "push", "-m", "gbm-auto-stash"])
-            .output();
+        let mut push_args = vec!["stash", "push"];
+        if squash {
+            push_args.push("--include-untracked");
+        }
+        push_args.extend(["-m", "gbm-auto-stash"]);
+        let _ = git_cmd(repo_path).args(&push_args).output();
     }
+    // Squash pops only a stash this call created, never a pre-existing one.
+    let should_pop = stash && (!squash || stash_ref(repo_path) != old_stash);
 
     // Checkout base
     let co = git_cmd(repo_path).args(["checkout", base]).output();
     if !matches!(&co, Ok(o) if o.status.success()) {
-        if stash {
+        if should_pop {
             let _ = git_cmd(repo_path).args(["stash", "pop"]).output();
         }
         return vec![OperationResult {
@@ -175,7 +185,7 @@ pub fn merge_branch(
 
     let out = git_cmd(repo_path).args(&merge_args).output();
 
-    let result = match out {
+    let mut result = match out {
         Ok(o) if o.status.success() => {
             if squash {
                 let _ = git_cmd(repo_path)
@@ -189,21 +199,49 @@ pub fn merge_branch(
             )
         }
         _ => {
-            let _ = git_cmd(repo_path).args(["merge", "--abort"]).output();
+            // `merge --squash` sets no MERGE_HEAD, so `merge --abort` fails there.
+            // Without a saved stash, `reset --merge` would discard a dirty tree's staged edits.
+            let reset_safe = !stash || should_pop;
+            let message = if squash && !reset_safe {
+                "Merge conflict \u{2014} not reset; stash was not created, working tree left as is"
+            } else {
+                let abort_args: &[&str] = if squash {
+                    &["reset", "--merge"]
+                } else {
+                    &["merge", "--abort"]
+                };
+                let _ = git_cmd(repo_path).args(abort_args).output();
+                "Merge conflict \u{2014} aborted"
+            };
             OperationResult {
                 branch_name: branch_name.to_string(),
                 action,
                 success: false,
-                message: "Merge conflict \u{2014} aborted".to_string(),
+                message: message.to_string(),
                 failure: None,
             }
         }
     };
 
-    if stash {
-        let _ = git_cmd(repo_path).args(["stash", "pop"]).output();
+    if should_pop {
+        let pop = git_cmd(repo_path).args(["stash", "pop"]).output();
+        if squash && !matches!(&pop, Ok(o) if o.status.success()) {
+            result.message.push_str(
+                " \u{2014} stash restore conflicted; your changes remain in stash@{0} (gbm-auto-stash)",
+            );
+        }
     }
     vec![result]
+}
+
+fn stash_ref(repo_path: &Path) -> Option<String> {
+    let out = git_cmd(repo_path)
+        .args(["rev-parse", "-q", "--verify", "refs/stash"])
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 #[instrument(skip(repo_path))]

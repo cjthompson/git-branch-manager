@@ -83,6 +83,60 @@ fn confirmation_dirty_warning_renders_five_files_and_exact_omitted_count() {
 }
 
 #[test]
+fn confirmation_stash_required_renders_tracked_untracked_counts() {
+    let files = vec![
+        ChangedFile {
+            path: "src/lib.rs".to_string(),
+            kind: ChangedFileKind::Modified,
+        },
+        ChangedFile {
+            path: "notes.txt".to_string(),
+            kind: ChangedFileKind::Untracked,
+        },
+    ];
+    let mut overlay = Overlay::Confirm {
+        preflight: DeletePreflight {
+            risks: vec![DeleteRisk::StashRequired {
+                worktree: "/repo".into(),
+                tracked: 1,
+                untracked: 1,
+                files,
+                omitted: 3,
+            }],
+        },
+        choices: vec![ConfirmChoice {
+            accelerator: 'y',
+            action: BranchAction::SquashMerge,
+            targets: vec!["feature/x".to_string()],
+            remote: None,
+            command: "git stash push --include-untracked + git merge --squash feature/x + git stash pop"
+                .to_string(),
+            description: "Stash 1 tracked / 1 untracked file(s), squash-merge, then restore them."
+                .to_string(),
+            destructive_target: None,
+        }],
+        selected: 0,
+        body_scroll: ModalScroll::default(),
+        stage: ConfirmStage::Initial,
+    };
+
+    let rendered = render_overlay(&mut overlay, 110, 30);
+
+    for expected in [
+        "DIRTY: 1 tracked, 1 untracked (will be stashed)",
+        "modified: src/lib.rs",
+        "untracked: notes.txt",
+        "+3 more",
+        "--include-untracked",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "missing {expected}: {rendered}"
+        );
+    }
+}
+
+#[test]
 fn constrained_confirmation_keeps_selected_choice_visible() {
     let risks = (0..8)
         .map(|index| DeleteRisk::UniqueCommits {

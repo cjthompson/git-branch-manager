@@ -184,7 +184,7 @@ fn graph_enter_dirty_linked_worktree_disables_checkout_delete_and_merge_but_not_
 }
 
 #[test]
-fn graph_enter_base_branch_in_linked_worktree_gates_merge_and_squash_on_base_cleanliness() {
+fn graph_enter_base_branch_in_linked_worktree_gates_merge_but_not_squash_on_base_cleanliness() {
     let (tmpdir, repo) = setup_test_repo();
     let dir = tmpdir.path();
     let base_linked_path = dir.join(".worktrees/main-linked");
@@ -226,10 +226,7 @@ fn graph_enter_base_branch_in_linked_worktree_gates_merge_and_squash_on_base_cle
         "merge into a clean base worktree should be enabled: {:?}",
         merge_clean.reason
     );
-    let squash_clean = capability::can_squash_into_base(
-        feature,
-        worktree_presence_for_branch_or_base(&worktrees_clean, &feature.name, "main"),
-    );
+    let squash_clean = capability::can_squash_into_base(feature);
     assert!(
         squash_clean.available,
         "squash into a clean base worktree should be enabled: {:?}",
@@ -252,12 +249,12 @@ fn graph_enter_base_branch_in_linked_worktree_gates_merge_and_squash_on_base_cle
     );
     assert!(!merge_dirty.available);
     assert_eq!(merge_dirty.reason, Some("base dirty"));
-    let squash_dirty = capability::can_squash_into_base(
-        feature,
-        worktree_presence_for_branch_or_base(&worktrees_dirty, &feature.name, "main"),
+    let squash_dirty = capability::can_squash_into_base(feature);
+    assert!(
+        squash_dirty.available,
+        "squash stays available with a dirty base (confirm offers a stash): {:?}",
+        squash_dirty.reason
     );
-    assert!(!squash_dirty.available);
-    assert_eq!(squash_dirty.reason, Some("base dirty"));
 
     // Dispatch-path check for the enabled Merge (clean-base case).
     let dispatch_path =

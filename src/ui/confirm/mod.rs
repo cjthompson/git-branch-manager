@@ -44,6 +44,13 @@ pub enum DeleteRisk {
         head: Option<String>,
         base: String,
     },
+    StashRequired {
+        worktree: PathBuf,
+        tracked: usize,
+        untracked: usize,
+        files: Vec<ChangedFile>,
+        omitted: usize,
+    },
 }
 
 /// One selectable operation in the initial confirmation stage.
