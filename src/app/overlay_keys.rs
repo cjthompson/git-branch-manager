@@ -90,15 +90,25 @@ impl App {
                                     stage: ConfirmStage::FinalDestructive { choice, target },
                                 });
                             } else {
-                                let dispatch_path =
-                                    self.dispatch_path_for(choice.action, &choice.targets);
-                                self.job_queue.enqueue_or_start_with_remote(
-                                    choice.action,
-                                    choice.targets,
-                                    choice.remote,
-                                    self.return_view,
-                                    dispatch_path,
-                                );
+                                // Safe `y` rows share an accelerator, so Enter runs every one of them.
+                                let group = choices
+                                    .iter()
+                                    .filter(|c| {
+                                        c.destructive_target.is_none()
+                                            && c.accelerator == choice.accelerator
+                                    })
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                for c in group {
+                                    let dispatch_path = self.dispatch_path_for(c.action, &c.targets);
+                                    self.job_queue.enqueue_or_start_with_remote(
+                                        c.action,
+                                        c.targets,
+                                        c.remote,
+                                        self.return_view,
+                                        dispatch_path,
+                                    );
+                                }
                             }
                         }
                     }

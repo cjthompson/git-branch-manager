@@ -24,10 +24,30 @@ pub(super) fn initial_lines(
 
     if let Some(default_choice) = choices.first() {
         lines.push(Line::from(Span::styled("Targets", theme.modal_title)));
-        for target in &default_choice.targets {
+        // Enter runs every safe `y` row, so list the union of their targets.
+        let enter_group: Vec<&ConfirmChoice> = if default_choice.destructive_target.is_none() {
+            choices
+                .iter()
+                .filter(|choice| {
+                    choice.destructive_target.is_none()
+                        && choice.accelerator == default_choice.accelerator
+                })
+                .collect()
+        } else {
+            vec![default_choice]
+        };
+        let mut shown_targets: Vec<&str> = Vec::new();
+        for choice in enter_group {
+            for target in &choice.targets {
+                if !shown_targets.contains(&target.as_str()) {
+                    shown_targets.push(target.as_str());
+                }
+            }
+        }
+        for target in shown_targets {
             lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(target.clone(), branch_style(target, theme)),
+                Span::styled(target.to_string(), branch_style(target, theme)),
             ]));
         }
         lines.push(Line::from(""));

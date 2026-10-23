@@ -198,15 +198,49 @@ impl App {
         remote: Option<String>,
         preflight: &DeletePreflight,
     ) -> Vec<ConfirmChoice> {
-        let mut choices = vec![ConfirmChoice {
-            accelerator: 'y',
-            action: BranchAction::DeleteLocal,
-            targets: targets.to_vec(),
-            remote: remote.clone(),
-            command: confirmation_command(BranchAction::DeleteLocal, targets, remote.as_deref()),
-            description: "Ask Git to delete only branches that are fully merged.".into(),
-            destructive_target: None,
-        }];
+        let (known_merged_targets, safe_targets): (Vec<String>, Vec<String>) =
+            targets.iter().cloned().partition(|name| {
+                // Checked-out branches keep the safe path; their `w` choice owns removal.
+                let checked_out = preflight.risks.iter().any(|risk| {
+                    matches!(risk, DeleteRisk::CheckedOut { branch, .. } if branch == name)
+                });
+                self.branch_is_known_merged(name) && !checked_out
+            });
+
+        // Force `y` precedes safe `y`: both share the accelerator, and Enter runs every
+        // same-accelerator row in order, so the force group is enqueued first.
+        let mut choices = Vec::new();
+        if !known_merged_targets.is_empty() {
+            choices.push(ConfirmChoice {
+                accelerator: 'y',
+                action: BranchAction::DeleteLocalForce,
+                targets: known_merged_targets.clone(),
+                remote: None,
+                command: confirmation_command(
+                    BranchAction::DeleteLocalForce,
+                    &known_merged_targets,
+                    None,
+                ),
+                description: "Delete; branch already merged into base (squash/cherry-pick)"
+                    .into(),
+                destructive_target: None,
+            });
+        }
+        if !safe_targets.is_empty() || known_merged_targets.is_empty() {
+            choices.push(ConfirmChoice {
+                accelerator: 'y',
+                action: BranchAction::DeleteLocal,
+                targets: safe_targets.clone(),
+                remote: remote.clone(),
+                command: confirmation_command(
+                    BranchAction::DeleteLocal,
+                    &safe_targets,
+                    remote.as_deref(),
+                ),
+                description: "Ask Git to delete only branches that are fully merged.".into(),
+                destructive_target: None,
+            });
+        }
 
         let mut primary_worktree_targets = Vec::new();
         let mut dirty_worktrees = Vec::new();
@@ -255,7 +289,8 @@ impl App {
         }) {
             let force = preflight.risks.iter().any(|risk| {
                 matches!(risk, DeleteRisk::UniqueCommits { branch: risky_branch, .. } if risky_branch == branch)
-            }) || dirty_worktrees.contains(worktree);
+            }) || self.branch_is_known_merged(branch)
+                || dirty_worktrees.contains(worktree);
             let action = if force {
                 BranchAction::DeleteBranchAndRemoveWorktreeForce
             } else {
@@ -279,4 +314,25 @@ impl App {
 
         choices
     }
+
+    pub(super) fn branch_is_known_merged(&self, name: &str) -> bool {
+        self.branches
+            .items()
+            .iter()
+            .find(|branch| branch.name == name)
+            .is_some_and(|branch| is_known_merged(branch.merge_status))
+    }
+}
+
+// Plain `git branch -d` cannot see squash or cherry-pick merges, so these need `-D`.
+fn is_known_merged(status: MergeStatus) -> bool {
+    matches!(
+        status,
+        MergeStatus::SquashMerged
+            | MergeStatus::LocalSquashMerged
+            | MergeStatus::RemoteSquashMerged
+            | MergeStatus::CherryPicked
+            | MergeStatus::LocalCherryPicked
+            | MergeStatus::RemoteCherryPicked
+    )
 }
