@@ -58,25 +58,6 @@ pub fn render_list_view<T: ViewItem>(
     // Worktrees Branch column) stretches by name, so a preceding fixed
     // indicator such as Branches Up does not change which column grows.
     let highlight_width = symbols.cursor_prefix.len() as u16 + 1;
-    let wide_data_width: u32 = visible_columns
-        .iter()
-        .map(|col| col.wide_width.unwrap_or(col.min_width) as u32)
-        .sum();
-    let minimum_full_width =
-        2u32 + highlight_width as u32 + 3 + wide_data_width + visible_columns.len() as u32;
-    let logical_width = if horizontal_scrolling {
-        (area.width as u32)
-            .max(120)
-            .max(minimum_full_width)
-            .min(u16::MAX as u32) as u16
-    } else {
-        area.width
-    };
-    let compact = !horizontal_scrolling && width < 120;
-    let table_width = logical_width.saturating_sub(2);
-    let [_highlight_area, columns_area] =
-        Layout::horizontal([Constraint::Length(highlight_width), Constraint::Fill(0)])
-            .areas(Rect::new(0, 0, table_width, 1));
 
     // The stretchy column is identified by name rather than position:
     // "Branch" (Branches and Worktrees), "Name" (Remotes/Tags), and "Path"
@@ -113,12 +94,44 @@ pub fn render_list_view<T: ViewItem>(
             is_stretchy: is_stretchy(col),
         })
         .collect();
-    let available = columns_area.width as u32;
-    let level = if horizontal_scrolling {
-        0
-    } else {
-        resolve_ladder_level(&ladder_columns, area.width, available)
+
+    // The ladder always fits the viewport; scrolling only widens the logical table.
+    let available = area.width.saturating_sub(2).saturating_sub(highlight_width) as u32;
+    let viewport_level = resolve_ladder_level(&ladder_columns, area.width, available);
+    let min_full_width_at = |level: u8| -> u32 {
+        2u32 + highlight_width as u32
+            + 3
+            + visible_columns
+                .iter()
+                .zip(&effective_min_widths)
+                .map(|(col, &min_width)| {
+                    let col_width = if demoted_at_level(col.key, level) {
+                        min_width
+                    } else {
+                        col.wide_width.unwrap_or(min_width)
+                    };
+                    col_width as u32
+                })
+                .sum::<u32>()
+            + visible_columns.len() as u32
     };
+    // Scroll only when even the compacted layout overflows the viewport. An
+    // overflowing layout stays at the wide level: the compacted widths would
+    // let Branch absorb the slack left by the fixed columns.
+    let overflows = horizontal_scrolling && min_full_width_at(viewport_level) > area.width as u32;
+    let (level, logical_width, compact) = if overflows {
+        let logical_width = (area.width as u32)
+            .max(120)
+            .max(min_full_width_at(0))
+            .min(u16::MAX as u32) as u16;
+        (0u8, logical_width, false)
+    } else {
+        (viewport_level, area.width, width < 120)
+    };
+    let table_width = logical_width.saturating_sub(2);
+    let [_highlight_area, columns_area] =
+        Layout::horizontal([Constraint::Length(highlight_width), Constraint::Fill(0)])
+            .areas(Rect::new(0, 0, table_width, 1));
 
     let mut widths: Vec<Constraint> = vec![Constraint::Length(3)]; // checkbox
     for (col, &min_width) in visible_columns.iter().zip(&effective_min_widths) {
