@@ -4,12 +4,17 @@
 
 ### Fixes
 - Force-delete squash-merged and cherry-picked branches from the delete action without a review prompt (#branches)
+- Shrink list columns to fit the viewport before horizontal scrolling extends the table (#list, #layout)
+- Show the ahead-of-base count for the selected graph branch in the status line (#graph, #status)
+
+### Tasks
+- Add a local-branch cherry-pick action that applies onto the current HEAD (#graph, #menu, #branches)
+- Stash and restore dirty files on squash merge instead of disabling it on a dirty branch worktree (#graph, #menu, #squash)
 
 ## 2026-10-22
 
 ### Fixes
 - graph view merge checking should apply to both remote and local branches (#graph)
-- Show the ahead-of-base count for the selected graph branch in the status line (#graph, #status)
 
 ## 2026-10-17
 
