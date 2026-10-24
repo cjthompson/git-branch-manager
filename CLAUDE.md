@@ -23,6 +23,17 @@ cargo clippy                         # lint
 
 If `cargo` is not on PATH, prefix with: `export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"`
 
+## Worktree Location
+
+**All new worktrees MUST be created under `./.worktrees/` in the primary repository root** (`~/dev/personal/git-branch-manager/.worktrees/`). Do not create sibling directories such as `~/dev/personal/git-branch-manager-<name>` or use any other location. Run worktree creation commands from the primary repo root even when the current checkout is linked; do not create nested `.worktrees` inside a linked worktree.
+
+```sh
+cd ~/dev/personal/git-branch-manager
+git worktree add ./.worktrees/my-feature -b feature/my-feature
+```
+
+Leave existing worktrees in place; this rule applies to new worktrees.
+
 ## Versioning
 
 **DO NOT COMMIT THE VERSION CHANGE.** Version edits on feature branches cause
