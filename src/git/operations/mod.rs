@@ -1,5 +1,6 @@
 mod local;
 mod remote;
+mod squash_message;
 mod sync;
 mod worktree_ops;
 

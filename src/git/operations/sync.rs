@@ -1,7 +1,9 @@
+use std::io::Write;
 use std::path::Path;
+use std::process::Stdio;
 use std::sync::atomic::AtomicBool;
 
-use super::{cancelled, git_cmd, run_git_cancellable};
+use super::{cancelled, git_cmd, run_git_cancellable, squash_message::squash_commit_message};
 use crate::types::{BranchAction, OperationResult};
 use tracing::instrument;
 
@@ -146,6 +148,23 @@ pub fn merge_branch(
         BranchAction::Merge
     };
 
+    let squash_message = if squash {
+        match squash_commit_message(repo_path, branch_name, base) {
+            Ok(message) => Some(message),
+            Err(error) => {
+                return vec![OperationResult {
+                    branch_name: branch_name.to_string(),
+                    action,
+                    success: false,
+                    message: format!("Failed to prepare squash commit message: {error:#}"),
+                    failure: None,
+                }];
+            }
+        }
+    } else {
+        None
+    };
+
     let old_stash = if squash && stash {
         stash_ref(repo_path)
     } else {
@@ -188,15 +207,31 @@ pub fn merge_branch(
     let mut result = match out {
         Ok(o) if o.status.success() => {
             if squash {
-                let _ = git_cmd(repo_path)
-                    .args(["commit", "-m", &format!("Squash merge {branch_name}")])
-                    .output();
+                let commit_result = squash_message
+                    .as_deref()
+                    .ok_or_else(|| "squash commit message was not prepared".to_string())
+                    .and_then(|message| commit_squash(repo_path, message));
+                match commit_result {
+                    Ok(()) => OperationResult::success(
+                        branch_name,
+                        action,
+                        format!("Merged {branch_name} into {base}"),
+                    ),
+                    Err(error) => OperationResult {
+                        branch_name: branch_name.to_string(),
+                        action,
+                        success: false,
+                        message: format!("Failed to create squash commit: {error}"),
+                        failure: None,
+                    },
+                }
+            } else {
+                OperationResult::success(
+                    branch_name,
+                    action,
+                    format!("Merged {branch_name} into {base}"),
+                )
             }
-            OperationResult::success(
-                branch_name,
-                action,
-                format!("Merged {branch_name} into {base}"),
-            )
         }
         _ => {
             // `merge --squash` sets no MERGE_HEAD, so `merge --abort` fails there.
@@ -242,6 +277,39 @@ fn stash_ref(repo_path: &Path) -> Option<String> {
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn commit_squash(repo_path: &Path, message: &str) -> Result<(), String> {
+    let mut child = git_cmd(repo_path)
+        .args(["commit", "--cleanup=verbatim", "--file=-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to open git commit stdin".to_string())?;
+    let message = message.to_owned();
+    let writer = std::thread::spawn(move || stdin.write_all(message.as_bytes()));
+    let output = child
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
+    writer
+        .join()
+        .map_err(|_| "failed while writing squash commit message".to_string())?
+        .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!("git commit exited with {}", output.status)
+        } else {
+            stderr
+        })
+    }
 }
 
 #[instrument(skip(repo_path))]

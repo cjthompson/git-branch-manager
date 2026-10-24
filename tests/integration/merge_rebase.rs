@@ -1,4 +1,3 @@
-
 use git_branch_manager::git::operations;
 
 use crate::common::*;
@@ -67,20 +66,115 @@ fn test_merge_branch_squash_success() {
     // commit must have exactly one parent.
     let repo = git2::Repository::open(dir).expect("re-open repo");
     let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
-    assert!(
-        head_commit
-            .summary()
-            .ok()
-            .flatten()
-            .is_some_and(|s| s.contains("Squash merge feature-squash")),
-        "HEAD should be the squash merge commit, got: {:?}",
-        head_commit.summary()
-    );
+    assert_eq!(head_commit.message().unwrap(), "Squash candidate");
     assert_eq!(
         head_commit.parent_count(),
         1,
         "squash merge must be a single-parent commit, not a merge commit"
     );
+}
+
+#[test]
+fn test_squash_commit_uses_full_source_messages_in_ancestry_order() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["checkout", "-b", "feature-messages"]);
+
+    write_and_commit_message(
+        dir,
+        "first.txt",
+        "Oldest subject\n\n  indented body\n# literal comment\nCo-Authored-By:\n cO-aUtHoReD-bY: First <first@example.com>\nCo-Authored-By: Duplicate <duplicate@example.com>\n",
+        "2030-01-01T00:00:00+0000",
+    );
+    write_and_commit_message(
+        dir,
+        "second.txt",
+        "Newest subject\n\nbody with $HOME and `ticks`\nCo-Authored-By: Second <second@example.com>\n",
+        "2001-01-01T00:00:00+0000",
+    );
+    run_git(dir, &["checkout", "main"]);
+
+    let results = operations::merge_branch(dir, "feature-messages", "main", true, false);
+    assert!(results[0].success, "{}", results[0].message);
+    let repo = git2::Repository::open(dir).unwrap();
+    let message = repo
+        .head()
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .message()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        message,
+        "Oldest subject\n\n  indented body\n# literal comment\n\nNewest subject\n\nbody with $HOME and `ticks`\n\nCo-Authored-By: First <first@example.com>"
+    );
+}
+
+#[test]
+fn test_squash_commit_without_coauthor_does_not_add_trailer() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["checkout", "-b", "feature-no-coauthor"]);
+    write_and_commit_message(
+        dir,
+        "change.txt",
+        "Subject\n\nbody\n",
+        "2020-01-01T00:00:00+0000",
+    );
+    run_git(dir, &["checkout", "main"]);
+
+    let results = operations::merge_branch(dir, "feature-no-coauthor", "main", true, false);
+    assert!(results[0].success, "{}", results[0].message);
+    let repo = git2::Repository::open(dir).unwrap();
+    assert_eq!(
+        repo.head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .message()
+            .unwrap(),
+        "Subject\n\nbody"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_squash_commit_failure_is_reported() {
+    let (tmpdir, _repo) = setup_test_repo();
+    let dir = tmpdir.path();
+    run_git(dir, &["checkout", "-b", "feature-commit-failure"]);
+    write_and_commit_message(dir, "change.txt", "Subject", "2020-01-01T00:00:00+0000");
+    run_git(dir, &["checkout", "main"]);
+    let hook = dir.join(".git/hooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&hook, permissions).unwrap();
+
+    let results = operations::merge_branch(dir, "feature-commit-failure", "main", true, false);
+    assert!(
+        !results[0].success,
+        "failed git commit must not report success"
+    );
+    assert!(
+        results[0]
+            .message
+            .contains("Failed to create squash commit")
+    );
+}
+
+fn write_and_commit_message(dir: &std::path::Path, file: &str, message: &str, date: &str) {
+    std::fs::write(dir.join(file), "content\n").unwrap();
+    std::fs::write(dir.join("commit-message.txt"), message).unwrap();
+    run_git(dir, &["add", file]);
+    run_git_with_env(
+        dir,
+        &["commit", "--cleanup=verbatim", "--file=commit-message.txt"],
+        &[("GIT_AUTHOR_DATE", date), ("GIT_COMMITTER_DATE", date)],
+    );
+    std::fs::remove_file(dir.join("commit-message.txt")).unwrap();
 }
 
 #[test]
