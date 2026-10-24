@@ -69,6 +69,7 @@ pub(super) fn confirmation_command(action: BranchAction, targets: &[String], rem
             || format!("Delete remote branch {targets}"),
             |remote| format!("git push {remote} --delete -- {targets}"),
         ),
+        BranchAction::CherryPickCommit => format!("git cherry-pick {targets}"),
         _ => format!("{} — {targets}", action.label()),
     }
 }
@@ -144,7 +145,8 @@ pub(super) fn graph_affected_views(action: BranchAction) -> &'static [ViewId] {
         BranchAction::PullRemote
         | BranchAction::MergeRemoteIntoCurrent
         | BranchAction::CherryPickRemote
-        | BranchAction::CherryPickLocal => {
+        | BranchAction::CherryPickLocal
+        | BranchAction::CherryPickCommit => {
             &[ViewId::Branches, ViewId::Remotes, ViewId::Worktrees, ViewId::Graph]
         }
         BranchAction::WorktreeRemove | BranchAction::WorktreeForceRemove => {

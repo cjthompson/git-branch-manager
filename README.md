@@ -50,7 +50,7 @@ Press `o` to open Graph options. `Space` toggles "Include remote refs", and `Ent
 
 Press `L` to load 500 more commits per press; history expansion is uncapped and session-only.
 
-Press `Enter` on a commit to open the same branch/remote/tag context menu used by the Branches, Remotes, and Tags views, built from whatever live refs point at that commit. Commits with no matching refs are shown informationally with no actions.
+Press `Enter` on a commit to open commit actions alongside the branch, remote, and tag actions for live refs at that commit. `Check code in primary branch` and `Cherry-pick commit onto current` target the selected full commit OID, even when no ref points at it or a branch has moved since the graph loaded. Cherry-picking applies the selected commit onto the currently checked-out branch. Merge commits are disabled because Git requires a mainline parent selection.
 
 From the Branches, Remotes, Tags, or Worktrees view, press `g` to jump the selected branch, tag, or worktree commit to its row in Graph. The same navigation is available as `Jump to Graph` in each view's context menu. In Graph, `g` and `G` retain their Home and End meanings.
 
@@ -109,7 +109,8 @@ git branch-manager --list
 | `r` | Reload graph |
 
 Commit details show the first four full message lines, author and local date,
-the selected commit's changed files, and the existing actions for its live refs.
+the selected commit's changed files, the selected-commit actions, and actions
+for its live refs.
 Use `Tab` to switch between the file list and actions. Press `Enter` on a file
 to open its patch; `Esc` returns to the same file selection. When the selected
 commit is a local non-base branch tip, the details view also shows the

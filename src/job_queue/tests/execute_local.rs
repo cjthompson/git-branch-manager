@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn execute_cherry_pick_commit_uses_selected_historical_oid() {
+    let tmpdir = tempfile::tempdir().expect("temp repo");
+    let dir = tmpdir.path();
+    run_git(dir, &["init", "-b", "main"]);
+    run_git(dir, &["config", "user.email", "test@example.com"]);
+    run_git(dir, &["config", "user.name", "Test User"]);
+    std::fs::write(dir.join("base.txt"), "base\n").unwrap();
+    run_git(dir, &["add", "base.txt"]);
+    run_git(dir, &["commit", "-m", "base"]);
+    run_git(dir, &["checkout", "-b", "feature/history"]);
+    std::fs::write(dir.join("first.txt"), "first\n").unwrap();
+    run_git(dir, &["add", "first.txt"]);
+    run_git(dir, &["commit", "-m", "first selected commit"]);
+    let selected_oid = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let selected_oid = String::from_utf8(selected_oid.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    std::fs::write(dir.join("second.txt"), "second\n").unwrap();
+    run_git(dir, &["add", "second.txt"]);
+    run_git(dir, &["commit", "-m", "newer branch tip"]);
+    run_git(dir, &["checkout", "main"]);
+
+    let (prog_tx, _prog_rx) = mpsc::channel();
+    let results = execute_action_with_remote(
+        BranchAction::CherryPickCommit,
+        std::slice::from_ref(&selected_oid),
+        dir,
+        "main",
+        false,
+        None,
+        &prog_tx,
+        &Arc::new(AtomicBool::new(false)),
+        &Arc::new(AtomicBool::new(false)),
+    );
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].success, "{results:?}");
+    assert_eq!(results[0].branch_name, selected_oid);
+    assert!(dir.join("first.txt").exists());
+    assert!(!dir.join("second.txt").exists());
+    let subject = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%s"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(subject.stdout).unwrap().trim(),
+        "first selected commit"
+    );
+}
+
+#[test]
 fn execute_action_worktree_remove_and_delete_branch_local_only() {
     let tmpdir = tempfile::tempdir().expect("temp repo");
     let dir = tmpdir.path();

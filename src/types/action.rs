@@ -41,6 +41,8 @@ pub enum BranchAction {
     PullRemote,
     MergeRemoteIntoCurrent,
     CherryPickRemote,
+    /// Cherry-pick this exact commit object onto the current checkout.
+    CherryPickCommit,
     ViewRemotePR,
     // Worktree actions
     WorktreeRemove,
@@ -90,6 +92,7 @@ impl BranchAction {
             Self::PullRemote => "Pull remote",
             Self::MergeRemoteIntoCurrent => "Merge into current",
             Self::CherryPickRemote => "Cherry-pick latest",
+            Self::CherryPickCommit => "Cherry-pick commit onto current",
             Self::ViewRemotePR => "Open PR in browser",
             Self::WorktreeRemove => "Remove worktree",
             Self::WorktreeForceRemove => "Force remove worktree",

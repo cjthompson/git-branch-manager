@@ -1,9 +1,11 @@
+mod commit;
 mod local;
 mod remote;
 mod squash_message;
 mod sync;
 mod worktree_ops;
 
+pub use commit::cherry_pick_commit;
 pub use local::{
     checkout_branch, cherry_pick_local, delete_local, delete_local_force,
     delete_locals_with_progress, fetch, fetch_prune, fetch_sync,

@@ -23,7 +23,18 @@ fn graph_multiple_refs_confirm_the_selected_authoritative_target() {
     let items = commit_details_items(&app);
     assert!(items
         .iter()
+        .filter(|item| !matches!(
+            item.action,
+            BranchAction::CheckPrimaryBranchCode | BranchAction::CherryPickCommit
+        ))
         .all(|item| item.shortcut.is_none() && item.label.contains(":")));
+    assert!(items
+        .iter()
+        .filter(|item| matches!(
+            item.action,
+            BranchAction::CheckPrimaryBranchCode | BranchAction::CherryPickCommit
+        ))
+        .all(|item| !item.label.contains(":")));
     let disabled_local_delete = items
         .iter()
         .find(|item| item.action == BranchAction::DeleteLocal)
@@ -265,7 +276,12 @@ fn graph_action_refreshes_dependent_ref_views() {
     );
     assert_eq!(
         graph_affected_views(BranchAction::FetchRemote),
-        &[ViewId::Branches, ViewId::Remotes, ViewId::Tags, ViewId::Graph]
+        &[
+            ViewId::Branches,
+            ViewId::Remotes,
+            ViewId::Tags,
+            ViewId::Graph
+        ]
     );
     // UI-only actions stay empty.
     assert_eq!(graph_affected_views(BranchAction::JumpToGraph), &[]);
