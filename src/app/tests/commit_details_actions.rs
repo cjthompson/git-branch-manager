@@ -109,7 +109,48 @@ fn commit_details_open_selects_first_enabled_action_after_disabled_checkout() {
 }
 
 #[test]
-fn graph_commit_details_uses_tag_metadata_and_ref_free_commits_have_no_actions() {
+fn graph_commit_actions_use_the_selected_oid_and_disable_merges() {
+    let oid = "1111111111111111111111111111111111111111";
+    let mut app = graph_app(vec![]);
+    let commit = app.graph.selected_commit().unwrap().clone();
+    let items = app.build_graph_menu_for(&commit);
+    let check = items
+        .iter()
+        .find(|item| item.action == BranchAction::CheckPrimaryBranchCode)
+        .unwrap();
+    assert_eq!(check.target, oid);
+    let pick = items
+        .iter()
+        .find(|item| item.action == BranchAction::CherryPickCommit)
+        .unwrap();
+    assert!(pick.enabled);
+    assert_eq!(pick.target, oid);
+    app.execute_menu_action(pick.clone());
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::Confirm { ref choices, .. })
+            if matches!(choices.as_slice(), [ConfirmChoice { action: BranchAction::CherryPickCommit, targets, .. }] if targets == &[oid])
+    ));
+
+    let mut merge = commit;
+    merge.parents = vec!["p1".into(), "p2".into()];
+    let merge_items = app.build_graph_menu_for(&merge);
+    let check = merge_items
+        .iter()
+        .find(|item| item.action == BranchAction::CheckPrimaryBranchCode)
+        .unwrap();
+    assert!(check.enabled);
+    assert_eq!(check.target, oid);
+    let pick = merge_items
+        .iter()
+        .find(|item| item.action == BranchAction::CherryPickCommit)
+        .unwrap();
+    assert!(!pick.enabled);
+    assert_eq!(pick.reason.as_deref(), Some("requires mainline selection"));
+}
+
+#[test]
+fn graph_commit_details_keeps_tag_metadata_and_offers_ref_free_commit_actions() {
     let mut tag_app = graph_app(vec![graph_ref("v1.2.3", graph::GraphRefKind::Tag)]);
     tag_app.tags.set_items(vec![tag("v1.2.3")]);
 
@@ -128,13 +169,21 @@ fn graph_commit_details_uses_tag_metadata_and_ref_free_commits_have_no_actions()
         crossterm::event::KeyModifiers::NONE,
     ));
     complete_graph_commit_details(&mut ref_free_app);
+    let items = commit_details_items(&ref_free_app);
+    for action in [
+        BranchAction::CheckPrimaryBranchCode,
+        BranchAction::CherryPickCommit,
+    ] {
+        let item = items.iter().find(|item| item.action == action).unwrap();
+        assert!(item.enabled);
+        assert_eq!(item.target, "1111111111111111111111111111111111111111");
+    }
     assert!(matches!(
         ref_free_app.overlay,
         Some(Overlay::CommitDetails {
-            ref items,
-            focus: CommitDetailsFocus::Files,
+            focus: CommitDetailsFocus::Actions,
             ..
-        }) if items.is_empty()
+        })
     ));
 }
 
@@ -146,7 +195,12 @@ fn graph_commit_details_picks_up_authoritative_metadata_loaded_in_background() {
         crossterm::event::KeyModifiers::NONE,
     ));
     complete_graph_commit_details(&mut app);
-    assert!(commit_details_items(&app).is_empty());
+    assert!(commit_details_items(&app)
+        .iter()
+        .any(|item| item.action == BranchAction::CherryPickCommit));
+    assert!(!commit_details_items(&app)
+        .iter()
+        .any(|item| item.action == BranchAction::PushTag));
 
     let (tx, rx) = mpsc::channel();
     tx.send(vec![tag("v1.2.3")]).unwrap();

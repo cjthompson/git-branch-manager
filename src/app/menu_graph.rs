@@ -9,7 +9,30 @@ impl App {
     }
 
     pub(super) fn build_graph_menu_for(&self, commit: &graph::GraphCommit) -> Vec<MenuItem> {
-        let mut groups = Vec::new();
+        let merge_commit = commit.parents.len() > 1;
+        let mut groups = vec![(
+            String::new(),
+            vec![
+                MenuItem {
+                    label: BranchAction::CheckPrimaryBranchCode.label().into(),
+                    enabled: true,
+                    reason: None,
+                    shortcut: None,
+                    action: BranchAction::CheckPrimaryBranchCode,
+                    target: commit.oid.clone(),
+                    remote: None,
+                },
+                MenuItem {
+                    label: BranchAction::CherryPickCommit.label().into(),
+                    enabled: !merge_commit,
+                    reason: merge_commit.then(|| "requires mainline selection".into()),
+                    shortcut: None,
+                    action: BranchAction::CherryPickCommit,
+                    target: commit.oid.clone(),
+                    remote: None,
+                },
+            ],
+        )];
         for reference in &commit.refs {
             let items = match reference.kind {
                 graph::GraphRefKind::LocalBranch => self
@@ -34,19 +57,26 @@ impl App {
             if let Some(items) = items {
                 let items: Vec<MenuItem> = items
                     .into_iter()
-                    .filter(|item| item.action != BranchAction::JumpToGraph)
+                    .filter(|item| {
+                        !matches!(
+                            item.action,
+                            BranchAction::JumpToGraph | BranchAction::CheckPrimaryBranchCode
+                        )
+                    })
                     .collect();
                 groups.push((reference.name.clone(), items));
             }
         }
 
-        let has_multiple_refs = groups.len() > 1;
+        let has_multiple_refs = groups.iter().filter(|(name, _)| !name.is_empty()).count() > 1;
         groups
             .into_iter()
             .flat_map(|(reference, items)| {
                 items.into_iter().map(move |mut item| {
-                    item.label = format!("{reference}: {}", item.label);
-                    if has_multiple_refs {
+                    if !reference.is_empty() {
+                        item.label = format!("{reference}: {}", item.label);
+                    }
+                    if has_multiple_refs && !reference.is_empty() {
                         item.shortcut = None;
                     }
                     item
