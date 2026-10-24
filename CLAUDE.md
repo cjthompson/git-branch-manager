@@ -36,8 +36,8 @@ Leave existing worktrees in place; this rule applies to new worktrees.
 
 ## Versioning
 
-**DO NOT COMMIT THE VERSION CHANGE.** Version edits on feature branches cause
-merge conflicts between parallel branches.
+**Do not commit development-version changes on feature branches.** Version
+edits on feature branches cause merge conflicts between parallel branches.
 
 `main` is for stable releases: its `Cargo.toml` version is always a plain
 `X.Y.Z`, never `X.Y.Z-devN`.
@@ -53,8 +53,12 @@ running binary shows which build it is. This edit stays local:
   hunk out.
 - Before every commit, check `git diff --cached Cargo.toml` shows no version
   change.
-- Before switching branches or merging, `git restore`/stash the local version
-  edit.
+- Before switching branches, `git restore`/stash the local version edit.
+- Before merging a worktree branch into `main`, revert its local version-only
+  changes in both `Cargo.toml` and `Cargo.lock`. If each file's only change is
+  the package version bump, run `git restore -- Cargo.toml Cargo.lock` in that
+  worktree. If either file also contains dependency or other substantive
+  changes, revert only the version hunks and preserve those other changes.
 
 ```sh
 grep '^version' Cargo.toml     # read current version
@@ -63,15 +67,23 @@ sed -i '' 's/^version = "0\.1\.0-dev3"/version = "0.1.0-dev4"/' Cargo.toml
 ```
 
 **When a task is accepted:** squash-merge the branch into `main` with no
-version change, then make a **separate** version-bump commit on `main` — the
-only commits that ever change the version. Bump patch for fixes or small
-features, minor for a bigger feature; no `-devN` suffix, and do not start a
-new `-dev1` cycle on `main`.
+version or release-changelog changes. Then make **one release commit on
+`main` containing the version bump and changelog changes together**:
+`Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md` MUST be committed in the same
+commit. Do not make separate version-only or changelog-only commits, and keep
+release-changelog updates out of feature-branch commits. Only these release
+commits may change the version.
+
+Bump patch for fixes or small features, minor for a bigger feature; no
+`-devN` suffix, and do not start a new `-dev1` cycle on `main`.
 
 ```sh
 # accepting a fix while main is 0.1.0 → 0.1.1
 sed -i '' 's/^version = "0\.1\.0"/version = "0.1.1"/' Cargo.toml
+# Update CHANGELOG.md with the changes included in this release.
 cargo build                    # also refreshes Cargo.lock's own version entry
+git add Cargo.toml Cargo.lock CHANGELOG.md
+git commit -m "chore: release 0.1.1"
 ```
 
 ## Architecture
