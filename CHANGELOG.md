@@ -3,6 +3,9 @@
 ## 2026-10-23
 
 ### Fixes
+- Squash merge commit message should append source commit messages oldest first
+- Graph commit actions must work for commits without branch-tip refs
+- Require repository worktrees under ./.worktrees/ in CLAUDE.md
 - Force-delete squash-merged and cherry-picked branches from the delete action without a review prompt (#branches)
 - Shrink list columns to fit the viewport before horizontal scrolling extends the table (#list, #layout)
 - Show the ahead-of-base count for the selected graph branch in the status line (#graph, #status)
