@@ -1,3 +1,4 @@
+mod delete_remote_and_local;
 mod execute_local;
 mod execute_remote;
 mod queue;
