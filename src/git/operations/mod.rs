@@ -12,8 +12,9 @@ pub use local::{
 };
 pub use remote::{
     checkout_remote_branch, cherry_pick_remote, delete_remotes_batch,
-    delete_remotes_batch_for_remote, delete_remotes_with_progress,
+    delete_remotes_batch_for_remote, delete_remotes_planned, delete_remotes_with_progress,
     delete_remotes_with_progress_for_remote, fetch_remote, merge_remote_into_current, pull_remote,
+    resolve_remote_deletes,
 };
 pub use sync::{
     fast_forward, force_push_branch, merge_branch, pull_branch, push_branch, rebase_branch,

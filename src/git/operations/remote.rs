@@ -1,10 +1,88 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 
 use super::{cancelled, git_cmd, run_git_cancellable, run_with_progress};
-use crate::types::{BranchAction, OperationResult, ProgressUpdate};
+use crate::types::{BranchAction, FailureCause, OperationResult, ProgressUpdate};
+use git2::Repository;
 use tracing::instrument;
+
+/// Resolve each branch's upstream remote before local deletion removes its config.
+pub fn resolve_remote_deletes(
+    repo_path: &Path,
+    explicit_remote: Option<&str>,
+    branch_names: &[String],
+) -> Vec<(String, Result<String, String>)> {
+    if let Some(remote) = explicit_remote {
+        return branch_names
+            .iter()
+            .map(|name| (name.clone(), Ok(remote.to_owned())))
+            .collect();
+    }
+
+    match Repository::open(repo_path) {
+        Ok(repo) => branch_names
+            .iter()
+            .map(|name| {
+                let target = (|| {
+                    let key = format!("branch.{name}.remote");
+                    let remote = repo
+                        .config()
+                        .and_then(|config| config.get_string(&key))
+                        .map_err(|_| {
+                            format!(
+                                "Cannot delete remote branch {name}: no upstream is configured ({key})"
+                            )
+                        })?;
+                    if repo.find_remote(&remote).is_err() {
+                        return Err(format!(
+                            "Cannot delete remote branch {name}: configured remote '{remote}' does not exist"
+                        ));
+                    }
+                    Ok(remote)
+                })();
+                (name.clone(), target)
+            })
+            .collect(),
+        Err(error) => branch_names
+            .iter()
+            .map(|name| (name.clone(), Err(format!("Failed to open repo: {error}"))))
+            .collect(),
+    }
+}
+
+/// Delete only branches with a resolved remote, grouping names by remote.
+pub fn delete_remotes_planned(
+    repo_path: &Path,
+    plan: &[(String, Result<String, String>)],
+    cancel: &AtomicBool,
+) -> Vec<OperationResult> {
+    let mut results = Vec::new();
+    let mut by_remote: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for (name, target) in plan {
+        match target {
+            Ok(remote) => by_remote
+                .entry(remote.as_str())
+                .or_default()
+                .push(name.clone()),
+            Err(message) => results.push(OperationResult::failure(
+                name,
+                BranchAction::DeleteRemoteBranch,
+                FailureCause::Other {
+                    raw_message: message.clone(),
+                },
+                message.clone(),
+            )),
+        }
+    }
+    for (remote, names) in by_remote {
+        results.extend(delete_remotes_batch_for_remote(
+            repo_path, remote, &names, cancel,
+        ));
+    }
+    results
+}
 
 #[instrument(skip(repo_path))]
 pub fn checkout_remote_branch(repo_path: &Path, remote: &str, short_name: &str) -> OperationResult {

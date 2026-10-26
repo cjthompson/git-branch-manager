@@ -5,7 +5,18 @@ use std::sync::Arc;
 
 use super::cascade;
 use crate::git::{operations, tags};
-use crate::types::{BranchAction, OperationResult, ProgressUpdate};
+use crate::types::{BranchAction, FailureCause, OperationResult, ProgressUpdate};
+
+fn unresolved_result(name: &str, action: BranchAction, message: String) -> OperationResult {
+    OperationResult::failure(
+        name,
+        action,
+        FailureCause::Other {
+            raw_message: message.clone(),
+        },
+        message,
+    )
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_action_with_remote(
@@ -213,6 +224,12 @@ pub(super) fn execute_action_with_remote(
                         failure: None,
                     });
                 } else {
+                    // Resolved before any local deletion: deleting a branch drops its config.
+                    let plan = operations::resolve_remote_deletes(
+                        repo_path,
+                        remote,
+                        std::slice::from_ref(name),
+                    );
                     match git2::Repository::open(repo_path) {
                         Err(e) => results.push(OperationResult {
                             branch_name: name.clone(),
@@ -222,21 +239,24 @@ pub(super) fn execute_action_with_remote(
                             failure: None,
                         }),
                         Ok(repo) => {
-                            let local_result = operations::delete_local(&repo, name);
-                            let local_ok = local_result.success;
-                            results.push(OperationResult {
-                                action,
-                                ..local_result
-                            });
-                            // Remote is a backup: only attempted once the local delete has succeeded.
-                            if local_ok {
-                                let remote_name = remote.unwrap_or("origin");
-                                results.extend(operations::delete_remotes_batch_for_remote(
-                                    repo_path,
-                                    remote_name,
-                                    std::slice::from_ref(name),
-                                    cancel_flag,
-                                ));
+                            if let Some((_, Err(message))) = plan.first() {
+                                results.push(unresolved_result(name, action, message.clone()));
+                            } else {
+                                let local_result = operations::delete_local(&repo, name);
+                                let local_ok = local_result.success;
+                                results.push(OperationResult {
+                                    action,
+                                    ..local_result
+                                });
+                                // Remote is a backup: only attempted once the local delete has succeeded.
+                                if local_ok {
+                                    let remote_results = operations::delete_remotes_planned(
+                                        repo_path,
+                                        &plan,
+                                        cancel_flag,
+                                    );
+                                    results.extend(remote_results);
+                                }
                             }
                         }
                     }
