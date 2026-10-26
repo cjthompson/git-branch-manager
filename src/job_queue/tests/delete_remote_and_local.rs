@@ -53,7 +53,7 @@ fn run_delete_remote_and_local(
 fn delete_remote_and_local_removes_local_then_remote_for_merged_branch() {
     let (_tmp, remote_dir, work_dir) = origin_and_work();
     run_git(&work_dir, &["branch", "gone"]);
-    run_git(&work_dir, &["push", "origin", "gone"]);
+    run_git(&work_dir, &["push", "-u", "origin", "gone"]);
 
     let results = run_delete_remote_and_local(&work_dir, "gone", false);
 
@@ -74,8 +74,10 @@ fn delete_remote_and_local_leaves_remote_untouched_when_local_delete_fails() {
     std::fs::write(work_dir.join("wip.txt"), "wip\n").unwrap();
     run_git(&work_dir, &["add", "wip.txt"]);
     run_git(&work_dir, &["commit", "-m", "wip commit"]);
-    // No upstream: a tracking branch would count as merged into origin/wip.
     run_git(&work_dir, &["push", "origin", "wip"]);
+    // Upstream is origin/main, which does not contain wip's commit, so the local delete is refused.
+    run_git(&work_dir, &["config", "branch.wip.remote", "origin"]);
+    run_git(&work_dir, &["config", "branch.wip.merge", "refs/heads/main"]);
     run_git(&work_dir, &["checkout", "main"]);
 
     let results = run_delete_remote_and_local(&work_dir, "wip", false);

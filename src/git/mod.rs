@@ -10,6 +10,7 @@ pub mod graph;
 pub mod merge_detection;
 pub mod operations;
 pub mod pr_loader;
+pub mod remote_resolve;
 pub mod squash_loader;
 pub mod status;
 pub mod tags;

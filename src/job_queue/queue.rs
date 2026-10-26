@@ -4,10 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
 use std::sync::Arc;
 
-use super::execute::execute_action_with_remote;
+use super::execute::execute_action_recording;
 use super::{
-    ActionJob, ActionJobQueue, CompletionSummary, DrainingJob, JobEvent, JobPoll,
-    JobStatusView, RunningJob,
+    take_remote_refs, ActionJob, ActionJobQueue, CompletionSummary, DrainingJob, JobEvent,
+    JobPoll, JobStatusView, RemoteRefs, RunningJob,
 };
 use crate::git::graph::{GraphRepositoryDelta, GraphRepositoryState};
 use crate::types::BranchAction;
@@ -94,12 +94,14 @@ impl ActionJobQueue {
         let cancel_clone = Arc::clone(&cancel_flag);
         let partial_delete_risk = Arc::new(AtomicBool::new(false));
         let partial_delete_risk_clone = Arc::clone(&partial_delete_risk);
+        let remote_refs: RemoteRefs = Arc::default();
+        let remote_refs_clone = Arc::clone(&remote_refs);
 
         std::thread::spawn(move || {
             let before = GraphRepositoryState::capture_with_head(&repo_path, &graph_head_path);
             let needs_stash =
                 !crate::git::status::detect_working_tree_status(&repo_path).is_clean();
-            let results = execute_action_with_remote(
+            let results = execute_action_recording(
                 action,
                 &item_names,
                 &repo_path,
@@ -109,6 +111,7 @@ impl ActionJobQueue {
                 &prog_tx,
                 &cancel_clone,
                 &partial_delete_risk_clone,
+                &remote_refs_clone,
             );
             let after = GraphRepositoryState::capture_with_head(&repo_path, &graph_head_path);
             let graph_delta = match (before, after) {
@@ -127,6 +130,7 @@ impl ActionJobQueue {
             cancel_flag,
             partial_delete_risk,
             latest_progress: None,
+            remote_refs,
         });
     }
 
@@ -157,7 +161,7 @@ impl ActionJobQueue {
         // repo may already have changed on disk.
         match self.draining.as_ref().map(|d| d.op_rx.try_recv()) {
             Some(Ok(results)) => {
-                let DrainingJob { job, graph_delta_rx, .. } = self.draining.take().unwrap();
+                let DrainingJob { job, graph_delta_rx, remote_refs, .. } = self.draining.take().unwrap();
                 let graph_delta = graph_delta_rx.try_recv().unwrap_or_else(|_| Err("repository state observation was unavailable".into()));
                 self.targets_done_before_current += job.targets.len();
                 let summary = CompletionSummary::new(job.action, &results);
@@ -173,6 +177,7 @@ impl ActionJobQueue {
                     results,
                     graph_delta,
                     failures,
+                    remote_deletions: take_remote_refs(&remote_refs),
                 });
             }
             Some(Err(TryRecvError::Disconnected)) => {
@@ -201,7 +206,7 @@ impl ActionJobQueue {
         if event.is_none() {
             event = match self.current.as_ref().map(|r| r.op_rx.try_recv()) {
                 Some(Ok(results)) => {
-                    let RunningJob { job, graph_delta_rx, .. } = self.current.take().unwrap();
+                    let RunningJob { job, graph_delta_rx, remote_refs, .. } = self.current.take().unwrap();
                     let graph_delta = graph_delta_rx.try_recv().unwrap_or_else(|_| Err("repository state observation was unavailable".into()));
                     self.targets_done_before_current += job.targets.len();
                     let summary = CompletionSummary::new(job.action, &results);
@@ -217,6 +222,7 @@ impl ActionJobQueue {
                         results,
                         graph_delta,
                         failures,
+                        remote_deletions: take_remote_refs(&remote_refs),
                     })
                 }
                 _ => None,
@@ -248,6 +254,7 @@ impl ActionJobQueue {
             job: running.job,
             op_rx: running.op_rx,
             graph_delta_rx: running.graph_delta_rx,
+            remote_refs: running.remote_refs,
         });
     }
 

@@ -176,7 +176,7 @@ a centered rect on top using `ratatui::widgets::Clear` + `Block`.
 2. Add the git operation function in `git/operations/` (return `OperationResult`)
 3. In the relevant per-view key handler in `app/keys_views.rs` (e.g. `handle_branches_key`),
    open `Overlay::Confirm { action: BranchAction::NewAction, targets }`
-4. Map the new `BranchAction` to your operation in `job_queue/execute.rs::execute_action_with_remote`
+4. Map the new `BranchAction` to your operation in `job_queue/execute.rs::execute_action_recording`
 5. Update `ui/help.rs` and the status-bar text in `ui/status_bar.rs`
 
 ### Adding a new view/tab

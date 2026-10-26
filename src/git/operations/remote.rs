@@ -2,9 +2,94 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 
+use std::collections::BTreeMap;
+
 use super::{cancelled, git_cmd, run_git_cancellable, run_with_progress};
+use crate::git::remote_resolve::{self, unresolved_result};
 use crate::types::{BranchAction, OperationResult, ProgressUpdate};
+use git2::Repository;
 use tracing::instrument;
+
+/// Resolved before local deletion, which drops each branch's config.
+pub fn resolve_remote_deletes(
+    repo_path: &Path,
+    explicit: Option<&str>,
+    branch_names: &[String],
+) -> Vec<(String, Result<String, String>)> {
+    if let Some(remote) = explicit {
+        return branch_names
+            .iter()
+            .map(|name| (name.clone(), Ok(remote.to_owned())))
+            .collect();
+    }
+    match Repository::open(repo_path) {
+        Ok(repo) => branch_names
+            .iter()
+            .map(|name| (name.clone(), remote_resolve::resolve_delete(&repo, name)))
+            .collect(),
+        Err(error) => branch_names
+            .iter()
+            .map(|name| (name.clone(), Err(format!("Failed to open repo: {error}"))))
+            .collect(),
+    }
+}
+
+/// Batch-delete remote branches from a plan made by [`resolve_remote_deletes`].
+/// Entries that failed to resolve become failure results and are not deleted.
+pub fn delete_remotes_planned(
+    repo_path: &Path,
+    plan: &[(String, Result<String, String>)],
+    cancel: &AtomicBool,
+) -> Vec<OperationResult> {
+    let mut results = Vec::new();
+    let mut by_remote: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for (name, target) in plan {
+        match target {
+            Ok(remote) => by_remote
+                .entry(remote.as_str())
+                .or_default()
+                .push(name.clone()),
+            Err(message) => results.push(unresolved_result(
+                name,
+                BranchAction::DeleteRemoteBranch,
+                message.clone(),
+            )),
+        }
+    }
+    for (remote, names) in by_remote {
+        results.extend(delete_remotes_batch_for_remote(
+            repo_path, remote, &names, cancel,
+        ));
+    }
+    results
+}
+
+/// Per-branch progress variant of [`delete_remotes_planned`].
+pub fn delete_remotes_with_progress_planned(
+    repo_path: &Path,
+    plan: &[(String, Result<String, String>)],
+    prog_tx: &Sender<ProgressUpdate>,
+    cancel: &AtomicBool,
+) -> Vec<OperationResult> {
+    let names: Vec<String> = plan.iter().map(|(name, _)| name.clone()).collect();
+    run_with_progress(
+        &names,
+        BranchAction::DeleteRemoteBranch,
+        prog_tx,
+        cancel,
+        |name| match plan.iter().find(|(planned, _)| planned == name) {
+            Some((_, Ok(remote))) => delete_remote(repo_path, remote, name, cancel),
+            Some((_, Err(message))) => {
+                unresolved_result(name, BranchAction::DeleteRemoteBranch, message.clone())
+            }
+            None => unresolved_result(
+                name,
+                BranchAction::DeleteRemoteBranch,
+                "No remote resolved".into(),
+            ),
+        },
+    )
+}
 
 #[instrument(skip(repo_path))]
 pub fn checkout_remote_branch(repo_path: &Path, remote: &str, short_name: &str) -> OperationResult {
@@ -47,7 +132,11 @@ pub fn delete_remotes_batch(
     branch_names: &[String],
     cancel: &AtomicBool,
 ) -> Vec<OperationResult> {
-    delete_remotes_batch_for_remote(repo_path, "origin", branch_names, cancel)
+    delete_remotes_planned(
+        repo_path,
+        &resolve_remote_deletes(repo_path, None, branch_names),
+        cancel,
+    )
 }
 
 #[instrument(skip(repo_path, branch_names, cancel), fields(count = branch_names.len()))]
@@ -134,7 +223,12 @@ pub fn delete_remotes_with_progress(
     prog_tx: &Sender<ProgressUpdate>,
     cancel: &AtomicBool,
 ) -> Vec<OperationResult> {
-    delete_remotes_with_progress_for_remote(repo_path, "origin", branch_names, prog_tx, cancel)
+    delete_remotes_with_progress_planned(
+        repo_path,
+        &resolve_remote_deletes(repo_path, None, branch_names),
+        prog_tx,
+        cancel,
+    )
 }
 
 pub fn delete_remotes_with_progress_for_remote(

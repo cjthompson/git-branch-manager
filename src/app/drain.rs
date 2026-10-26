@@ -674,6 +674,7 @@ impl App {
             graph_delta,
             failures,
             return_view,
+            remote_deletions,
         }) = job_poll.event
         {
             self.refresh_after_job(action, return_view, &targets, remote.as_deref(), &results, graph_delta);
@@ -692,27 +693,18 @@ impl App {
             // When DeleteLocalAndRemote completes, immediately filter confirmed remote
             // deletions from the in-memory remotes list so they don't appear until a fetch.
             if action == BranchAction::DeleteLocalAndRemote {
-                let selected_remote = remote.as_deref().unwrap_or("origin");
-                let successfully_deleted: Vec<String> = results
-                    .iter()
-                    .filter(|r| r.success && r.action == BranchAction::DeleteRemoteBranch)
-                    .map(|r| r.branch_name.clone())
-                    .collect();
-
-                if !successfully_deleted.is_empty() {
-                    let deleted_set: std::collections::HashSet<_> =
-                        successfully_deleted.into_iter().collect();
-                    self.remotes.set_items(
-                        self.remotes
-                            .items()
-                            .iter()
-                            .filter(|remote| {
-                                remote.remote != selected_remote
-                                    || !deleted_set.contains(&remote.short_name)
-                            })
-                            .cloned()
-                            .collect(),
-                    );
+                // Explicit remote applies to all targets; else use each branch's recorded remote.
+                let deleted: Vec<(String, String)> = match remote.as_deref() {
+                    Some(explicit) => results
+                        .iter()
+                        .filter(|r| r.success && r.action == BranchAction::DeleteRemoteBranch)
+                        .map(|r| (explicit.to_owned(), r.branch_name.clone()))
+                        .collect(),
+                    None => remote_deletions,
+                };
+                if !deleted.is_empty() {
+                    self.remotes
+                        .set_items(remotes_without_deleted(self.remotes.items(), &deleted));
                     list_state::apply_sort(&mut self.remotes, &self.remote_columns);
                 }
             }
@@ -812,4 +804,20 @@ impl App {
 
         dirty
     }
+}
+
+/// Drops the remote rows whose `(remote, branch)` pair a job deleted.
+pub(super) fn remotes_without_deleted(
+    items: &[RemoteBranchInfo],
+    deleted: &[(String, String)],
+) -> Vec<RemoteBranchInfo> {
+    items
+        .iter()
+        .filter(|row| {
+            !deleted
+                .iter()
+                .any(|(remote, branch)| row.remote == *remote && row.short_name == *branch)
+        })
+        .cloned()
+        .collect()
 }

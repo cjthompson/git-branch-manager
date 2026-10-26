@@ -15,7 +15,13 @@ fn test_push_branch() {
     run_git(&work_dir, &["commit", "-m", "Push test commit"]);
     run_git(&work_dir, &["checkout", "main"]);
 
-    let result = operations::push_branch(&work_dir, "push-test", &AtomicBool::new(false));
+    let result = operations::push_branch(
+        &work_dir,
+        "push-test",
+        "origin",
+        true,
+        &AtomicBool::new(false),
+    );
     assert!(
         result.success,
         "push_branch should succeed: {}",

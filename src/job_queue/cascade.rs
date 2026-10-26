@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
+use super::{record_deleted_remote_refs, RemoteRefs};
+use crate::git::remote_resolve;
 use crate::git::{operations, worktree};
 use crate::types::{BranchAction, FailureCause, OperationResult, ProgressUpdate};
 
@@ -17,6 +19,7 @@ fn execute_branch_name_cascade(
     prog_tx: &Sender<ProgressUpdate>,
     cancel_flag: &Arc<AtomicBool>,
     partial_delete_risk: &Arc<AtomicBool>,
+    remote_refs: &RemoteRefs,
 ) -> Vec<OperationResult> {
     let repo = match git2::Repository::open(repo_path) {
         Ok(repo) => repo,
@@ -52,6 +55,12 @@ fn execute_branch_name_cascade(
 
     let force = action == BranchAction::DeleteBranchAndRemoveWorktreeForce;
     let remove_remote = action == BranchAction::DeleteBranchAndRemoveWorktreeRemote;
+    // Resolved before any local deletion: deleting a branch drops its config.
+    let remote_plan = if remove_remote {
+        operations::resolve_remote_deletes(repo_path, remote, item_names)
+    } else {
+        Vec::new()
+    };
     let mut results = Vec::new();
     let mut locally_deleted = Vec::new();
 
@@ -143,18 +152,18 @@ fn execute_branch_name_cascade(
     }
 
     if remove_remote && !locally_deleted.is_empty() && !cancel_flag.load(Ordering::Relaxed) {
-        let remote_name = remote.unwrap_or("origin");
         let _ = prog_tx.send(ProgressUpdate {
             completed: locally_deleted.len(),
             total: item_names.len(),
             current_item: "Deleting remote branches...".into(),
         });
-        results.extend(operations::delete_remotes_batch_for_remote(
-            repo_path,
-            remote_name,
-            &locally_deleted,
-            cancel_flag,
-        ));
+        let planned: Vec<(String, Result<String, String>)> = remote_plan
+            .into_iter()
+            .filter(|(name, _)| locally_deleted.contains(name))
+            .collect();
+        let remote_results = operations::delete_remotes_planned(repo_path, &planned, cancel_flag);
+        record_deleted_remote_refs(remote_refs, &planned, &remote_results);
+        results.extend(remote_results);
     }
 
     results
@@ -210,6 +219,8 @@ pub(super) fn execute_worktree_remove_and_delete_branch(
     cancel_flag: &Arc<AtomicBool>,
     partial_delete_risk: &Arc<AtomicBool>,
     results: &mut Vec<OperationResult>,
+    remote: Option<&str>,
+    remote_refs: &RemoteRefs,
 ) -> Option<Vec<OperationResult>> {
     let repo = match git2::Repository::open(repo_path) {
         Ok(r) => r,
@@ -224,6 +235,8 @@ pub(super) fn execute_worktree_remove_and_delete_branch(
         }
     };
     let mut locally_deleted = Vec::new();
+    let remove_remote = action == BranchAction::WorktreeRemoveAndDeleteBranchRemote;
+    let mut remote_plan: Vec<(String, Result<String, String>)> = Vec::new();
     for (i, path_str) in item_names.iter().enumerate() {
         if cancel_flag.load(Ordering::Relaxed) {
             results.push(OperationResult {
@@ -268,6 +281,12 @@ pub(super) fn execute_worktree_remove_and_delete_branch(
 
         if removed {
             if let Some(name) = branch_name {
+                if remove_remote {
+                    remote_plan.push((
+                        name.clone(),
+                        remote_resolve::resolve_delete_for(&repo, remote, &name),
+                    ));
+                }
                 let delete_result = operations::delete_local(&repo, &name);
                 if delete_result.success {
                     locally_deleted.push(name);
@@ -276,19 +295,19 @@ pub(super) fn execute_worktree_remove_and_delete_branch(
             }
         }
     }
-    if action == BranchAction::WorktreeRemoveAndDeleteBranchRemote
-        && !locally_deleted.is_empty()
-    {
+    if remove_remote && !locally_deleted.is_empty() {
         let _ = prog_tx.send(ProgressUpdate {
             completed: locally_deleted.len(),
             total,
             current_item: "Deleting remote branches...".into(),
         });
-        results.extend(operations::delete_remotes_batch(
-            repo_path,
-            &locally_deleted,
-            cancel_flag,
-        ));
+        let planned: Vec<(String, Result<String, String>)> = remote_plan
+            .into_iter()
+            .filter(|(name, _)| locally_deleted.contains(name))
+            .collect();
+        let remote_results = operations::delete_remotes_planned(repo_path, &planned, cancel_flag);
+        record_deleted_remote_refs(remote_refs, &planned, &remote_results);
+        results.extend(remote_results);
     }
     None
 }
@@ -303,6 +322,7 @@ pub(super) fn execute_delete_branch_cascade(
     cancel_flag: &Arc<AtomicBool>,
     partial_delete_risk: &Arc<AtomicBool>,
     results: &mut Vec<OperationResult>,
+    remote_refs: &RemoteRefs,
 ) {
     results.extend(match action {
         BranchAction::DeleteBranchAndRemoveWorktree
@@ -315,6 +335,7 @@ pub(super) fn execute_delete_branch_cascade(
             prog_tx,
             cancel_flag,
             partial_delete_risk,
+            remote_refs,
         ),
         _ => unreachable!("matched new delete action"),
     });

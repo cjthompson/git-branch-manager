@@ -2,6 +2,7 @@ mod delete_remote_and_local;
 mod execute_local;
 mod execute_remote;
 mod queue;
+mod remote_resolution;
 
 use super::*;
 use super::execute::execute_action_with_remote;

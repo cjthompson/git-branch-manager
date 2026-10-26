@@ -88,12 +88,16 @@ pub fn delete_tags_batch(repo: &Repository, tag_names: &[String]) -> Vec<Operati
 
 /// Batch delete remote tags with fallback to individual deletes.
 #[instrument(skip(repo_path, tag_names), fields(count = tag_names.len()))]
-pub fn delete_remote_tags_batch(repo_path: &Path, tag_names: &[String]) -> Vec<OperationResult> {
+pub fn delete_remote_tags_batch(
+    repo_path: &Path,
+    tag_names: &[String],
+    remote: &str,
+) -> Vec<OperationResult> {
     if tag_names.is_empty() {
         return vec![];
     }
 
-    let mut args = vec!["push", "origin", "--delete"];
+    let mut args = vec!["push", remote, "--delete"];
     let refs: Vec<&str> = tag_names.iter().map(|s| s.as_str()).collect();
     args.extend(&refs);
 
@@ -122,7 +126,7 @@ pub fn delete_remote_tags_batch(repo_path: &Path, tag_names: &[String]) -> Vec<O
         .iter()
         .map(|name| {
             let out = Command::new("git")
-                .args(["push", "origin", "--delete", name])
+                .args(["push", remote, "--delete", name])
                 .current_dir(repo_path)
                 .stdin(Stdio::null())
                 .env("GIT_TERMINAL_PROMPT", "0")
@@ -148,9 +152,9 @@ pub fn delete_remote_tags_batch(repo_path: &Path, tag_names: &[String]) -> Vec<O
 
 /// Push a tag to the remote.
 #[instrument(skip(repo_path))]
-pub fn push_tag(repo_path: &Path, tag_name: &str) -> OperationResult {
+pub fn push_tag(repo_path: &Path, tag_name: &str, remote: &str) -> OperationResult {
     let out = Command::new("git")
-        .args(["push", "origin", tag_name])
+        .args(["push", remote, tag_name])
         .current_dir(repo_path)
         .stdin(Stdio::null())
         .env("GIT_TERMINAL_PROMPT", "0")

@@ -4,14 +4,21 @@ use std::process::Stdio;
 use std::sync::atomic::AtomicBool;
 
 use super::{cancelled, git_cmd, run_git_cancellable, squash_message::squash_commit_message};
+use crate::git::remote_resolve::{self, unresolved_result};
 use crate::types::{BranchAction, OperationResult};
 use tracing::instrument;
 
 #[instrument(skip(repo_path, cancel))]
 pub fn fast_forward(repo_path: &Path, branch_name: &str, cancel: &AtomicBool) -> OperationResult {
+    let remote = match remote_resolve::fetch_target(repo_path, branch_name) {
+        Ok(remote) => remote,
+        Err(message) => {
+            return unresolved_result(branch_name, BranchAction::FastForward, message);
+        }
+    };
     let refspec = format!("{branch_name}:{branch_name}");
     match run_git_cancellable(
-        git_cmd(repo_path).args(["fetch", "origin", &refspec]),
+        git_cmd(repo_path).args(["fetch", &remote, &refspec]),
         cancel,
     ) {
         None => cancelled(branch_name, BranchAction::FastForward),
@@ -73,11 +80,19 @@ pub fn pull_branch(
 }
 
 #[instrument(skip(repo_path, cancel))]
-pub fn push_branch(repo_path: &Path, branch_name: &str, cancel: &AtomicBool) -> OperationResult {
-    match run_git_cancellable(
-        git_cmd(repo_path).args(["push", "--set-upstream", "origin", branch_name]),
-        cancel,
-    ) {
+pub fn push_branch(
+    repo_path: &Path,
+    branch_name: &str,
+    remote: &str,
+    set_upstream: bool,
+    cancel: &AtomicBool,
+) -> OperationResult {
+    let mut args = vec!["push"];
+    if set_upstream {
+        args.push("--set-upstream");
+    }
+    args.extend([remote, branch_name]);
+    match run_git_cancellable(git_cmd(repo_path).args(&args), cancel) {
         None => cancelled(branch_name, BranchAction::Push),
         Some(Ok(o)) if o.status.success() => OperationResult::success(
             branch_name,
@@ -105,12 +120,16 @@ pub fn push_branch(repo_path: &Path, branch_name: &str, cancel: &AtomicBool) -> 
 pub fn force_push_branch(
     repo_path: &Path,
     branch_name: &str,
+    remote: &str,
+    set_upstream: bool,
     cancel: &AtomicBool,
 ) -> OperationResult {
-    match run_git_cancellable(
-        git_cmd(repo_path).args(["push", "--force-with-lease", "origin", branch_name]),
-        cancel,
-    ) {
+    let mut args = vec!["push"];
+    if set_upstream {
+        args.push("--set-upstream");
+    }
+    args.extend(["--force-with-lease", remote, branch_name]);
+    match run_git_cancellable(git_cmd(repo_path).args(&args), cancel) {
         None => cancelled(branch_name, BranchAction::ForcePush),
         Some(Ok(o)) if o.status.success() => OperationResult::success(
             branch_name,

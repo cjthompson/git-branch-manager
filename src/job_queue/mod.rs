@@ -19,13 +19,41 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, TimeDelta, Utc};
 
 use crate::git::graph::GraphRepositoryDelta;
 use crate::types::{BranchAction, OperationResult, ProgressUpdate};
 use crate::view::ViewId;
+
+/// `(remote, branch)` pairs a job deleted remotely; filled on its thread, drained at completion.
+pub(crate) type RemoteRefs = Arc<Mutex<Vec<(String, String)>>>;
+
+fn take_remote_refs(refs: &RemoteRefs) -> Vec<(String, String)> {
+    let mut guard = refs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::mem::take(&mut *guard)
+}
+
+/// Record `(remote, branch)` for each planned branch whose remote deletion succeeded.
+fn record_deleted_remote_refs(
+    refs: &RemoteRefs,
+    plan: &[(String, Result<String, String>)],
+    results: &[OperationResult],
+) {
+    let mut guard = refs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    for (name, target) in plan {
+        let Ok(remote) = target else { continue };
+        let deleted = results.iter().any(|result| {
+            result.success
+                && result.action == BranchAction::DeleteRemoteBranch
+                && result.branch_name == *name
+        });
+        if deleted {
+            guard.push((remote.clone(), name.clone()));
+        }
+    }
+}
 
 /// How long a completed job's summary lingers in the status area.
 const SUMMARY_LINGER_SECS: i64 = 4;
@@ -54,6 +82,7 @@ struct RunningJob {
     cancel_flag: Arc<AtomicBool>,
     partial_delete_risk: Arc<AtomicBool>,
     latest_progress: Option<ProgressUpdate>,
+    remote_refs: RemoteRefs,
 }
 
 /// A just-cancelled job whose thread hasn't exited yet. Kept separate from
@@ -69,6 +98,7 @@ struct DrainingJob {
     job: ActionJob,
     op_rx: Receiver<Vec<OperationResult>>,
     graph_delta_rx: Receiver<Result<GraphRepositoryDelta, String>>,
+    remote_refs: RemoteRefs,
 }
 
 /// Outcome of the most recently completed job, shown briefly in the status area.
@@ -135,6 +165,8 @@ pub struct JobEvent {
     /// separate accessor in the same tick. Non-empty triggers the
     /// Results overlay auto-open (plan P005 §5).
     pub failures: Vec<OperationResult>,
+    /// Remote branches this job deleted, each under the remote the job resolved for it.
+    pub remote_deletions: Vec<(String, String)>,
 }
 
 /// Result of one [`ActionJobQueue::poll`] call.

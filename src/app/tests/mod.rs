@@ -22,6 +22,7 @@ mod navigation;
 mod operation_results;
 mod primary_code;
 mod recovery;
+mod remote_drain;
 mod render_rows;
 mod squash_stash_prompt;
 mod startup_settings;

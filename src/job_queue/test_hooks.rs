@@ -26,7 +26,14 @@ impl ActionJobQueue {
         partial_delete_risk: Arc<AtomicBool>,
     ) {
         let (_delta_tx, graph_delta_rx) = mpsc::channel();
-        self.inject_running_with_graph_delta_for_test(job, op_rx, graph_delta_rx, progress_rx, cancel_flag, partial_delete_risk);
+        self.inject_running_with_graph_delta_for_test(
+            job,
+            op_rx,
+            graph_delta_rx,
+            progress_rx,
+            cancel_flag,
+            partial_delete_risk,
+        );
     }
 
     /// Inject a fake running job with an explicitly controlled repository
@@ -49,6 +56,7 @@ impl ActionJobQueue {
             cancel_flag,
             partial_delete_risk,
             latest_progress: None,
+            remote_refs: Arc::default(),
         });
     }
 
