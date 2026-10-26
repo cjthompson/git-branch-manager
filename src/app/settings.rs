@@ -107,7 +107,9 @@ impl App {
 
     pub(super) fn save_horizontal_scrolling(&mut self) {
         let horizontal_scrolling = self.config.horizontal_scrolling;
-        self.config = Config::update(|c| c.horizontal_scrolling = horizontal_scrolling);
+        self.config = Config::update_at(&self.config_root, |c| {
+            c.horizontal_scrolling = horizontal_scrolling
+        });
     }
 
     /// Persist only the given view's sort column/direction.
