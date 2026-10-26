@@ -204,20 +204,42 @@ pub(super) fn execute_action_with_remote(
         }
         BranchAction::DeleteRemoteAndLocal => {
             if let Some(name) = item_names.first() {
-                let remote_name = remote.unwrap_or("origin");
-                let remote_results = operations::delete_remotes_batch_for_remote(
-                    repo_path,
-                    remote_name,
-                    std::slice::from_ref(name),
-                    cancel_flag,
-                );
-                results.extend(remote_results);
-                if let Ok(repo) = git2::Repository::open(repo_path) {
-                    let local_result = operations::delete_local(&repo, name);
+                if cancel_flag.load(Ordering::Relaxed) {
                     results.push(OperationResult {
-                        action: BranchAction::DeleteRemoteAndLocal,
-                        ..local_result
+                        branch_name: String::new(),
+                        action,
+                        success: false,
+                        message: "Cancelled by user".into(),
+                        failure: None,
                     });
+                } else {
+                    match git2::Repository::open(repo_path) {
+                        Err(e) => results.push(OperationResult {
+                            branch_name: name.clone(),
+                            action,
+                            success: false,
+                            message: format!("Failed to open repo: {e}"),
+                            failure: None,
+                        }),
+                        Ok(repo) => {
+                            let local_result = operations::delete_local(&repo, name);
+                            let local_ok = local_result.success;
+                            results.push(OperationResult {
+                                action,
+                                ..local_result
+                            });
+                            // Remote is a backup: only attempted once the local delete has succeeded.
+                            if local_ok {
+                                let remote_name = remote.unwrap_or("origin");
+                                results.extend(operations::delete_remotes_batch_for_remote(
+                                    repo_path,
+                                    remote_name,
+                                    std::slice::from_ref(name),
+                                    cancel_flag,
+                                ));
+                            }
+                        }
+                    }
                 }
             }
         }
