@@ -719,7 +719,25 @@ impl App {
         }
 
         // Cache-audit result (one-shot)
-        for audit in drain_channel(&mut self.diag_rx, 1, &mut dirty) {
+        let audit_pending = self.diag_rx.is_some();
+        let audits = drain_channel(&mut self.diag_rx, 1, &mut dirty);
+        if audits.is_empty() && audit_pending && self.diag_rx.is_none() {
+            // The audit thread exited without a result (the repo could not be opened).
+            self.clear_cancel_flag_unless_primary_code_check_owns_it();
+            self.progress_rx = None;
+            self.progress = None;
+            if let Some(Overlay::Executing { label, .. }) = &self.overlay {
+                if label == "Verifying cache accuracy..." {
+                    self.overlay = None;
+                }
+            }
+            self.toast = Some(Toast::new(
+                "Cache audit failed: repository could not be opened".into(),
+                3,
+            ));
+            dirty = true;
+        }
+        for audit in audits {
             self.clear_cancel_flag_unless_primary_code_check_owns_it();
             self.progress_rx = None;
             self.progress = None;
