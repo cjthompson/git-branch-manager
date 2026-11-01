@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-31
+
+### Follow up on partially implemented tasks #002–#037 (P002)
+- Cover `ahead_behind.rs`
+- Cover `app/settings.rs`
+- Cover `app/mouse_search.rs`
+- Cover `app/keys_views.rs`
+
 ## 2026-10-23
 
 ### Fixes
