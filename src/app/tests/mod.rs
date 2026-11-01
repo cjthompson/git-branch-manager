@@ -16,6 +16,7 @@ mod graph_enrichment_publish;
 mod graph_updates;
 mod info_modal_worktree_menu;
 mod jump_to_graph;
+mod keys_views;
 mod merge_confidence;
 mod modal_keys;
 mod navigation;
