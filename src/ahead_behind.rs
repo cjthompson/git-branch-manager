@@ -185,3 +185,6 @@ pub(crate) fn compute_ahead_behind(
     span.record("graph_error_count", graph_error_count);
     updates
 }
+
+#[cfg(test)]
+mod tests;
