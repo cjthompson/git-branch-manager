@@ -23,6 +23,7 @@ mod operation_results;
 mod primary_code;
 mod recovery;
 mod render_rows;
+mod settings;
 mod squash_stash_prompt;
 mod startup_settings;
 
