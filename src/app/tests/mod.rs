@@ -18,6 +18,7 @@ mod info_modal_worktree_menu;
 mod jump_to_graph;
 mod merge_confidence;
 mod modal_keys;
+mod mouse_search;
 mod navigation;
 mod operation_results;
 mod primary_code;
