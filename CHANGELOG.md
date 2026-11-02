@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-02
+
+### Follow up on partially implemented tasks #002–#037 (P002)
+- Cover `git/operations/remote.rs`
+- Cover `git/tags.rs`
+
 ## 2026-10-31
 
 ### Follow up on partially implemented tasks #002–#037 (P002)
