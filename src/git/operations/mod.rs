@@ -77,6 +77,10 @@ fn run_git_cancellable(
     cmd: &mut Command,
     cancel: &AtomicBool,
 ) -> Option<std::io::Result<std::process::Output>> {
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -92,5 +96,22 @@ fn run_git_cancellable(
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => return Some(Err(e)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_git_cancellable;
+    use std::process::Command;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn precancelled_command_does_not_spawn() {
+        let tempdir = tempfile::tempdir().expect("temporary directory");
+        let missing_executable = tempdir.path().join("missing-git-executable");
+        assert!(!missing_executable.exists());
+
+        let mut command = Command::new(missing_executable);
+        assert!(run_git_cancellable(&mut command, &AtomicBool::new(true)).is_none());
     }
 }

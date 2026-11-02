@@ -1,6 +1,10 @@
+use std::path::Path;
+use std::process::Command;
 use std::sync::atomic::AtomicBool;
+use std::sync::mpsc;
 
 use git_branch_manager::git::operations;
+use git_branch_manager::types::{BranchAction, ProgressUpdate};
 
 use crate::common::*;
 
@@ -281,5 +285,497 @@ fn test_delete_remotes_batch_empty() {
     assert!(
         results.is_empty(),
         "empty input should produce empty results"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers for the remote operation tests below
+// ---------------------------------------------------------------------------
+
+/// Create `branch` from the current HEAD, commit `file` with `content`, push it to `remote`, and return to main.
+fn push_branch_to_remote(
+    work_dir: &Path,
+    remote: &str,
+    branch: &str,
+    file: &str,
+    content: &str,
+    subject: &str,
+) {
+    run_git(work_dir, &["checkout", "-b", branch]);
+    std::fs::write(work_dir.join(file), content).unwrap();
+    run_git(work_dir, &["add", file]);
+    run_git(work_dir, &["commit", "-m", subject]);
+    run_git(work_dir, &["push", "-u", remote, branch]);
+    run_git(work_dir, &["checkout", "main"]);
+}
+
+/// Create `branch` from the current HEAD, push it to origin, and return to main.
+fn push_branch_to_origin(work_dir: &Path, branch: &str, file: &str, content: &str, subject: &str) {
+    push_branch_to_remote(work_dir, "origin", branch, file, content, subject);
+}
+
+/// Whether `name` resolves as a ref in `dir`. Panics only if git cannot be run.
+fn ref_exists(dir: &Path, name: &str) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "-q", "--verify", name])
+        .current_dir(dir)
+        .output()
+        .expect("failed to run git rev-parse")
+        .status
+        .success()
+}
+
+// ---------------------------------------------------------------------------
+// Checkout / fetch / pull
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_checkout_remote_branch_missing_repo_reports_spawn_error() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    let missing = work_dir.join("missing-repo");
+    assert!(!missing.exists(), "missing repository precondition");
+
+    let result = operations::checkout_remote_branch(&missing, "origin", "feat");
+    assert!(!result.success);
+    assert_eq!(result.branch_name, "feat");
+    assert_eq!(result.action, BranchAction::CheckoutRemote);
+    assert!(!result.message.is_empty(), "spawn error should be reported");
+}
+
+#[test]
+fn test_fetch_remote_success_reports_fetched() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    let results = operations::fetch_remote(&work_dir, "origin", &AtomicBool::new(false));
+    assert_eq!(results.len(), 1);
+    let result = &results[0];
+    assert!(result.success, "fetch should succeed: {}", result.message);
+    assert_eq!(result.message, "Fetched origin");
+    assert_eq!(result.branch_name, "origin");
+    assert_eq!(result.action, BranchAction::FetchRemote);
+}
+
+#[test]
+fn test_delete_remotes_batch_for_non_origin_remote_only_updates_selected_remote() {
+    let (tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    let origin_dir = work_dir.parent().unwrap().join("remote.git");
+    let secondary_dir = tmpdir.path().join("secondary.git");
+    run_git(
+        tmpdir.path(),
+        &[
+            "init",
+            "--bare",
+            "-b",
+            "main",
+            secondary_dir.to_str().unwrap(),
+        ],
+    );
+    run_git(
+        &work_dir,
+        &[
+            "remote",
+            "add",
+            "secondary",
+            secondary_dir.to_str().unwrap(),
+        ],
+    );
+    run_git(&work_dir, &["push", "secondary", "main"]);
+
+    push_branch_to_remote(
+        &work_dir,
+        "secondary",
+        "secondary-only",
+        "secondary-only.txt",
+        "secondary\n",
+        "Add secondary-only",
+    );
+    run_git(&work_dir, &["push", "origin", "secondary-only"]);
+
+    let ref_name = "refs/heads/secondary-only";
+    assert!(
+        ref_exists(&secondary_dir, ref_name),
+        "secondary branch setup"
+    );
+    assert!(ref_exists(&origin_dir, ref_name), "origin branch setup");
+
+    let names = vec!["secondary-only".to_string()];
+    let results = operations::delete_remotes_batch_for_remote(
+        &work_dir,
+        "secondary",
+        &names,
+        &AtomicBool::new(false),
+    );
+
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].success,
+        "secondary delete should succeed: {}",
+        results[0].message
+    );
+    assert!(
+        !ref_exists(&secondary_dir, ref_name),
+        "the selected remote branch should be deleted"
+    );
+    assert!(
+        ref_exists(&origin_dir, ref_name),
+        "deleting from secondary must leave origin unchanged"
+    );
+}
+
+#[test]
+fn test_fetch_remote_unknown_remote_fails() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    let results = operations::fetch_remote(&work_dir, "no-such-remote", &AtomicBool::new(false));
+    assert_eq!(results.len(), 1);
+    let result = &results[0];
+    assert!(!result.success);
+    assert!(!result.message.is_empty(), "stderr should be reported");
+}
+
+#[test]
+fn test_fetch_remote_precancelled_reports_cancelled() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    let results = operations::fetch_remote(&work_dir, "origin", &AtomicBool::new(true));
+    assert_eq!(results.len(), 1);
+    assert!(!results[0].success);
+    assert_eq!(results[0].message, "Cancelled");
+}
+
+#[test]
+fn test_fetch_remote_missing_repo_reports_spawn_error() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    let missing = work_dir.join("missing-repo");
+    assert!(!missing.exists(), "missing repository precondition");
+
+    let results = operations::fetch_remote(&missing, "origin", &AtomicBool::new(false));
+    assert_eq!(results.len(), 1);
+    assert!(!results[0].success);
+    assert!(
+        !results[0].message.is_empty(),
+        "spawn error should be reported"
+    );
+}
+
+#[test]
+fn test_pull_remote_fast_forwards_non_current_branch() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    push_branch_to_origin(
+        &work_dir,
+        "pull-src",
+        "pull.txt",
+        "pull\n",
+        "Pull source commit",
+    );
+    let tip = git_output(&work_dir, &["rev-parse", "pull-src"]);
+
+    // Rewind the local branch so it is behind origin/pull-src
+    run_git(&work_dir, &["branch", "-f", "pull-src", "main"]);
+
+    let results = operations::pull_remote(&work_dir, "origin", "pull-src", &AtomicBool::new(false));
+    assert_eq!(results.len(), 1);
+    let result = &results[0];
+    assert!(result.success, "pull should succeed: {}", result.message);
+    assert_eq!(result.message, "Pulled origin/pull-src");
+    assert_eq!(result.branch_name, "pull-src");
+    assert_eq!(git_output(&work_dir, &["rev-parse", "pull-src"]), tip);
+}
+
+#[test]
+fn test_pull_remote_missing_ref_fails() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    let results = operations::pull_remote(
+        &work_dir,
+        "origin",
+        "no-such-branch",
+        &AtomicBool::new(false),
+    );
+    assert_eq!(results.len(), 1);
+    let result = &results[0];
+    assert!(!result.success);
+    assert_eq!(result.branch_name, "no-such-branch");
+    assert!(!result.message.is_empty(), "stderr should be reported");
+}
+
+#[test]
+fn test_pull_remote_precancelled_reports_cancelled() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+
+    let results = operations::pull_remote(&work_dir, "origin", "main", &AtomicBool::new(true));
+    assert_eq!(results.len(), 1);
+    assert!(!results[0].success);
+    assert_eq!(results[0].message, "Cancelled");
+}
+
+#[test]
+fn test_pull_remote_missing_repo_reports_spawn_error() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    let missing = work_dir.join("missing-repo");
+    assert!(!missing.exists(), "missing repository precondition");
+
+    let results = operations::pull_remote(&missing, "origin", "main", &AtomicBool::new(false));
+    assert_eq!(results.len(), 1);
+    assert!(!results[0].success);
+    assert!(
+        !results[0].message.is_empty(),
+        "spawn error should be reported"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Remote delete: batch, fallback, and progress paths
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_delete_remotes_batch_precancelled_marks_all_cancelled() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    let remote_dir = work_dir.parent().unwrap().join("remote.git");
+    push_branch_to_origin(&work_dir, "cancel-a", "cancel-a.txt", "a\n", "Add cancel-a");
+    push_branch_to_origin(&work_dir, "cancel-b", "cancel-b.txt", "b\n", "Add cancel-b");
+
+    let names = vec!["cancel-a".to_string(), "cancel-b".to_string()];
+    let results = operations::delete_remotes_batch_for_remote(
+        &work_dir,
+        "origin",
+        &names,
+        &AtomicBool::new(true),
+    );
+    assert_eq!(results.len(), 2);
+    for result in &results {
+        assert!(!result.success);
+        assert_eq!(result.message, "Cancelled");
+    }
+    for name in &names {
+        assert!(
+            !git_output(&remote_dir, &["branch", "--list", name]).is_empty(),
+            "cancelled batch must leave remote branch {name} in place"
+        );
+    }
+}
+
+#[test]
+fn test_delete_remotes_batch_mixed_ok_and_missing_reports_each_item() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    let remote_dir = work_dir.parent().unwrap().join("remote.git");
+    push_branch_to_origin(&work_dir, "ok-a", "ok-a.txt", "ok\n", "Add ok-a");
+    assert!(ref_exists(&remote_dir, "refs/heads/ok-a"));
+
+    let names = vec!["ok-a".to_string(), "never-pushed".to_string()];
+    let results = operations::delete_remotes_batch(&work_dir, &names, &AtomicBool::new(false));
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].branch_name, "ok-a");
+    assert!(results[0].success, "ok-a delete: {}", results[0].message);
+    assert_eq!(results[1].branch_name, "never-pushed");
+    assert!(!results[1].success);
+    assert!(!results[1].message.is_empty(), "stderr should be reported");
+    assert!(
+        !ref_exists(&remote_dir, "refs/heads/ok-a"),
+        "the valid branch should be deleted from the bare remote"
+    );
+    assert!(
+        !ref_exists(&remote_dir, "refs/heads/never-pushed"),
+        "the nonexistent branch should remain absent"
+    );
+}
+
+#[test]
+fn test_delete_remotes_batch_missing_repo_reports_each_error() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    let missing = work_dir.join("missing-repo");
+    assert!(!missing.exists(), "missing repository precondition");
+
+    let names = vec!["a".to_string(), "b".to_string()];
+    let results = operations::delete_remotes_batch(&missing, &names, &AtomicBool::new(false));
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].branch_name, "a");
+    assert_eq!(results[1].branch_name, "b");
+    for result in &results {
+        assert!(!result.success);
+        assert!(!result.message.is_empty(), "spawn error should be reported");
+    }
+}
+
+#[test]
+fn test_delete_remotes_with_progress_reports_each_item() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    push_branch_to_origin(&work_dir, "prog-a", "prog-a.txt", "a\n", "Add prog-a");
+    push_branch_to_origin(&work_dir, "prog-b", "prog-b.txt", "b\n", "Add prog-b");
+
+    let (tx, rx) = mpsc::channel::<ProgressUpdate>();
+    let names = vec!["prog-a".to_string(), "prog-b".to_string()];
+    let results =
+        operations::delete_remotes_with_progress(&work_dir, &names, &tx, &AtomicBool::new(false));
+
+    assert_eq!(results.len(), 2);
+    assert!(results[0].success, "prog-a delete: {}", results[0].message);
+    assert!(results[1].success, "prog-b delete: {}", results[1].message);
+
+    let updates: Vec<ProgressUpdate> = rx.try_iter().collect();
+    let tuples: Vec<(usize, usize, &str)> = updates
+        .iter()
+        .map(|u| (u.completed, u.total, u.current_item.as_str()))
+        .collect();
+    assert_eq!(tuples, vec![(0, 2, "prog-a"), (1, 2, "prog-b")]);
+}
+
+#[test]
+fn test_delete_remotes_with_progress_mixed_results() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    push_branch_to_origin(&work_dir, "prog-ok", "prog-ok.txt", "ok\n", "Add prog-ok");
+
+    let (tx, rx) = mpsc::channel::<ProgressUpdate>();
+    let names = vec!["prog-ok".to_string(), "prog-missing".to_string()];
+    let results = operations::delete_remotes_with_progress_for_remote(
+        &work_dir,
+        "origin",
+        &names,
+        &tx,
+        &AtomicBool::new(false),
+    );
+
+    assert_eq!(results.len(), 2);
+    assert!(results[0].success, "prog-ok delete: {}", results[0].message);
+    assert!(!results[1].success);
+    assert!(!results[1].message.is_empty(), "stderr should be reported");
+
+    let updates: Vec<ProgressUpdate> = rx.try_iter().collect();
+    assert_eq!(updates.len(), 2);
+}
+
+#[test]
+fn test_delete_remotes_with_progress_precancelled_stops_first() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    let remote_dir = work_dir.parent().unwrap().join("remote.git");
+    push_branch_to_origin(
+        &work_dir,
+        "prog-stop",
+        "prog-stop.txt",
+        "stop\n",
+        "Add prog-stop",
+    );
+
+    let (tx, rx) = mpsc::channel::<ProgressUpdate>();
+    let names = vec!["prog-stop".to_string()];
+    let results = operations::delete_remotes_with_progress_for_remote(
+        &work_dir,
+        "origin",
+        &names,
+        &tx,
+        &AtomicBool::new(true),
+    );
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].message, "Cancelled");
+    assert_eq!(rx.try_iter().count(), 0, "no progress before cancellation");
+    assert!(
+        !git_output(&remote_dir, &["branch", "--list", "prog-stop"]).is_empty(),
+        "cancelled delete must leave the remote branch in place"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Merge / cherry-pick into current branch
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_merge_remote_into_current_fast_forwards() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    push_branch_to_origin(&work_dir, "ff-src", "ff-src.txt", "ff\n", "Add ff-src");
+
+    let results = operations::merge_remote_into_current(&work_dir, "origin/ff-src", "ff-src");
+    assert_eq!(results.len(), 1);
+    let result = &results[0];
+    assert!(result.success, "merge should succeed: {}", result.message);
+    assert_eq!(result.message, "Merged origin/ff-src into current");
+    assert_eq!(result.branch_name, "ff-src");
+    assert_eq!(
+        git_output(&work_dir, &["rev-parse", "HEAD"]),
+        git_output(&work_dir, &["rev-parse", "origin/ff-src"])
+    );
+}
+
+#[test]
+fn test_merge_remote_into_current_conflict_aborts() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    push_branch_to_origin(
+        &work_dir,
+        "conflict-src",
+        "README.md",
+        "branch side\n",
+        "Branch side change",
+    );
+    std::fs::write(work_dir.join("README.md"), "main side\n").unwrap();
+    run_git(&work_dir, &["add", "README.md"]);
+    run_git(&work_dir, &["commit", "-m", "Main side change"]);
+
+    let results =
+        operations::merge_remote_into_current(&work_dir, "origin/conflict-src", "conflict-src");
+    assert_eq!(results.len(), 1);
+    let result = &results[0];
+    assert!(!result.success);
+    assert_eq!(result.message, "Merge conflict \u{2014} aborted");
+    assert!(result.failure.is_none());
+
+    assert_eq!(git_output(&work_dir, &["status", "--porcelain"]), "");
+    assert!(
+        !ref_exists(&work_dir, "MERGE_HEAD"),
+        "MERGE_HEAD should be absent after abort"
+    );
+    assert_eq!(
+        std::fs::read_to_string(work_dir.join("README.md")).unwrap(),
+        "main side\n"
+    );
+}
+
+#[test]
+fn test_cherry_pick_remote_applies_commit() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    push_branch_to_origin(&work_dir, "cp-src", "cherry.txt", "cherry\n", "Add cherry");
+
+    let results = operations::cherry_pick_remote(&work_dir, "origin/cp-src", "cp-src");
+    assert_eq!(results.len(), 1);
+    let result = &results[0];
+    assert!(
+        result.success,
+        "cherry-pick should succeed: {}",
+        result.message
+    );
+    assert_eq!(result.message, "Cherry-picked origin/cp-src");
+    assert_eq!(result.branch_name, "cp-src");
+    assert!(work_dir.join("cherry.txt").exists());
+    assert_eq!(
+        git_output(&work_dir, &["log", "-1", "--format=%s"]),
+        "Add cherry"
+    );
+}
+
+#[test]
+fn test_cherry_pick_remote_conflict_aborts() {
+    let (_tmpdir, work_dir, _repo) = setup_remote_test_repo();
+    push_branch_to_origin(
+        &work_dir,
+        "cp-conflict",
+        "README.md",
+        "branch side\n",
+        "Branch side change",
+    );
+    std::fs::write(work_dir.join("README.md"), "main side\n").unwrap();
+    run_git(&work_dir, &["add", "README.md"]);
+    run_git(&work_dir, &["commit", "-m", "Main side change"]);
+
+    let results = operations::cherry_pick_remote(&work_dir, "origin/cp-conflict", "cp-conflict");
+    assert_eq!(results.len(), 1);
+    let result = &results[0];
+    assert!(!result.success);
+    assert_eq!(result.message, "Cherry-pick conflict \u{2014} aborted");
+    assert!(result.failure.is_none());
+
+    assert_eq!(git_output(&work_dir, &["status", "--porcelain"]), "");
+    assert!(
+        !ref_exists(&work_dir, "CHERRY_PICK_HEAD"),
+        "CHERRY_PICK_HEAD should be absent after abort"
     );
 }
