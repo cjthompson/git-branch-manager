@@ -207,3 +207,6 @@ pub(crate) fn spawn_phase1_loader(
     });
     phase1_rx
 }
+
+#[cfg(test)]
+mod tests;
