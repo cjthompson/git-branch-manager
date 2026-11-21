@@ -10,6 +10,8 @@ mod local_ops;
 mod merge_rebase;
 mod primary_code;
 mod primary_code_state;
+#[cfg(unix)]
+mod pty_tui;
 mod remote_ops;
 mod remote_status;
 mod remotes;
