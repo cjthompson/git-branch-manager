@@ -12,12 +12,10 @@ pub(crate) fn init_debug_log() -> Option<tracing_appender::non_blocking::WorkerG
     use tracing_subscriber::fmt::format::FmtSpan;
     use tracing_subscriber::EnvFilter;
 
-    let path = match std::env::var("GBM_DEBUG").ok().as_deref() {
-        None => return None,
-        Some(v) if v == "1" || v.eq_ignore_ascii_case("true") => default_debug_log_path(),
-        Some(v) if v == "0" || v.eq_ignore_ascii_case("false") || v.is_empty() => return None,
-        Some(v) => std::path::PathBuf::from(v),
-    };
+    let path = resolve_debug_log_path(
+        std::env::var("GBM_DEBUG").ok().as_deref(),
+        default_debug_log_path,
+    )?;
 
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -44,9 +42,24 @@ pub(crate) fn init_debug_log() -> Option<tracing_appender::non_blocking::WorkerG
     Some(guard)
 }
 
+fn resolve_debug_log_path(
+    value: Option<&str>,
+    default_path: impl FnOnce() -> std::path::PathBuf,
+) -> Option<std::path::PathBuf> {
+    match value {
+        None => None,
+        Some(v) if v == "1" || v.eq_ignore_ascii_case("true") => Some(default_path()),
+        Some(v) if v == "0" || v.eq_ignore_ascii_case("false") || v.is_empty() => None,
+        Some(v) => Some(std::path::PathBuf::from(v)),
+    }
+}
+
 fn default_debug_log_path() -> std::path::PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("git-branch-manager")
         .join("debug.log")
 }
+
+#[cfg(test)]
+mod tests;
