@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-21
+
+### Test coverage plan (P002)
+- Cover `logging.rs`
+- Cover `terminal.rs`
+
+### Dependencies
+- Update all dependencies, including `dirs` 6 → 7, `rusqlite` 0.32 → 0.43, and `toml` 1.0 → 1.2
+
 ## 2026-11-03
 
 ### Follow up on partially implemented tasks #002–#037 (P002)
