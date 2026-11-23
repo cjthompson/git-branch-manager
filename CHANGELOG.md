@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-23
+
+### Graph squash-merge markers and optional merge arrows (P001)
+- Add squash-merge markers to source branch tips
+- Add optional merge arrows for squash commits
+
 ## 2026-11-21
 
 ### Test coverage plan (P002)
