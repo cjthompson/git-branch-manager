@@ -1,6 +1,7 @@
 mod lanes;
 mod ref_pane;
 mod row;
+mod squash_arrows;
 #[cfg(test)]
 mod tests;
 
@@ -23,6 +24,7 @@ use self::ref_pane::{commit_summary_style, ref_pane_parts};
 use self::row::{
     compose_row, compose_scrolled_row, graph_separator, max_ref_scroll_offset, spans_width,
 };
+use self::squash_arrows::{apply_arrow_cells, plan_squash_arrows};
 use super::modal::{draw_modal_shell, ModalActionRow, ModalFooter, ModalScroll, ModalSpec};
 use super::tab_bar::tab_bar_line;
 
@@ -175,6 +177,11 @@ fn render_graph_rows(
         .iter()
         .map(|commit| (commit.oid.as_str(), commit.lane))
         .collect();
+    let squash_arrows = if state.shows_squash_arrows() {
+        plan_squash_arrows(snapshot, symbols)
+    } else {
+        HashMap::new()
+    };
     let mut pending_merge_lane = None;
     let mut rows = Vec::new();
     for (line_index, graph_line) in snapshot.lines.iter().enumerate() {
@@ -239,6 +246,9 @@ fn render_graph_rows(
                     selected_style(theme.cherry_picked, selected, theme),
                 );
             }
+        }
+        if let Some(cells) = squash_arrows.get(&line_index) {
+            apply_arrow_cells(&mut dag, cells, selected, theme);
         }
         let mut detail = Vec::new();
         if let Some(commit) = commit {
@@ -313,8 +323,14 @@ fn render_graph_rows(
     );
 }
 
-/// Draw the opt-in remote-ref/load-older controls for the Graph tab.
-pub fn draw_graph_options(frame: &mut Frame, cursor: usize, include_remotes: bool, theme: &Theme) {
+/// Draw the opt-in remote-ref/load-older/squash-arrow controls for the Graph tab.
+pub fn draw_graph_options(
+    frame: &mut Frame,
+    cursor: usize,
+    include_remotes: bool,
+    show_squash_arrows: bool,
+    theme: &Theme,
+) {
     let rows = [
         ModalActionRow::new(
             Some(' '),
@@ -325,6 +341,14 @@ pub fn draw_graph_options(frame: &mut Frame, cursor: usize, include_remotes: boo
             "",
         ),
         ModalActionRow::new(None, "Load older history (+500 commits)", ""),
+        ModalActionRow::new(
+            Some(' '),
+            format!(
+                "{} Show merge arrows for squash commits",
+                if show_squash_arrows { "[x]" } else { "[ ]" }
+            ),
+            "",
+        ),
     ];
     let areas = draw_modal_shell(
         frame,

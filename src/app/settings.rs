@@ -85,6 +85,13 @@ impl App {
         });
     }
 
+    pub(super) fn save_show_squash_arrows(&mut self) {
+        let show_squash_arrows = self.graph.shows_squash_arrows();
+        self.config = Config::update_at(&self.config_root, |c| {
+            c.show_squash_arrows = Some(show_squash_arrows)
+        });
+    }
+
     pub(super) fn save_auto_fetch(&mut self) {
         let auto_fetch = self.config.auto_fetch;
         self.config = Config::update_at(&self.config_root, |c| c.auto_fetch = auto_fetch);

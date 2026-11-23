@@ -203,6 +203,7 @@ pub(crate) fn base_overlay_fixtures() -> Vec<BaseOverlayFixture> {
             overlay: Overlay::GraphOptions {
                 cursor: 0,
                 include_remotes: false,
+                show_squash_arrows: false,
             },
             expected_title: "Graph options",
             expected_footer: "[j/k] Navigate  [Space] Toggle  [Enter] Apply  [Esc] Cancel",

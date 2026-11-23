@@ -335,8 +335,15 @@ pub fn draw(frame: &mut Frame, ctx: &mut RenderContext) {
             Overlay::GraphOptions {
                 cursor,
                 include_remotes,
+                show_squash_arrows,
             } => {
-                draw_graph_options(frame, *cursor, *include_remotes, ctx.theme);
+                draw_graph_options(
+                    frame,
+                    *cursor,
+                    *include_remotes,
+                    *show_squash_arrows,
+                    ctx.theme,
+                );
             }
             Overlay::Diagnostics { cursor } => {
                 draw_diagnostics_menu(frame, *cursor, ctx.theme);

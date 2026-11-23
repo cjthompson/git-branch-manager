@@ -4,6 +4,7 @@ mod head_state;
 mod lanes;
 mod ref_scroll;
 mod ref_state;
+mod squash_arrows;
 mod squash_refs;
 
 use super::lanes::{graph_spans, graph_symbol, merge_origin_lane, selected_style};
@@ -149,7 +150,7 @@ fn graph_options_render_remote_toggle_and_history_control() {
     let backend = TestBackend::new(60, 12);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| draw_graph_options(frame, 0, true, &Theme::dark()))
+        .draw(|frame| draw_graph_options(frame, 0, true, false, &Theme::dark()))
         .unwrap();
     let buffer: String = terminal
         .backend()
@@ -160,4 +161,5 @@ fn graph_options_render_remote_toggle_and_history_control() {
         .collect();
     assert!(buffer.contains("[x] Include remote refs"));
     assert!(buffer.contains("Load older history"));
+    assert!(buffer.contains("[ ] Show merge arrows for squash commits"));
 }

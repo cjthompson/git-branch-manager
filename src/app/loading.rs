@@ -90,12 +90,18 @@ impl App {
         self.spawn_graph_load(self.graph.max_count(), include_remotes);
     }
 
+    /// Cursor rows: 0=include remotes, 1=load older, 2=arrows (reloads only if remotes changed).
     pub(super) fn apply_graph_options(&mut self, cursor: usize, include_remotes: bool) {
-        if cursor == 0 {
-            self.reload_graph_with_remotes(include_remotes);
-        } else {
-            self.graph.set_include_remotes(include_remotes);
-            self.load_older_graph();
+        match cursor {
+            0 => self.reload_graph_with_remotes(include_remotes),
+            1 => {
+                self.graph.set_include_remotes(include_remotes);
+                self.load_older_graph();
+            }
+            _ if include_remotes != self.graph.includes_remotes() => {
+                self.reload_graph_with_remotes(include_remotes);
+            }
+            _ => {}
         }
     }
 
@@ -109,6 +115,7 @@ impl App {
         self.overlay = Some(Overlay::GraphOptions {
             cursor: 0,
             include_remotes: self.graph.includes_remotes(),
+            show_squash_arrows: self.graph.shows_squash_arrows(),
         });
     }
 

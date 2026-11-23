@@ -20,6 +20,7 @@ pub struct Config {
     pub auto_fetch: Option<bool>,
     pub load_worktrees_on_launch: Option<bool>,
     pub include_remotes: Option<bool>,
+    pub show_squash_arrows: Option<bool>,
     /// Scroll wide list tables horizontally instead of collapsing columns.
     /// Absent means disabled to preserve the current responsive layout.
     pub horizontal_scrolling: Option<bool>,
@@ -179,6 +180,7 @@ mod tests {
         assert_eq!(c.theme, None);
         assert_eq!(c.auto_fetch, None);
         assert_eq!(c.include_remotes, None);
+        assert_eq!(c.show_squash_arrows, None);
         assert_eq!(c.horizontal_scrolling, None);
     }
 
@@ -202,6 +204,15 @@ mod tests {
 
         assert_eq!(parsed.include_remotes, Some(true));
         assert!(serialized.contains("include_remotes = true"));
+    }
+
+    #[test]
+    fn config_roundtrip_preserves_graph_squash_arrows_preference() {
+        let parsed: Config = toml::from_str("show_squash_arrows = true\n").unwrap();
+        let serialized = toml::to_string(&parsed).unwrap();
+
+        assert_eq!(parsed.show_squash_arrows, Some(true));
+        assert!(serialized.contains("show_squash_arrows = true"));
     }
 
     #[test]

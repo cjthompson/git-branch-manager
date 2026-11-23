@@ -751,26 +751,39 @@ impl App {
             Some(Overlay::GraphOptions {
                 cursor,
                 include_remotes,
+                show_squash_arrows,
             }) => match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
                     self.overlay = Some(Overlay::GraphOptions {
-                        cursor: (cursor + 1).min(1),
+                        cursor: (cursor + 1).min(2),
                         include_remotes,
+                        show_squash_arrows,
                     });
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     self.overlay = Some(Overlay::GraphOptions {
                         cursor: cursor.saturating_sub(1),
                         include_remotes,
+                        show_squash_arrows,
                     });
                 }
                 KeyCode::Char(' ') => {
+                    let (include_remotes, show_squash_arrows) = if cursor == 2 {
+                        (include_remotes, !show_squash_arrows)
+                    } else {
+                        (!include_remotes, show_squash_arrows)
+                    };
                     self.overlay = Some(Overlay::GraphOptions {
                         cursor,
-                        include_remotes: !include_remotes,
+                        include_remotes,
+                        show_squash_arrows,
                     });
                 }
                 KeyCode::Enter => {
+                    if show_squash_arrows != self.graph.shows_squash_arrows() {
+                        self.graph.set_show_squash_arrows(show_squash_arrows);
+                        self.save_show_squash_arrows();
+                    }
                     self.apply_graph_options(cursor, include_remotes);
                     self.save_include_remotes();
                 }
@@ -779,6 +792,7 @@ impl App {
                     self.overlay = Some(Overlay::GraphOptions {
                         cursor,
                         include_remotes,
+                        show_squash_arrows,
                     });
                 }
             },

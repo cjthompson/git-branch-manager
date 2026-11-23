@@ -17,6 +17,7 @@ pub struct GraphState {
     error: Option<String>,
     max_count: usize,
     include_remotes: bool,
+    show_squash_arrows: bool,
     cursor: usize,
     offset: usize,
     horizontal_offset: usize,
@@ -37,6 +38,7 @@ impl GraphState {
             error: None,
             max_count: GRAPH_PAGE_SIZE,
             include_remotes: false,
+            show_squash_arrows: false,
             cursor: 0,
             offset: 0,
             horizontal_offset: 0,
@@ -62,6 +64,10 @@ impl GraphState {
 
     pub fn includes_remotes(&self) -> bool {
         self.include_remotes
+    }
+
+    pub fn shows_squash_arrows(&self) -> bool {
+        self.show_squash_arrows
     }
 
     pub fn commit_offset(&self) -> usize {
@@ -195,6 +201,11 @@ impl GraphState {
 
     pub fn set_include_remotes(&mut self, include_remotes: bool) {
         self.include_remotes = include_remotes;
+    }
+
+    /// Render-only: takes effect on the next frame without reloading the snapshot.
+    pub fn set_show_squash_arrows(&mut self, show_squash_arrows: bool) {
+        self.show_squash_arrows = show_squash_arrows;
     }
 
     /// Apply asynchronous squash-merge enrichment to the active snapshot.

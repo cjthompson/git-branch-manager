@@ -66,11 +66,23 @@ fn graph_navigation_uses_one_row_cursor() {
 fn graph_options_and_older_history_update_state() {
     let mut state = GraphState::new();
     assert_eq!(state.max_count(), 500);
+    assert!(!state.shows_squash_arrows());
     assert_eq!(state.load_older_history(), 1000);
     state.set_include_remotes(true);
     assert!(state.includes_remotes());
+    state.set_show_squash_arrows(true);
+    assert!(state.shows_squash_arrows());
     state.begin_load(state.max_count(), state.includes_remotes());
     assert!(state.is_loading());
+    assert!(
+        state.shows_squash_arrows(),
+        "begin_load must not reset the render-only arrows flag"
+    );
+    state.apply_result(Ok(snapshot()));
+    assert!(
+        state.shows_squash_arrows(),
+        "apply_result must not reset the render-only arrows flag"
+    );
 }
 
 #[test]

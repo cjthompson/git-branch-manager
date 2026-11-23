@@ -55,6 +55,7 @@ impl App {
             .and_then(|k| sort_keys::index_for_key(&worktree_cols, k));
         let worktree_sort_asc = config.sort_asc_worktrees.unwrap_or(true);
         let include_remotes = config.include_remotes.unwrap_or(false);
+        let show_squash_arrows = config.show_squash_arrows.unwrap_or(false);
 
         let mut branch_state = ListState::empty();
         branch_state.loading = true;
@@ -92,6 +93,7 @@ impl App {
             graph: {
                 let mut graph = GraphState::new();
                 graph.set_include_remotes(include_remotes);
+                graph.set_show_squash_arrows(show_squash_arrows);
                 graph
             },
             branches: branch_state,

@@ -88,7 +88,7 @@ fn is_merge_connector(character: char) -> bool {
 /// Use semantic colors from the active theme for graph lanes. The palette
 /// cycles after four lanes so large histories remain colorful without adding a
 /// second, graph-specific theme configuration surface.
-fn graph_lane_style(lane: usize, theme: &Theme) -> Style {
+pub(super) fn graph_lane_style(lane: usize, theme: &Theme) -> Style {
     match lane % 4 {
         0 => theme.title,
         1 => theme.ahead,

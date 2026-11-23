@@ -46,7 +46,7 @@ git branch-manager
 
 Graph is the first tab and the default view on launch. Each row streams the commit DAG (topology, abbreviated OID, summary) on the left alongside a responsive `LRT │ State │ Refs` pane on the right. The pane and the DAG share one cursor and scroll offset — there is no independent pane focus yet.
 
-Press `o` to open Graph options. `Space` toggles "Include remote refs", and `Enter` applies the toggle and reloads. The remote-ref preference **persists** to `config.toml` (only the history-window size does not persist across restarts).
+Press `o` to open Graph options. `Space` toggles "Include remote refs", and `Enter` applies the toggle and reloads. The remote-ref preference **persists** to `config.toml` (only the history-window size does not persist across restarts). The third row, "Show merge arrows for squash commits", is off by default and draws a connector from each exactly matched squash-merge source tip up to its `≈` destination row where the path is free; it applies without reloading and **persists** to `config.toml` as `show_squash_arrows`.
 
 Press `L` to load 500 more commits per press; history expansion is uncapped and session-only.
 

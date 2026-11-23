@@ -93,6 +93,7 @@ pub enum Overlay {
     GraphOptions {
         cursor: usize,
         include_remotes: bool,
+        show_squash_arrows: bool,
     },
     /// Diagnostics menu: pick a debugging tool to run.
     Diagnostics {
