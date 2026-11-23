@@ -167,6 +167,15 @@ impl GraphCommit {
                 similarity_percent: confidence.similarity_percent,
             })
     }
+
+    /// Whether this commit is the captured source tip of a squash pairing, at any confidence.
+    pub fn is_squash_source_tip(&self) -> bool {
+        self.relationships.iter().any(|relationship| {
+            relationship.kind == RelationshipKind::SquashMerge
+                && relationship.source_oid == self.oid
+                && relationship.destination_oid != self.oid
+        })
+    }
 }
 
 /// A fuzzy (non-exact) possible-squash-merge signal for a single base commit,

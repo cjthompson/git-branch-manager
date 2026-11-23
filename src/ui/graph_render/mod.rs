@@ -215,6 +215,19 @@ fn render_graph_rows(
                 );
             }
         }
+        if !is_merge && commit.is_some_and(|commit| commit.is_squash_source_tip()) {
+            if let Some(marker_index) = graph_line
+                .graph
+                .chars()
+                .position(|character| matches!(character, '*' | '●' | 'o' | '○'))
+            {
+                dag[marker_index] = Span::styled(
+                    symbols.graph_squash_commit,
+                    selected_style(theme.squash_merged, selected, theme),
+                );
+            }
+        }
+        // Runs after the squash markers so a cherry-picked squash source shows the cherry glyph.
         if !is_merge && commit.is_some_and(|commit| commit.is_cherry_picked_commit()) {
             if let Some(marker_index) = graph_line
                 .graph

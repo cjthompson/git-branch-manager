@@ -76,6 +76,55 @@ fn squash_confidence_ignores_relationships_where_commit_is_the_source() {
 }
 
 #[test]
+fn squash_source_tip_detects_exact_and_fuzzy_sources() {
+    let exact = GraphCommit {
+        oid: "t1".into(),
+        relationships: vec![squash("d", "t1", &["feature/a"], RelationshipMatch::Exact)],
+        ..GraphCommit::default()
+    };
+    assert!(exact.is_squash_source_tip());
+
+    let fuzzy = GraphCommit {
+        oid: "t2".into(),
+        relationships: vec![squash(
+            "d",
+            "t2",
+            &["feature/b"],
+            RelationshipMatch::Fuzzy {
+                similarity_percent: 90,
+            },
+        )],
+        ..GraphCommit::default()
+    };
+    assert!(fuzzy.is_squash_source_tip());
+}
+
+#[test]
+fn squash_source_tip_ignores_destination_and_cherry_pick_relationships() {
+    let destination = GraphCommit {
+        oid: "d".into(),
+        relationships: vec![squash("d", "t1", &["feature/x"], RelationshipMatch::Exact)],
+        ..GraphCommit::default()
+    };
+    assert!(!destination.is_squash_source_tip());
+
+    let cherry = GraphCommit {
+        oid: "t1".into(),
+        relationships: vec![GraphRelationship {
+            kind: RelationshipKind::CherryPick,
+            matching: RelationshipMatch::Exact,
+            destination_oid: "d".into(),
+            destination_refs: vec!["main".into()],
+            source_oid: "t1".into(),
+            source_refs: vec!["feature/x".into()],
+        }],
+        ..GraphCommit::default()
+    };
+    assert!(!cherry.is_squash_source_tip());
+    assert!(!GraphCommit::default().is_squash_source_tip());
+}
+
+#[test]
 fn stronger_match_prefers_exact_then_higher_percent() {
     use RelationshipMatch::*;
     assert_eq!(
